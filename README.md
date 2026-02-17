@@ -18,6 +18,8 @@ git clone https://github.com/wohlford/dotclaude.git ~/.claude
 |------|---------|
 | [CLAUDE.md](CLAUDE.md) | Global instructions loaded into every Claude Code session |
 | [STYLE.md](STYLE.md) | Code style and formatting standards (Bash, Python, JS, YAML, JSON, Markdown) |
+| [templates.md](templates.md) | Starter templates for Bash scripts, Python modules, and JavaScript |
+| [workflows.md](workflows.md) | Development workflows (Explore/Plan/Code/Commit, TDD) |
 
 ## License
 

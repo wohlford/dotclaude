@@ -3,6 +3,8 @@
 Universal instructions for all projects.
 
 - **Code style and formatting:** [STYLE.md](./.claude/STYLE.md)
+- **Code templates:** [templates.md](./.claude/templates.md) (Bash, Python, JavaScript)
+- **Development workflows:** [workflows.md](./.claude/workflows.md) (Explore/Plan/Code/Commit, TDD)
 
 ## Environment
 
