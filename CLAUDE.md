@@ -20,6 +20,10 @@ Universal instructions for all projects.
 | :--- | :--- | :--- |
 | `style-reviewer` | haiku | Review code files for STYLE.md compliance |
 
+## Hooks
+
+- **PostToolUse** (Edit/Write) — `~/.claude/scripts/style-check.sh` validates file format (tabs, newlines, syntax) on every edit
+
 ## Environment
 
 - **Platform**: macOS with MacPorts package manager
