@@ -1,0 +1,25 @@
+# Claude Code internal state
+cache/
+debug/
+downloads/
+file-history/
+history.jsonl
+plans/
+plugins/
+projects/
+session-env/
+shell-snapshots/
+stats-cache.json
+statsig/
+tasks/
+telemetry/
+todos/
+
+# Browser integration
+chrome/
+
+# Machine-specific settings
+settings.local.json
+
+# Backup files
+*.bak
