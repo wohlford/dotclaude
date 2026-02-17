@@ -125,10 +125,10 @@ set -euo pipefail
 ### Commit Messages
 
 ```text
-<type>: <subject>
+<type>[!]: <subject>
 ```
 
-Single line only. No body or footer. Lowercase, imperative mood, no period.
+Single line only. No body or footer. Lowercase, imperative mood, no period. Append `!` after the type for breaking changes.
 
 **Types:** `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`, `revert`
 
@@ -138,7 +138,27 @@ Single line only. No body or footer. Lowercase, imperative mood, no period.
 feat: add user authentication system
 fix: handle null values in data parser
 refactor: extract validation logic to separate module
+feat!: remove legacy API endpoint
 ```
+
+### Semantic Versioning
+
+All projects follow [Semantic Versioning 2.0.0](https://semver.org/). Versions are tracked with annotated git tags (`v1.2.3`).
+
+**Breaking changes** use `!` after the type:
+
+```text
+feat!: remove legacy authentication API
+refactor!: change config file format
+```
+
+**Version bump rules:**
+
+| Bump | Trigger |
+|------|---------|
+| MAJOR | Any type with `!` suffix |
+| MINOR | `feat` |
+| PATCH | All other types (`fix`, `perf`, `docs`, `style`, `refactor`, `test`, `chore`, `ci`, `revert`) |
 
 ### Never Commit
 
