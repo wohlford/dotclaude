@@ -21,6 +21,14 @@ git clone https://github.com/wohlford/dotclaude.git ~/.claude
 | [templates.md](templates.md) | Starter templates for Bash scripts, Python modules, and JavaScript |
 | [workflows.md](workflows.md) | Development workflows (Explore/Plan/Code/Commit, TDD) |
 
+### Skills (Slash Commands)
+
+| Command | Purpose |
+|---------|---------|
+| `/commit` | Create a git commit following `<type>: <subject>` format |
+| `/init-bash` | Scaffold a new Bash script from the standard template |
+| `/init-python` | Scaffold a new Python module from the standard template |
+
 ### Agents
 
 | Agent | Model | Purpose |

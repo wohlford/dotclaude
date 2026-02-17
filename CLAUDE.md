@@ -6,6 +6,14 @@ Universal instructions for all projects.
 - **Code templates:** [templates.md](./.claude/templates.md) (Bash, Python, JavaScript)
 - **Development workflows:** [workflows.md](./.claude/workflows.md) (Explore/Plan/Code/Commit, TDD)
 
+## Skills (Slash Commands)
+
+| Command | Purpose |
+| :--- | :--- |
+| `/commit` | Create a git commit following `<type>: <subject>` format |
+| `/init-bash` | Scaffold a new bash script from the standard template |
+| `/init-python` | Scaffold a new Python module from the standard template |
+
 ## Agents
 
 | Agent | Model | Purpose |
