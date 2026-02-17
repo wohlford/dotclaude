@@ -21,6 +21,12 @@ git clone https://github.com/wohlford/dotclaude.git ~/.claude
 | [templates.md](templates.md) | Starter templates for Bash scripts, Python modules, and JavaScript |
 | [workflows.md](workflows.md) | Development workflows (Explore/Plan/Code/Commit, TDD) |
 
+### Agents
+
+| Agent | Model | Purpose |
+|-------|-------|---------|
+| `style-reviewer` | haiku | Review code files for STYLE.md compliance |
+
 ## License
 
 [MIT](LICENSE)

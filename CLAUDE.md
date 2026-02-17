@@ -6,6 +6,12 @@ Universal instructions for all projects.
 - **Code templates:** [templates.md](./.claude/templates.md) (Bash, Python, JavaScript)
 - **Development workflows:** [workflows.md](./.claude/workflows.md) (Explore/Plan/Code/Commit, TDD)
 
+## Agents
+
+| Agent | Model | Purpose |
+| :--- | :--- | :--- |
+| `style-reviewer` | haiku | Review code files for STYLE.md compliance |
+
 ## Environment
 
 - **Platform**: macOS with MacPorts package manager
