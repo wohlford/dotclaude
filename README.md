@@ -10,6 +10,15 @@ Clone into your home directory:
 git clone https://github.com/wohlford/dotclaude.git ~/.claude
 ```
 
+## What's Included
+
+### Documentation
+
+| File | Purpose |
+|------|---------|
+| [CLAUDE.md](CLAUDE.md) | Global instructions loaded into every Claude Code session |
+| [STYLE.md](STYLE.md) | Code style and formatting standards (Bash, Python, JS, YAML, JSON, Markdown) |
+
 ## License
 
 [MIT](LICENSE)
