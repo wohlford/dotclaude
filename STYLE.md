@@ -41,6 +41,10 @@ set -euo pipefail
 - Use `trap cleanup EXIT` for temp file cleanup
 - Use `mktemp` + `mv` for atomic writes
 - Use `command -v tool` to check dependencies
+- Prefer long-form flags: `--recursive` not `-r`, `--force` not `-f`, `--parents` not `-p`
+- Use `printf` not `echo` for output
+- Use ANSI-C quoting (`$'...'`) for escape sequences: `$'\033[0;32m'`
+- Prefer parameter expansion (`${var#pattern}`, `${var%%pattern}`, `${var%.*}`) over calling `sed`/`awk`
 
 ### Naming
 
@@ -50,6 +54,63 @@ set -euo pipefail
 | Functions | `lower_snake_case` | `process_file` |
 | Constants | `UPPER_SNAKE_CASE` | `MAX_RETRIES` |
 | Files | `kebab-case.sh` | `process-data.sh` |
+
+### Script Structure
+
+Scripts follow a `main()` / `main "$@"` skeleton. Core logic goes in named functions, not at the top level:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+deploy() {
+  local target="$1"
+  # ... core logic ...
+}
+
+main() {
+  local verbose=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --verbose) verbose=true; shift ;;
+      --)        shift; break ;;
+      -*)        printf 'Unknown flag: %s\n' "$1" >&2; exit 1 ;;
+      *)         break ;;
+    esac
+  done
+
+  deploy "$@"
+}
+
+main "$@"
+```
+
+### Source Guard
+
+Files that must be sourced (not executed) check `BASH_SOURCE` at the top:
+
+```bash
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  printf 'Cannot run directly. Usage: source %s\n' "$0" >&2
+  exit 1
+fi
+```
+
+### Path Resolution
+
+Scripts resolve their own directory using `dirname` + `realpath`:
+
+```bash
+script_dir="$(dirname "$(realpath "$0")")"
+```
+
+Sourced files use `BASH_SOURCE` instead of `$0`:
+
+```bash
+script_dir="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+```
+
 
 ## Python
 
@@ -125,10 +186,10 @@ set -euo pipefail
 ### Commit Messages
 
 ```text
-<type>[!]: <subject>
+<type>[(scope)][!]: <subject>
 ```
 
-Single line only. No body or footer. Lowercase, imperative mood, no period. Append `!` after the type for breaking changes.
+Single line only. No body or footer. Lowercase, imperative mood, no period. Scope is optional but encouraged to specify the area of impact. Append `!` after the type/scope for breaking changes.
 
 **Types:** `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`, `revert`
 
@@ -136,9 +197,11 @@ Single line only. No body or footer. Lowercase, imperative mood, no period. Appe
 
 ```text
 feat: add user authentication system
+feat(auth): add OAuth2 support
 fix: handle null values in data parser
-refactor: extract validation logic to separate module
+refactor(parser): extract validation logic to separate module
 feat!: remove legacy API endpoint
+chore(build)!: drop support for Node 6
 ```
 
 ### Semantic Versioning

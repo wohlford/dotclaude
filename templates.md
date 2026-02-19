@@ -15,7 +15,7 @@ set -euo pipefail
 # ============================================================================
 
 # ---------- Configuration ----------
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 readonly DEFAULT_TIMEOUT=30
 
 # ---------- Global Variables ----------
@@ -26,15 +26,12 @@ temp_file=""
 # ---------- Cleanup Handler ----------
 cleanup() {
   local exit_code=$?
-  [[ -n "$temp_file" && -f "$temp_file" ]] && rm -f "$temp_file"
+  [[ -n "$temp_file" && -f "$temp_file" ]] && rm --force "$temp_file"
   exit "$exit_code"
 }
 trap cleanup EXIT INT TERM
 
 # ---------- Helper Functions ----------
-log_info()  { echo "[INFO] $*"; }
-log_error() { echo "[ERROR] $*" >&2; }
-
 show_help() {
   cat << EOF
 Usage: $(basename "$0") [options] <input-file>
@@ -52,7 +49,7 @@ check_dependencies() {
   local missing=0
   for cmd in "jq" "curl"; do
     if ! command -v "$cmd" &>/dev/null; then
-      log_error "$cmd not found (sudo port install $cmd)"
+      printf '[ERROR] %s\n' "$cmd not found (sudo port install $cmd)"
       missing=1
     fi
   done
@@ -62,10 +59,10 @@ check_dependencies() {
 # ---------- Core Logic ----------
 process_file() {
   local input="$1"
-  [[ -f "$input" ]] || { log_error "Not found: $input"; return 1; }
+  [[ -f "$input" ]] || { printf '[ERROR] %s\n' "Not found: $input"; return 1; }
 
   if [[ $dry_run -eq 1 ]]; then
-    log_info "Would process: $input"
+    printf '[INFO] %s\n' "Would process: $input"
     return 0
   fi
 
@@ -73,7 +70,7 @@ process_file() {
   # ... processing ...
   mv "$temp_file" "${input%.txt}.out"
   temp_file=""
-  log_info "Processed: $input"
+  printf '[INFO] %s\n' "Processed: $input"
 }
 
 # ---------- Argument Parsing ----------
@@ -84,11 +81,11 @@ parse_arguments() {
       -h|--help)    show_help ;;
       -v|--verbose) verbose=1; shift ;;
       -n|--dry-run) dry_run=1; shift ;;
-      -*)           log_error "Unknown option: $1"; exit 1 ;;
+      -*)           printf '[ERROR] %s\n' "Unknown option: $1"; exit 1 ;;
       *)            readonly INPUT_FILE="$1"; shift ;;
     esac
   done
-  [[ -n "${INPUT_FILE:-}" ]] || { log_error "Input file required"; exit 1; }
+  [[ -n "${INPUT_FILE:-}" ]] || { printf '[ERROR] %s\n' "Input file required"; exit 1; }
 }
 
 # ---------- Main ----------
