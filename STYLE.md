@@ -175,6 +175,48 @@ script_dir="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 - Fenced code blocks with language identifiers
 - Consistent list markers (`-` not mixed with `*`)
 
+## Timestamps
+
+When emitting time-of-day timestamps into human-readable Markdown, use the canonical local format with DST-aware abbreviation.
+
+### Canonical format
+
+| Form | Example | When to use |
+|------|---------|-------------|
+| Full | `2026-04-28 12:55 CDT` | Files where date is not implicit (e.g., flat append-only logs) |
+| Time-only | `12:55 CDT` | Files where surrounding context implies the date (daily notes, per-day section in dated logs) |
+
+### Rules
+
+- **Local time at write**, DST-aware abbreviation — `CDT` in summer, `CST` in winter. Time zone follows the device's current TZ.
+- **Em-dash delimiter** (` — `) between timestamp and body in bulleted entries: `- 12:55 CDT — body text`.
+- **Don't use** UTC `Z` suffix in entry bodies.
+- **Don't use** ISO 8601 datetime in entry bodies (e.g., `2026-04-28T12:55:00Z`).
+
+### Computation
+
+Bash:
+
+```bash
+date "+%Y-%m-%d %H:%M %Z"   # full
+date "+%H:%M %Z"            # time-only
+```
+
+Python:
+
+```python
+from datetime import datetime
+from zoneinfo import ZoneInfo
+datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")              # uses OS local TZ
+datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M %Z") # explicit IANA TZ
+```
+
+### When NOT to use this format
+
+- **Filenames** — keep `YYYY-MM-DD` ISO-only (e.g., `2026-04-28-decision-foo.md`).
+- **Machine-parseable logs in code** — use full ISO 8601 with offset: `2026-04-28T12:55:00-05:00`.
+- **Cross-system timestamps** — anywhere the consumer is non-human, prefer ISO 8601 with offset.
+
 ## Comments
 
 - Explain **why**, not **what**
@@ -192,6 +234,10 @@ script_dir="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 Single line only. No body or footer. Lowercase, imperative mood, no period. Scope is optional but encouraged to specify the area of impact. Append `!` after the type/scope for breaking changes.
 
 **Types:** `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`, `revert`
+
+**`docs` vs `feat` for markdown files:**
+- `docs` — repo usage documentation (README, CONTRIBUTING, setup guides)
+- `feat` — markdown files consumed as AI execution context, configuration, or runtime logic (scoring rubrics, resume master, pipeline plans, agent/skill definitions)
 
 **Examples:**
 
