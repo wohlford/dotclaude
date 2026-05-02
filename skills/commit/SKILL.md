@@ -39,16 +39,36 @@ The user wants to create a git commit. Follow the commit message format from `~/
 
 **Types:** `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`, `revert`
 
+### Granular-by-default
+
+**Always split unrelated changes into separate commits.** A single `/commit` invocation may produce multiple commits when the working tree contains independent changes.
+
+Before committing, group the changed files by logical unit:
+- Each bug fix, feature, refactor, or documentation update is its own commit
+- Pipeline data updates (extraction runs, status changes, contact log entries) are each their own commit
+- Configuration changes are separated from code changes
+- A change to one component does not get bundled with an unrelated change to another component
+
+If `git status` shows changes that would naturally take different commit messages (different `<type>` or unrelated `<subject>`), commit them separately — even if the user invoked `/commit` once. Tag each one independently.
+
+**When to bundle into one commit:**
+- All changes share the same logical purpose (e.g., adding a feature touches 5 files)
+- The user explicitly passes `--batch` or describes the changes as a single unit
+- Trivial mechanical changes that travel together (rename across files, formatter sweep)
+
+When in doubt, split. The cost of an extra commit is negligible; the cost of an opaque "kitchen sink" commit is real.
+
 ### Process
 
 1. Review `git status` and `git diff` to understand the changes
-2. If nothing is staged, stage the relevant files (prefer explicit filenames over `git add .`)
-3. Draft a commit message:
+2. **Group changes into logical units.** If multiple independent commits are needed, plan them before staging anything. Walk through each group sequentially: stage → commit → tag, then move to the next.
+3. For the current group, stage only its files (prefer explicit filenames over `git add .` or `git add -A`)
+4. Draft a commit message for this group:
    - Choose the correct type based on the nature of the change
    - Write a concise subject in imperative mood (e.g., "add X", "fix Y", "remove Z")
    - Append `!` after the type if the change is breaking (e.g., `feat!: remove legacy API`)
    - Keep the entire message under 72 characters
-4. Create the commit using a heredoc:
+5. Create the commit using a heredoc:
 
 ```bash
 git commit -S -m "$(cat <<'EOF'
@@ -57,20 +77,22 @@ EOF
 )"
 ```
 
-5. Show the result with `git log --oneline -1`
-6. Determine the version bump from the commit message:
+6. Show the result with `git log --oneline -1`
+7. Determine the version bump from the commit message:
    - Type has `!` suffix → **MAJOR** (reset minor and patch to 0)
    - Type is `feat` → **MINOR** (reset patch to 0)
    - All other types → **PATCH**
-7. Read the latest tag from dynamic context (default `v0.0.0`)
-8. Increment the appropriate version component
-9. Create a signed, annotated tag:
+8. Read the latest tag from dynamic context (default `v0.0.0`) — for subsequent commits in the same `/commit` invocation, use the tag you created in the previous iteration as the base
+9. Increment the appropriate version component
+10. Create a signed, annotated tag:
 
 ```bash
 git tag -s -a vX.Y.Z -m "<type>[!]: <subject>"
 ```
 
-10. Show the tagged result: `git log --oneline -1 --decorate`
+11. Show the tagged result: `git log --oneline -1 --decorate`
+12. **If more groups remain from step 2, return to step 3** with the next group. Continue until all logical units have their own commit and tag.
+13. After all commits are done, show a final summary: `git log --oneline -<N> --decorate` where N is the number of commits created.
 
 ### Arguments
 
