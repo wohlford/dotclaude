@@ -429,9 +429,50 @@ def cmd_init(args: argparse.Namespace) -> int:
   return 0
 
 
+HANDLER_DEFAULT_MARKERS = {
+  'skills': 'sync:skills cols=Command:key,Purpose:auto',
+  'agents': 'sync:agents cols=Agent:key,Purpose:auto',
+  'plugins': 'sync:plugins cols=Plugin:key,Purpose:manual',
+  'hooks': 'sync:hooks cols=Event:key,Matcher:auto,Script:auto,Purpose:auto',
+  'scripts': 'sync:scripts cols=Script:key,Purpose:auto',
+  'index': 'sync:index',
+}
+
+
 def cmd_add(args: argparse.Namespace) -> int:
-  print("add: not yet implemented (Phase 2 commit 2)", file=sys.stderr)
-  return 1
+  handler = args.handler
+
+  if handler == 'custom':
+    if not args.source or not args.cols:
+      print("add custom requires --source GLOB and --cols COLS", file=sys.stderr)
+      return 1
+    open_marker = f'<!-- sync:custom source="{args.source}" cols={args.cols} -->'
+    close_marker = '<!-- /sync:custom -->'
+  elif handler in HANDLER_DEFAULT_MARKERS:
+    open_marker = f'<!-- {HANDLER_DEFAULT_MARKERS[handler]} -->'
+    close_marker = f'<!-- /sync:{handler} -->'
+  else:
+    print(f"unknown handler: {handler!r}; choices: {', '.join(list(HANDLER_DEFAULT_MARKERS) + ['custom'])}",
+          file=sys.stderr)
+    return 2
+
+  target = Path(args.into).resolve() if args.into else Path.cwd().resolve() / 'README.md'
+  block = f'\n{open_marker}\n{close_marker}\n'
+
+  if target.exists():
+    text = target.read_text(encoding='utf-8')
+    if not text.endswith('\n'):
+      text += '\n'
+    atomic_write(target, text + block)
+    print(f"appended {handler} marker to {target}")
+  else:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    title = target.parent.name.replace('_', ' ').replace('-', ' ').title() or 'Index'
+    atomic_write(target, f'# {title}\n\n## Index\n{block}')
+    print(f"created {target} with {handler} marker")
+
+  print("Run /sync-docs to populate.")
+  return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -452,8 +493,10 @@ def main(argv: list[str] | None = None) -> int:
                       help='Maximum directory depth to scaffold (default: 2)')
 
   add_p = subparsers.add_parser('add', help='Insert a marker block')
-  add_p.add_argument('handler', help='Handler name (skills, agents, etc.)')
+  add_p.add_argument('handler', help='Handler name (skills, agents, plugins, hooks, scripts, index, custom)')
   add_p.add_argument('--into', help='Target file (default: ./README.md)')
+  add_p.add_argument('--source', help='Glob source (custom handler only)')
+  add_p.add_argument('--cols', help='Column spec (custom handler only)')
 
   # Allow --check at the top level too (sync is the default subcommand)
   parser.add_argument('--check', action='store_true', help=argparse.SUPPRESS)
