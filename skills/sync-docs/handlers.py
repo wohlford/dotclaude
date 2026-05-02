@@ -21,6 +21,23 @@ from extractors import (
 from formatters import ColSpec, render_list, render_table, parse_table
 
 
+_PROJECT_CONFIG: dict = {}
+
+
+def set_project_config(cfg: dict) -> None:
+  """Install the project-local config dict (from .claude/sync-docs.yaml).
+
+  Handlers consult this to override default discovery globs and to look up
+  project-defined custom handler definitions.
+  """
+  global _PROJECT_CONFIG
+  _PROJECT_CONFIG = cfg or {}
+
+
+def _config_for(handler_name: str) -> dict:
+  return _PROJECT_CONFIG.get('handlers', {}).get(handler_name, {})
+
+
 @dataclass
 class Source:
   path: Path
@@ -139,7 +156,8 @@ class SkillsHandler:
     directives: dict[str, str],
   ) -> list[Source]:
     chain = get_chain(directives.get('extract', 'yaml-frontmatter,heading-meta').split(','))
-    globs = ['skills/*/SKILL.md', '.claude/skills/*/SKILL.md']
+    cfg_source = _config_for('skills').get('source')
+    globs = [cfg_source] if cfg_source else ['skills/*/SKILL.md', '.claude/skills/*/SKILL.md']
     sources: list[Source] = []
     seen: set[Path] = set()
     for g in globs:
@@ -210,7 +228,8 @@ class AgentsHandler:
     directives: dict[str, str],
   ) -> list[Source]:
     chain = get_chain(directives.get('extract', 'yaml-frontmatter,heading-meta').split(','))
-    globs = ['agents/*.md', '.claude/agents/*.md']
+    cfg_source = _config_for('agents').get('source')
+    globs = [cfg_source] if cfg_source else ['agents/*.md', '.claude/agents/*.md']
     excluded = {'README.md', 'index.md'}
     sources: list[Source] = []
     seen: set[Path] = set()
@@ -431,9 +450,15 @@ class ScriptsHandler:
     directives: dict[str, str],
   ) -> list[Source]:
     chain = get_chain(directives.get('extract', 'bash-header,py-docstring,h1-and-paragraph').split(','))
+    cfg_source = _config_for('scripts').get('source')
+    globs = [cfg_source] if cfg_source else ['scripts/*.sh', 'scripts/*.py']
     sources: list[Source] = []
-    for g in ('scripts/*.sh', 'scripts/*.py'):
+    seen: set[Path] = set()
+    for g in globs:
       for path in repo_root.glob(g):
+        if path in seen:
+          continue
+        seen.add(path)
         fields = extract_chain(path, chain)
         if 'name' not in fields:
           fields['name'] = path.name
@@ -591,6 +616,80 @@ class IndexHandler:
     return render_table(rows, cols)
 
 
+# ---------- custom ----------
+
+class CustomHandler:
+  """Generic handler for ad-hoc indexes.
+
+  Configured per-marker via directives:
+    source=<glob>           — files to discover (relative to repo root)
+    extract=<chain>         — extractor chain (default: yaml-frontmatter,heading-meta)
+    cols=<col-spec>         — column list with role annotations (required)
+
+  Each column maps to a frontmatter field by lowercased name. Special
+  treatment: a column literally named 'File', 'Name', or 'Path' renders
+  the source file's path/name in backticks.
+  """
+  name = 'custom'
+
+  def discover(
+    self,
+    repo_root: Path,
+    marker_dir: Path,
+    directives: dict[str, str],
+  ) -> list[Source]:
+    source = directives.get('source')
+    if not source:
+      raise ValueError("sync:custom requires source=<glob>")
+    chain_names = directives.get('extract', 'yaml-frontmatter,heading-meta').split(',')
+    chain = get_chain(chain_names)
+    sources: list[Source] = []
+    for path in repo_root.glob(source):
+      if not path.is_file():
+        continue
+      fields = extract_chain(path, chain)
+      sources.append(Source(path=path, fields=fields))
+    return sources
+
+  def render(
+    self,
+    sources: list[Source],
+    directives: dict[str, str],
+    existing_body: list[str],
+  ) -> list[str]:
+    cols_spec = directives.get('cols')
+    if not cols_spec:
+      raise ValueError("sync:custom requires cols=<col-spec>")
+    cols = _parse_cols(cols_spec)
+    err = _validate_cols(cols, self.name)
+    if err:
+      raise ValueError(err)
+
+    repo_root = directives.get('_repo_root')  # injected by dispatcher (optional)
+
+    rows: list[dict[str, str]] = []
+    for s in sources:
+      row: dict[str, str] = {}
+      for c in cols:
+        if c.role == 'manual':
+          row[c.name] = ''
+          continue
+        if c.name in ('File', 'Path'):
+          row[c.name] = f'`{s.path.name}`'
+        elif c.name == 'Name':
+          row[c.name] = f'`{s.path.stem}`'
+        elif c.name.lower() in s.fields:
+          row[c.name] = str(s.fields[c.name.lower()])
+        else:
+          row[c.name] = ''
+      rows.append(row)
+
+    key = _get_key_col(cols)
+    rows = _sort_rows(rows, directives.get('sort'), key.name if key else cols[0].name)
+    rows = _preserve_manual(rows, cols, existing_body)
+    return render_table(rows, cols)
+
+
 # ---------- registry ----------
 
 HANDLERS: dict[str, Handler] = {
@@ -600,6 +699,7 @@ HANDLERS: dict[str, Handler] = {
   'hooks': HooksHandler(),
   'scripts': ScriptsHandler(),
   'index': IndexHandler(),
+  'custom': CustomHandler(),
 }
 
 

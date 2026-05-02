@@ -254,6 +254,65 @@ def test_index_handler_sort_mtime_desc(tmp_path):
   assert pos_newest < pos_middle < pos_oldest, "expected mtime,desc to put newest first"
 
 
+def test_custom_handler_with_yaml_frontmatter(tmp_path):
+  posts = tmp_path / 'posts'
+  posts.mkdir()
+  (posts / 'first.md').write_text("---\ntitle: First Post\nauthor: Alice\n---\n# First\n")
+  (posts / 'second.md').write_text("---\ntitle: Second Post\nauthor: Bob\n---\n# Second\n")
+  h = handlers.CustomHandler()
+  sources = h.discover(tmp_path, tmp_path, {'source': 'posts/*.md'})
+  out = h.render(
+    sources,
+    {'source': 'posts/*.md', 'cols': 'File:key,Title:auto,Author:auto'},
+    [],
+  )
+  joined = '\n'.join(out)
+  assert '`first.md`' in joined
+  assert 'First Post' in joined
+  assert 'Alice' in joined
+  assert '`second.md`' in joined
+  assert 'Bob' in joined
+
+
+def test_custom_handler_requires_source(tmp_path):
+  h = handlers.CustomHandler()
+  import pytest
+  with pytest.raises(ValueError, match='source='):
+    h.discover(tmp_path, tmp_path, {})
+
+
+def test_custom_handler_requires_cols(tmp_path):
+  h = handlers.CustomHandler()
+  import pytest
+  with pytest.raises(ValueError, match='cols='):
+    h.render([], {'source': 'x'}, [])
+
+
+def test_custom_handler_preserves_manual_column(tmp_path):
+  posts = tmp_path / 'posts'
+  posts.mkdir()
+  (posts / 'a.md').write_text("---\ntitle: A\n---\n")
+  (posts / 'b.md').write_text("---\ntitle: B\n---\n")
+  existing = [
+    '| File   | Status      | Title |',
+    '| :----- | :---------- | :---- |',
+    '| `a.md` | published   | OLD   |',
+    '| `b.md` | draft       | OLD   |',
+  ]
+  h = handlers.CustomHandler()
+  sources = h.discover(tmp_path, tmp_path, {'source': 'posts/*.md'})
+  out = h.render(
+    sources,
+    {'source': 'posts/*.md', 'cols': 'File:key,Status:manual,Title:auto'},
+    existing,
+  )
+  joined = '\n'.join(out)
+  assert 'published' in joined  # manual preserved
+  assert 'draft' in joined
+  assert ' A ' in joined or '| A ' in joined  # title rebuilt
+  assert 'OLD' not in joined
+
+
 def test_index_handler_lint_mode_renders_canonical_body(tmp_path):
   """Lint vs sync semantics live in the dispatcher; the handler always
   renders the canonical body. The dispatcher decides whether to write."""

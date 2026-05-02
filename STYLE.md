@@ -237,7 +237,7 @@ Close markers carry no directives. Mismatched handler name in close marker → p
 | `hooks` | `settings.json` → `hooks` + each script's header | event, matcher, command path, purpose | Table: `Event`, `Matcher`, `Script`, `Purpose` |
 | `scripts` | `scripts/*.sh`, `scripts/*.py` | filename, purpose | Table: `Script`, `Purpose` |
 | `index` | Direct children of marker's containing dir | dirname or filename, summary | List or table per directives |
-| `custom` | Per `source=<glob>` directive | Per `extract=` and `cols=` | Generic table |
+| `custom` | Per `source=<glob>` directive (relative to repo root) | Per `extract=` chain and `cols=` (column names map to lowercased frontmatter fields; `File`/`Path`/`Name` render the source filename) | Generic table |
 
 The `index` handler accepts: `kind=dirs|files|all` (default `all`), `extensions=<csv>`, `pattern=<regex>`, `sort=alpha|date|mtime[,desc]`, `summary-from=README.md|first-h1|first-paragraph|none`, `limit=N`, `mode=sync|lint`.
 
@@ -286,6 +286,15 @@ For pure-auto markers (no manual columns), the first column is conventionally th
 <!-- sync:skills cols=Command:key,Purpose:auto -->
 ```
 
+The `custom` handler indexes arbitrary frontmatter-decorated files (blog posts, references, etc.):
+
+```markdown
+<!-- sync:custom source="docs/posts/*.md" cols=File:key,Title:auto,Date:auto,Author:auto -->
+<!-- /sync:custom -->
+```
+
+`source` is a glob relative to the repo root. `cols=` names map to lowercased frontmatter fields (`Title:auto` reads the `title` field). The `File`, `Path`, and `Name` column names are special — they render the source file's name in backticks.
+
 ### Lint mode
 
 `mode=lint` markers don't rewrite content. They detect drift only:
@@ -313,11 +322,11 @@ The skill never modifies a file that doesn't contain a `<!-- sync:* -->` marker.
 ```yaml
 handlers:
   skills:
-    source: src/skills/**/SKILL.md      # nested layout — overrides default
-  components:                            # custom handler
-    source: src/components/**/index.tsx
-    extract: h1-and-paragraph
-    cols: [Component:key, Description:auto]
+    source: "src/skills/*/SKILL.md"     # nested layout — overrides default
+  posts:                                 # project-defined handler (no built-in)
+    source: "content/posts/*.md"
+    extract: yaml-frontmatter,heading-meta
+    cols: "File:key,Title:auto,Date:auto"
 
 init:
   exclude:
@@ -326,7 +335,9 @@ init:
     - vendor/
 ```
 
-When present, overrides ship with the project repo and only apply within that repo.
+When `<!-- sync:posts -->` appears in a marker, it routes to the `custom` handler with the directives merged from the config.
+
+Requires `pyyaml`: `uv pip install pyyaml`. If pyyaml is not installed, the file is ignored with a warning.
 
 ## Timestamps
 

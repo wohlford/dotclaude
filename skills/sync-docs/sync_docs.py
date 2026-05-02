@@ -29,6 +29,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handlers  # noqa: E402
 import markers  # noqa: E402
 
+try:
+  import yaml  # type: ignore[import-not-found]
+  _HAS_YAML = True
+except ImportError:
+  _HAS_YAML = False
+
 
 SEMANTIC_DIR_NAMES = frozenset({
   'applications', 'runs', 'jobs', 'incoming', 'archive',
@@ -43,6 +49,27 @@ EXCLUDED_DIR_NAMES = frozenset({
 })
 
 DATE_PREFIX_RE = re.compile(r'^\d{4}-\d{2}-\d{2}')
+
+
+def load_project_config(repo_root: Path) -> dict:
+  """Load .claude/sync-docs.yaml if present. Returns {} on absence or parse failure."""
+  config_path = repo_root / '.claude' / 'sync-docs.yaml'
+  if not config_path.exists():
+    return {}
+  if not _HAS_YAML:
+    print(
+      f"warning: {config_path} found but pyyaml not installed; "
+      f"install via 'uv pip install pyyaml' to enable project config",
+      file=sys.stderr,
+    )
+    return {}
+  try:
+    text = config_path.read_text(encoding='utf-8')
+    data = yaml.safe_load(text)
+    return data if isinstance(data, dict) else {}
+  except Exception as e:
+    print(f"warning: failed to parse {config_path}: {e}", file=sys.stderr)
+    return {}
 
 
 def discover_repo_root(scope: str | None) -> Path:
@@ -190,6 +217,8 @@ def process_file(
 
 def cmd_sync(args: argparse.Namespace) -> int:
   repo_root = discover_repo_root(args.scope)
+  config = load_project_config(repo_root)
+  handlers.set_project_config(config)
   md_files = find_markdown_files(repo_root)
 
   modified: list[Path] = []
@@ -201,7 +230,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
   for md in md_files:
     try:
-      original, regenerated, changes, lint_drifts, errors = process_file(md, repo_root)
+      original, regenerated, changes, lint_drifts, errors = process_file(md, repo_root, config)
     except Exception as e:
       print(f"error processing {md.relative_to(repo_root)}: {e}", file=sys.stderr)
       return 2
@@ -351,10 +380,17 @@ def _scaffold_readme(dir_path: Path, marker_directive: str) -> str:
 
 def cmd_init(args: argparse.Namespace) -> int:
   repo_root = discover_repo_root(args.scope)
+  config = load_project_config(repo_root)
+  exclude_patterns = config.get('init', {}).get('exclude', []) or []
   candidates: list[tuple[Path, str, str]] = []
   for d in _walk_dirs(repo_root):
-    rel_depth = len(d.relative_to(repo_root).parts)
+    rel = d.relative_to(repo_root)
+    rel_depth = len(rel.parts)
     if rel_depth > args.max_depth:
+      continue
+    rel_str = str(rel) + '/'
+    if any(rel_str.startswith(p.rstrip('/') + '/') or str(rel) == p.rstrip('/')
+           for p in exclude_patterns):
       continue
     reason, marker = _qualify_dir(d)
     if reason and marker:
