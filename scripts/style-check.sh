@@ -42,6 +42,23 @@ check_no_tabs() {
   fi
 }
 
+# ---------- Frontmatter checks (skills) ----------
+case "$file_path" in
+  */skills/*/SKILL.md)
+    if [[ "$(head -1 "$file_path")" != "---" ]]; then
+      add_error "Missing YAML frontmatter (file must start with '---')"
+    else
+      frontmatter=$(awk '/^---$/{c++; next} c==1' "$file_path")
+      if ! grep -q '^name:' <<<"$frontmatter"; then
+        add_error "Frontmatter missing 'name:' field"
+      fi
+      if ! grep -q '^description:' <<<"$frontmatter"; then
+        add_error "Frontmatter missing 'description:' field"
+      fi
+    fi
+    ;;
+esac
+
 # ---------- Route by extension ----------
 ext="${file_path##*.}"
 

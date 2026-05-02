@@ -13,6 +13,7 @@ Universal instructions for all projects.
 | `/commit` | Create a signed git commit with automatic semver tagging |
 | `/init-bash` | Scaffold a new bash script from the standard template |
 | `/init-python` | Scaffold a new Python module from the standard template |
+| `/init-skill` | Scaffold a new skill at `skills/<name>/SKILL.md` |
 
 ## Agents
 
