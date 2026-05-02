@@ -42,9 +42,9 @@ check_no_tabs() {
   fi
 }
 
-# ---------- Frontmatter checks (skills) ----------
+# ---------- Frontmatter checks (skills, agents) ----------
 case "$file_path" in
-  */skills/*/SKILL.md)
+  */skills/*/SKILL.md|*/agents/*.md)
     if [[ "$(head -1 "$file_path")" != "---" ]]; then
       add_error "Missing YAML frontmatter (file must start with '---')"
     else
