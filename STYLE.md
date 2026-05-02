@@ -273,8 +273,8 @@ Worked example — agents table with a hand-curated "Used by" column:
 <!-- sync:agents cols=Agent:key,"Used by":manual,Purpose:auto -->
 | Agent | Used by | Purpose |
 | :--- | :--- | :--- |
-| `packager` | `/package` | Generate resume, cover letter, highlights |
-| `accuracy-reviewer` | `/package` | Post-package check for inflation, date errors |
+| `code-reviewer` | `/review` | Review changes for style and correctness |
+| `security-auditor` | `/review` | Flag potential security issues |
 <!-- /sync:agents -->
 ```
 
@@ -390,7 +390,7 @@ Single line only. No body or footer. Lowercase, imperative mood, no period. Scop
 
 **`docs` vs `feat` for markdown files:**
 - `docs` — repo usage documentation (README, CONTRIBUTING, setup guides)
-- `feat` — markdown files consumed as AI execution context, configuration, or runtime logic (scoring rubrics, resume master, pipeline plans, agent/skill definitions)
+- `feat` — markdown files consumed as AI execution context, configuration, or runtime logic (agent/skill definitions, scoring rubrics, prompt templates, pipeline configs)
 
 **Examples:**
 

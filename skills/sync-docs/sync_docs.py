@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import handlers  # noqa: E402
 import markers  # noqa: E402
+
+
+SEMANTIC_DIR_NAMES = frozenset({
+  'applications', 'runs', 'jobs', 'incoming', 'archive',
+  'data', 'reports', 'extracts', 'dumps',
+})
+
+MD_STYLE_EXTENSIONS = frozenset({'.md', '.eml', '.rst'})
+
+EXCLUDED_DIR_NAMES = frozenset({
+  '.git', '.venv', 'venv', 'node_modules', '.pytest_cache',
+  '__pycache__', '.mypy_cache', '.ruff_cache', 'fixtures',
+})
+
+DATE_PREFIX_RE = re.compile(r'^\d{4}-\d{2}-\d{2}')
 
 
 def discover_repo_root(scope: str | None) -> Path:
@@ -49,14 +65,10 @@ def discover_repo_root(scope: str | None) -> Path:
 
 def find_markdown_files(root: Path) -> list[Path]:
   """Walk repo for .md files, skipping hidden and large data dirs."""
-  excluded_dirs = {
-    '.git', '.venv', 'venv', 'node_modules', '.pytest_cache',
-    '__pycache__', '.mypy_cache', '.ruff_cache',
-    'fixtures',
-  }
   results: list[Path] = []
   for dirpath, dirnames, filenames in os.walk(root):
-    dirnames[:] = [d for d in dirnames if d not in excluded_dirs and not d.startswith('.')]
+    dirnames[:] = [d for d in dirnames
+                   if d not in EXCLUDED_DIR_NAMES and not d.startswith('.')]
     for fname in filenames:
       if fname.endswith('.md'):
         results.append(Path(dirpath) / fname)
@@ -263,9 +275,122 @@ def cmd_sync(args: argparse.Namespace) -> int:
   return 2 if all_errors else 0
 
 
+def _walk_dirs(root: Path):
+  """Yield every non-excluded subdirectory of root (recursive)."""
+  for dirpath, dirnames, _ in os.walk(root):
+    dirnames[:] = [d for d in dirnames
+                   if d not in EXCLUDED_DIR_NAMES and not d.startswith('.')]
+    for d in dirnames:
+      yield Path(dirpath) / d
+
+
+def _qualify_dir(dir_path: Path) -> tuple[str | None, str | None]:
+  """Return (reason, suggested_marker_directive) if dir qualifies for a README,
+  else (None, None). The marker directive is the open-marker payload, e.g.
+  'index kind=dirs sort=date,desc'."""
+  if (dir_path / 'README.md').exists():
+    return None, None
+
+  try:
+    children = list(dir_path.iterdir())
+  except (OSError, PermissionError):
+    return None, None
+
+  files = [c for c in children if c.is_file() and not c.name.startswith('.')]
+  dirs = [c for c in children if c.is_dir() and not c.name.startswith('.')
+          and c.name not in EXCLUDED_DIR_NAMES]
+
+  if not files and not dirs:
+    return None, None
+
+  date_dirs = [d for d in dirs if DATE_PREFIX_RE.match(d.name)]
+  md_files = [f for f in files if f.suffix in MD_STYLE_EXTENSIONS]
+
+  marker = _choose_marker(dirs, date_dirs, files, md_files)
+
+  # Rule 3: semantic name
+  if dir_path.name in SEMANTIC_DIR_NAMES:
+    return f"semantic name '{dir_path.name}'", marker
+
+  # Rule 2: ≥3 patterned subdirs (date-prefixed)
+  if len(date_dirs) >= 3:
+    return f"{len(date_dirs)} date-stamped subdirectories", marker
+
+  # Rule 1: ≥5 markdown-style files
+  if len(md_files) >= 5:
+    return f"{len(md_files)} markdown-style files", marker
+
+  return None, None
+
+
+def _choose_marker(dirs: list[Path], date_dirs: list[Path],
+                   files: list[Path], md_files: list[Path]) -> str:
+  """Pick the most appropriate marker directive for this directory."""
+  if date_dirs and len(date_dirs) >= max(3, len(dirs) // 2):
+    return 'index kind=dirs sort=date,desc'
+  if md_files and len(md_files) >= max(3, len(files) // 2):
+    return 'index kind=files extract=h1-and-paragraph sort=alpha'
+  return 'index mode=lint'
+
+
+def _scaffold_readme(dir_path: Path, marker_directive: str) -> str:
+  """Generate the README.md content for a fresh scaffold."""
+  handler = marker_directive.split(' ', 1)[0]
+  title = dir_path.name.replace('_', ' ').replace('-', ' ').title()
+  return (
+    f"# {title}\n"
+    f"\n"
+    f"<!-- TODO: one-line purpose -->\n"
+    f"\n"
+    f"## Index\n"
+    f"\n"
+    f"<!-- sync:{marker_directive} -->\n"
+    f"<!-- /sync:{handler} -->\n"
+  )
+
+
 def cmd_init(args: argparse.Namespace) -> int:
-  print("init: not yet implemented (Phase 2 commit 2)", file=sys.stderr)
-  return 1
+  repo_root = discover_repo_root(args.scope)
+  candidates: list[tuple[Path, str, str]] = []
+  for d in _walk_dirs(repo_root):
+    rel_depth = len(d.relative_to(repo_root).parts)
+    if rel_depth > args.max_depth:
+      continue
+    reason, marker = _qualify_dir(d)
+    if reason and marker:
+      candidates.append((d, reason, marker))
+
+  if not candidates:
+    print("No directories qualify for README scaffolding.")
+    return 0
+
+  candidates.sort(key=lambda c: c[0])
+  created = 0
+  skipped = 0
+  for dir_path, reason, marker in candidates:
+    rel = dir_path.relative_to(repo_root)
+    print(f"\n{rel}/  ({reason})")
+    print(f"  Suggested marker: <!-- sync:{marker} -->")
+    if args.yes_to_all:
+      proceed = True
+    else:
+      try:
+        response = input("  Create README.md? [y/N]: ").strip().lower()
+      except (EOFError, KeyboardInterrupt):
+        print()
+        return 1
+      proceed = response in ('y', 'yes')
+    if proceed:
+      readme = dir_path / 'README.md'
+      atomic_write(readme, _scaffold_readme(dir_path, marker))
+      print(f"  Created {readme.relative_to(repo_root)}")
+      created += 1
+    else:
+      print("  Skipped.")
+      skipped += 1
+
+  print(f"\n{created} README(s) created, {skipped} skipped.")
+  return 0
 
 
 def cmd_add(args: argparse.Namespace) -> int:
@@ -287,6 +412,8 @@ def main(argv: list[str] | None = None) -> int:
 
   init_p = subparsers.add_parser('init', help='Scaffold READMEs for content directories')
   init_p.add_argument('--yes-to-all', action='store_true', help='Skip confirmation prompts')
+  init_p.add_argument('--max-depth', type=int, default=2,
+                      help='Maximum directory depth to scaffold (default: 2)')
 
   add_p = subparsers.add_parser('add', help='Insert a marker block')
   add_p.add_argument('handler', help='Handler name (skills, agents, etc.)')

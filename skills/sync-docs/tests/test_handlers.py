@@ -111,13 +111,13 @@ def test_agents_handler_discovers_excluding_readme(tmp_path):
 
 
 def test_agents_handler_hybrid_columns_preserve_manual(tmp_path):
-  _make_agent(tmp_path, 'packager', 'Generates packages')
-  _make_agent(tmp_path, 'reviewer', 'Reviews code')
+  _make_agent(tmp_path, 'code-reviewer', 'Reviews changes for style')
+  _make_agent(tmp_path, 'security-auditor', 'Flags security issues')
   existing_body = [
-    '| Agent          | Used by    | Purpose            |',
-    '| :------------- | :--------- | :----------------- |',
-    '| `packager`     | `/package` | Old purpose        |',
-    '| `reviewer`     | `/review`  | Old reviewer       |',
+    '| Agent              | Used by    | Purpose            |',
+    '| :----------------- | :--------- | :----------------- |',
+    '| `code-reviewer`    | `/review`  | Old purpose        |',
+    '| `security-auditor` | `/audit`   | Old auditor        |',
   ]
   h = handlers.AgentsHandler()
   sources = h.discover(tmp_path, tmp_path, {})
@@ -128,11 +128,11 @@ def test_agents_handler_hybrid_columns_preserve_manual(tmp_path):
   )
   joined = '\n'.join(out)
   # Used by column preserved from existing body
-  assert '`/package`' in joined
   assert '`/review`' in joined
+  assert '`/audit`' in joined
   # Purpose column regenerated from sources
-  assert 'Generates packages' in joined
-  assert 'Reviews code' in joined
+  assert 'Reviews changes for style' in joined
+  assert 'Flags security issues' in joined
   assert 'Old purpose' not in joined
 
 
