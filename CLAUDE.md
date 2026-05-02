@@ -2,9 +2,9 @@
 
 Universal instructions for all projects.
 
-- **Code style and formatting:** [STYLE.md](./.claude/STYLE.md)
-- **Code templates:** [templates.md](./.claude/templates.md) (Bash, Python, JavaScript)
-- **Development workflows:** [workflows.md](./.claude/workflows.md) (Explore/Plan/Code/Commit, TDD)
+- **Code style and formatting:** [STYLE.md](./STYLE.md)
+- **Code templates:** [templates.md](./templates.md) (Bash, Python, JavaScript)
+- **Development workflows:** [workflows.md](./workflows.md) (Explore/Plan/Code/Commit, TDD)
 
 ## Skills (Slash Commands)
 
@@ -23,6 +23,18 @@ Universal instructions for all projects.
 ## Hooks
 
 - **PostToolUse** (Edit/Write) — `~/.claude/scripts/style-check.sh` validates file format (tabs, newlines, syntax) on every edit
+
+## Plugins
+
+Enabled in [settings.json](./settings.json):
+
+| Plugin | Purpose |
+| :--- | :--- |
+| `code-review` | Code review pull requests (`/review`, `/security-review`, `/ultrareview`) |
+| `superpowers` | Enhanced development workflows and skills |
+| `pyright-lsp` | Python type checking via Pyright |
+| `claude-md-management` | Audit and improve CLAUDE.md files |
+| `claude-code-setup` | Recommend Claude Code automations |
 
 ## Environment
 
