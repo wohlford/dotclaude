@@ -33,7 +33,8 @@ The user may optionally provide:
    - If no arguments are expected, simplify `parse_arguments`
 3. Write the file to the specified path
 4. Make it executable: `chmod +x <file>`
-5. Confirm creation and remind the user of the script structure
+5. Run `/sync-docs` to regenerate any `<!-- sync:scripts -->` index tables in the repo (no-op if no such markers exist).
+6. Confirm creation and remind the user of the script structure
 
 ### Template Requirements (from STYLE.md)
 

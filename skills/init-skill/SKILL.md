@@ -28,9 +28,7 @@ The user may optionally provide:
 2. Verify `skills/<name>/` does not already exist. Refuse to overwrite.
 3. Create the directory `skills/<name>/`.
 4. Write `skills/<name>/SKILL.md` with the frontmatter and section stubs shown below.
-5. Remind the user to add the new skill to:
-   - `CLAUDE.md` Skills table
-   - `README.md` Skills (Slash Commands) table
+5. Run `/sync-docs` to regenerate any `<!-- sync:skills -->` index tables in the repo (CLAUDE.md, README.md, skills/README.md, etc.). The new skill registers automatically.
 
 ### Skill Structure
 

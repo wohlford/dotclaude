@@ -23,18 +23,23 @@ git clone https://github.com/wohlford/dotclaude.git ~/.claude
 
 ### Skills (Slash Commands)
 
-| Command | Purpose |
-|---------|---------|
-| `/commit` | Create a signed git commit with automatic semver tagging |
-| `/init-bash` | Scaffold a new Bash script from the standard template |
-| `/init-python` | Scaffold a new Python module from the standard template |
-| `/init-skill` | Scaffold a new skill at `skills/<name>/SKILL.md` |
+<!-- sync:skills cols=Command:key,Purpose:auto -->
+| Command        | Purpose                                                                                 |
+| :------------- | :-------------------------------------------------------------------------------------- |
+| `/commit`      | Create a signed git commit with automatic semver tagging following STYLE.md conventions |
+| `/init-bash`   | Scaffold a new Bash script from the standard template in templates.md                   |
+| `/init-python` | Scaffold a new Python module from the standard template in templates.md                 |
+| `/init-skill`  | Scaffold a new skill at skills/<name>/SKILL.md following the standard structure         |
+| `/sync-docs`   | Regenerate index regions of README.md and CLAUDE.md from authoritative sources          |
+<!-- /sync:skills -->
 
 ### Agents
 
-| Agent | Model | Purpose |
-|-------|-------|---------|
-| `style-reviewer` | haiku | Review code files for STYLE.md compliance |
+<!-- sync:agents cols=Agent:key,Model:auto,Purpose:auto -->
+| Agent            | Model | Purpose                                                             |
+| :--------------- | :---- | :------------------------------------------------------------------ |
+| `style-reviewer` | haiku | Review code files for compliance with the global STYLE.md standards |
+<!-- /sync:agents -->
 
 ### Hooks
 
@@ -44,13 +49,15 @@ git clone https://github.com/wohlford/dotclaude.git ~/.claude
 
 ### Plugins
 
-| Plugin | Purpose |
-|--------|---------|
-| `code-review` | Code review pull requests |
-| `superpowers` | Enhanced development workflows and skills |
-| `pyright-lsp` | Python type checking via Pyright |
-| `claude-md-management` | Audit and improve CLAUDE.md files |
-| `claude-code-setup` | Recommend Claude Code automations |
+<!-- sync:plugins cols=Plugin:key,Purpose:manual -->
+| Plugin                 | Purpose                                   |
+| :--------------------- | :---------------------------------------- |
+| `claude-code-setup`    | Recommend Claude Code automations         |
+| `claude-md-management` | Audit and improve CLAUDE.md files         |
+| `code-review`          | Code review pull requests                 |
+| `pyright-lsp`          | Python type checking via Pyright          |
+| `superpowers`          | Enhanced development workflows and skills |
+<!-- /sync:plugins -->
 
 Plugins are configured in [`settings.json`](settings.json) and resolved automatically by Claude Code.
 

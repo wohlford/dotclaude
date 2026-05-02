@@ -31,7 +31,8 @@ The user may optionally provide:
    - Add specified imports (maintaining stdlib > third-party > local order)
    - Keep `main()` entry point and `if __name__ == "__main__":` block
 3. Write the file to the specified path
-4. Confirm creation and summarize the module structure
+4. Run `/sync-docs` to regenerate any `<!-- sync:scripts -->` index tables in the repo (no-op if no such markers exist).
+5. Confirm creation and summarize the module structure
 
 ### Template Requirements (from STYLE.md)
 
