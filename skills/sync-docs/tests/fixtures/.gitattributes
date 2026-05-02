@@ -1,0 +1,3 @@
+# Preserve raw bytes in hostile fixtures — they intentionally test
+# unusual encodings/line endings.
+hostile/* binary

@@ -23,3 +23,7 @@ settings.local.json
 
 # Backup files
 *.bak
+
+# Python build artifacts
+__pycache__/
+.pytest_cache/
