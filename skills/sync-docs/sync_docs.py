@@ -158,19 +158,21 @@ def process_file(
   path: Path,
   repo_root: Path,
   config: dict | None = None,
-) -> tuple[str, str, list[str], list[str], list[markers.ParseError]]:
+) -> tuple[str, str, list[str], list[str], list[markers.ParseError], int]:
   """Parse a markdown file. Returns (original, regenerated, sync_changes,
-  lint_drifts, errors).
+  lint_drifts, errors, block_count).
 
   sync_changes lists blocks that would be (or were) rewritten.
   lint_drifts lists blocks in mode=lint where the expected body differs
   from the existing body — reported but never written.
+  block_count is the number of marker blocks parsed (used by callers to
+  distinguish "no markers" from "markers all clean").
   """
   config = config or {}
   original = path.read_text(encoding='utf-8')
   doc = markers.parse(original)
   if not doc.blocks:
-    return original, original, [], [], doc.errors
+    return original, original, [], [], doc.errors, 0
 
   config_handlers = config.get('handlers', {})
 
@@ -212,7 +214,7 @@ def process_file(
       changes.append(f"  {block.handler} (line {block.open_line})")
 
   regenerated = markers.render(doc, body_replacements)
-  return original, regenerated, changes, lint_drifts, doc.errors
+  return original, regenerated, changes, lint_drifts, doc.errors, len(doc.blocks)
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
@@ -230,11 +232,11 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
   for md in md_files:
     try:
-      original, regenerated, changes, lint_drifts, errors = process_file(md, repo_root, config)
+      original, regenerated, changes, lint_drifts, errors, block_count = process_file(md, repo_root, config)
     except Exception as e:
       print(f"error processing {md.relative_to(repo_root)}: {e}", file=sys.stderr)
       return 2
-    if changes or lint_drifts or errors:
+    if block_count > 0:
       marker_files += 1
     for err in errors:
       all_errors.append((md, err))
