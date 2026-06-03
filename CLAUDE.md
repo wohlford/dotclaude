@@ -6,6 +6,8 @@ Universal instructions for all projects.
 - **Code templates:** [templates.md](./templates.md) (Bash, Python, JavaScript)
 - **Development workflows:** [workflows.md](./workflows.md) (Explore/Plan/Code/Commit, TDD)
 
+> Auto-generated index tables sit between `<!-- sync:* -->` markers — don't hand-edit them; update the source and run `/sync-docs`.
+
 ## Skills (Slash Commands)
 
 <!-- sync:skills cols=Command:key,Purpose:auto -->
