@@ -27,3 +27,4 @@ settings.local.json
 # Python build artifacts
 __pycache__/
 .pytest_cache/
+.claude.local.md
