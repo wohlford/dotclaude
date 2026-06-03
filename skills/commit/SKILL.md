@@ -21,6 +21,16 @@ git diff --cached --stat
 git log --oneline --decorate -5
 ```
 
+Scopes already used in this repo — reuse one when it fits and is specific; prefer a precise name over a vague frequent one.
+
+```bash
+git log --pretty=%s -n 300 2>/dev/null \
+	| sed -nE 's/^[a-z]+\(([^)]+)\)!?:.*/\1/p' \
+	| tr ',' '\n' \
+	| sed -E 's/^ +//; s/ +$//' \
+	| sort | uniq -c | sort -rn | head -30
+```
+
 ```bash
 git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0"
 ```
@@ -32,12 +42,29 @@ The user wants to create a git commit. Follow the commit message format from `~/
 ### Commit Message Format
 
 ```text
-<type>[!]: <subject>
+<type>[(scope)][!]: <subject>
 ```
 
-**Single line only.** No body, no footer, no `Co-Authored-By`. Lowercase, imperative mood, no trailing period. Append `!` after the type for breaking changes.
+**Single line only.** No body, no footer, no `Co-Authored-By`. Lowercase, imperative mood, no trailing period. **Scope is encouraged** — include it whenever the area of impact is inferable, omitting it only for truly cross-cutting changes; choose it per **Choosing a scope** below. Append `!` after the type/scope for breaking changes.
 
 **Types:** `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`, `revert`
+
+### Choosing a scope
+
+Include a scope whenever one is inferable; omit only for truly cross-cutting changes.
+
+Choose the scope in this order:
+
+1. **Reuse an existing repo scope** if one fits the change and is specific enough — see the prior-scopes list in Dynamic Context. Don't inherit a vague frequent scope (a bare `skill`, `scripts`) when a precise name is clearly better.
+2. Otherwise **coin a new scope** by this precedence:
+   - **Logical area** — the subsystem or concept the change is about, regardless of which files it touches (`env`, `install`, `certificates`).
+   - **Component / directory** — when the change maps cleanly to one unit (`commit`, `python-v3.12`).
+   - **Filename with extension** — when confined to one file and no broader area fits (`build.sh`, `functions.sh`).
+   - **Comma-joined** for a few related units (`build.sh,functions.sh`); **glob** when one change spans many directories (`*/build.sh`).
+   - **Omit** (or `*`) when the change is genuinely repo-wide.
+3. When several candidates fit, pick the name a reader recognizes fastest.
+
+Normalize: match the real filename and extension (`preseed.yaml`, not `preseed.yml`); keep precision at the directory's actual name (`python-v3.12`); lowercase unless the name is genuinely cased (`README.md`); no space after commas.
 
 ### Granular-by-default
 
@@ -65,14 +92,15 @@ When in doubt, split. The cost of an extra commit is negligible; the cost of an 
 3. For the current group, stage only its files (prefer explicit filenames over `git add .` or `git add -A`)
 4. Draft a commit message for this group:
    - Choose the correct type based on the nature of the change
+   - Add a scope as `(scope)` whenever the area of impact is inferable — choose it per **Choosing a scope** (reuse a fitting existing repo scope, else lead with the logical area; break ties by recognizability); omit only for truly cross-cutting changes
    - Write a concise subject in imperative mood (e.g., "add X", "fix Y", "remove Z")
-   - Append `!` after the type if the change is breaking (e.g., `feat!: remove legacy API`)
+   - Append `!` after the type/scope if the change is breaking (e.g., `feat!: remove legacy API`, `chore(build)!: drop Node 6`)
    - Keep the entire message under 72 characters
 5. Create the commit using a heredoc:
 
 ```bash
 git commit -S -m "$(cat <<'EOF'
-<type>[!]: <subject>
+<type>[(scope)][!]: <subject>
 EOF
 )"
 ```
@@ -87,7 +115,7 @@ EOF
 10. Create a signed, annotated tag:
 
 ```bash
-git tag -s -a vX.Y.Z -m "<type>[!]: <subject>"
+git tag -s -a vX.Y.Z -m "<type>[(scope)][!]: <subject>"
 ```
 
 11. Show the tagged result: `git log --oneline -1 --decorate`
