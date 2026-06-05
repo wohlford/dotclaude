@@ -1,6 +1,6 @@
 ---
 name: commit
-description: Create a signed git commit with automatic semver tagging following STYLE.md conventions
+description: Create a git commit with automatic semver tagging following STYLE.md conventions; signing and identity follow git config
 ---
 
 # /commit — Create a Git Commit
@@ -38,6 +38,16 @@ git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0"
 ## Instructions
 
 The user wants to create a git commit. Follow the commit message format from `~/.claude/STYLE.md` exactly.
+
+### Signing and identity
+
+Signing and identity are **config-driven — never hardcoded**. Use plain `git commit` and
+`git tag -a` (never pass `-S` or `-s`). Whether commits and tags are signed then follows the
+repo's effective `commit.gpgsign` / `tag.gpgsign`; the author identity follows the repo's
+effective `user.name` / `user.email`. Do not set, override, or hardcode any identity, signing
+key, host, or path. A primary global identity applies by default; additional identities (a
+different email, an optional signing key, or unsigned when no key is configured) are selected
+per-repo via git `includeIf` in a private git config the skill never touches.
 
 ### Commit Message Format
 
@@ -99,7 +109,7 @@ When in doubt, split. The cost of an extra commit is negligible; the cost of an 
 5. Create the commit using a heredoc:
 
 ```bash
-git commit -S -m "$(cat <<'EOF'
+git commit -m "$(cat <<'EOF'
 <type>[(scope)][!]: <subject>
 EOF
 )"
@@ -112,10 +122,10 @@ EOF
    - All other types → **PATCH**
 8. Read the latest tag from dynamic context (default `v0.0.0`) — for subsequent commits in the same `/commit` invocation, use the tag you created in the previous iteration as the base
 9. Increment the appropriate version component
-10. Create a signed, annotated tag:
+10. Create an annotated tag (signing follows `tag.gpgsign`; do not pass `-s`):
 
 ```bash
-git tag -s -a vX.Y.Z -m "<type>[(scope)][!]: <subject>"
+git tag -a vX.Y.Z -m "<type>[(scope)][!]: <subject>"
 ```
 
 11. Show the tagged result: `git log --oneline -1 --decorate`
@@ -133,6 +143,8 @@ The user may provide:
 
 ### Rules
 
+- **Never** pass `-S` (commit) or `-s` (tag) — signing follows the repo's `commit.gpgsign` / `tag.gpgsign`
+- **Never** set or hardcode `user.name`, `user.email`, a signing key, host, or path — identity follows the repo's effective git config, selected per-repo via `includeIf`
 - **Never** add `Co-Authored-By` or any footer
 - **Never** add a message body (second paragraph)
 - **Never** use a period at the end of the subject
