@@ -38,9 +38,10 @@ git clone https://github.com/wohlford/dotclaude.git ~/.claude
 ### Agents
 
 <!-- sync:agents cols=Agent:key,Model:auto,Purpose:auto -->
-| Agent            | Model | Purpose                                                             |
-| :--------------- | :---- | :------------------------------------------------------------------ |
-| `style-reviewer` | haiku | Review code files for compliance with the global STYLE.md standards |
+| Agent            | Model | Purpose                                                                        |
+| :--------------- | :---- | :----------------------------------------------------------------------------- |
+| `skill-reviewer` | haiku | Review SKILL.md files for compliance with the repo's canonical skill structure |
+| `style-reviewer` | haiku | Review code files for compliance with the global STYLE.md standards            |
 <!-- /sync:agents -->
 
 ### Hooks
