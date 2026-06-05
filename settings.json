@@ -7,6 +7,10 @@
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/style-check.sh"
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/sync-docs-check.sh"
           }
         ]
       }
