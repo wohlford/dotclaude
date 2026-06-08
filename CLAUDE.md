@@ -49,6 +49,14 @@ Enabled in [settings.json](./settings.json):
 | `superpowers`          | Enhanced development workflows and skills                                 |
 <!-- /sync:plugins -->
 
+### Superpowers plan/spec location (override)
+
+The superpowers skills hardcode `docs/superpowers/plans/` and `docs/superpowers/specs/`.
+Override that in every repo: save **plans** to `plans/` and design **specs** to `specs/`
+at the repo root, dropping the `docs/superpowers/` prefix. Keep the `YYYY-MM-DD-<name>.md`
+filename convention. When a skill (writing-plans, brainstorming, subagent-driven-development,
+requesting-code-review, executing-plans) reads or writes a plan/spec, use these paths instead.
+
 ## Environment
 
 - **Platform**: macOS with MacPorts package manager
