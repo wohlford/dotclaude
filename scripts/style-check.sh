@@ -77,12 +77,14 @@ case "$ext" in
       add_error "Missing shebang line"
     fi
     # Check set -euo pipefail in first 5 lines
-    if ! head -5 "$file_path" | grep -q 'set -euo pipefail'; then
+    # Allow set -uo pipefail (without -e) for test harnesses that need to
+    # continue execution past assertion failures.
+    if ! head -5 "$file_path" | grep -qE 'set -e?uo pipefail'; then
       add_error "Missing 'set -euo pipefail' in first 5 lines"
     fi
     # Run shellcheck if available
     if command -v shellcheck >/dev/null 2>&1; then
-      sc_output=$(shellcheck -f gcc "$file_path" 2>&1 || true)
+      sc_output=$(shellcheck -x --source-path="$(dirname "$file_path")" -e SC1091 -f gcc "$file_path" 2>&1 || true)
       if [[ -n "$sc_output" ]]; then
         add_error "shellcheck warnings:\n${sc_output}"
       fi
