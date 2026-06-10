@@ -2,6 +2,8 @@
 
 These proven workflows optimize Claude's performance on different types of development tasks. Choose the workflow that best matches your problem.
 
+> For methodical design work, `/feature <description>` runs a risk-tiered pipeline (triage → spec → spike → plan → reviews) that orchestrates the `superpowers` skills and stops at a reviewed plan ready to execute.
+
 ## Workflow A: Explore, Plan, Code, Commit
 
 Best for: Complex problems requiring research and planning, feature additions, architectural changes.
