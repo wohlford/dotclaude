@@ -47,14 +47,18 @@ those remain manual steps for the user.
    `claude-code-setup:claude-automation-recommender`. Present its recommendations and let
    the user select which to accept. If the user accepts none, skip to step 6.
 
-5. **Plan, review, and implement the accepted automations** (only when one or more were
-   accepted in step 4):
-   1. Write a plan covering the accepted recommendations to a temporary, untracked Markdown
-      file (e.g. `"$TMPDIR/debrief-automation-plan.md"`).
-   2. Re-read the plan critically with maximum reasoning depth — the equivalent of an
-      "ultrathink" pass: challenge each item, look for missing steps, wrong ordering, and
-      risks — and revise the plan file in place.
-   3. Implement the revised plan.
+5. **Design and implement the accepted automations via the `/feature` pipeline** (only when one
+   or more were accepted in step 4):
+   1. For the accepted automations — each on its own, or as one cohesive set — **follow** the
+      `/feature` design pipeline documented in `skills/feature/SKILL.md`: Step 0 risk triage, then
+      the chosen lane (brainstorming → spec/plan, an ultrathink-level self-review, the optional
+      empirical spike, and the budget-gated diverse-model review) to produce a reviewed plan.
+      `/feature` is user-only (`disable-model-invocation: true`), so do **not** invoke it via the
+      Skill tool — follow its documented steps directly; the SKILL.md is the single source of truth.
+   2. **Present the reviewed plan and pause** for the user's confirmation.
+   3. On confirmation, **implement** the plan (`superpowers:executing-plans` /
+      `subagent-driven-development`). This deliberately continues past `/feature`'s stop-at-plan
+      boundary — a standalone `/feature` run hands off here, but the debrief routine owns execution.
 
 6. **Commit what the routine changed.** If the working tree has tracked changes from this
    routine (accepted CLAUDE.md edits, any repo files written in step 3, implemented
@@ -76,7 +80,8 @@ those remain manual steps for the user.
   those.
 - Memory entries persist through Claude Code's memory store, which lives outside this repo;
   only repo files need committing in step 6.
-- In step 5, keep the plan file out of version control (a temporary location); only the
-  implemented changes get committed.
+- In step 5, follow `/feature`'s artifact convention (spec/plan under `specs/`/`plans/`); those
+  files are governed by the repo's own tracking rules (often gitignored), so only the implemented
+  changes need committing in step 6.
 - In step 3, follow the memory protocol: one fact per file with frontmatter and a
   `MEMORY.md` pointer line; update an existing memory file rather than duplicating it.
