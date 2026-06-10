@@ -35,6 +35,7 @@ Universal instructions for all projects.
 ## Hooks
 
 - **PostToolUse** (Edit/Write) — `~/.claude/scripts/style-check.sh` validates file format (tabs, newlines, syntax) on every edit
+- **PostToolUse** (Edit/Write) — `~/.claude/scripts/sync-docs-check.sh` blocks a new/changed `skills/*/SKILL.md` or `agents/*.md` that leaves the `<!-- sync:* -->` index tables stale; fix with `python3 skills/sync-docs/sync_docs.py` (silent no-op outside sync-docs repos)
 
 ## Plugins
 
