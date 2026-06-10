@@ -9,6 +9,7 @@ plugins/
 projects/
 session-env/
 shell-snapshots/
+specs/
 stats-cache.json
 statsig/
 tasks/
