@@ -500,10 +500,13 @@ def main(argv: list[str] | None = None) -> int:
   add_p.add_argument('--source', help='Glob source (custom handler only)')
   add_p.add_argument('--cols', help='Column spec (custom handler only)')
 
-  # Allow --check at the top level too (sync is the default subcommand)
-  parser.add_argument('--check', action='store_true', help=argparse.SUPPRESS)
+  # Allow --check at the top level too (sync is the default subcommand). Use a
+  # distinct dest so the sync subparser's default cannot clobber it when the
+  # flag precedes the subcommand (`--check sync`); OR the two after parsing.
+  parser.add_argument('--check', action='store_true', dest='top_check', help=argparse.SUPPRESS)
 
   args = parser.parse_args(argv)
+  args.check = getattr(args, 'check', False) or args.top_check
 
   if args.subcommand == 'init':
     return cmd_init(args)

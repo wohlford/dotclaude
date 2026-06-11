@@ -57,6 +57,19 @@ def test_check_dirty_before_sync(tmp_path):
   assert 'drift' in result.stderr.lower()
 
 
+def test_check_never_writes_any_flag_order(tmp_path):
+  """`--check` is a dry-run regardless of where it sits relative to the `sync`
+  subcommand. Regression: a top-level `--check` used to be clobbered by the
+  sync subparser default in `--check sync`, silently rewriting files."""
+  for order in (['--check'], ['sync', '--check'], ['--check', 'sync']):
+    repo = _copy_fixture('dotclaude-shaped', tmp_path / f"repo-{'-'.join(order)}")
+    before = (repo / 'README.md').read_bytes()  # starts dirty (stale rows)
+    result = _run(repo, *order)
+    after = (repo / 'README.md').read_bytes()
+    assert result.returncode == 1, f"{order}: expected drift exit 1, got {result.returncode}"
+    assert before == after, f"{order}: --check must not write"
+
+
 def test_no_markers_byte_identical(tmp_path):
   repo = _copy_fixture('no-markers', tmp_path / 'repo')
   before = (repo / 'README.md').read_bytes()
