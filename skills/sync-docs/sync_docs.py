@@ -503,7 +503,8 @@ def main(argv: list[str] | None = None) -> int:
   # Allow --check at the top level too (sync is the default subcommand). Use a
   # distinct dest so the sync subparser's default cannot clobber it when the
   # flag precedes the subcommand (`--check sync`); OR the two after parsing.
-  parser.add_argument('--check', action='store_true', dest='top_check', help=argparse.SUPPRESS)
+  parser.add_argument(
+    '--check', action='store_true', dest='top_check', help=argparse.SUPPRESS)
 
   args = parser.parse_args(argv)
   args.check = getattr(args, 'check', False) or args.top_check
