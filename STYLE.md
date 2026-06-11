@@ -1,6 +1,6 @@
 # Code Style Guide
 
-Universal code style and formatting standards. Full templates: [templates.md](./.claude/templates.md)
+Universal code style and formatting standards. Full templates: [templates.md](./templates.md)
 
 ## File Format Standards
 

@@ -1,6 +1,6 @@
 # Code Templates
 
-Full-length templates for reference. See [STYLE.md](./.claude/STYLE.md) for rules.
+Full-length templates for reference. See [STYLE.md](./STYLE.md) for rules.
 
 ## Bash Script Template
 
