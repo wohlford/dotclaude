@@ -42,8 +42,22 @@ check_no_tabs() {
   fi
 }
 
+check_no_trailing_ws() {
+  local ws_lines
+  ws_lines=$(grep -nE '[[:blank:]]+$' "$file_path" 2>/dev/null || true)
+  if [[ -n "$ws_lines" ]]; then
+    add_error "Trailing whitespace found:\n${ws_lines}"
+  fi
+}
+
 # ---------- Frontmatter checks (skills, agents) ----------
 case "$file_path" in
+  */tests/fixtures/*)
+    : # test fixtures are intentionally varied — never validate their frontmatter
+    ;;
+  */agents/README.md|*/agents/index.md)
+    : # index READMEs carry no frontmatter (mirrors AgentsHandler excludes)
+    ;;
   */skills/*/SKILL.md|*/agents/*.md)
     if [[ "$(head -1 "$file_path")" != "---" ]]; then
       add_error "Missing YAML frontmatter (file must start with '---')"
@@ -65,6 +79,7 @@ ext="${file_path##*.}"
 case "$ext" in
   py)
     check_no_tabs
+    check_no_trailing_ws
     if ! python3 -m py_compile "$file_path" 2>&1; then
       add_error "Python syntax error"
     fi
@@ -72,6 +87,8 @@ case "$ext" in
     ;;
 
   sh|bash)
+    check_no_tabs
+    check_no_trailing_ws
     # Check shebang
     if ! head -1 "$file_path" | grep -q '^#!'; then
       add_error "Missing shebang line"
@@ -94,10 +111,13 @@ case "$ext" in
 
   js|mjs|cjs)
     check_no_tabs
+    check_no_trailing_ws
     check_final_newline
     ;;
 
   json)
+    check_no_tabs
+    check_no_trailing_ws
     if ! python3 -m json.tool "$file_path" >/dev/null 2>&1; then
       add_error "Invalid JSON"
     fi
@@ -105,6 +125,8 @@ case "$ext" in
     ;;
 
   yaml|yml)
+    check_no_tabs
+    check_no_trailing_ws
     if command -v yamllint >/dev/null 2>&1; then
       yl_output=$(yamllint -d relaxed "$file_path" 2>&1 || true)
       if [[ -n "$yl_output" ]]; then
@@ -115,6 +137,8 @@ case "$ext" in
     ;;
 
   md)
+    check_no_tabs
+    check_no_trailing_ws
     check_final_newline
     ;;
 
