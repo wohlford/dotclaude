@@ -184,10 +184,10 @@ Index sections of `README.md` and `CLAUDE.md` files (skills tables, agents table
 A directory needs its own `README.md` if any of:
 
 1. It has ≥5 sibling `.md`-style files (`.md`, `.eml`, `.rst`) in its root
-2. It has ≥3 sibling subdirectories matching the same naming pattern (e.g., `^\d{4}-\d{2}-\d{2}`, `^[a-z0-9-]+-\d{4}-\d{2}-\d{2}$`)
+2. It has ≥3 sibling subdirectories whose names share a date prefix (`^\d{4}-\d{2}-\d{2}`)
 3. Its name is one of the conventional content-bucket names: `applications`, `runs`, `jobs`, `incoming`, `archive`, `data`, `reports`, `extracts`, `dumps`
 
-Skip even if a rule matches: hidden dirs (`.git`, `.venv`, `.pytest_cache`, `node_modules`), single-file dirs, dirs explicitly excluded in `.claude/sync-docs.yaml`.
+Skip even if a rule matches: hidden dirs and common build/test dirs (`.git`, `.venv`, `venv`, `node_modules`, `.pytest_cache`, `__pycache__`, `.mypy_cache`, `.ruff_cache`, `fixtures`), single-file dirs, dirs explicitly excluded in `.claude/sync-docs.yaml`.
 
 `/sync-docs init` walks the repo and proposes scaffolds for qualifying directories interactively.
 
