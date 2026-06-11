@@ -30,9 +30,12 @@ Read an existing well-formed skill first (e.g. `skills/commit/SKILL.md` or
   (`skills/<name>/SKILL.md`)
 - `description:` present, a single line, no trailing period
 - `disable-model-invocation: true` is present for **side-effectful** skills — anything that
-  commits, deploys, pushes, sends, or otherwise changes external state (e.g. commit,
-  propagate, init-* scaffolds). Flag its absence on such skills; flag its presence on a
-  purely informational skill as suspicious.
+  commits, deploys, pushes, sends, or otherwise changes external state (e.g. propagate,
+  init-* scaffolds). Flag its absence on such skills; flag its presence on a purely
+  informational skill as suspicious. **Exception:** a side-effectful skill may stay
+  model-invocable by design when another skill orchestrates it — `commit` omits the flag so
+  `/debrief` can invoke it programmatically; treat a documented orchestration role as
+  intended, not a defect.
 
 ### Heading and summary
 
