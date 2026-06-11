@@ -21,14 +21,14 @@ The user may provide:
 - No args (default `sync`) — regenerate all marker contents in the current repo
 - `--check` — dry-run; print a unified diff of what would change; exit 1 on drift
 - `init` — scaffold READMEs for content directories meeting threshold rules (interactive); add `--yes-to-all` for non-interactive mode
-- `add <handler>` — insert a marker block for `<handler>` into a target file
+- `add <handler>` — insert a marker block for `<handler>` into a target file (`--into <file>`, default `./README.md`; `--source <glob>` and `--cols <spec>` apply to the `custom` handler)
 - `--scope <path>` — override repo root (default: git toplevel from cwd)
 - `--scope cwd` — limit scan to current working directory
 
 ### Exit codes
 
 - **0** — success / no drift / no markers found
-- **1** — drift detected in `--check` mode
+- **1** — drift detected in `--check` mode, or an operational failure (e.g. missing `add` argument, aborted `init` prompt)
 - **2** — parser or handler errors (the script printed details to stderr)
 
 ### Process
