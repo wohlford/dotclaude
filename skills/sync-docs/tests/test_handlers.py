@@ -199,6 +199,32 @@ def test_hooks_handler(tmp_path):
   assert sources[0].fields['description'] == 'Validate file format'
 
 
+def test_hooks_two_same_event_dont_collapse(tmp_path):
+  """Two hooks under the same event must render as two rows. Regression: the
+  default key was Event (not unique), so by_key collapsed them to one."""
+  (tmp_path / 'settings.json').write_text(json.dumps({
+    'hooks': {
+      'PostToolUse': [{
+        'matcher': 'Edit|Write',
+        'hooks': [
+          {'type': 'command', 'command': 'scripts/style-check.sh'},
+          {'type': 'command', 'command': 'scripts/sync-docs-check.sh'},
+        ],
+      }]
+    }
+  }))
+  h = handlers.HooksHandler()
+  sources = h.discover(tmp_path, tmp_path, {})
+  assert len(sources) == 2
+  body = h.render(sources, {}, [])
+  joined = '\n'.join(body)
+  assert '`style-check.sh`' in joined
+  assert '`sync-docs-check.sh`' in joined
+  # Re-render with the prior output as existing body: both rows survive.
+  body2 = h.render(sources, {}, body)
+  assert body2 == body, "hooks table must be idempotent under preserve-manual"
+
+
 def test_scripts_handler(tmp_path):
   scripts = tmp_path / 'scripts'
   scripts.mkdir()

@@ -435,7 +435,7 @@ HANDLER_DEFAULT_MARKERS = {
   'skills': 'sync:skills cols=Command:key,Purpose:auto',
   'agents': 'sync:agents cols=Agent:key,Purpose:auto',
   'plugins': 'sync:plugins cols=Plugin:key,Purpose:manual',
-  'hooks': 'sync:hooks cols=Event:key,Matcher:auto,Script:auto,Purpose:auto',
+  'hooks': 'sync:hooks cols=Event:auto,Matcher:auto,Script:key,Purpose:auto',
   'scripts': 'sync:scripts cols=Script:key,Purpose:auto',
   'index': 'sync:index',
 }

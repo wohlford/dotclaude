@@ -412,7 +412,7 @@ class HooksHandler:
     directives: dict[str, str],
     existing_body: list[str],
   ) -> list[str]:
-    cols_spec = directives.get('cols', 'Event:key,Matcher:auto,Script:auto,Purpose:auto')
+    cols_spec = directives.get('cols', 'Event:auto,Matcher:auto,Script:key,Purpose:auto')
     cols = _parse_cols(cols_spec)
     err = _validate_cols(cols, self.name)
     if err:
@@ -664,8 +664,6 @@ class CustomHandler:
     err = _validate_cols(cols, self.name)
     if err:
       raise ValueError(err)
-
-    repo_root = directives.get('_repo_root')  # injected by dispatcher (optional)
 
     rows: list[dict[str, str]] = []
     for s in sources:
