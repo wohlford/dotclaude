@@ -60,6 +60,7 @@ cd dotclaude
 | :---------- | :------------ | :------------------- | :-------------------------------------------------------------------------- |
 | PostToolUse | `Edit\|Write` | `style-check.sh`     | Global PostToolUse hook — validate file edits against STYLE.md              |
 | PostToolUse | `Edit\|Write` | `sync-docs-check.sh` | PostToolUse hook — warn when an edit leaves /sync-docs index tables drifted |
+| PostToolUse | `Edit\|Write` | `sync-docs-test.sh`  | PostToolUse hook — run the sync-docs test suite when its Python changes     |
 <!-- /sync:hooks -->
 
 ### Plugins

@@ -12,4 +12,5 @@ Sync" for how this index stays in sync.
 | :------------------- | :-------------------------------------------------------------------------- |
 | `style-check.sh`     | Global PostToolUse hook — validate file edits against STYLE.md              |
 | `sync-docs-check.sh` | PostToolUse hook — warn when an edit leaves /sync-docs index tables drifted |
+| `sync-docs-test.sh`  | PostToolUse hook — run the sync-docs test suite when its Python changes     |
 <!-- /sync:scripts -->
