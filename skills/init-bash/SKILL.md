@@ -54,3 +54,10 @@ The user may optionally provide:
 - Variables: `lower_snake_case`
 - Functions: `lower_snake_case`
 - Constants: `UPPER_SNAKE_CASE`
+
+### Rules
+
+- Never overwrite an existing file — if the target path already exists, stop and ask.
+- Reject a filename that isn't `kebab-case.sh`; correct it or confirm with the user first.
+- Always `chmod +x` the new script and keep the `main "$@"` entry point intact.
+- Only add `check_dependencies` entries the user actually named — don't invent dependencies.

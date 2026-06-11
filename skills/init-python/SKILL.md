@@ -54,3 +54,10 @@ The user may optionally provide:
 - Classes: `PascalCase`
 - Constants: `UPPER_SNAKE_CASE`
 - Private: `_leading_underscore`
+
+### Rules
+
+- Never overwrite an existing file — if the target path already exists, stop and ask.
+- Reject a filename that isn't `lower_snake_case.py`; correct it or confirm with the user first.
+- Preserve the `main()` / `if __name__ == "__main__":` entry point and 2-space indentation.
+- Only add the imports and stubs the user requested — don't scaffold speculative code.
