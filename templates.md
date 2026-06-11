@@ -80,12 +80,13 @@ process_file() {
 parse_arguments() {
   [[ $# -eq 0 ]] && show_help
   while [[ $# -gt 0 ]]; do
-    case $1 in
+    case "$1" in
       -h|--help)    show_help ;;
       -v|--verbose) verbose=1; shift ;;
       -n|--dry-run) dry_run=1; shift ;;
       -*)           log_error "Unknown option: $1"; exit 1 ;;
-      *)            readonly INPUT_FILE="$1"; shift ;;
+      *)            [[ -z "${INPUT_FILE:-}" ]] || { log_error "Unexpected argument: $1"; exit 1; }
+                    readonly INPUT_FILE="$1"; shift ;;
     esac
   done
   [[ -n "${INPUT_FILE:-}" ]] || { log_error "Input file required"; exit 1; }
