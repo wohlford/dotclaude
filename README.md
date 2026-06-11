@@ -4,11 +4,15 @@ Global [Claude Code](https://docs.anthropic.com/en/docs/claude-code) configurati
 
 ## Installation
 
-Clone into your home directory:
+This repo is symlinked into `~/.claude` rather than cloned over it, so the checkout stays the source of truth. Clone it anywhere, then run the installer:
 
 ```bash
-git clone https://github.com/wohlford/dotclaude.git ~/.claude
+git clone https://github.com/wohlford/dotclaude.git
+cd dotclaude
+./install.sh
 ```
+
+`install.sh` symlinks the tracked files and directories (`CLAUDE.md`, `STYLE.md`, `templates.md`, `workflows.md`, `skills/`, `agents/`, `scripts/`) into `~/.claude`, backing up anything already present. `settings.json` is intentionally **not** linked — Claude Code rewrites it at runtime, so manage it manually. Restart Claude Code after installing (or after pulling updates) to reload the configuration.
 
 ## What's Included
 
@@ -49,20 +53,23 @@ git clone https://github.com/wohlford/dotclaude.git ~/.claude
 
 ### Hooks
 
-| Event | Trigger | Script |
-|-------|---------|--------|
-| PostToolUse | Edit, Write | [`scripts/style-check.sh`](scripts/style-check.sh) — validates file format, syntax, and style on every edit |
+<!-- sync:hooks -->
+| Event       | Matcher       | Script               | Purpose                                                                     |
+| :---------- | :------------ | :------------------- | :-------------------------------------------------------------------------- |
+| PostToolUse | `Edit\|Write` | `style-check.sh`     | Global PostToolUse hook — validate file edits against STYLE.md              |
+| PostToolUse | `Edit\|Write` | `sync-docs-check.sh` | PostToolUse hook — warn when an edit leaves /sync-docs index tables drifted |
+<!-- /sync:hooks -->
 
 ### Plugins
 
 <!-- sync:plugins cols=Plugin:key,Purpose:manual -->
-| Plugin                 | Purpose                                   |
-| :--------------------- | :---------------------------------------- |
-| `claude-code-setup`    | Recommend Claude Code automations         |
-| `claude-md-management` | Audit and improve CLAUDE.md files         |
-| `code-review`          | Code review pull requests                 |
-| `pyright-lsp`          | Python type checking via Pyright          |
-| `superpowers`          | Enhanced development workflows and skills |
+| Plugin                 | Purpose                                                                   |
+| :--------------------- | :------------------------------------------------------------------------ |
+| `claude-code-setup`    | Recommend Claude Code automations                                         |
+| `claude-md-management` | Audit and improve CLAUDE.md files                                         |
+| `code-review`          | Code review pull requests (`/review`, `/security-review`, `/ultrareview`) |
+| `pyright-lsp`          | Python type checking via Pyright                                          |
+| `superpowers`          | Enhanced development workflows and skills                                 |
 <!-- /sync:plugins -->
 
 Plugins are configured in [`settings.json`](settings.json) and resolved automatically by Claude Code.
