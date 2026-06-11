@@ -33,9 +33,9 @@ Read an existing well-formed skill first (e.g. `skills/commit/SKILL.md` or
   commits, deploys, pushes, sends, or otherwise changes external state (e.g. propagate,
   init-* scaffolds). Flag its absence on such skills; flag its presence on a purely
   informational skill as suspicious. **Exception:** a side-effectful skill may stay
-  model-invocable by design when another skill orchestrates it — `commit` omits the flag so
-  `/debrief` can invoke it programmatically; treat a documented orchestration role as
-  intended, not a defect.
+  model-invocable by design — `commit` omits the flag so `/debrief` can invoke it
+  programmatically, and `/feature` omits it so Claude can launch the design pipeline directly;
+  treat a documented model-invocable role as intended, not a defect.
 
 ### Heading and summary
 

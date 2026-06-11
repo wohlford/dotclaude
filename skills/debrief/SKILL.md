@@ -53,8 +53,9 @@ those remain manual steps for the user.
       `/feature` design pipeline documented in `skills/feature/SKILL.md`: Step 0 risk triage, then
       the chosen lane (brainstorming → spec/plan, an ultrathink-level self-review, the optional
       empirical spike, and the budget-gated diverse-model review) to produce a reviewed plan.
-      `/feature` is user-only (`disable-model-invocation: true`), so do **not** invoke it via the
-      Skill tool — follow its documented steps directly; the SKILL.md is the single source of truth.
+      Follow `/feature`'s documented steps directly rather than firing it via the Skill tool: the
+      routine continues past `/feature`'s stop-at-plan boundary (step 5.3 below), so it orchestrates
+      the pipeline inline. The SKILL.md is the single source of truth.
    2. **Present the reviewed plan and pause** for the user's confirmation.
    3. On confirmation, **implement** the plan (`superpowers:executing-plans` /
       `subagent-driven-development`). This deliberately continues past `/feature`'s stop-at-plan

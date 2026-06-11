@@ -1,7 +1,6 @@
 ---
 name: feature
 description: Run the methodical, risk-tiered design pipeline for a change (triage → spec → spike → plan → reviews) and stop at a reviewed plan ready to execute
-disable-model-invocation: true
 ---
 
 # /feature — Methodical Design Pipeline
@@ -85,7 +84,8 @@ which sets up the worktree and implements task-by-task.
 
 - **Stop at the reviewed plan.** Never implement or invoke an execution skill; decline `writing-plans`'
   execution offer.
-- **User-only** invocation — a deliberate, side-effecting kickoff.
+- **Invocation** — model-invocable; launch it (or let the user run `/feature`) only for changes
+  that warrant methodical design, not trivial edits. A deliberate, scale-to-uncertainty kickoff.
 - Save spec/plan at the repo root (`specs/`, `plans/`, `YYYY-MM-DD-<name>.md`); commit each as produced.
 - Time/scope-box the spike to one assumption; bias borderline triage to the full lane.
 - Budget: the expensive move is the diverse-model agent pass — default to **one** (on the plan);
