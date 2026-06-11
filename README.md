@@ -12,7 +12,7 @@ cd dotclaude
 ./install.sh
 ```
 
-`install.sh` symlinks the tracked files and directories (`CLAUDE.md`, `STYLE.md`, `templates.md`, `workflows.md`, `skills/`, `agents/`, `scripts/`) into `~/.claude`, backing up anything already present. `settings.json` is intentionally **not** linked — Claude Code rewrites it at runtime, so manage it manually. Restart Claude Code after installing (or after pulling updates) to reload the configuration.
+`install.sh` symlinks the tracked files and directories (`CLAUDE.md`, `STYLE.md`, `templates.md`, `workflows.md`, `README.md`, `LICENSE`, `skills/`, `agents/`, `scripts/`) into `~/.claude`, backing up anything already present. `settings.json` is intentionally **not** linked — Claude Code rewrites it at runtime, so manage it manually. Restart Claude Code after installing (or after pulling updates) to reload the configuration.
 
 ## What's Included
 
