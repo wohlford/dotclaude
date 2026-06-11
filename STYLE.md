@@ -395,7 +395,7 @@ datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M %Z") # explic
 <type>[(scope)][!]: <subject>
 ```
 
-Single line only. No body or footer. Lowercase, imperative mood, no period. Scope is optional but encouraged to specify the area of impact. Append `!` after the type/scope for breaking changes.
+Single line only. No body or footer. Lowercase, imperative mood, no period. Keep the whole subject under 72 characters. Scope is optional but encouraged to specify the area of impact. Append `!` after the type/scope for breaking changes.
 
 **Types:** `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`, `revert`
 
