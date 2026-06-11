@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Script: sync-docs-check.sh
-# Purpose: PostToolUse hook — warn when an edit leaves /sync-docs index tables drifted
+# Purpose: PostToolUse hook — block edits that leave /sync-docs index tables drifted
 # Usage: Called by Claude Code hooks with JSON on stdin
 #
 # Exit codes:
