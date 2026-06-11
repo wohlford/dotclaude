@@ -25,10 +25,10 @@ Scopes already used in this repo — reuse one when it fits and is specific; pre
 
 ```bash
 git log --pretty=%s -n 300 2>/dev/null \
-	| sed -nE 's/^[a-z]+\(([^)]+)\)!?:.*/\1/p' \
-	| tr ',' '\n' \
-	| sed -E 's/^ +//; s/ +$//' \
-	| sort | uniq -c | sort -rn | head -30
+  | sed -nE 's/^[a-z]+\(([^)]+)\)!?:.*/\1/p' \
+  | tr ',' '\n' \
+  | sed -E 's/^ +//; s/ +$//' \
+  | sort | uniq -c | sort -rn | head -30
 ```
 
 ```bash
