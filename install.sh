@@ -29,8 +29,8 @@ readonly CLAUDE_DIRS=(
 )
 
 # ---------- Helper Functions ----------
-log_info()  { echo "[INFO] $*"; }
-log_error() { echo "[ERROR] $*" >&2; }
+log_info()  { printf '[INFO] %s\n' "$*"; }
+log_error() { printf '[ERROR] %s\n' "$*" >&2; }
 
 link_file() {
   local src="$1"
@@ -70,4 +70,4 @@ main() {
   log_info "Note: settings.json was NOT linked (Claude Code rewrites it at runtime; manage manually if needed)."
 }
 
-main
+main "$@"

@@ -150,12 +150,12 @@ esac
 
 # ---------- Report results ----------
 if [[ ${#errors[@]} -gt 0 ]]; then
-  echo "style-check FAILED for ${file_path}:" >&2
+  printf 'style-check FAILED for %s:\n' "$file_path" >&2
   for err in "${errors[@]}"; do
-    echo -e "  - ${err}" >&2
+    printf '  - %b\n' "$err" >&2
   done
   exit 2
 fi
 
-echo "style-check passed: ${file_path}"
+printf 'style-check passed: %s\n' "$file_path"
 exit 0
