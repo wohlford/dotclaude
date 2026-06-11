@@ -22,9 +22,12 @@ git status -sb | head -1
 ```
 
 ```bash
-# Live repo that ~/.claude/skills resolves to (empty if not a symlink)
-tgt="$(readlink ~/.claude/skills 2>/dev/null || true)"
-[ -n "$tgt" ] && (cd "$(dirname "$tgt")" && git rev-parse --show-toplevel) || echo "(not a symlink — cannot determine live repo)"
+# Live repo that ~/.claude/skills resolves to (blank if it isn't a symlink)
+if [ -L ~/.claude/skills ]; then
+  (cd -P ~/.claude/skills && git rev-parse --show-toplevel)
+else
+  echo "(not a symlink — cannot determine live repo)"
+fi
 ```
 
 ## Instructions
@@ -42,11 +45,10 @@ into `~/.claude`. Push here, fast-forward there, then prompt a restart.
 4. Resolve the live repo from the symlink:
 
 ```bash
-tgt="$(readlink ~/.claude/skills 2>/dev/null || true)"
-if [ -z "$tgt" ]; then
+if [ ! -L ~/.claude/skills ]; then
   echo "~/.claude/skills is not a symlink — cannot locate the live repo; propagate manually." >&2
 else
-  live="$(cd "$(dirname "$tgt")" && git rev-parse --show-toplevel)"
+  live="$(cd -P ~/.claude/skills && git rev-parse --show-toplevel)"
 fi
 ```
 
@@ -75,5 +77,5 @@ The user may provide:
 
 - **Never** force-push or force-merge — `--ff-only` only; surface failures with a manual fallback.
 - **Never** hardcode machine paths — derive the live repo from the `~/.claude/skills` symlink.
-- Push only after work hours, per the repo's commit-timing policy.
+- Push outside of normal working hours so the live config changes land off-hours.
 - Do not commit on the user's behalf here — propagation moves already-committed work.
