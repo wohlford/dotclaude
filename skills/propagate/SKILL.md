@@ -62,9 +62,26 @@ git -C "$live" fetch origin "$branch" --tags
 git -C "$live" merge --ff-only "origin/$branch"
 ```
 
-   - If the merge fails (diverged history, or the live tree has local / skip-worktree
-     changes such as a runtime-rewritten `settings.json`), do NOT force. Report the failure
-     and print the manual command for the user to resolve in `$live`.
+   - **On `--ff-only` failure, do NOT force.** First list other locally-modified tracked files with
+     `git -C "$live" status --porcelain` — the runtime `settings.json` is skip-worktree, so it never
+     shows there even when it is the blocker.
+   - **If the only blocker is the runtime `settings.json`:** auto-resolve it — park it, fast-forward,
+     then restore it so the runtime prefs (`model`, `enabledPlugins`) survive, then hand-add any new
+     hook entries the committed version gained into the runtime file and report:
+
+```bash
+git -C "$live" update-index --no-skip-worktree settings.json
+git -C "$live" stash push -m 'runtime settings.json' -- settings.json
+git -C "$live" merge --ff-only "origin/$branch"
+git -C "$live" checkout 'stash@{0}' -- settings.json && git -C "$live" stash drop
+git -C "$live" reset -q HEAD -- settings.json
+git -C "$live" update-index --skip-worktree settings.json
+```
+
+   - **If any other tracked file blocks** (e.g. a live-edited skill): do NOT auto-discard — it may hold
+     real work. Restore `settings.json` if you parked it, then report the blocking file(s) and the
+     manual options; `git checkout -- <file>` is safe only when the file already equals the incoming
+     version (`git -C "$live" diff --quiet "origin/$branch" -- <file>`).
 6. Remind the user to restart Claude so the propagated skills/agents/config reload.
 
 ### Arguments
