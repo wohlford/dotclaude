@@ -39,6 +39,7 @@ Universal instructions for all projects.
 ## Hooks
 
 - **PostToolUse** (Edit/Write) — `~/.claude/scripts/style-check.sh` validates file format (tabs, newlines, syntax) on every edit
+- **PostToolUse** (Edit/Write) — `~/.claude/scripts/shellcheck-check.sh` runs `shellcheck -S warning` on edited `*.sh` files, surfacing shell warnings/errors (silent no-op without shellcheck or for non-shell files)
 - **PostToolUse** (Edit/Write) — `~/.claude/scripts/sync-docs-check.sh` blocks a new/changed `skills/*/SKILL.md` or `agents/*.md` that leaves the `<!-- sync:* -->` index tables stale; fix with `python3 skills/sync-docs/sync_docs.py` (silent no-op outside sync-docs repos)
 - **PostToolUse** (Edit/Write) — `~/.claude/scripts/sync-docs-test.sh` runs the sync-docs test suite when a `skills/sync-docs/*.py` file changes, surfacing regressions immediately (silent no-op for any other edit)
 
