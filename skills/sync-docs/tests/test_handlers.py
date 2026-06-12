@@ -225,6 +225,32 @@ def test_hooks_two_same_event_dont_collapse(tmp_path):
   assert body2 == body, "hooks table must be idempotent under preserve-manual"
 
 
+def test_hooks_pretooluse_renders(tmp_path):
+  """PreToolUse hooks render too — the handler is event-generic, taking the
+  event straight from the settings.json key."""
+  (tmp_path / 'settings.json').write_text(json.dumps({
+    'hooks': {
+      'PreToolUse': [{
+        'matcher': 'Bash',
+        'hooks': [{'type': 'command', 'command': 'scripts/git-timing-guard.sh'}],
+      }]
+    }
+  }))
+  scripts = tmp_path / 'scripts'
+  scripts.mkdir()
+  (scripts / 'git-timing-guard.sh').write_text(
+    "#!/usr/bin/env bash\n"
+    "# Script: git-timing-guard.sh\n"
+    "# Purpose: Block git writes outside a window\n"
+  )
+  h = handlers.HooksHandler()
+  sources = h.discover(tmp_path, tmp_path, {})
+  assert len(sources) == 1
+  assert sources[0].fields['event'] == 'PreToolUse'
+  assert sources[0].fields['matcher'] == 'Bash'
+  assert sources[0].fields['description'] == 'Block git writes outside a window'
+
+
 def test_scripts_handler(tmp_path):
   scripts = tmp_path / 'scripts'
   scripts.mkdir()

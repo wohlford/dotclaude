@@ -38,6 +38,7 @@ Universal instructions for all projects.
 
 ## Hooks
 
+- **PreToolUse** (Bash) — `~/.claude/scripts/git-timing-guard.sh` blocks `git` writes (commit/push/tag) outside a configured time window; policy lives in an untracked local config, so it's a silent no-op when that's absent
 - **PostToolUse** (Edit/Write) — `~/.claude/scripts/style-check.sh` validates file format (tabs, newlines, syntax) on every edit
 - **PostToolUse** (Edit/Write) — `~/.claude/scripts/shellcheck-check.sh` runs `shellcheck -S warning` on edited `*.sh` files, surfacing shell warnings/errors (silent no-op without shellcheck or for non-shell files)
 - **PostToolUse** (Edit/Write) — `~/.claude/scripts/sync-docs-check.sh` blocks a new/changed `skills/*/SKILL.md` or `agents/*.md` that leaves the `<!-- sync:* -->` index tables stale; fix with `python3 skills/sync-docs/sync_docs.py` (silent no-op outside sync-docs repos)

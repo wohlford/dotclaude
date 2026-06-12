@@ -10,6 +10,7 @@ Sync" for how this index stays in sync.
 <!-- sync:scripts -->
 | Script                | Purpose                                                                   |
 | :-------------------- | :------------------------------------------------------------------------ |
+| `git-timing-guard.sh` | PreToolUse hook — block git writes outside a configured time window       |
 | `shellcheck-check.sh` | PostToolUse hook — run shellcheck on edited shell scripts                 |
 | `style-check.sh`      | Global PostToolUse hook — validate file edits against STYLE.md            |
 | `sync-docs-check.sh`  | PostToolUse hook — block edits that leave /sync-docs index tables drifted |
