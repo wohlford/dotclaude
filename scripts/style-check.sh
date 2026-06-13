@@ -43,6 +43,21 @@ check_no_tabs() {
 }
 
 check_no_trailing_ws() {
+  # Exempt Claude Code's auto-memory files. The memory subsystem augments
+  # frontmatter after each write (injecting node_type/originSessionId) and
+  # leaves the `metadata:` key with a trailing space, which re-triggers this
+  # check on every memory write — busywork to strip each time. Upstream-correct
+  # fix is in the memory writer (don't emit trailing whitespace when
+  # augmenting); this is a workaround — revert it when the writer stops emitting
+  # trailing whitespace. Anchored on the real config dir (CLAUDE_CONFIG_DIR, else
+  # ~/.claude) so only the genuine memory tree is exempt — not an unrelated
+  # */projects/*/memory/*.md elsewhere — and the check stays intact everywhere else.
+  local mem_base="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+  case "$file_path" in
+    "$mem_base"/*/memory/*.md)
+      return 0
+      ;;
+  esac
   local ws_lines
   ws_lines=$(grep -nE '[[:blank:]]+$' "$file_path" 2>/dev/null || true)
   if [[ -n "$ws_lines" ]]; then
