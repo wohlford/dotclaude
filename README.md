@@ -57,13 +57,14 @@ cd dotclaude
 ### Hooks
 
 <!-- sync:hooks -->
-| Event       | Matcher       | Script                | Purpose                                                                   |
-| :---------- | :------------ | :-------------------- | :------------------------------------------------------------------------ |
-| PreToolUse  | `Bash`        | `git-timing-guard.sh` | PreToolUse hook — block git writes outside a configured time window       |
-| PostToolUse | `Edit\|Write` | `style-check.sh`      | Global PostToolUse hook — validate file edits against STYLE.md            |
-| PostToolUse | `Edit\|Write` | `shellcheck-check.sh` | PostToolUse hook — run shellcheck on edited shell scripts                 |
-| PostToolUse | `Edit\|Write` | `sync-docs-check.sh`  | PostToolUse hook — block edits that leave /sync-docs index tables drifted |
-| PostToolUse | `Edit\|Write` | `sync-docs-test.sh`   | PostToolUse hook — run the sync-docs test suite when its Python changes   |
+| Event       | Matcher       | Script                | Purpose                                                                    |
+| :---------- | :------------ | :-------------------- | :------------------------------------------------------------------------- |
+| PreToolUse  | `Bash`        | `git-timing-guard.sh` | PreToolUse hook — block git writes outside a configured time window        |
+| PostToolUse | `Edit\|Write` | `style-check.sh`      | Global PostToolUse hook — validate file edits against STYLE.md             |
+| PostToolUse | `Edit\|Write` | `shellcheck-check.sh` | PostToolUse hook — run shellcheck on edited shell scripts                  |
+| PostToolUse | `Edit\|Write` | `style-check-test.sh` | PostToolUse hook — run the style-check test suite when style-check changes |
+| PostToolUse | `Edit\|Write` | `sync-docs-check.sh`  | PostToolUse hook — block edits that leave /sync-docs index tables drifted  |
+| PostToolUse | `Edit\|Write` | `sync-docs-test.sh`   | PostToolUse hook — run the sync-docs test suite when its Python changes    |
 <!-- /sync:hooks -->
 
 ### Plugins
