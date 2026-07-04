@@ -114,3 +114,5 @@ verifying with `bash script.sh` masks exactly that defect. Always verify by bare
 invocation (`./scripts/<name>.sh`) and check the committed mode is `100755`
 (`git ls-files -s scripts/<name>.sh`). Caught in review on 2026-07-04 after a 644 hook
 shipped; the runner passed every `bash`-prefixed test while being unrunnable as wired.
+Since v0.24.0 this is also enforced mechanically: `exec-bit-guard.sh` blocks any `git commit`
+that would record a new shebang file as 644 (or downgrade 755 → 644).

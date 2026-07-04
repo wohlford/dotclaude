@@ -11,6 +11,7 @@ for how the index below stays in sync.
 <!-- sync:scripts -->
 | Script                       | Purpose                                                                                                                    |
 | :--------------------------- | :------------------------------------------------------------------------------------------------------------------------- |
+| `exec-bit-guard-test.sh`     | PostToolUse hook — run the exec-bit-guard test suite when the gate or its suite changes                                    |
 | `exec-bit-guard.sh`          | PreToolUse hook — block `git commit` when it would record a new shebang file without the exec bit (or a 755→644 downgrade) |
 | `guard-secrets-test.sh`      | PostToolUse hook — run the guard-secrets test suite when the guard changes                                                 |
 | `guard-secrets.sh`           | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem)                                              |

@@ -63,23 +63,25 @@ Wondering how the pieces fit — what takes effect where, and what owns what? Se
 ### Hooks
 
 <!-- sync:hooks -->
-| Event       | Matcher                              | Script                       | Purpose                                                                                        |
-| :---------- | :----------------------------------- | :--------------------------- | :--------------------------------------------------------------------------------------------- |
-| PreToolUse  | `Read\|Edit\|Write\|MultiEdit\|Grep` | `guard-secrets.sh`           | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem)                  |
-| PreToolUse  | `Bash`                               | `push-guard.sh`              | PreToolUse hook — block `git push` unless the push segment leads with an ALLOW_PUSH=1 override |
-| PreToolUse  | `Bash`                               | `recast-commit-gate.py`      | PreToolUse hook — run the recast suite before a commit that touches recast source              |
-| PostToolUse | `Edit\|Write`                        | `style-check.sh`             | Global PostToolUse hook — validate file edits against STYLE.md                                 |
-| PostToolUse | `Edit\|Write`                        | `shellcheck-check.sh`        | PostToolUse hook — run shellcheck on edited shell scripts                                      |
-| PostToolUse | `Edit\|Write`                        | `ruff-check.sh`              | PostToolUse hook — run ruff lint+format check on edited Python in ruff projects                |
-| PostToolUse | `Edit\|Write`                        | `style-check-test.sh`        | PostToolUse hook — run the style-check test suite when style-check changes                     |
-| PostToolUse | `Edit\|Write`                        | `sync-docs-check.sh`         | PostToolUse hook — block edits that leave /sync-docs index tables drifted                      |
-| PostToolUse | `Edit\|Write`                        | `sync-docs-test.sh`          | PostToolUse hook — run the sync-docs test suite when its Python changes                        |
-| PostToolUse | `Edit\|Write`                        | `guard-secrets-test.sh`      | PostToolUse hook — run the guard-secrets test suite when the guard changes                     |
-| PostToolUse | `Edit\|Write`                        | `recast-test.sh`             | PostToolUse hook — run the matching recast test file when a recast source changes              |
-| PostToolUse | `Edit\|Write`                        | `md-links-check.py`          | PostToolUse hook — verify relative links and anchors in edited markdown resolve                |
-| PostToolUse | `Edit\|Write`                        | `md-links-check-test.sh`     | PostToolUse hook — run the md-links-check test suite when the checker changes                  |
-| PostToolUse | `Edit\|Write`                        | `markdownlint-check.sh`      | PostToolUse hook — run markdownlint-cli2 on edited markdown in opted-in repos                  |
-| PostToolUse | `Edit\|Write`                        | `markdownlint-check-test.sh` | PostToolUse hook — run the markdownlint-check test suite when the lint hook changes            |
+| Event       | Matcher                              | Script                       | Purpose                                                                                                                    |
+| :---------- | :----------------------------------- | :--------------------------- | :------------------------------------------------------------------------------------------------------------------------- |
+| PreToolUse  | `Read\|Edit\|Write\|MultiEdit\|Grep` | `guard-secrets.sh`           | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem)                                              |
+| PreToolUse  | `Bash`                               | `push-guard.sh`              | PreToolUse hook — block `git push` unless the push segment leads with an ALLOW_PUSH=1 override                             |
+| PreToolUse  | `Bash`                               | `exec-bit-guard.sh`          | PreToolUse hook — block `git commit` when it would record a new shebang file without the exec bit (or a 755→644 downgrade) |
+| PreToolUse  | `Bash`                               | `recast-commit-gate.py`      | PreToolUse hook — run the recast suite before a commit that touches recast source                                          |
+| PostToolUse | `Edit\|Write`                        | `style-check.sh`             | Global PostToolUse hook — validate file edits against STYLE.md                                                             |
+| PostToolUse | `Edit\|Write`                        | `shellcheck-check.sh`        | PostToolUse hook — run shellcheck on edited shell scripts                                                                  |
+| PostToolUse | `Edit\|Write`                        | `ruff-check.sh`              | PostToolUse hook — run ruff lint+format check on edited Python in ruff projects                                            |
+| PostToolUse | `Edit\|Write`                        | `style-check-test.sh`        | PostToolUse hook — run the style-check test suite when style-check changes                                                 |
+| PostToolUse | `Edit\|Write`                        | `sync-docs-check.sh`         | PostToolUse hook — block edits that leave /sync-docs index tables drifted                                                  |
+| PostToolUse | `Edit\|Write`                        | `sync-docs-test.sh`          | PostToolUse hook — run the sync-docs test suite when its Python changes                                                    |
+| PostToolUse | `Edit\|Write`                        | `guard-secrets-test.sh`      | PostToolUse hook — run the guard-secrets test suite when the guard changes                                                 |
+| PostToolUse | `Edit\|Write`                        | `recast-test.sh`             | PostToolUse hook — run the matching recast test file when a recast source changes                                          |
+| PostToolUse | `Edit\|Write`                        | `md-links-check.py`          | PostToolUse hook — verify relative links and anchors in edited markdown resolve                                            |
+| PostToolUse | `Edit\|Write`                        | `md-links-check-test.sh`     | PostToolUse hook — run the md-links-check test suite when the checker changes                                              |
+| PostToolUse | `Edit\|Write`                        | `markdownlint-check.sh`      | PostToolUse hook — run markdownlint-cli2 on edited markdown in opted-in repos                                              |
+| PostToolUse | `Edit\|Write`                        | `markdownlint-check-test.sh` | PostToolUse hook — run the markdownlint-check test suite when the lint hook changes                                        |
+| PostToolUse | `Edit\|Write`                        | `exec-bit-guard-test.sh`     | PostToolUse hook — run the exec-bit-guard test suite when the gate or its suite changes                                    |
 <!-- /sync:hooks -->
 
 ### Plugins
