@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.14.0 — 2026-07-04
+- feat(debrief): add /debrief end-of-session routine orchestrating memory and automation review
+
 ## v0.13.0 — 2026-07-04
 - feat(feature): add /feature risk-tiered change pipeline with diverse-model review
 
