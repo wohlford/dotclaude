@@ -199,7 +199,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 Index sections of `README.md` and `CLAUDE.md` files (skills tables, agents tables, plugin lists, content directory listings) drift from reality as a project grows. The `/sync-docs` skill regenerates these index regions from authoritative sources on demand. Hand-written prose is never touched.
 
 **Full reference** (marker syntax, directives, handlers, extractor chain, lint mode, project
-config): `skills/sync-docs/reference.md`.
+config): [`skills/sync-docs/reference.md`](./skills/sync-docs/reference.md).
 
 ## Timestamps
 

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.7.0 — 2026-07-04
+- feat(sync-docs): add index-region generator with marker system and pytest suite
+
 ## v0.6.0 — 2026-07-04
 - feat(lint-hooks): add shellcheck and ruff edit-time hooks with ruff regression suite
 

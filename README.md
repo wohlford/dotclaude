@@ -40,6 +40,7 @@ Wondering how the pieces fit — what takes effect where, and what owns what? Se
 | `/init-js`     | Scaffold a new JavaScript module from the standard template in templates.md                                              |
 | `/init-python` | Scaffold a new Python module from the standard template in templates.md                                                  |
 | `/init-skill`  | Scaffold a new skill at skills/<name>/SKILL.md following the standard structure                                          |
+| `/sync-docs`   | Regenerate index regions of README.md and CLAUDE.md from authoritative sources                                           |
 <!-- /sync:skills -->
 
 ### Agents

@@ -39,7 +39,7 @@ caught whether you're editing, reviewing, or committing:
   by `/vet` for a deeper read than a hook can do at edit time.
 - **`/sync-docs`** keeps the auto-generated index regions (`<!-- sync:* -->` tables in README/CLAUDE)
   from drifting; a companion hook blocks an edit that leaves one stale. Full marker reference:
-  `skills/sync-docs/reference.md`.
+  [`skills/sync-docs/reference.md`](skills/sync-docs/reference.md).
 
 The pattern: **one source of truth → enforced at edit time (hook) + on demand (reviewer) + for drift
 (sync).** When you add a rule, decide which of the three should enforce it.
