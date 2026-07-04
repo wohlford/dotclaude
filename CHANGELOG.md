@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.21.0 — 2026-07-04
+- feat(markdownlint): add markdownlint-cli2 opt-in lint hook
+
 ## v0.20.0 — 2026-07-04
 - feat(md-links-check): add test-runner hook and wire both hooks into settings
 

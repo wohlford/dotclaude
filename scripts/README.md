@@ -13,6 +13,7 @@ for how the index below stays in sync.
 | :----------------------- | :--------------------------------------------------------------------------------------------- |
 | `guard-secrets-test.sh`  | PostToolUse hook — run the guard-secrets test suite when the guard changes                     |
 | `guard-secrets.sh`       | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem)                  |
+| `markdownlint-check.sh`  | PostToolUse hook — run markdownlint-cli2 on edited markdown in opted-in repos                  |
 | `md-links-check-test.sh` | PostToolUse hook — run the md-links-check test suite when the checker changes                  |
 | `md-links-check.py`      | PostToolUse hook — verify relative links and anchors in edited markdown resolve                |
 | `push-guard.sh`          | PreToolUse hook — block `git push` unless the push segment leads with an ALLOW_PUSH=1 override |
