@@ -1,0 +1,63 @@
+---
+name: init-js
+description: Scaffold a new JavaScript module from the standard template in templates.md
+disable-model-invocation: true
+---
+
+# /init-js — Scaffold a JavaScript Module
+
+Create a new JavaScript module from the standard template.
+
+## Instructions
+
+The user wants to create a new JavaScript module. Use the template from `~/.claude/templates.md` (JavaScript Module Template section).
+
+### Arguments
+
+The user must provide:
+- A filename or path (e.g., `file-processor.js`, `src/validate.js`)
+
+The user may optionally provide:
+- A brief description of the module's purpose
+- Key functions or classes to stub out
+- Third-party dependencies to import
+
+### Process
+
+1. Read `~/.claude/templates.md` for the full JavaScript module template
+2. Customize the template:
+   - Set the template's top-of-file `/** … */` module description block to the user's description (or a placeholder)
+   - Add requested functions/classes as stubs with JSDoc and parameter names
+   - Add specified `import` lines (`require` only when scaffolding explicit CommonJS)
+   - Keep the `main()` entry point and the template's `import.meta.url` entry-point guard; swap it for `if (require.main === module)` only when the user explicitly asked for CommonJS
+3. Write the file to the specified path
+4. Make it executable: `chmod +x <file>`
+5. Run `/sync-docs` to regenerate any `<!-- sync:scripts -->` index tables in the repo (no-op if no such markers exist).
+6. Confirm creation and summarize the module structure
+
+### Template Requirements (from STYLE.md)
+
+- 2-space indentation, semicolons required
+- Single quotes for strings
+- `const` by default, `let` only when reassignment is needed
+- Arrow functions for callbacks; `async`/`await` over callback chains
+- Trailing commas in multiline arrays/objects
+- JSDoc comments on exported functions
+- **Modules: ESM (`import`/`export`)** — the template in templates.md is ESM; produce a CommonJS scaffold (`require`/`module.exports`, `require.main` guard) only if the user explicitly asks for it
+- `export` for the public surface (`module.exports` only in an explicit-CommonJS scaffold)
+
+### Naming
+
+- Filename must be `kebab-case.js` (e.g., `file-processor.js`, not `fileProcessor.js`)
+- Variables/functions: `camelCase`
+- Classes: `PascalCase`
+- Constants: `UPPER_SNAKE_CASE`
+
+### Rules
+
+- Never overwrite an existing file — if the target path already exists, stop and ask.
+- Reject a filename that isn't `kebab-case.js`; correct it or confirm with the user first.
+- Always `chmod +x` the new module — its shebang pairs with the executable bit.
+- Preserve the `main()` entry point and its guard — the template's `import.meta.url` entry-point check, or `if (require.main === module)` in an explicit-CommonJS scaffold.
+- Only add the imports and stubs the user requested — don't scaffold speculative code.
+- Once the module is fleshed out beyond the template, `/vet <path>` dispatches `style-reviewer` to check it against STYLE.md (non-blocking).
