@@ -7,6 +7,7 @@ User-invokable slash commands shipped with this `~/.claude/` configuration. Each
 <!-- sync:skills cols=Command:key,Purpose:auto -->
 | Command               | Purpose                                                                                                                                                                                                    |
 | :-------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/audit`              | Run the mechanical compliance sweep — linters, format, link, exec-bit, and config-validity checks over a repo's tracked files                                                                              |
 | `/commit`             | Create a git commit with automatic semver tagging following STYLE.md conventions; signing and identity follow git config                                                                                   |
 | `/debrief`            | Run the end-of-session pre-compaction routine (CLAUDE.md refresh, memory save, automation review and implementation)                                                                                       |
 | `/feature`            | Run the methodical, risk-tiered pipeline for a change (triage → spec → spike → plan → reviews), then continue through subagent-driven execution to a merged change; --plan-only stops at the reviewed plan |

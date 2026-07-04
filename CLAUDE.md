@@ -23,6 +23,7 @@ Universal instructions for all projects.
 <!-- sync:skills cols=Command:key,Purpose:auto -->
 | Command               | Purpose                                                                                                                                                                                                    |
 | :-------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/audit`              | Run the mechanical compliance sweep — linters, format, link, exec-bit, and config-validity checks over a repo's tracked files                                                                              |
 | `/commit`             | Create a git commit with automatic semver tagging following STYLE.md conventions; signing and identity follow git config                                                                                   |
 | `/debrief`            | Run the end-of-session pre-compaction routine (CLAUDE.md refresh, memory save, automation review and implementation)                                                                                       |
 | `/feature`            | Run the methodical, risk-tiered pipeline for a change (triage → spec → spike → plan → reviews), then continue through subagent-driven execution to a merged change; --plan-only stops at the reviewed plan |
@@ -130,6 +131,8 @@ requesting-code-review, executing-plans) reads or writes a plan/spec, use these 
 - npm-global CLIs live per-version in `~/.nvm/versions/node/<ver>/bin` and need that dir ON
   PATH (their `env node` shebang; an absolute launcher path alone fails). `markdownlint-cli2`
   is installed there — the markdownlint hook uses it; repos opt in via `.markdownlint-cli2.jsonc`
+  (for a repo-wide run pass the glob explicitly — `markdownlint-cli2 "**/*.md"` — a bare invocation
+  lints 0 files when the config contains only ignores, which false-reads as a clean pass)
 
 #### System Tools (MacPorts)
 
