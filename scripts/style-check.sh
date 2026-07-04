@@ -171,6 +171,24 @@ case "$ext" in
     check_final_newline
     ;;
 
+  toml)
+    check_no_tabs
+    check_no_trailing_ws
+    # tomllib is stdlib from Python 3.11; older interpreters skip silently (fail open).
+    if command -v python3 >/dev/null 2>&1 && python3 -c 'import tomllib' 2>/dev/null; then
+      toml_output=$(python3 -c '
+import sys
+import tomllib
+with open(sys.argv[1], "rb") as f:
+    tomllib.load(f)
+' "$file_path" 2>&1 || true)
+      if [[ -n "$toml_output" ]]; then
+        add_error "Invalid TOML:\n${toml_output}"
+      fi
+    fi
+    check_final_newline
+    ;;
+
   md)
     check_no_tabs
     check_no_trailing_ws

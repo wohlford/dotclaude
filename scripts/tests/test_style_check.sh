@@ -102,5 +102,25 @@ else
   printf 'FAIL  jq absent (want 0, got %d)\n' "$got"; fail=$((fail + 1))
 fi
 
+# 11. Valid TOML → pass.
+toml_ok="$sandbox/config.toml"
+printf 'line-length = 88\n\n[lint]\nselect = ["E", "F"]\n' > "$toml_ok"
+run "$toml_ok" 0 "valid TOML passes"
+
+# 12. Invalid TOML syntax → flagged.
+toml_bad="$sandbox/broken.toml"
+printf '[lint\nselect = oops\n' > "$toml_bad"
+run "$toml_bad" 2 "invalid TOML flagged"
+
+# 13. TOML with trailing whitespace → flagged (whitespace rules apply to .toml).
+toml_ws="$sandbox/ws.toml"
+printf 'key = "value" \n' > "$toml_ws"
+run "$toml_ws" 2 "TOML trailing whitespace flagged"
+
+# 14. TOML missing final newline → flagged.
+toml_nl="$sandbox/nonl.toml"
+printf 'key = "value"' > "$toml_nl"
+run "$toml_nl" 2 "TOML missing final newline flagged"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
