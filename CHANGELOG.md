@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.26.0 — 2026-07-04
+- feat(audit): add mechanical compliance sweep engine and test suite
+
 ## v0.25.3 — 2026-07-04
 - fix(skills): correct contradictions and gaps found by vet audit
 
