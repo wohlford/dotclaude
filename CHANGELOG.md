@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.25.2 — 2026-07-04
+- style(recast-commit-gate): convert forced-path handling to pathlib
+
 ## v0.25.1 — 2026-07-04
 - style(md-links-check): add type hints and docstrings, use pathlib
 

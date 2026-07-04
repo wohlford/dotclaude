@@ -377,13 +377,13 @@ def changed_files(root: Path, base: Path, info: dict) -> set[str]:
         files |= tracked(paths) | untracked(paths)
     # A preceding `git rm`/`git mv` commits its paths even with no diff yet (a diff-based query can't
     # see a not-yet-run deletion), so add them directly, normalized to root-relative for SOURCE_RE.
-    # realpath both sides so a base/root prefix mismatch from a symlinked tmp (/var -> /private/var)
+    # resolve() both sides so a base/root prefix mismatch from a symlinked tmp (/var -> /private/var)
     # doesn't garble the relative path; drop anything that resolves outside the repo.
-    root_real = os.path.realpath(root)
+    root_real = root.resolve()
     for p in info.get("forced", []):
-        rel = os.path.relpath(os.path.realpath(os.path.join(base, p)), root_real)
-        if rel != ".." and not rel.startswith(".." + os.sep):
-            files.add(rel)
+        resolved = (base / p).resolve()
+        if resolved.is_relative_to(root_real):
+            files.add(str(resolved.relative_to(root_real)))
     return files
 
 
