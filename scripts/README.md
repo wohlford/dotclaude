@@ -13,6 +13,7 @@ for how the index below stays in sync.
 | :---------------------- | :--------------------------------------------------------------------------------------------- |
 | `guard-secrets-test.sh` | PostToolUse hook — run the guard-secrets test suite when the guard changes                     |
 | `guard-secrets.sh`      | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem)                  |
+| `md-links-check.py`     | PostToolUse hook — verify relative links and anchors in edited markdown resolve                |
 | `push-guard.sh`         | PreToolUse hook — block `git push` unless the push segment leads with an ALLOW_PUSH=1 override |
 | `recast-commit-gate.py` | PreToolUse hook — run the recast suite before a commit that touches recast source              |
 | `recast-test.sh`        | PostToolUse hook — run the matching recast test file when a recast source changes              |
