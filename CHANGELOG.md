@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.11.0 — 2026-07-04
+- feat(idempotency-tester): add /idempotency-tester skill with sandbox harness and pytest suite
+
 ## v0.10.0 — 2026-07-04
 - feat(vet): add /vet skill dispatching reviewer agents over skills, agents, and scripts
 
