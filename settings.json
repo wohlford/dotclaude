@@ -21,6 +21,14 @@
           },
           {
             "type": "command",
+            "command": "$HOME/.claude/scripts/shellcheck-check.sh"
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/ruff-check.sh"
+          },
+          {
+            "type": "command",
             "command": "$HOME/.claude/scripts/style-check-test.sh"
           },
           {
