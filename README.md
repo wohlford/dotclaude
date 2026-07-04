@@ -60,6 +60,8 @@ Wondering how the pieces fit — what takes effect where, and what owns what? Se
 | PostToolUse | `Edit\|Write`                        | `shellcheck-check.sh`   | PostToolUse hook — run shellcheck on edited shell scripts                       |
 | PostToolUse | `Edit\|Write`                        | `ruff-check.sh`         | PostToolUse hook — run ruff lint+format check on edited Python in ruff projects |
 | PostToolUse | `Edit\|Write`                        | `style-check-test.sh`   | PostToolUse hook — run the style-check test suite when style-check changes      |
+| PostToolUse | `Edit\|Write`                        | `sync-docs-check.sh`    | PostToolUse hook — block edits that leave /sync-docs index tables drifted       |
+| PostToolUse | `Edit\|Write`                        | `sync-docs-test.sh`     | PostToolUse hook — run the sync-docs test suite when its Python changes         |
 | PostToolUse | `Edit\|Write`                        | `guard-secrets-test.sh` | PostToolUse hook — run the guard-secrets test suite when the guard changes      |
 <!-- /sync:hooks -->
 

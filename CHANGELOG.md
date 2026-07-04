@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.8.0 — 2026-07-04
+- feat(sync-docs-hooks): add index-drift and test-runner hooks for sync-docs
+
 ## v0.7.0 — 2026-07-04
 - feat(sync-docs): add index-region generator with marker system and pytest suite
 
