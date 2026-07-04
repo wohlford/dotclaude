@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.12.0 — 2026-07-04
+- feat(propagate): add /propagate (local-default) and push-guard hook
+
 ## v0.11.0 — 2026-07-04
 - feat(idempotency-tester): add /idempotency-tester skill with sandbox harness and pytest suite
 

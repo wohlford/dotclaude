@@ -9,6 +9,15 @@
             "command": "$HOME/.claude/scripts/guard-secrets.sh"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/push-guard.sh"
+          }
+        ]
       }
     ],
     "PostToolUse": [

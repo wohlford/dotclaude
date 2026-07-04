@@ -41,6 +41,7 @@ Wondering how the pieces fit — what takes effect where, and what owns what? Se
 | `/init-js`            | Scaffold a new JavaScript module from the standard template in templates.md                                                                         |
 | `/init-python`        | Scaffold a new Python module from the standard template in templates.md                                                                             |
 | `/init-skill`         | Scaffold a new skill at skills/<name>/SKILL.md following the standard structure                                                                     |
+| `/propagate`          | Promote committed changes from this dev working copy to the live ~/.claude repo locally; --push also publishes to origin (explicit)                 |
 | `/sync-docs`          | Regenerate index regions of README.md and CLAUDE.md from authoritative sources                                                                      |
 | `/vet`                | Vet an authored skill, agent, or script — or the whole repo with --all — by dispatching the matching reviewer agent(s) and reporting their findings |
 <!-- /sync:skills -->
@@ -59,16 +60,17 @@ Wondering how the pieces fit — what takes effect where, and what owns what? Se
 ### Hooks
 
 <!-- sync:hooks -->
-| Event       | Matcher                              | Script                  | Purpose                                                                         |
-| :---------- | :----------------------------------- | :---------------------- | :------------------------------------------------------------------------------ |
-| PreToolUse  | `Read\|Edit\|Write\|MultiEdit\|Grep` | `guard-secrets.sh`      | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem)   |
-| PostToolUse | `Edit\|Write`                        | `style-check.sh`        | Global PostToolUse hook — validate file edits against STYLE.md                  |
-| PostToolUse | `Edit\|Write`                        | `shellcheck-check.sh`   | PostToolUse hook — run shellcheck on edited shell scripts                       |
-| PostToolUse | `Edit\|Write`                        | `ruff-check.sh`         | PostToolUse hook — run ruff lint+format check on edited Python in ruff projects |
-| PostToolUse | `Edit\|Write`                        | `style-check-test.sh`   | PostToolUse hook — run the style-check test suite when style-check changes      |
-| PostToolUse | `Edit\|Write`                        | `sync-docs-check.sh`    | PostToolUse hook — block edits that leave /sync-docs index tables drifted       |
-| PostToolUse | `Edit\|Write`                        | `sync-docs-test.sh`     | PostToolUse hook — run the sync-docs test suite when its Python changes         |
-| PostToolUse | `Edit\|Write`                        | `guard-secrets-test.sh` | PostToolUse hook — run the guard-secrets test suite when the guard changes      |
+| Event       | Matcher                              | Script                  | Purpose                                                                                        |
+| :---------- | :----------------------------------- | :---------------------- | :--------------------------------------------------------------------------------------------- |
+| PreToolUse  | `Read\|Edit\|Write\|MultiEdit\|Grep` | `guard-secrets.sh`      | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem)                  |
+| PreToolUse  | `Bash`                               | `push-guard.sh`         | PreToolUse hook — block `git push` unless the push segment leads with an ALLOW_PUSH=1 override |
+| PostToolUse | `Edit\|Write`                        | `style-check.sh`        | Global PostToolUse hook — validate file edits against STYLE.md                                 |
+| PostToolUse | `Edit\|Write`                        | `shellcheck-check.sh`   | PostToolUse hook — run shellcheck on edited shell scripts                                      |
+| PostToolUse | `Edit\|Write`                        | `ruff-check.sh`         | PostToolUse hook — run ruff lint+format check on edited Python in ruff projects                |
+| PostToolUse | `Edit\|Write`                        | `style-check-test.sh`   | PostToolUse hook — run the style-check test suite when style-check changes                     |
+| PostToolUse | `Edit\|Write`                        | `sync-docs-check.sh`    | PostToolUse hook — block edits that leave /sync-docs index tables drifted                      |
+| PostToolUse | `Edit\|Write`                        | `sync-docs-test.sh`     | PostToolUse hook — run the sync-docs test suite when its Python changes                        |
+| PostToolUse | `Edit\|Write`                        | `guard-secrets-test.sh` | PostToolUse hook — run the guard-secrets test suite when the guard changes                     |
 <!-- /sync:hooks -->
 
 ### Plugins
