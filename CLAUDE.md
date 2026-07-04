@@ -17,14 +17,15 @@ Universal instructions for all projects.
 ## Skills (Slash Commands)
 
 <!-- sync:skills cols=Command:key,Purpose:auto -->
-| Command        | Purpose                                                                                                                  |
-| :------------- | :----------------------------------------------------------------------------------------------------------------------- |
-| `/commit`      | Create a git commit with automatic semver tagging following STYLE.md conventions; signing and identity follow git config |
-| `/init-bash`   | Scaffold a new Bash script from the standard template in templates.md                                                    |
-| `/init-js`     | Scaffold a new JavaScript module from the standard template in templates.md                                              |
-| `/init-python` | Scaffold a new Python module from the standard template in templates.md                                                  |
-| `/init-skill`  | Scaffold a new skill at skills/<name>/SKILL.md following the standard structure                                          |
-| `/sync-docs`   | Regenerate index regions of README.md and CLAUDE.md from authoritative sources                                           |
+| Command        | Purpose                                                                                                                                             |
+| :------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/commit`      | Create a git commit with automatic semver tagging following STYLE.md conventions; signing and identity follow git config                            |
+| `/init-bash`   | Scaffold a new Bash script from the standard template in templates.md                                                                               |
+| `/init-js`     | Scaffold a new JavaScript module from the standard template in templates.md                                                                         |
+| `/init-python` | Scaffold a new Python module from the standard template in templates.md                                                                             |
+| `/init-skill`  | Scaffold a new skill at skills/<name>/SKILL.md following the standard structure                                                                     |
+| `/sync-docs`   | Regenerate index regions of README.md and CLAUDE.md from authoritative sources                                                                      |
+| `/vet`         | Vet an authored skill, agent, or script — or the whole repo with --all — by dispatching the matching reviewer agent(s) and reporting their findings |
 <!-- /sync:skills -->
 
 ## Agents

@@ -36,7 +36,7 @@ caught whether you're editing, reviewing, or committing:
   `Edit`/`Write` and **block** a non-conforming change immediately (exit 2). See
   `scripts/HOOKS.md` for how they're built.
 - **Reviewer agents** (`agents/style-reviewer.md`, `skill-reviewer.md`, …) are dispatched **on demand**
-  by `/vet` for a deeper read than a hook can do at edit time.
+  by [`/vet`](skills/vet/SKILL.md) for a deeper read than a hook can do at edit time.
 - **`/sync-docs`** keeps the auto-generated index regions (`<!-- sync:* -->` tables in README/CLAUDE)
   from drifting; a companion hook blocks an edit that leaves one stale. Full marker reference:
   [`skills/sync-docs/reference.md`](skills/sync-docs/reference.md).
