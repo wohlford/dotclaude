@@ -28,7 +28,9 @@ The user may optionally provide:
 2. Customize the template:
    - Set the template's top-of-file `/** … */` module description block to the user's description (or a placeholder)
    - Add requested functions/classes as stubs with JSDoc and parameter names
-   - Add specified `import` lines (`require` only when scaffolding explicit CommonJS)
+   - Add specified `import` lines (`require` only when scaffolding explicit CommonJS). Installing
+     the packages (`npm install <package>`) is out of scope — note any uninstalled imports to the
+     user at the end
    - Keep the `main()` entry point and the template's `import.meta.url` entry-point guard; swap it for `if (require.main === module)` only when the user explicitly asked for CommonJS
 3. Write the file to the specified path
 4. Make it executable: `chmod +x <file>`
@@ -56,7 +58,7 @@ The user may optionally provide:
 ### Rules
 
 - Never overwrite an existing file — if the target path already exists, stop and ask.
-- Reject a filename that isn't `kebab-case.js`; correct it or confirm with the user first.
+- If the filename isn't `kebab-case.js`, propose the corrected `kebab-case.js` name and confirm with the user before writing.
 - Always `chmod +x` the new module — its shebang pairs with the executable bit.
 - Preserve the `main()` entry point and its guard — the template's `import.meta.url` entry-point check, or `if (require.main === module)` in an explicit-CommonJS scaffold.
 - Only add the imports and stubs the user requested — don't scaffold speculative code.

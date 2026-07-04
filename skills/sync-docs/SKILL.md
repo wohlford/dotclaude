@@ -42,7 +42,7 @@ The user may provide:
 
 2. Surface stdout and stderr to the user verbatim.
 
-3. If exit code is non-zero, briefly explain to the user what state the repo is in (drift detected, parser errors, unknown `add` handler) — but do not retry, do not "fix" anything Claude infers from the error.
+3. If exit code is non-zero, briefly explain to the user what state the repo is in — naming which of the three known states applies (drift detected, parser errors, unknown `add` handler), nothing beyond that; the raw output has already been shown in full. Do not retry, do not "fix" anything Claude infers from the error.
 
 ### Rules
 
@@ -58,4 +58,4 @@ Test suite lives at `skills/sync-docs/tests/`:
 python3 -m pytest skills/sync-docs/tests/ -v
 ```
 
-Run from the repo root.
+Run from the root of this skill's own source repo (the one containing `skills/sync-docs/`), not the repo being synced.

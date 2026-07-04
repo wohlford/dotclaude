@@ -47,9 +47,13 @@ authorized action gated by the push-guard.
 ### Process
 
 1. **Branch:** the supplied name, else `branch=$(git rev-parse --abbrev-ref HEAD)`.
-2. **Confirm shareable:** the working tree is clean and the branch has commits to promote
-   (`git status -sb` in full — the Dynamic Context line is truncated). If there are uncommitted
-   changes the user wants live, tell them to `/commit` first.
+2. **Confirm shareable:** the working tree is clean (`git status -sb` in full — the Dynamic
+   Context line is truncated). Its ahead/behind count tracks the branch's upstream (usually
+   `origin`), **not** production — whether production actually lacks commits is settled by step
+   5's `--ff-only` merge, which is a no-op when already current. If there are uncommitted
+   changes the user wants live, tell them to `/commit` first. When a branch name was supplied,
+   first verify it exists (`git rev-parse --verify <branch>`; if not, report and stop) — the
+   clean-tree check still applies to this working copy, which is what gets fetched from.
 3. **Resolve production** from the symlink; capture the dev repo root:
 
    ```bash
@@ -71,7 +75,9 @@ authorized action gated by the push-guard.
    ALLOW_PUSH=1 git push origin "$branch" --follow-tags
    ```
 
-   If the push is rejected, do **not** force-push — fetch and report the divergence to the user.
+   If the push is rejected, do **not** force-push — fetch, report the divergence to the user, and
+   **stop**: do not continue to step 5 until the user resolves it and a subsequent push succeeds
+   (promoting from origin's stale state would fake a successful promotion).
    Set the **source production fast-forwards from** for step 5: `--push` → `src=origin`; default
    (local promote) → `src="$dev"`.
 
@@ -89,7 +95,10 @@ authorized action gated by the push-guard.
      and dev share no history — is a one-off the user performs by hand, not this skill.)
    - **If the only blocker is the runtime `settings.json`** (skip-worktree, so it never shows in
      `git status --porcelain`): park it, fast-forward, restore it so the runtime prefs (`model`,
-     `enabledPlugins`) survive, then hand-add any new hook entries the committed version gained:
+     `enabledPlugins`) survive, then hand-add any new hook entries the committed version gained —
+     enumerate them with `git -C "$live" diff FETCH_HEAD -- settings.json` after the restore (the
+     runtime file vs the incoming commit: copy over missing `hooks` entries, keep the runtime
+     `model`/`enabledPlugins` values):
 
    ```bash
    git -C "$live" update-index --no-skip-worktree settings.json
@@ -100,6 +109,9 @@ authorized action gated by the push-guard.
    git -C "$live" update-index --skip-worktree settings.json
    ```
 
+   - **If the merge still fails after parking:** restore `settings.json` from the stash
+     (`checkout 'stash@{0}' -- settings.json`, `stash drop`) and re-apply `--skip-worktree` before
+     reporting the blocker — never leave the file parked with a dangling stash.
    - **Any other tracked file blocks:** do not auto-discard; restore `settings.json` if parked, report
      the blocker and the manual options (`git checkout -- <file>` is safe only when it already equals
      the incoming version).

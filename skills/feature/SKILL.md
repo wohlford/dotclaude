@@ -19,9 +19,12 @@ passed, in which case stop at the plan.
 
 ### Arguments
 
-`/feature <one-line description of the change> [--plan-only]` — the description seeds the
-brainstorming. `--plan-only` stops at the reviewed, committed plan (the legacy design-only behavior)
-instead of executing and merging.
+The user must provide:
+- `<one-line description of the change>` — seeds the brainstorming.
+
+The user may optionally provide:
+- `--plan-only` — stop at the reviewed, committed plan (the legacy design-only behavior) instead
+  of executing and merging.
 
 ### Process
 
@@ -42,7 +45,8 @@ the implementation share one branch that merges atomically. If on the base branc
 create and switch to `<type>/<kebab-name>` — `<type>` matching the change's commit type (`feat`,
 `fix`, `chore`, …) and the name derived from the one-line change description (CONTRIBUTING.md's
 convention). If on a branch that is neither the base nor one created for this change, confirm with
-the user before proceeding. With `--plan-only`, the branch is still created but is left in place at
+the user before proceeding; if they decline, ask which branch to use (or create the standard
+`<type>/<kebab-name>` branch). With `--plan-only`, the branch is still created but is left in place at
 the end (no merge).
 
 #### Fast lane (low uncertainty)
@@ -60,7 +64,9 @@ the end (no merge).
 1. **Spec.** Use `superpowers:brainstorming` to produce the spec. When brainstorming reaches its
    terminal "invoke `writing-plans`" step, **do NOT follow it** — return here to step 2 (you interpose
    the spike + reviews first). Save the spec to `specs/YYYY-MM-DD-<name>.md`; commit.
-2. **Ultrathink the spec.** Deep self-review; revise inline.
+2. **Ultrathink the spec.** Deep self-review; revise inline. For high-stakes designs, a second
+   diverse-model review of the *spec* (the step-6 mechanism) is opt-in — offer it here, before
+   the spike.
 3. **Spike the #1 risk.** Name the assumption whose failure invalidates the most downstream work. If
    it is **empirical** and its cheapest *decisive* signal is **cheap to probe**, run a throwaway,
    time-boxed probe now — probe the decisive signal ("does GRUB appear when a blank VM boots the
@@ -69,9 +75,8 @@ the end (no merge).
    and rely on the plan's decision-gates instead. If it isn't empirical, say "no spike" and continue.
 4. **Plan.** Use `superpowers:writing-plans`. Save to `plans/YYYY-MM-DD-<name>.md`; commit.
 5. **Ultrathink the plan.** Deep self-review; revise inline.
-6. **One diverse-model review of the plan** (see below). Fold findings; revise; recommit. (A second
-   diverse review of the *spec* is opt-in for high-stakes designs — offer it after step 2, before
-   the spike; if a later review invalidates the spec, loop back to step 1 as with spike
+6. **One diverse-model review of the plan** (see below). Fold findings; revise; recommit. (If a
+   review at this stage invalidates the spec, loop back to step 1 as with spike
    invalidation.)
 7. Present the committed spec + plan. Pause for the user's confirmation, then **execute and merge** (below).
 
@@ -96,7 +101,8 @@ With the plan reviewed and committed, **continue** (do not stop):
 1. **Execute** the plan with `superpowers:subagent-driven-development` on the feature branch — fresh
    subagent per task, per-task spec+quality reviews, and a final whole-branch review. (When
    `writing-plans` offers to set up execution, this IS that execution.)
-2. **Finish** with `superpowers:finishing-a-development-branch`: verify the suite passes, then
+2. **Finish** with `superpowers:finishing-a-development-branch`: verify the project's test suite
+   passes (if the repo has none, say so and rely on the per-task reviews), then
    **merge the feature branch** back to its base and clean up. The **merge is the default end
    action** — do not pause to choose it. If tests fail, stop and report; do not merge.
 

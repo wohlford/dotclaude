@@ -31,8 +31,13 @@ The user may optionally provide:
    - Add specified imports (maintaining stdlib > third-party > local order)
    - Keep `main()` entry point and `if __name__ == "__main__":` block
 3. Write the file to the specified path
-4. Run `/sync-docs` to regenerate any `<!-- sync:scripts -->` index tables in the repo (no-op if no such markers exist).
-5. Confirm creation and summarize the module structure
+4. Settle the shebang/exec-bit pairing per STYLE.md's script rule: if the module is an entry-point
+   script run by path (the user's description implies a standalone CLI), keep the template's
+   shebang and `chmod +x <file>`; if it is only ever imported or run via `python3 module.py`,
+   remove the shebang line instead. Never leave a shebang on a non-executable file — the
+   exec-bit-guard hook blocks committing a new 644 shebang file.
+5. Run `/sync-docs` to regenerate any `<!-- sync:scripts -->` index tables in the repo (no-op if no such markers exist).
+6. Confirm creation and summarize the module structure
 
 ### Template Requirements (from STYLE.md)
 

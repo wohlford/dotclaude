@@ -1,6 +1,6 @@
 ---
 name: debrief
-description: Run the end-of-session pre-compaction routine (CLAUDE.md refresh, memory save, automation review)
+description: Run the end-of-session pre-compaction routine (CLAUDE.md refresh, memory save, automation review and implementation)
 disable-model-invocation: true
 ---
 
@@ -50,8 +50,11 @@ those remain manual steps for the user.
    *tracked repo file*, apply step 1's sensitivity carve-out.
 
 4. **Automation recommendations.** Invoke
-   `claude-code-setup:claude-automation-recommender`. Triage its recommendations by the
-   priority it assigns: **auto-accept at most the top 2 high-priority picks** (if more than 2
+   `claude-code-setup:claude-automation-recommender`. The recommender groups its output by
+   category and assigns no priority tiers — assign each recommendation a tier yourself and
+   state it: **high** = clear, recurring value in this repo's actual workflow; **low** =
+   speculative or one-off; **medium** = everything between. Then triage by those tiers:
+   **auto-accept at most the top 2 high-priority picks** (if more than 2
    are high-priority, pause for the user's decision on the rest), **auto-decline low-priority**
    ones (noting what was dropped), and **pause for the user's decision on any medium-tier**
    recommendation, regardless of count. If nothing is accepted, skip to step 6.
@@ -76,8 +79,9 @@ those remain manual steps for the user.
       feature branch.
 
 6. **Commit what the routine changed.** If the working tree has tracked changes from this
-   routine (accepted CLAUDE.md edits, any repo files written in step 3, implemented
-   automations), invoke `/commit` to commit them. The commit skill is granular by default,
+   routine (accepted CLAUDE.md edits, any repo files written in step 3, and — only when step
+   5's merge was deferred — automation changes the SDD flow didn't already commit), invoke
+   `/commit` to commit them. The commit skill is granular by default,
    so it splits unrelated changes into separate commits and tags. If there are no tracked
    changes, say so and continue.
 

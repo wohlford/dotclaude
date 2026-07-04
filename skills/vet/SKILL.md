@@ -26,12 +26,12 @@ The user must provide **one of**:
   `--all`, `--all` takes precedence — sweep the whole repo and note the conflict to the caller.
 
 The user may optionally provide:
-- `--tests` (with `--all` only; a no-op otherwise) — also vet **test code** (`.sh`/`.py` under a
+- `--tests` (with `--all` only; a no-op otherwise — tell the caller it was ignored) — also vet **test code** (`.sh`/`.py` under a
   `tests/` directory, `test_*`, `conftest`). **Off by default** to keep the sweep focused on shipping
   code (test code has only a narrow, Python-only STYLE exemption — type hints and docstrings; all
   other rules still apply, and shell test code has no exemption). The
   **skills** category's `tests/` exclusion is permanent (those are malformed fixtures, not real
-  skills) — `--tests` only affects the scripts and python categories.
+  skills) — `--tests` only affects the scripts, python, and javascript categories.
 
 If invoked with **neither a path nor `--all`**, ask what to vet rather than guessing — never default
 to a whole-repo sweep.
@@ -55,7 +55,8 @@ to a whole-repo sweep.
    reviewer as failed/unavailable for that file rather than silently dropping it.
 4. **Report** the findings grouped by file and reviewer, with each reviewer's verdict. Order
    most-severe first — files with any reviewer FAIL before files where every reviewer passes; within
-   a file, majors before minors. Do not edit anything; the caller decides what to act on.
+   a file, most-severe first on each reviewer's own scale (error/major before warning/minor;
+   findings without a severity sort last). Do not edit anything; the caller decides what to act on.
 
 ### Repo-wide mode (`--all`)
 
@@ -65,7 +66,8 @@ Vet every shipping artifact in the repo, batched by category, in one pass:
    - **skills** — `git ls-files 'skills/*/SKILL.md'`. Git's pathspec `*` matches `/`, so this also
      returns nested fixture `SKILL.md` files under `skills/sync-docs/tests/fixtures/`; **exclude any
      path containing `/tests/`** (malformed fixtures, not real skills).
-   - **agents** — `git ls-files 'agents/*.md'`, dropping `README.md`.
+   - **agents** — `git ls-files 'agents/*.md'`, dropping `README.md` and `index.md` (matching
+     agent-reviewer's own exclusions).
    - **scripts** — `git ls-files '*.sh'`; **python** — `git ls-files '*.py'`. **Without `--tests`,**
      drop files under a `tests/` directory and `test_*` / `conftest` files (default = what ships).
      Note: `test_*` / `conftest` files outside a `tests/` directory are skipped by the sweep as test

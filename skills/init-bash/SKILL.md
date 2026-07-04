@@ -35,7 +35,7 @@ The user may optionally provide:
    - If no arguments are expected, simplify `parse_arguments`: remove the
      positional `INPUT_FILE` case and its required-arg check, keeping only the
      `-h`/`-v`/`-n` option handling
-3. Write the file to the specified path — if the parent directory doesn't exist, create it (`mkdir -p`) before writing
+3. Before writing, apply the Rules checks: the filename is `kebab-case.sh` (else propose the corrected name and confirm) and the target doesn't already exist (else stop and ask). Then write the file to the specified path — if the parent directory doesn't exist, create it (`mkdir -p`) before writing
 4. Make it executable: `chmod +x <file>`
 5. Run `/sync-docs` to regenerate any `<!-- sync:scripts -->` index tables in the repo (no-op if no such markers exist).
 6. Confirm creation and remind the user of the script structure

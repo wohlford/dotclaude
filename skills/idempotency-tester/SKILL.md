@@ -22,6 +22,12 @@ an exit-parity-mismatch message is printed to stderr (no diff); when **state** d
 printed to stderr · `2` harness or target error (bad usage — including a missing target or `--seed` dir —
 `--setup` failed, run 1 failed without `--allow-nonzero`).
 
+The printed diff covers `work/` only (the manifest that decides pass/fail also compares the
+redirected `home/`/`xdg/` roots and the synthesized `.git` porcelain) — an **empty diff with
+exit 1** means the divergence is in one of those; re-run with `--keep` to inspect them by hand.
+The diff is also raw and unfiltered (the built-in/`--ignore` exclusions apply to the manifest
+only), so treat the exit code, not the diff contents, as authoritative.
+
 ### Arguments
 - `--seed DIR` — copy `DIR/.` into the sandbox before run 1 (give the target the state it acts on).
 - `--setup CMD` — run once after seeding, before run 1 (repeatable); non-zero aborts with 2. Setup

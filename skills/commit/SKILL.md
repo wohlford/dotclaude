@@ -97,6 +97,8 @@ If `git status` shows changes that would naturally take different commit message
 - The user explicitly passes `--batch` or describes the changes as a single unit
 - Trivial mechanical changes that travel together (rename across files, formatter sweep)
 
+A bundled commit that mixes types takes the type that drives the biggest version bump (step 5's precedence: `!` > `feat` > others).
+
 When in doubt, split. The cost of an extra commit is negligible; the cost of an opaque "kitchen sink" commit is real.
 
 ### Process
@@ -104,7 +106,7 @@ When in doubt, split. The cost of an extra commit is negligible; the cost of an 
 Per logical group, the order is **stage → version → changelog → commit → tag** (version and changelog come *before* the commit so the entry lands inside it).
 
 1. Review `git status` and `git diff` to understand the changes.
-2. **Group changes into logical units.** If multiple independent commits are needed, plan them before staging anything, then walk each group through steps 3–8. **If `CHANGELOG.md` is already modified** in the working tree before you start, those hand edits are their *own* group — commit them separately or flag to the user; never let step 6 silently fold them into another group.
+2. **Group changes into logical units.** If multiple independent commits are needed, plan them before staging anything, then walk each group through steps 3–8. **If `CHANGELOG.md` is already modified** in the working tree before you start, those hand edits are their *own* group — commit them separately when their intent is clear, or flag them to the user when it isn't; never let step 6 silently fold them into another group.
 3. For the current group, stage only its files (prefer explicit filenames over `git add .` / `git add -A`).
 4. Draft the single-line message `<type>[(scope)][!]: <subject>` per **Commit Message Format** and **Choosing a scope** (imperative mood; `!` if breaking; under 72 chars). **This freezes the message** — the version (5) and changelog entry (6) derive from it; if you later refine it, redo 5–6.
 5. **Determine the version.** *If `--no-tag` was passed, skip this step, the changelog step (6), and the tag step (8) — still stage and commit.* Otherwise apply the first matching rule:
@@ -112,14 +114,14 @@ Per logical group, the order is **stage → version → changelog → commit →
    - `feat` → **MINOR** (reset patch to 0).
    - all other types → **PATCH**.
    **Base tag:** for the first commit of the invocation, the latest tag from dynamic context (default `v0.0.0`); for each later commit in the same invocation, the tag you created in the previous iteration. Increment it to get `vX.Y.Z`.
-6. **Living changelog entry.** Prepend a section that mirrors the tag:
+6. **Living changelog entry.** Prepend a section that mirrors the tag (subject to the **Format guard** below):
 
    ```text
    ## vX.Y.Z — <YYYY-MM-DD>
-   - <subject>
+   - <message>
    ```
 
-   literal em-dash `—`; date is today (= the commit's own date); `<subject>` is the exact message from step 4. Insert it **immediately before the first `##`-level heading**, with exactly one blank line on each side; if the file has no `##`-level heading, append at EOF. Then **stage `CHANGELOG.md`** with the group.
+   literal em-dash `—`; date is today (= the commit's own date); `<message>` is the full message frozen in step 4 — the entire `<type>[(scope)][!]: <subject>` line, not just the text after the colon. Insert it **immediately before the first `##`-level heading**, with exactly one blank line on each side; if the file has no `##`-level heading, append at EOF. Then **stage `CHANGELOG.md`** with the group.
    - **Format guard (portability — the skill is copied into other repos).** Add the entry only if the file's **first `##`-level heading matches `^## v[0-9]`** (this living format) **or** the file has **no `##`-level version sections** at all. If it's a Keep-a-Changelog file (`## [1.2.3]`, `## [Unreleased]`) or owned by other tooling, **skip the entry and tell the user** — never inject a `## vX.Y.Z` above a different convention. Skip **silently** when there is no `CHANGELOG.md`.
    - **Idempotency.** Before prepending, if the first `^## v` line **already equals** the `vX.Y.Z` you just computed, it's a leftover from a prior/blocked attempt — **update that section's bullet in place** to match the current message; **never add a second section**.
 7. Create the commit (the group's files + `CHANGELOG.md` are already staged):
@@ -132,7 +134,7 @@ Per logical group, the order is **stage → version → changelog → commit →
    ```
 
    Show it: `git log --oneline -1`.
-8. **Tag** (skip if `--no-tag`): `git tag -a vX.Y.Z -m "<message>"` (signing follows `tag.gpgsign`; never `-s`). Show: `git log --oneline -1 --decorate`.
+8. **Tag** (skip if `--no-tag`): `git tag -a vX.Y.Z -m "<message>"` — `<message>` is the same message frozen in step 4 (signing follows `tag.gpgsign`; never `-s`). Show: `git log --oneline -1 --decorate`.
 9. **If more groups remain, return to step 3.**
 10. Final summary: `git log --oneline -<N> --decorate` (N = commits created).
 
