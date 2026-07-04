@@ -107,3 +107,10 @@ Register the hook in the `hooks` → `PostToolUse` (or `PreToolUse`) array in
 [`../settings.json`](../settings.json) with the appropriate tool matcher (`Edit|Write` for the
 post-edit checks; `Read|Edit|Write|MultiEdit` for the secrets deny-gate) and the
 `~/.claude/scripts/<name>.sh` command path. After wiring, restart Claude to load it.
+
+**The exec bit is load-bearing.** settings.json invokes hooks by bare path, so a script
+committed without `chmod +x` fails with "permission denied" on every real event — and
+verifying with `bash script.sh` masks exactly that defect. Always verify by bare-path
+invocation (`./scripts/<name>.sh`) and check the committed mode is `100755`
+(`git ls-files -s scripts/<name>.sh`). Caught in review on 2026-07-04 after a 644 hook
+shipped; the runner passed every `bash`-prefixed test while being unrunnable as wired.

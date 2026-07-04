@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.23.2 — 2026-07-04
+- docs(hooks): warn that the exec bit is load-bearing for wired hooks
+
 ## v0.23.1 — 2026-07-04
 - docs(env): note npm-global CLI PATH requirement and markdownlint-cli2
 
