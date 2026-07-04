@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.13.0 — 2026-07-04
+- feat(feature): add /feature risk-tiered change pipeline with diverse-model review
+
 ## v0.12.0 — 2026-07-04
 - feat(propagate): add /propagate (local-default) and push-guard hook
 
