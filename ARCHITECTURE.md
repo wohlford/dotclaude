@@ -55,7 +55,7 @@ Edits don't take effect where you make them. There are two working clones plus t
 
 - **`dotclaude-staging`** — the tracked working copy. All development happens here.
 - **`dotclaude` (live)** — a separate clone whose `skills/`, `agents/`, `scripts/`, and the standards
-  docs are **symlinked into `~/.claude`** (see `install.sh`). This is what Claude Code
+  docs are **symlinked into `~/.claude`** (see [`install.sh`](install.sh)). This is what Claude Code
   actually loads.
 - **[`/propagate`](skills/propagate/SKILL.md)** pushes committed work from staging to `origin`, then
   fast-forwards the live clone from `origin`. So an edit is: commit in staging → `/propagate` → restart
