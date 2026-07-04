@@ -22,10 +22,10 @@ and destinations containing parentheses are not checked.
 """
 
 import json
-import os
 import re
 import sys
 import urllib.parse
+from pathlib import Path
 
 SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
@@ -43,7 +43,8 @@ HTML_ANCHOR_RE = re.compile(r"""(?:id|name)\s*=\s*["']([^"']+)["']""", re.IGNORE
 KEEP_RE = re.compile(r"[^\w\- ]")
 
 
-def read_file_path():
+def read_file_path() -> str | None:
+    """Parse the edited file's path from the tool-call JSON on stdin."""
     try:
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -54,7 +55,7 @@ def read_file_path():
     return None
 
 
-def strip_frontmatter(lines):
+def strip_frontmatter(lines: list[str]) -> list[str]:
     """Blank out a leading YAML frontmatter block, preserving line numbering."""
     if lines and lines[0].strip() == "---":
         for i in range(1, len(lines)):
@@ -63,7 +64,7 @@ def strip_frontmatter(lines):
     return lines
 
 
-def mask_fences(lines):
+def mask_fences(lines: list[str]) -> list[str]:
     """Blank out fenced code blocks, preserving line numbering."""
     out = []
     fence = None  # (char, min_length) of the open fence
@@ -87,7 +88,7 @@ def mask_fences(lines):
     return out
 
 
-def slugify(title):
+def slugify(title: str) -> str:
     """GitHub-style heading slug: drop formatting, keep word chars/-/_, spaces->hyphens."""
     t = HEADING_LINK_RE.sub(r"\1", title)  # keep link text, drop the URL
     t = t.replace("`", "").lower()
@@ -95,13 +96,13 @@ def slugify(title):
     return t.replace(" ", "-")
 
 
-def collect_anchors(text):
+def collect_anchors(text: str) -> set[str]:
     """All anchors a fragment may point at: heading slugs (deduped) + HTML id/name."""
     lines = mask_fences(strip_frontmatter(text.splitlines()))
-    counts = {}
+    counts: dict[str, int] = {}
     anchors = set()
 
-    def add(title):
+    def add(title: str) -> None:
         slug = slugify(title.strip())
         n = counts.get(slug, 0)
         counts[slug] = n + 1
@@ -128,7 +129,7 @@ def collect_anchors(text):
     return anchors
 
 
-def clean_target(raw):
+def clean_target(raw: str) -> str | None:
     """Normalize a raw link destination; None means 'skip, do not judge'."""
     t = raw.strip()
     if not t:
@@ -144,7 +145,7 @@ def clean_target(raw):
     return t
 
 
-def extract_links(lines):
+def extract_links(lines: list[str]) -> list[tuple[int, str]]:
     """Yield (line_number, raw_destination) for links, images, and ref definitions."""
     links = []
     for i, line in enumerate(lines, 1):
@@ -163,15 +164,17 @@ def extract_links(lines):
     return links
 
 
-def check(file_path):
+def check(file_path: str) -> list[str]:
+    """Check every relative link and anchor in file_path; return error strings."""
     with open(file_path, encoding="utf-8", errors="replace") as f:
         src = f.read()
     lines = mask_fences(strip_frontmatter(src.splitlines()))
-    base = os.path.dirname(os.path.abspath(file_path))
-    anchor_cache = {}
+    abs_file = Path(file_path).resolve()
+    base = abs_file.parent
+    anchor_cache: dict[Path, set[str]] = {}
     errors = []
 
-    def anchors_of(path, text=None):
+    def anchors_of(path: Path, text: str | None = None) -> set[str]:
         if path not in anchor_cache:
             if text is None:
                 with open(path, encoding="utf-8", errors="replace") as f:
@@ -189,14 +192,14 @@ def check(file_path):
         path = urllib.parse.unquote(path)
         frag = urllib.parse.unquote(frag).lower() if frag else None
         if not path:
-            if frag and frag not in anchors_of(os.path.abspath(file_path), src):
+            if frag and frag not in anchors_of(abs_file, src):
                 errors.append(f"line {lineno}: (#{frag}) — anchor not found")
             continue
-        resolved = os.path.normpath(os.path.join(base, path))
-        if not os.path.exists(resolved):
+        resolved = (base / path).resolve()
+        if not resolved.exists():
             errors.append(f"line {lineno}: ({raw}) — file not found: {resolved}")
             continue
-        if frag and resolved.lower().endswith(".md") and os.path.isfile(resolved):
+        if frag and resolved.suffix.lower() == ".md" and resolved.is_file():
             if frag not in anchors_of(resolved):
                 errors.append(
                     f"line {lineno}: ({raw}) — anchor '#{frag}' not found in {resolved}"
@@ -204,13 +207,15 @@ def check(file_path):
     return errors
 
 
-def main():
+def main() -> int:
+    """Hook entry point: 0 allows the edit; 2 blocks with errors on stderr."""
     file_path = read_file_path()
     if not file_path or not file_path.lower().endswith(".md"):
         return 0
-    if not os.path.isfile(file_path):
+    abs_file = Path(file_path).resolve()
+    if not abs_file.is_file():
         return 0
-    parts = os.path.abspath(file_path).split(os.sep)[:-1]
+    parts = abs_file.parts[:-1]
     if "plans" in parts or "specs" in parts:
         return 0  # design docs legitimately link to files that do not exist yet
     errors = check(file_path)

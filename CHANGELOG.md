@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.25.1 — 2026-07-04
+- style(md-links-check): add type hints and docstrings, use pathlib
+
 ## v0.25.0 — 2026-07-04
 - feat(exec-bit-guard): add test-runner hook and wire the gate into settings
 
