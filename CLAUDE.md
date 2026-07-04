@@ -36,8 +36,10 @@ Universal instructions for all projects.
 ## Hooks
 
 <!-- sync:hooks -->
-| Event | Matcher | Script | Purpose |
-| :---- | :------ | :----- | :------ |
+| Event       | Matcher                              | Script                  | Purpose                                                                       |
+| :---------- | :----------------------------------- | :---------------------- | :---------------------------------------------------------------------------- |
+| PreToolUse  | `Read\|Edit\|Write\|MultiEdit\|Grep` | `guard-secrets.sh`      | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem) |
+| PostToolUse | `Edit\|Write`                        | `guard-secrets-test.sh` | PostToolUse hook — run the guard-secrets test suite when the guard changes    |
 <!-- /sync:hooks -->
 
 ## Plugins

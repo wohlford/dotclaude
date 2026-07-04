@@ -1,5 +1,28 @@
 {
-  "hooks": {},
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|MultiEdit|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/guard-secrets.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/guard-secrets-test.sh"
+          }
+        ]
+      }
+    ]
+  },
   "enabledPlugins": {
     "code-review@claude-plugins-official": true,
     "superpowers@claude-plugins-official": true,

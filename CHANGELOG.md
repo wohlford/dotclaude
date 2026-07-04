@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.4.0 — 2026-07-04
+- feat(guard-secrets): add secret-file deny-gate with regression suite and test hook
+
 ## v0.3.0 — 2026-07-04
 - feat(init): add init-bash, init-js, init-python, and init-skill scaffolders
 
