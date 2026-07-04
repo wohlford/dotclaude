@@ -117,7 +117,7 @@ requesting-code-review, executing-plans) reads or writes a plan/spec, use these 
 
 #### Node.js (NVM)
 
-- **NVM**: 0.40.3 — **Node**: v26.3.0 (versions under `~/.nvm/versions/node/`)
+- **NVM** manages Node (versions under `~/.nvm/versions/node/`); use the newest installed (v26.x line)
 - Initialize: `source /opt/local/share/nvm/init-nvm.sh` — in non-interactive shells this may
   leave `node` off PATH; call the binary directly: `~/.nvm/versions/node/<ver>/bin/node`
 - Install: `npm install <package>`
