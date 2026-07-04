@@ -55,6 +55,8 @@ Wondering how the pieces fit — what takes effect where, and what owns what? Se
 | Event       | Matcher                              | Script                  | Purpose                                                                       |
 | :---------- | :----------------------------------- | :---------------------- | :---------------------------------------------------------------------------- |
 | PreToolUse  | `Read\|Edit\|Write\|MultiEdit\|Grep` | `guard-secrets.sh`      | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem) |
+| PostToolUse | `Edit\|Write`                        | `style-check.sh`        | Global PostToolUse hook — validate file edits against STYLE.md                |
+| PostToolUse | `Edit\|Write`                        | `style-check-test.sh`   | PostToolUse hook — run the style-check test suite when style-check changes    |
 | PostToolUse | `Edit\|Write`                        | `guard-secrets-test.sh` | PostToolUse hook — run the guard-secrets test suite when the guard changes    |
 <!-- /sync:hooks -->
 

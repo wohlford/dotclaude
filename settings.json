@@ -17,6 +17,14 @@
         "hooks": [
           {
             "type": "command",
+            "command": "$HOME/.claude/scripts/style-check.sh"
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/style-check-test.sh"
+          },
+          {
+            "type": "command",
             "command": "$HOME/.claude/scripts/guard-secrets-test.sh"
           }
         ]
