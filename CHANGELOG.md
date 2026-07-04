@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.24.0 — 2026-07-04
+- feat(exec-bit-guard): add commit gate blocking scripts committed without exec bit
+
 ## v0.23.3 — 2026-07-04
 - fix(exec-bit): restore exec bits and add tracked-shebang integrity audit
 
