@@ -1,0 +1,9 @@
+# Ruff config. The presence of this file is what activates ruff-check.sh on this repo
+# (the hook is a no-op in repos without ruff config). 88 is ruff's default; stated
+# explicitly for documentation. E501 is deferred to `ruff format` — it is authoritative
+# for line length, and deliberately leaves unsplittable long lines (e.g. strings) intact.
+line-length = 88
+
+[lint]
+select = ["E", "F", "W", "I", "B"]
+ignore = ["E501"]

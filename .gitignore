@@ -1,0 +1,31 @@
+# Claude Code internal state (repo root only — leave nested dirs of these names tracked)
+/cache/
+/debug/
+/downloads/
+/file-history/
+/history.jsonl
+/plans/
+/plugins/
+/projects/
+/session-env/
+/shell-snapshots/
+/specs/
+/stats-cache.json
+/statsig/
+/tasks/
+/telemetry/
+/todos/
+
+# Browser integration
+/chrome/
+
+# Machine-specific settings
+settings.local.json
+.claude.local.md
+
+# Backup files
+*.bak
+
+# Python build artifacts (match at any depth)
+__pycache__/
+.pytest_cache/
