@@ -60,6 +60,14 @@
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/recast-test.sh"
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/md-links-check.py"
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/md-links-check-test.sh"
           }
         ]
       }

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.20.0 — 2026-07-04
+- feat(md-links-check): add test-runner hook and wire both hooks into settings
+
 ## v0.19.0 — 2026-07-04
 - feat(md-links-check): add markdown link and anchor checker hook
 
