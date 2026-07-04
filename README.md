@@ -33,8 +33,9 @@ Wondering how the pieces fit — what takes effect where, and what owns what? Se
 ### Skills (Slash Commands)
 
 <!-- sync:skills cols=Command:key,Purpose:auto -->
-| Command | Purpose |
-| :------ | :------ |
+| Command   | Purpose                                                                                                                  |
+| :-------- | :----------------------------------------------------------------------------------------------------------------------- |
+| `/commit` | Create a git commit with automatic semver tagging following STYLE.md conventions; signing and identity follow git config |
 <!-- /sync:skills -->
 
 ### Agents

@@ -17,8 +17,9 @@ Universal instructions for all projects.
 ## Skills (Slash Commands)
 
 <!-- sync:skills cols=Command:key,Purpose:auto -->
-| Command | Purpose |
-| :------ | :------ |
+| Command   | Purpose                                                                                                                  |
+| :-------- | :----------------------------------------------------------------------------------------------------------------------- |
+| `/commit` | Create a git commit with automatic semver tagging following STYLE.md conventions; signing and identity follow git config |
 <!-- /sync:skills -->
 
 ## Agents

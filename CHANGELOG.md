@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.2.0 — 2026-07-04
+- feat(commit): add /commit skill with semver tagging and scope guidance
+
 ## v0.1.0 — 2026-07-04
 - feat(templates): add Bash, Python, and JavaScript starter templates
 
