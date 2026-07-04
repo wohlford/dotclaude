@@ -3,5 +3,8 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.1.0 — 2026-07-04
+- feat(templates): add Bash, Python, and JavaScript starter templates
+
 ## v0.0.1 — 2026-07-04
 - chore(seed): scaffold repo with standards, docs, and base config

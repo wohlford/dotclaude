@@ -25,7 +25,7 @@ Wondering how the pieces fit — what takes effect where, and what owns what? Se
 | [CLAUDE.md](CLAUDE.md) | Global instructions loaded into every Claude Code session |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Commit-message and semantic-versioning conventions for contributors |
 | [STYLE.md](STYLE.md) | Code style and formatting standards (Bash, Python, JS, YAML, JSON, Markdown) |
-| templates.md | Starter templates for Bash scripts, Python modules, and JavaScript |
+| [templates.md](templates.md) | Starter templates for Bash scripts, Python modules, and JavaScript |
 | [workflows.md](workflows.md) | Development workflows — the `/feature` pipeline, with Explore/Plan/Code/Commit and TDD as primitives |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | How this repo fits together — enforcement mesh, staging→propagate lifecycle, source-of-truth map |
 | TESTING.md | Test layout and conventions (pytest suites, fixture-repo factories, harness style) |

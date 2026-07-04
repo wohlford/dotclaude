@@ -3,7 +3,7 @@
 Universal instructions for all projects.
 
 - **Code style and formatting:** [STYLE.md](./STYLE.md)
-- **Code templates:** templates.md (Bash, Python, JavaScript)
+- **Code templates:** [templates.md](./templates.md) (Bash, Python, JavaScript)
 - **Development workflows:** [workflows.md](./workflows.md) (the `/feature` pipeline; Explore/Plan/Code/Commit and TDD as primitives)
 - **Contributing conventions:** [CONTRIBUTING.md](./CONTRIBUTING.md) (commit messages, semantic versioning)
 
