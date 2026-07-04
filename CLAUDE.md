@@ -14,6 +14,10 @@ Universal instructions for all projects.
 > `git push` is blocked; lead the command with `ALLOW_PUSH=1` only on explicit authorization).
 > `/propagate` promotes to production locally by default; `/propagate --push` publishes to `origin`.
 
+> **Bugs get a regression test first.** When a bug is found, reproduce it as a failing test *before*
+> fixing it (RED→GREEN; see [workflows.md](./workflows.md)). Skipping is a flagged exception — state
+> why at fix time (e.g. untestable: timing/environment/interactive), never skip silently.
+
 ## Skills (Slash Commands)
 
 <!-- sync:skills cols=Command:key,Purpose:auto -->

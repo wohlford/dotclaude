@@ -51,6 +51,17 @@ The default for anything testable, and how `/feature` execution actually works:
 Don't let the implementation edit the tests. A change to a gate or hook should land with its failing
 test first — the check that would have caught the regression.
 
+### Bug found → regression test first
+
+Every bug gets a regression test **before** the fix, wherever it was found — by a user, a review, or
+mid-task. Reproduce the bug as a failing test (RED), fix it, watch the test pass (GREEN), and keep
+the test forever; the failing run is the proof the test actually catches the bug, and the passing
+run is the proof it's fixed.
+
+Skipping is a flagged exception, never the quiet default: if a regression test is impractical
+(timing-dependent, environment-specific, interactive-only), say so explicitly at fix time and record
+why alongside the fix — in the commit message or a code comment.
+
 ## Cross-cutting disciplines
 
 - **Diverse-model review.** A *different* model than the author catches blind spots that same-model
@@ -72,6 +83,7 @@ test first — the check that would have caught the regression.
 |---|---|
 | Trivial edit, or a conversational answer | Direct — no pipeline |
 | Testable change with clear input/output | TDD (RED→GREEN→commit) |
+| Fixing a discovered bug | Regression test first — failing test, then the fix |
 | Real design, risk, or blast radius | `/feature` — full lane |
 | Well-scoped, low-uncertainty change | `/feature` — fast lane |
 | Want a reviewed plan but not execution | `/feature --plan-only` |
