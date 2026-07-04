@@ -36,9 +36,9 @@ The user may provide:
 
 1. Run the Python script with the user's arguments:
 
-```bash
-python3 ~/.claude/skills/sync-docs/sync_docs.py "$@"
-```
+   ```bash
+   python3 ~/.claude/skills/sync-docs/sync_docs.py "$@"
+   ```
 
 2. Surface stdout and stderr to the user verbatim.
 

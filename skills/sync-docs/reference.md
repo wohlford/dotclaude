@@ -4,7 +4,7 @@ The complete manual for the `/sync-docs` marker system — the machinery behind 
 auto-generated index regions in `README.md`/`CLAUDE.md`. The convention summary lives in
 [STYLE.md](../../STYLE.md); this is the full reference.
 
-### When a directory should have a README
+## When a directory should have a README
 
 A directory needs its own `README.md` if any of:
 
@@ -16,7 +16,7 @@ Skip even if a rule matches: hidden dirs and common build/test dirs (`.git`, `.v
 
 `/sync-docs init` walks the repo and proposes scaffolds for qualifying directories interactively.
 
-### Marker syntax
+## Marker syntax
 
 A marker block delimits an auto-managed region inside any `.md` file:
 
@@ -37,7 +37,7 @@ Anything between the open/close markers is owned by `/sync-docs`; anything else 
 
 Close markers carry no directives. Mismatched handler name in close marker → parse error with line number.
 
-### Common directives
+## Common directives
 
 | Directive | Meaning | Example |
 | :--- | :--- | :--- |
@@ -52,7 +52,7 @@ Close markers carry no directives. Mismatched handler name in close marker → p
 | `extensions` | For `index` handler, file extensions to include | `extensions=md,txt` |
 | `pattern` | Regex over basename for filtering entries | `pattern="^\d{4}-\d{2}-\d{2}"` |
 
-### Built-in handlers
+## Built-in handlers
 
 | Handler | Discovery | Default fields | Default rendering |
 | :--- | :--- | :--- | :--- |
@@ -66,7 +66,7 @@ Close markers carry no directives. Mismatched handler name in close marker → p
 
 The `index` handler accepts: `kind=dirs|files|all` (default `all`), `extensions=<csv>`, `pattern=<regex>`, `sort=alpha|date|mtime[,desc]`, `summary-from=README.md|first-h1|first-paragraph|none`, `limit=N`, `mode=sync|lint`.
 
-### Extractor chain
+## Extractor chain
 
 A source file may carry metadata in multiple formats. Extractors run in order; results are merged with **earlier extractors winning per-key**:
 
@@ -80,7 +80,7 @@ Merge example: YAML provides `name`, heading-meta provides `description` → mer
 
 Each handler ships a default chain. Markers may override with `extract=` (single extractor) or `extract=yaml-frontmatter,heading-meta` (chain).
 
-### Hybrid columns
+## Hybrid columns
 
 The `cols=` directive annotates each column with a role:
 
@@ -120,7 +120,7 @@ The `custom` handler indexes arbitrary frontmatter-decorated files (blog posts, 
 
 `source` is a glob relative to the repo root. `cols=` names map to lowercased frontmatter fields (`Title:auto` reads the `title` field). The `File`, `Path`, and `Name` column names are special — they render the source file's name in backticks.
 
-### Lint mode
+## Lint mode
 
 `mode=lint` markers don't rewrite content. They detect drift only:
 
@@ -130,17 +130,17 @@ The `custom` handler indexes arbitrary frontmatter-decorated files (blog posts, 
 
 Use lint mode for hand-curated tables where presence/absence of rows can be machine-checked but cell prose is too nuanced to auto-write. Example: a "Repository Structure" table where each directory's purpose is hand-tuned.
 
-### Single source of truth
+## Single source of truth
 
 For each kind of index, source files are authoritative; marker blocks are mirrors derived from sources. Hand-edits to auto cells are silently overwritten on next sync. Hand-edits to manual cells are preserved.
 
 To *change* what an index says, edit the source (the SKILL.md, the agent .md, etc.) — never the marker block.
 
-### Backwards compatibility
+## Backwards compatibility
 
 The skill never modifies a file that doesn't contain a `<!-- sync:* -->` marker. Existing READMEs in any project are safe by default; opt-in by adding markers. `init` is the only operation that creates new files, and only with explicit user confirmation.
 
-### Project-local overrides
+## Project-local overrides
 
 `.claude/sync-docs.yaml` (optional, project-local, checked into the project repo) overrides built-in handler discovery and registers project-specific custom handlers:
 

@@ -119,7 +119,6 @@ Sourced files use `BASH_SOURCE` instead of `$0`:
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ```
 
-
 ## Python
 
 ### Key Rules

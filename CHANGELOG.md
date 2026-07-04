@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.23.0 — 2026-07-04
+- feat(markdownlint): adopt lenient repo config and fix genuine markdown findings
+
 ## v0.22.0 — 2026-07-04
 - feat(markdownlint): add test-runner hook and wire both hooks into settings
 

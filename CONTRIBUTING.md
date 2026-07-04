@@ -39,7 +39,7 @@ For Markdown and other text files, pick the type by how the file is *used*, not 
 
 - **One line.** No body, no footer.
 - **Lowercase** throughout — type, scope, and subject — except proper nouns, acronyms, and code identifiers (`OAuth2`, `API`, `Windows`).
-- **Imperative mood** in the subject — "add", not "added" or "adds". Read it as "this commit will _add user auth_".
+- **Imperative mood** in the subject — "add", not "added" or "adds". Read it as "this commit will *add user auth*".
 - **No trailing period.**
 - **Under 72 characters** for the whole line, type and scope included.
 

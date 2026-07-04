@@ -1,0 +1,34 @@
+// markdownlint-cli2 config. The presence of this file is what activates
+// markdownlint-check.sh on this repo (the hook is a no-op in repos without one).
+// Lenient by design: rules hostile to house prose style or to generated content are
+// off; everything else runs. Principle: fix genuine findings, disable systemic noise.
+{
+  // Untracked design drafts; the hook also carves these out itself.
+  // .superpowers/sdd/** is this feature pipeline's own scratch tracking (task
+  // briefs/reports); it carries its own `*` .gitignore and is never committed.
+  "ignores": ["plans/**", "specs/**", ".superpowers/sdd/**"],
+  "config": {
+    // 919 hits: prose and sync-docs table rows exceed any sane limit; ruff-style,
+    // line length is not markdown's concern here.
+    "line-length": false,
+    // 79 hits, all in sync-docs generated tables — generated style is not hand-fixable.
+    "table-column-style": false,
+    // 66 hits: house style runs lists directly under their intro line.
+    "blanks-around-lists": false,
+    // 41 hits: the /commit CHANGELOG format puts the bullet directly under `## vX.Y.Z`.
+    "blanks-around-headings": false,
+    // 5 hits: memory-style files legitimately open with frontmatter + text, no H1.
+    "first-line-heading": false,
+    // 2 hits: CLAUDE.md's adjacent policy blockquotes are intentionally separate quotes.
+    "no-blanks-blockquote": false,
+    // Duplicate headings are fine across sections, not within one (e.g. CHANGELOG vs
+    // repeated sibling titles).
+    "no-duplicate-heading": { "siblings_only": true },
+    // 3 hits, all inside <!-- sync:skills --> marker blocks (CLAUDE.md, README.md,
+    // skills/README.md): the /init-skill row reproduces that skill's frontmatter
+    // `description` verbatim, which contains a literal `<name>` path placeholder.
+    // The source is a plain-text description field, not markdown, and is reused
+    // as-is elsewhere — generated content, not hand-fixable (see house-style note above).
+    "no-inline-html": false
+  }
+}

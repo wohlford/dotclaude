@@ -52,14 +52,14 @@ authorized action gated by the push-guard.
    changes the user wants live, tell them to `/commit` first.
 3. **Resolve production** from the symlink; capture the dev repo root:
 
-```bash
-dev="$(git rev-parse --show-toplevel)"
-if [ ! -L ~/.claude/skills ]; then
-  echo "~/.claude/skills is not a symlink — cannot locate production; promote manually." >&2
-else
-  live="$(cd -P ~/.claude/skills && git rev-parse --show-toplevel)"
-fi
-```
+   ```bash
+   dev="$(git rev-parse --show-toplevel)"
+   if [ ! -L ~/.claude/skills ]; then
+     echo "~/.claude/skills is not a symlink — cannot locate production; promote manually." >&2
+   else
+     live="$(cd -P ~/.claude/skills && git rev-parse --show-toplevel)"
+   fi
+   ```
 
    - Not a symlink → stop, tell the user to promote manually.
    - `live` equals `dev` → the working copy IS production; nothing to do; report and stop.
@@ -67,9 +67,9 @@ fi
 4. **Publish first, only with `--push`.** Pushing is explicit-only (the push-guard blocks a bare
    `git push`); the `--push` flag IS the authorization, so lead the command with the override:
 
-```bash
-ALLOW_PUSH=1 git push origin "$branch" --follow-tags
-```
+   ```bash
+   ALLOW_PUSH=1 git push origin "$branch" --follow-tags
+   ```
 
    If the push is rejected, do **not** force-push — fetch and report the divergence to the user.
    Set the **source production fast-forwards from** for step 5: `--push` → `src=origin`; default
@@ -77,10 +77,10 @@ ALLOW_PUSH=1 git push origin "$branch" --follow-tags
 
 5. **Fast-forward production (never force).** Fetch from `src` and `--ff-only` merge:
 
-```bash
-git -C "$live" fetch "$src" "$branch" --tags
-git -C "$live" merge --ff-only FETCH_HEAD
-```
+   ```bash
+   git -C "$live" fetch "$src" "$branch" --tags
+   git -C "$live" merge --ff-only FETCH_HEAD
+   ```
 
    (`$src` is `origin` after `--push`, else the absolute `$dev` path for a fully-local promote.)
    - **On `--ff-only` failure, do NOT force.** If `git -C "$live" log FETCH_HEAD..HEAD --oneline` is
@@ -91,14 +91,14 @@ git -C "$live" merge --ff-only FETCH_HEAD
      `git status --porcelain`): park it, fast-forward, restore it so the runtime prefs (`model`,
      `enabledPlugins`) survive, then hand-add any new hook entries the committed version gained:
 
-```bash
-git -C "$live" update-index --no-skip-worktree settings.json
-git -C "$live" stash push -m 'runtime settings.json' -- settings.json
-git -C "$live" merge --ff-only FETCH_HEAD
-git -C "$live" checkout 'stash@{0}' -- settings.json && git -C "$live" stash drop
-git -C "$live" reset -q HEAD -- settings.json
-git -C "$live" update-index --skip-worktree settings.json
-```
+   ```bash
+   git -C "$live" update-index --no-skip-worktree settings.json
+   git -C "$live" stash push -m 'runtime settings.json' -- settings.json
+   git -C "$live" merge --ff-only FETCH_HEAD
+   git -C "$live" checkout 'stash@{0}' -- settings.json && git -C "$live" stash drop
+   git -C "$live" reset -q HEAD -- settings.json
+   git -C "$live" update-index --skip-worktree settings.json
+   ```
 
    - **Any other tracked file blocks:** do not auto-discard; restore `settings.json` if parked, report
      the blocker and the manual options (`git checkout -- <file>` is safe only when it already equals

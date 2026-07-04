@@ -119,8 +119,8 @@ Per logical group, the order is **stage → version → changelog → commit →
    - <subject>
    ```
 
-   literal em-dash `—`; date is today (= the commit's own date); `<subject>` is the exact message from step 4. Insert it **immediately before the first `^## ` heading**, with exactly one blank line on each side; if the file has no `## ` heading, append at EOF. Then **stage `CHANGELOG.md`** with the group.
-   - **Format guard (portability — the skill is copied into other repos).** Add the entry only if the file's **first `## ` heading matches `^## v[0-9]`** (this living format) **or** the file has **no `## ` version sections** at all. If it's a Keep-a-Changelog file (`## [1.2.3]`, `## [Unreleased]`) or owned by other tooling, **skip the entry and tell the user** — never inject a `## vX.Y.Z` above a different convention. Skip **silently** when there is no `CHANGELOG.md`.
+   literal em-dash `—`; date is today (= the commit's own date); `<subject>` is the exact message from step 4. Insert it **immediately before the first `##`-level heading**, with exactly one blank line on each side; if the file has no `##`-level heading, append at EOF. Then **stage `CHANGELOG.md`** with the group.
+   - **Format guard (portability — the skill is copied into other repos).** Add the entry only if the file's **first `##`-level heading matches `^## v[0-9]`** (this living format) **or** the file has **no `##`-level version sections** at all. If it's a Keep-a-Changelog file (`## [1.2.3]`, `## [Unreleased]`) or owned by other tooling, **skip the entry and tell the user** — never inject a `## vX.Y.Z` above a different convention. Skip **silently** when there is no `CHANGELOG.md`.
    - **Idempotency.** Before prepending, if the first `^## v` line **already equals** the `vX.Y.Z` you just computed, it's a leftover from a prior/blocked attempt — **update that section's bullet in place** to match the current message; **never add a second section**.
 7. Create the commit (the group's files + `CHANGELOG.md` are already staged):
 

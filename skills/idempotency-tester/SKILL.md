@@ -42,6 +42,7 @@ printed to stderr · `2` harness or target error (bad usage — including a miss
   `$IDEMPOTENCY_SANDBOX` is exported into the target/setup environment.
 
 ### How another skill or process calls it
+
 ```bash
 bash ~/.claude/skills/idempotency-tester/idempotency-test.sh \
   --seed skills/sync-docs/tests/fixtures/dotclaude-shaped -- skills/sync-docs/sync_docs.py --scope .
