@@ -68,6 +68,14 @@
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/md-links-check-test.sh"
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/markdownlint-check.sh"
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/markdownlint-check-test.sh"
           }
         ]
       }
