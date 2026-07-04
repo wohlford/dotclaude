@@ -137,12 +137,17 @@ check_shellcheck() {
     verdict_skip shellcheck 'shellcheck not found'
     return
   fi
-  local abs out rc
-  abs="$(printf '%s\n' "$files" | while IFS= read -r f; do [[ -n "$f" ]] && printf '%s\n' "$scope/$f"; done)"
-  out="$(printf '%s\n' "$abs" | xargs shellcheck -S warning 2>&1)"; rc=$?
+  local f detail="" out rc=0
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    out="$(shellcheck -S warning "$scope/$f" 2>&1)" || rc=$?
+    if [[ -n "$out" ]]; then
+      detail="${detail}${out}"$'\n'
+    fi
+  done <<< "$files"
   if [[ "$rc" -ne 0 ]]; then
     verdict_fail shellcheck 'shellcheck reported findings'
-    print_offenders "$out"
+    print_offenders "$detail"
   else
     verdict_pass shellcheck
   fi
@@ -159,12 +164,24 @@ check_ruff() {
     verdict_skip ruff 'ruff not found'
     return
   fi
-  local out1 out2 rc1 rc2
-  out1="$(cd "$scope" && printf '%s\n' "$files" | xargs ruff check 2>&1)"; rc1=$?
-  out2="$(cd "$scope" && printf '%s\n' "$files" | xargs ruff format --check 2>&1)"; rc2=$?
+  local f detail1="" detail2="" out rc1=0 rc2=0
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    out="$(cd "$scope" && ruff check "$f" 2>&1)" || rc1=$?
+    if [[ -n "$out" ]]; then
+      detail1="${detail1}${out}"$'\n'
+    fi
+  done <<< "$files"
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    out="$(cd "$scope" && ruff format --check "$f" 2>&1)" || rc2=$?
+    if [[ -n "$out" ]]; then
+      detail2="${detail2}${out}"$'\n'
+    fi
+  done <<< "$files"
   if [[ "$rc1" -ne 0 || "$rc2" -ne 0 ]]; then
     verdict_fail ruff 'ruff check/format reported findings'
-    print_offenders "${out1}"$'\n'"${out2}"
+    print_offenders "${detail1}"$'\n'"${detail2}"
   else
     verdict_pass ruff
   fi
