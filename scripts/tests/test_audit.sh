@@ -463,6 +463,23 @@ assert_not_has 'FAIL format-trailing-ws' 'rI: valid gen/* exclusion still effect
 assert_rc 1 'rI: invalid pattern present -> exit 1 despite valid exclusion working'
 
 # ============================================================================
+# rJ. tracked binary blob -> exec-bit PASS, no "null byte" warning on stderr
+#     (Finding 2: the old check_exec_bit forked `git cat-file` per file through a command
+#     substitution, which bash warns about on binary content — the same per-file fork was
+#     the root cause of a 12,853-fork acceptance-test timeout on a real repo. The fork-count
+#     regression itself is untestable here — timing/environment-dependent; its regression
+#     test is the court-repo acceptance run the controller re-executes after this wave.)
+# ============================================================================
+rJ="$tmp/rJ_binary_blob"
+mkrepo "$rJ"
+printf '\x00\x01\x02' > "$rJ/blob.bin"
+chmod 644 "$rJ/blob.bin"
+commit_all "$rJ" seed
+run_engine "$rJ"
+assert_has 'PASS exec-bit' 'rJ: binary blob (100644, no shebang) -> PASS exec-bit'
+assert_not_has 'null byte' 'rJ: engine stderr does not warn about null byte in input'
+
+# ============================================================================
 # rK. .auditignore excludes format-tabs matches too (mirrors rA for trailing-ws; pins
 #     the ignore threading specifically through check_format_tabs so a regression
 #     dropping it fails the suite)

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.28.1 — 2026-07-04
+- perf(audit): drop per-file git cat-file forks from the exec-bit check
+
 ## v0.28.0 — 2026-07-04
 - feat(audit): add .auditignore scoping and offender caps
 

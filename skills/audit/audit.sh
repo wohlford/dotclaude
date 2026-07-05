@@ -275,14 +275,18 @@ check_md_links() {
 
 check_exec_bit() {
   local scope="$1" mode sha stage path first2 detail=""
-  # shellcheck disable=SC2034  # stage is part of `ls-files -s` output shape, unused here
+  # shellcheck disable=SC2034  # sha/stage are part of `ls-files -s` output shape, unused here
   while read -r mode sha stage path; do
     [[ -z "$mode" ]] && continue
     if [[ "$mode" == "100644" ]]; then
-      first2="$(git -C "$scope" cat-file blob "$sha" 2>/dev/null | head -c 2 || true)"
-      if [[ "$first2" == '#!' ]]; then
-        detail="${detail}${path}"$'\n'
-      fi
+      # Builtin working-tree read, not a per-file `git cat-file` fork: sniffs the checked-out
+      # file rather than the index blob (acceptable for a working-copy compliance sweep) —
+      # zero forks instead of one fork-pair per 100644 file (12,853 of them timed out a
+      # 300s sweep on the motivating repo).
+      [[ -r "$scope/$path" && -s "$scope/$path" ]] || continue
+      first2=""
+      IFS= read -r -n 2 first2 < "$scope/$path" || true
+      [[ "$first2" == '#!' ]] && detail="${detail}${path}"$'\n'
     fi
   done < <(git -C "$scope" ls-files -s)
   if [[ -n "$detail" ]]; then
