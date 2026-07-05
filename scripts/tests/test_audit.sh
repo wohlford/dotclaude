@@ -317,5 +317,186 @@ assert_has 'FAIL tests' '15c: --tests with a failing suite -> FAIL tests'
 picked="$(bash -c 'source "$1"; printf "v9.1.0\nv26.3.0\nv10.2.1\n" | pick_newest_version' _ "$engine")"
 check_eq "$picked" 'v26.3.0' '16: pick_newest_version selects highest semver (no sort -V)'
 
+# ============================================================================
+# rA. .auditignore exclusion is load-bearing, both directions
+# ============================================================================
+rA="$tmp/rA_auditignore"
+mkrepo "$rA"
+mkdir -p "$rA/gen"
+printf 'clean line\nline with trailing space \n' > "$rA/gen/transcript.md"
+commit_all "$rA" seed
+run_engine "$rA"
+assert_has 'FAIL format-trailing-ws' 'rA: trailing ws in gen/, no .auditignore -> FAIL format-trailing-ws'
+
+printf 'gen/*\n' > "$rA/.auditignore"
+commit_all "$rA" 'add auditignore'
+run_engine "$rA"
+assert_has 'PASS format-trailing-ws' 'rA: gen/* excluded -> PASS format-trailing-ws'
+assert_rc 0 'rA: rest of fixture clean -> exit 0'
+
+# ============================================================================
+# rB. .auditignore comments/blank lines are ignored; the real glob still excludes
+# ============================================================================
+rB="$tmp/rB_comments"
+mkrepo "$rB"
+mkdir -p "$rB/gen"
+printf 'line with trailing space \n' > "$rB/gen/x.txt"
+commit_all "$rB" seed
+printf '# comment\n  # indented comment\n\ngen/*\n' > "$rB/.auditignore"
+commit_all "$rB" 'add auditignore'
+run_engine "$rB"
+assert_has 'PASS format-trailing-ws' 'rB: comments/blanks ignored, real glob still excludes -> PASS'
+assert_rc 0 'rB: exit 0, no crash on comment/blank lines'
+
+# ============================================================================
+# rC. CRLF + missing-final-newline honor excludes
+# ============================================================================
+rC="$tmp/rC_crlf_finalnl"
+mkrepo "$rC"
+mkdir -p "$rC/gen"
+printf 'a\r\nb\r\n' > "$rC/gen/crlf.txt"
+printf 'no trailing newline' > "$rC/gen/nofinalnl.txt"
+commit_all "$rC" seed
+printf 'gen/*\n' > "$rC/.auditignore"
+commit_all "$rC" 'add auditignore'
+run_engine "$rC"
+assert_has 'PASS format-crlf' 'rC: CRLF file excluded -> PASS format-crlf'
+assert_has 'PASS format-final-newline' 'rC: missing-final-newline file excluded -> PASS format-final-newline'
+
+# ============================================================================
+# rD. output cap — 60 trailing-ws offenders truncate with a "more" marker
+#     NOTE: this only pins the print cap (print_offenders' 50-line sed window). It cannot
+#     distinguish that from the collection cap (check_format_trailing_ws's `head -n 51`) —
+#     removing the `head -n 51` collection cap would still pass this test unchanged, since
+#     the print cap alone is enough to produce the "more" marker and hide line60. Deliberate,
+#     deferred: a test that pins the collection cap too would need a much larger fixture.
+# ============================================================================
+rD="$tmp/rD_cap"
+mkrepo "$rD"
+i=1
+: > "$rD/manylines.txt"
+while [[ "$i" -le 60 ]]; do
+  printf 'line%d \n' "$i" >> "$rD/manylines.txt"
+  i=$((i + 1))
+done
+commit_all "$rD" seed
+run_engine "$rD"
+assert_has 'FAIL format-trailing-ws' 'rD: 60 offending lines -> FAIL format-trailing-ws'
+assert_has '… more (run the underlying tool' 'rD: output cap message present'
+assert_not_has 'line60' 'rD: 60th offender line absent from (capped) output'
+
+# ============================================================================
+# rE. no .auditignore present -> behavior unchanged (guards against excludes
+#     applying when the ignore string is empty)
+# ============================================================================
+rE="$tmp/rE_no_auditignore"
+mkrepo "$rE"
+printf 'clean\nline with trailing space \n' > "$rE/f.txt"
+commit_all "$rE" x
+run_engine "$rE"
+assert_has 'FAIL format-trailing-ws' 'rE: no .auditignore present -> still FAIL format-trailing-ws'
+
+# ============================================================================
+# rF. excludes never silence code/config checks (locks spec O1)
+# ============================================================================
+if command -v jq >/dev/null 2>&1; then
+  rF="$tmp/rF_locked_json"
+  mkrepo "$rF"
+  mkdir -p "$rF/gen"
+  printf '{ "a": }\n' > "$rF/gen/bad.json"
+  printf 'gen/*\n' > "$rF/.auditignore"
+  commit_all "$rF" seed
+  run_engine "$rF"
+  assert_has 'FAIL json' 'rF: .auditignore excludes the dir but json check still FAILs'
+else
+  printf 'skip - jq not installed in this test environment\n'
+fi
+
+# ============================================================================
+# rG. visibility line — present only when active patterns exist
+# ============================================================================
+rG="$tmp/rG_visibility"
+mkrepo "$rG"
+printf 'clean\n' > "$rG/f.txt"
+commit_all "$rG" seed
+run_engine "$rG"
+assert_not_has '(.auditignore:' 'rG: no .auditignore file -> no visibility line'
+
+printf 'gen/*\n' > "$rG/.auditignore"
+commit_all "$rG" 'add auditignore'
+run_engine "$rG"
+assert_has '(.auditignore:' 'rG: active .auditignore -> visibility line present'
+assert_has '(.auditignore: 1 exclude pattern(s) active)' 'rG: exact visibility count text'
+
+# ============================================================================
+# rH. invalid-only .auditignore pattern -> FAIL auditignore, offender still caught
+#     (Finding 1: `/gen/*` is gitignore-anchored syntax git's pathspec engine rejects
+#     outright — rc 128. With it the ONLY pattern, zero valid patterns survive, so the
+#     sweep must proceed unexcluded and still catch the real offender.)
+# ============================================================================
+rH="$tmp/rH_invalid_only"
+mkrepo "$rH"
+printf 'clean line\nline with trailing space \n' > "$rH/outside.txt"
+printf '/gen/*\n' > "$rH/.auditignore"
+commit_all "$rH" seed
+run_engine "$rH"
+assert_has 'FAIL auditignore' 'rH: invalid-only pattern -> FAIL auditignore'
+assert_has '/gen/*' 'rH: FAIL auditignore names the bad pattern'
+assert_has 'FAIL format-trailing-ws' 'rH: zero valid patterns remain -> offender still caught'
+assert_rc 1 'rH: invalid pattern -> exit 1'
+
+# ============================================================================
+# rI. mixed valid + invalid .auditignore patterns -> FAIL auditignore names the
+#     invalid one, but the valid pattern's exclusion is still honored
+# ============================================================================
+rI="$tmp/rI_mixed"
+mkrepo "$rI"
+mkdir -p "$rI/gen"
+printf 'line with trailing space \n' > "$rI/gen/x.txt"
+printf 'clean\n' > "$rI/clean.txt"
+printf 'gen/*\n../outside\n' > "$rI/.auditignore"
+commit_all "$rI" seed
+run_engine "$rI"
+assert_has 'FAIL auditignore' 'rI: mixed valid+invalid -> FAIL auditignore'
+assert_has '../outside' 'rI: FAIL auditignore names the invalid pattern'
+assert_not_has 'FAIL format-trailing-ws' 'rI: valid gen/* exclusion still effective -> no FAIL format-trailing-ws'
+assert_rc 1 'rI: invalid pattern present -> exit 1 despite valid exclusion working'
+
+# ============================================================================
+# rK. .auditignore excludes format-tabs matches too (mirrors rA for trailing-ws; pins
+#     the ignore threading specifically through check_format_tabs so a regression
+#     dropping it fails the suite)
+# ============================================================================
+rK="$tmp/rK_tabs_exclude"
+mkrepo "$rK"
+mkdir -p "$rK/gen"
+printf '# Doc\n\tindented with a tab\n' > "$rK/gen/transcript.md"
+commit_all "$rK" seed
+run_engine "$rK"
+assert_has 'FAIL format-tabs' 'rK: tab in gen/, no .auditignore -> FAIL format-tabs'
+
+printf 'gen/*\n' > "$rK/.auditignore"
+commit_all "$rK" 'add auditignore'
+run_engine "$rK"
+assert_has 'PASS format-tabs' 'rK: gen/* excluded -> PASS format-tabs'
+
+# ============================================================================
+# rL. .auditignore excludes md-links matches too (mirrors rA for trailing-ws; pins
+#     the ignore threading specifically through check_md_links so a regression
+#     dropping it fails the suite)
+# ============================================================================
+rL="$tmp/rL_mdlinks_exclude"
+mkrepo "$rL"
+mkdir -p "$rL/gen"
+printf '# Doc\n\nSee [missing](./nope.md) for more.\n' > "$rL/gen/broken.md"
+commit_all "$rL" seed
+run_engine "$rL"
+assert_has 'FAIL md-links' 'rL: broken link in gen/, no .auditignore -> FAIL md-links'
+
+printf 'gen/*\n' > "$rL/.auditignore"
+commit_all "$rL" 'add auditignore'
+run_engine "$rL"
+assert_has 'PASS md-links' 'rL: gen/* excluded -> PASS md-links'
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

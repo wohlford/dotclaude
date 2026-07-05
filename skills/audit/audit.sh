@@ -5,6 +5,12 @@ set -uo pipefail
 # Purpose: Read-only mechanical compliance sweep over a target git repo's tracked files
 # Usage: audit.sh [--scope <path>] [--tests]
 #
+# A `.auditignore` at the scope root (opt-in, one glob pathspec per line, `#` comments and
+# blank lines ignored) excludes matching paths from the five text-content checks
+# (format-trailing-ws, format-crlf, format-final-newline, format-tabs, md-links) only — it
+# can never silence a code/config check (shellcheck, ruff, markdownlint, exec-bit, json,
+# toml, sync-docs, tests). No file present, or a present-but-empty file, sweeps unchanged.
+#
 # Exit codes:
 #   0 — sweep completed, zero FAILs
 #   1 — sweep completed, at least one FAIL
@@ -46,11 +52,32 @@ verdict_skip() { # name reason
   skip_count=$((skip_count + 1))
 }
 
-print_offenders() { # detail-block (newline-separated, unindented) -> indent 2sp, own lines
-  local detail="$1"
+print_offenders() { # detail-block (newline-separated, unindented) -> indent 2sp, cap 50 lines
+  local detail="$1" n
   [[ -z "$detail" ]] && return
   detail="${detail%$'\n'}"           # avoid a doubled trailing blank line
-  printf '%s\n' "$detail" | sed 's/^/  /'
+  n="$(printf '%s\n' "$detail" | wc -l | tr -d ' ')"
+  if [[ "$n" -gt 50 ]]; then
+    printf '%s\n' "$detail" | sed -n '1,50p' | sed 's/^/  /'
+    printf '  … more (run the underlying tool for the full list)\n'
+  else
+    printf '%s\n' "$detail" | sed 's/^/  /'
+  fi
+}
+
+# ---------- .auditignore helpers ----------
+
+git_with_excludes() {  # $1=scope $2=ignore-string, rest = git args; appends :(exclude) pathspecs
+  local scope="$1" ignore="$2" g
+  shift 2
+  while IFS= read -r g; do
+    g="${g#"${g%%[![:space:]]*}"}"; g="${g%"${g##*[![:space:]]}"}"   # trim FIRST
+    case "$g" in ''|\#*) continue ;; esac                            # then skip blank/comment
+    set -- "$@" ":(exclude)$g"
+  done <<EOF
+$ignore
+EOF
+  git -C "$scope" "$@" 2>/dev/null
 }
 
 # ---------- BSD-safe newest-nvm-version picker ----------
@@ -72,9 +99,9 @@ check_format_trailing_ws() {
   # ending in the plain letter "t" (i.e. most English prose). Built instead with a real
   # embedded tab byte, mirroring the same printf idiom the brief already uses for
   # format-crlf/format-tabs below.
-  local scope="$1" hits ws
+  local scope="$1" ignore="$2" hits ws
   ws="$(printf ' \t')"
-  hits="$(git -C "$scope" grep -nIE "[${ws}]+\$" -- . 2>/dev/null)"
+  hits="$(git_with_excludes "$scope" "$ignore" grep -nIE "[${ws}]+\$" -- . | head -n 51)"
   if [[ -n "$hits" ]]; then
     verdict_fail format-trailing-ws 'trailing whitespace found'
     print_offenders "$hits"
@@ -84,9 +111,9 @@ check_format_trailing_ws() {
 }
 
 check_format_crlf() {
-  local scope="$1" hits cr
+  local scope="$1" ignore="$2" hits cr
   cr="$(printf '\r')"
-  hits="$(git -C "$scope" grep -nIl "$cr" -- . 2>/dev/null)"
+  hits="$(git_with_excludes "$scope" "$ignore" grep -nIl "$cr" -- . | head -n 51)"
   if [[ -n "$hits" ]]; then
     verdict_fail format-crlf 'CRLF line endings found'
     print_offenders "$hits"
@@ -96,8 +123,8 @@ check_format_crlf() {
 }
 
 check_format_final_newline() {
-  local scope="$1" files f detail="" last
-  files="$(git -C "$scope" grep -Il '' -- . 2>/dev/null)"
+  local scope="$1" ignore="$2" files f detail="" last
+  files="$(git_with_excludes "$scope" "$ignore" grep -Il '' -- .)"
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     [[ -s "$scope/$f" ]] || continue   # empty files pass
@@ -115,9 +142,9 @@ check_format_final_newline() {
 }
 
 check_format_tabs() {
-  local scope="$1" hits tab
+  local scope="$1" ignore="$2" hits tab
   tab="$(printf '\t')"
-  hits="$(git -C "$scope" grep -n "$tab" -- '*.sh' '*.py' '*.json' '*.yaml' '*.yml' '*.md' 2>/dev/null)"
+  hits="$(git_with_excludes "$scope" "$ignore" grep -n "$tab" -- '*.sh' '*.py' '*.json' '*.yaml' '*.yml' '*.md' | head -n 51)"
   if [[ -n "$hits" ]]; then
     verdict_fail format-tabs 'literal tab character found'
     print_offenders "$hits"
@@ -221,7 +248,7 @@ check_markdownlint() {
 }
 
 check_md_links() {
-  local scope="$1" checker
+  local scope="$1" ignore="$2" checker
   checker="$script_dir/../../scripts/md-links-check.py"
   if [[ ! -f "$checker" ]] || ! command -v python3 >/dev/null 2>&1; then
     verdict_skip md-links 'checker or python3 not found'
@@ -229,7 +256,7 @@ check_md_links() {
   fi
 
   local files f detail="" out rc
-  files="$(git -C "$scope" ls-files -- '*.md' 2>/dev/null)"
+  files="$(git_with_excludes "$scope" "$ignore" ls-files -- '*.md')"
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     out="$(printf '{"tool_input":{"file_path":"%s"}}' "$scope/$f" | python3 "$checker" 2>&1)"
@@ -381,7 +408,7 @@ check_tests() {
 # ---------- main ----------
 
 main() {
-  local scope="" run_tests=false
+  local scope="" run_tests=false auditignore="" ignore="" invalid_detail="" ignore_count=0 g
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -414,14 +441,42 @@ main() {
   fi
   scope="$(cd "$scope" && pwd)"
 
-  check_format_trailing_ws "$scope"
-  check_format_crlf "$scope"
-  check_format_final_newline "$scope"
-  check_format_tabs "$scope"
+  [[ -f "$scope/.auditignore" ]] && auditignore="$(cat "$scope/.auditignore")"
+
+  if [[ -n "$auditignore" ]]; then
+    while IFS= read -r g; do
+      g="${g#"${g%%[![:space:]]*}"}"; g="${g%"${g##*[![:space:]]}"}"   # trim FIRST
+      case "$g" in ''|\#*) continue ;; esac                            # then skip blank/comment
+      # Cheap probe: does git accept this as a pathspec exclude? An anchored
+      # gitignore-style pattern (e.g. `/gen/*`) or one that escapes the repo
+      # (e.g. `../outside`) makes git exit 128 — never silently trust it.
+      if git -C "$scope" ls-files -- ":(exclude)$g" . >/dev/null 2>&1; then
+        ignore="${ignore}${g}"$'\n'
+        ignore_count=$((ignore_count + 1))
+      else
+        invalid_detail="${invalid_detail}${g}"$'\n'
+      fi
+    done <<EOF
+$auditignore
+EOF
+  fi
+
+  if [[ -n "$invalid_detail" ]]; then
+    verdict_fail auditignore 'invalid exclude pattern(s) in .auditignore'
+    print_offenders "$invalid_detail"
+  fi
+
+  [[ "$ignore_count" -gt 0 ]] \
+    && printf '(.auditignore: %d exclude pattern(s) active)\n' "$ignore_count"
+
+  check_format_trailing_ws "$scope" "$ignore"
+  check_format_crlf "$scope" "$ignore"
+  check_format_final_newline "$scope" "$ignore"
+  check_format_tabs "$scope" "$ignore"
   check_shellcheck "$scope"
   check_ruff "$scope"
   check_markdownlint "$scope"
-  check_md_links "$scope"
+  check_md_links "$scope" "$ignore"
   check_exec_bit "$scope"
   check_json "$scope"
   check_toml "$scope"

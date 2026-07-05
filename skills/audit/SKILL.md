@@ -1,6 +1,6 @@
 ---
 name: audit
-description: Run the mechanical compliance sweep — linters, format, link, exec-bit, and config-validity checks over a repo's tracked files
+description: Run the mechanical compliance sweep — linters, format, link, exec-bit, and config-validity checks over a repo's tracked files; repos exclude generated paths via .auditignore
 ---
 
 # /audit — Mechanical Compliance Sweep
@@ -38,10 +38,41 @@ The sweep runs 13 checks: `format-trailing-ws`, `format-crlf`, `format-final-new
 executable); `json`, `toml` (config validity); `sync-docs` (index-table drift); and `tests`
 (shell suites + pytest, only with `--tests`).
 
+### .auditignore
+
+A `<scope>/.auditignore` file is an opt-in exclusion mechanism: one **git pathspec glob** per
+line, `#` comments and blank lines ignored, leading/trailing whitespace trimmed. Each pattern
+becomes a `:(exclude)` pathspec — this mirrors the repo's own `.markdownlint-cli2.jsonc`
+`ignores` model. **`!` negation is not supported in v1.**
+
+It scopes ONLY the five text-content checks: `format-trailing-ws`, `format-crlf`,
+`format-final-newline`, `format-tabs`, `md-links`. Code/config checks (`shellcheck`, `ruff`,
+`markdownlint`, `exec-bit`, `json`, `toml`, `sync-docs`, `tests`) are deliberately never scoped
+by it — a repo cannot hide a broken tracked `.json` or a non-executable shebang file from the
+audit.
+
+An absent `.auditignore` is fully backward compatible — behavior is identical to before it
+existed. A present-but-empty file (or one containing only comments/blank lines) behaves exactly
+like an absent one: zero active patterns, no visibility line. When at least one active pattern
+exists, the run prints `(.auditignore: N exclude pattern(s) active)` up front, so a PASS over a
+reduced file set is visibly different from a PASS over everything.
+
+Each pattern is probed against git before use. An invalid one — an anchored gitignore-style
+pattern (e.g. `/gen/*`) or one that escapes the repo (e.g. `../outside`) — makes git reject the
+pathspec outright, so the sweep never trusts it silently: it reports `FAIL auditignore` naming
+every bad pattern (guaranteeing exit 1, never a false-clean run), then still sweeps using only
+the remaining valid patterns — one broken exclude line degrades, it doesn't blind the whole run.
+
+A document-store or generated-heavy repo should add a `.auditignore` — otherwise the format
+sweep will be slow and will FAIL on intentionally-nonconforming files (generated transcripts
+with load-bearing trailing whitespace, vendored dumps, etc.).
+
 ### Rules
 
 - **Read-only** — never auto-fix a FAIL without the caller asking; `/audit` only runs the sweep
   and reports.
+- Offender output is capped at 50 lines per check (global to every check, not an `.auditignore`
+  feature), ending with `… more (run the underlying tool for the full list)` when more exist.
 - A tool that isn't installed surfaces as `SKIP`, not a silent pass — always relay `SKIP`s; each
   is a coverage gap, not a clean bill of health.
 - `markdownlint` only runs in repos opted in via `.markdownlint-cli2.jsonc` — opting in is a
