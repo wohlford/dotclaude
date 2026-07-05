@@ -12,32 +12,26 @@ often spans **many** skills' test suites at once, so the suites must not collide
 
 ## The uniquely-named-helper-module rule
 
-When a skill's tests import shared helpers — a wrapper that invokes the script under test, path
-constants, a git wrapper — put them in a module named for the skill (`<skill>_helpers.py`), **not**
-`conftest.py` and **not** a generic name like `helpers.py`.
+Each skill's tests import shared helpers — `run` (invoke the script under test), `git` (a
+signing-off git wrapper), and the script-path constants — from a module named for the skill (e.g.
+`recast_helpers.py`). **Not** `conftest.py`, and **not** a generic name.
 
-Why: when `pytest skills/foo/tests skills/bar/tests …` runs across suites in one invocation, two
-**imported** modules that share a name (two `helpers.py`, or `from conftest import …` in two suites)
-collide on the module name and the run fails. pytest handles per-directory `conftest.py` fixtures fine
-— the clash is on *imported* modules — so a shared helper gets a unique name per skill. So:
+Why: when `pytest skills/recast/tests skills/sync-docs/tests …` runs across suites in one invocation,
+two **imported** modules that share a name (two `helpers.py`, or `from conftest import …` in two
+suites) collide on the module name and the run fails. pytest handles per-directory `conftest.py`
+fixtures fine — the clash is on *imported* modules — so the shared helpers get a unique name per
+skill. So:
 
 - **`conftest.py`** holds *only* pytest fixtures (they're discovered by path, no import needed).
 - **`<skill>_helpers.py`** holds everything imported with `from <skill>_helpers import …`.
 
-In practice most suites avoid the problem entirely: the `sync-docs` suite imports its own
-package modules directly (`import extractors`, `import handlers`, `import sync_docs`), which are
-already uniquely named, and keeps fixtures in `conftest.py`.
+## Fixture-repo factories
 
-## Fixtures
-
-Tests that need a repo-shaped input use **static fixture trees**, not a live checkout. The
-`sync-docs` suite runs its marker and handler code against fake repo trees under
-`skills/sync-docs/tests/fixtures/` (e.g. a `dotclaude-shaped` tree), so a test never depends on the
-real working copy. The `idempotency-tester` suite builds a throwaway working directory and drives the
-script through `subprocess`, asserting on what it observes.
-
-Assert on **exit code and observable state** (file contents, generated tables, emitted paths), not on
-prose — tool wording differs across platforms (BSD vs GNU), so matching messages makes tests brittle.
+Tests that exercise git machinery build **throwaway repos** via fixtures — e.g. `make_repo` (a plain
+branch with N commits, in the recast suite). The helper's `git()` forces
+`commit.gpgsign=false`/`tag.gpgsign=false` and a fixed identity, so tests never touch a real signing
+key and are deterministic. Assert on **exit code and observable repo state** (SHAs, tag messages,
+file contents), not on prose (BSD vs GNU git word their messages differently).
 
 ## Style of test code
 
@@ -62,7 +56,7 @@ prose — tool wording differs across platforms (BSD vs GNU), so matching messag
 
 ```bash
 # one suite
-python3 -m pytest skills/sync-docs/tests -q
+python3 -m pytest skills/recast/tests -q
 # the combined run (why the naming rule exists)
-python3 -m pytest skills/sync-docs/tests skills/idempotency-tester/tests -q
+python3 -m pytest skills/recast/tests skills/sync-docs/tests -q
 ```

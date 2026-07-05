@@ -16,6 +16,7 @@ User-invokable slash commands shipped with this `~/.claude/` configuration. Each
 | `/init-python`        | Scaffold a new Python module from the standard template in templates.md                                                                                                                                    |
 | `/init-skill`         | Scaffold a new skill at skills/<name>/SKILL.md following the standard structure                                                                                                                            |
 | `/propagate`          | Promote committed changes from this dev working copy to the live ~/.claude repo locally; --push also publishes to origin (explicit)                                                                        |
+| `/recast`             | Re-develop a git source repo into a target as a genuine ground-up, proven-per-commit history converging to functional equivalence (never copies the tree, never pushes)                                    |
 | `/sync-docs`          | Regenerate index regions of README.md and CLAUDE.md from authoritative sources                                                                                                                             |
 | `/vet`                | Vet an authored skill, agent, or script — or the whole repo with --all — by dispatching the matching reviewer agent(s) and reporting their findings                                                        |
 <!-- /sync:skills -->

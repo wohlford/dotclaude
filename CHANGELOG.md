@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.16.0 — 2026-07-04
+- feat(recast): add /recast skill and commit-gate
+
 ## v0.15.2 — 2026-07-04
 - docs(index): add TESTING and README indexes; regenerate all sync-docs tables
 

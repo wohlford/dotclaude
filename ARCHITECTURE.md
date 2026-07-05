@@ -10,7 +10,7 @@ configuration honest**. Four kinds of artifact:
 
 | Kind | Lives in | What it is |
 |---|---|---|
-| **Skills** | `skills/<name>/SKILL.md` (+ bundled scripts) | Slash commands (`/commit`, `/feature`, …) |
+| **Skills** | `skills/<name>/SKILL.md` (+ bundled scripts) | Slash commands (`/commit`, `/recast`, …) |
 | **Agents** | `agents/*.md` | Subagent definitions (the reviewers `/vet` dispatches) |
 | **Hooks** | `scripts/*.sh` + `settings.json` | PreToolUse deny-gates and PostToolUse checks on every edit |
 | **Standards** | `STYLE.md`, `CONTRIBUTING.md`, `templates.md`, `workflows.md` | The universal rules |
