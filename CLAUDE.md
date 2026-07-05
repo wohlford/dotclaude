@@ -71,6 +71,7 @@ Universal instructions for all projects.
 | PostToolUse | `Edit\|Write`                        | `markdownlint-check.sh`      | PostToolUse hook — run markdownlint-cli2 on edited markdown in opted-in repos                                              |
 | PostToolUse | `Edit\|Write`                        | `markdownlint-check-test.sh` | PostToolUse hook — run the markdownlint-check test suite when the lint hook changes                                        |
 | PostToolUse | `Edit\|Write`                        | `exec-bit-guard-test.sh`     | PostToolUse hook — run the exec-bit-guard test suite when the gate or its suite changes                                    |
+| PostToolUse | `Edit\|Write`                        | `audit-test.sh`              | PostToolUse hook — run the audit engine test suite when the engine or its suite changes                                    |
 <!-- /sync:hooks -->
 
 ## Plugins
