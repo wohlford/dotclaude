@@ -34,7 +34,7 @@ caught whether you're editing, reviewing, or committing:
 
 - **Hooks** (`scripts/style-check.sh`, `shellcheck-check.sh`, `ruff-check.sh`, …) run on every
   `Edit`/`Write` and **block** a non-conforming change immediately (exit 2). See
-  `scripts/HOOKS.md` for how they're built.
+  [`scripts/HOOKS.md`](scripts/HOOKS.md) for how they're built.
 - **Reviewer agents** (`agents/style-reviewer.md`, `skill-reviewer.md`, …) are dispatched **on demand**
   by [`/vet`](skills/vet/SKILL.md) for a deeper read than a hook can do at edit time.
 - **`/sync-docs`** keeps the auto-generated index regions (`<!-- sync:* -->` tables in README/CLAUDE)
@@ -77,7 +77,7 @@ To *change* what something says, edit its canonical home — never the derived c
 | The `<!-- sync:* -->` marker system | `skills/sync-docs/reference.md` |
 | A skills/agents/hooks **index table** | the source files (SKILL.md, agent .md, `settings.json`) — regenerate with `/sync-docs`, never hand-edit the table |
 | Hook wiring | `settings.json` (+ each script's `# Purpose:` header) |
-| How to author a hook | `scripts/HOOKS.md` |
+| How to author a hook | [`scripts/HOOKS.md`](scripts/HOOKS.md) |
 | Test conventions | `TESTING.md` |
 
 ## Extension points
@@ -85,5 +85,5 @@ To *change* what something says, edit its canonical home — never the derived c
 - **New skill** → `/init-skill` scaffolds `skills/<name>/SKILL.md`; `skill-reviewer` +
   `skill-content-reviewer` check it; add its row via `/sync-docs`.
 - **New agent** → follow `agents/agent-reviewer.md` as the canonical shape.
-- **New hook** → write it per `scripts/HOOKS.md`, wire it into `settings.json`.
+- **New hook** → write it per [`scripts/HOOKS.md`](scripts/HOOKS.md), wire it into `settings.json`.
 - **New standard** → put it in the right canonical doc, then decide which enforcement arm(s) apply.

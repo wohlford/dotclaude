@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.15.1 — 2026-07-04
+- docs(hooks): add HOOKS.md guide for authoring PreToolUse and PostToolUse hooks
+
 ## v0.15.0 — 2026-07-04
 - feat(install): add installer that symlinks tracked config into ~/.claude
 
