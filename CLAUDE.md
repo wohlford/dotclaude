@@ -74,6 +74,10 @@ Universal instructions for all projects.
 | PostToolUse | `Edit\|Write`                        | `audit-test.sh`              | PostToolUse hook — run the audit engine test suite when the engine or its suite changes                                    |
 <!-- /sync:hooks -->
 
+> Hooks fire per-edit: a multi-step change that passes through an invalid intermediate state
+> (e.g. resolving conflict markers with two Edits) trips transient PostToolUse errors — verify
+> the final file state instead of reacting to the mid-sequence report, or make it one edit.
+
 ## Plugins
 
 Enabled in [settings.json](./settings.json):
