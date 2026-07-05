@@ -1,0 +1,23 @@
+# Scripts
+
+Hook and utility scripts shipped with this `~/.claude/` configuration. The scripts here back
+the hooks declared in [`settings.json`](../settings.json); `install.sh` (repo
+root) symlinks this directory into `~/.claude`. New hooks follow the shared protocol in
+[HOOKS.md](HOOKS.md). See [`../skills/sync-docs/reference.md`](../skills/sync-docs/reference.md)
+for how the index below stays in sync.
+
+## Index
+
+<!-- sync:scripts -->
+| Script                  | Purpose                                                                                        |
+| :---------------------- | :--------------------------------------------------------------------------------------------- |
+| `guard-secrets-test.sh` | PostToolUse hook — run the guard-secrets test suite when the guard changes                     |
+| `guard-secrets.sh`      | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem)                  |
+| `push-guard.sh`         | PreToolUse hook — block `git push` unless the push segment leads with an ALLOW_PUSH=1 override |
+| `ruff-check.sh`         | PostToolUse hook — run ruff lint+format check on edited Python in ruff projects                |
+| `shellcheck-check.sh`   | PostToolUse hook — run shellcheck on edited shell scripts                                      |
+| `style-check-test.sh`   | PostToolUse hook — run the style-check test suite when style-check changes                     |
+| `style-check.sh`        | Global PostToolUse hook — validate file edits against STYLE.md                                 |
+| `sync-docs-check.sh`    | PostToolUse hook — block edits that leave /sync-docs index tables drifted                      |
+| `sync-docs-test.sh`     | PostToolUse hook — run the sync-docs test suite when its Python changes                        |
+<!-- /sync:scripts -->

@@ -64,13 +64,13 @@ Universal instructions for all projects.
 Enabled in [settings.json](./settings.json):
 
 <!-- sync:plugins cols=Plugin:key,Purpose:manual -->
-| Plugin                 | Purpose |
-| :--------------------- | :------ |
-| `claude-code-setup`    |         |
-| `claude-md-management` |         |
-| `code-review`          |         |
-| `pyright-lsp`          |         |
-| `superpowers`          |         |
+| Plugin                 | Purpose                                                                   |
+| :--------------------- | :------------------------------------------------------------------------ |
+| `claude-code-setup`    | Recommend Claude Code automations                                         |
+| `claude-md-management` | Audit and improve CLAUDE.md files                                         |
+| `code-review`          | Code review pull requests (`/review`, `/security-review`, `/ultrareview`) |
+| `pyright-lsp`          | Python type checking via Pyright                                          |
+| `superpowers`          | Enhanced development workflows and skills                                 |
 <!-- /sync:plugins -->
 
 ### Superpowers plan/spec location (override)

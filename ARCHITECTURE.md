@@ -78,7 +78,7 @@ To *change* what something says, edit its canonical home — never the derived c
 | A skills/agents/hooks **index table** | the source files (SKILL.md, agent .md, `settings.json`) — regenerate with `/sync-docs`, never hand-edit the table |
 | Hook wiring | `settings.json` (+ each script's `# Purpose:` header) |
 | How to author a hook | [`scripts/HOOKS.md`](scripts/HOOKS.md) |
-| Test conventions | `TESTING.md` |
+| Test conventions | [`TESTING.md`](TESTING.md) |
 
 ## Extension points
 

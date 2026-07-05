@@ -28,7 +28,7 @@ Wondering how the pieces fit — what takes effect where, and what owns what? Se
 | [templates.md](templates.md) | Starter templates for Bash scripts, Python modules, and JavaScript |
 | [workflows.md](workflows.md) | Development workflows — the `/feature` pipeline, with Explore/Plan/Code/Commit and TDD as primitives |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | How this repo fits together — enforcement mesh, staging→propagate lifecycle, source-of-truth map |
-| TESTING.md | Test layout and conventions (pytest suites, fixture-repo factories, harness style) |
+| [TESTING.md](TESTING.md) | Test layout and conventions (pytest suites, fixture-repo factories, harness style) |
 
 ### Skills (Slash Commands)
 
@@ -78,13 +78,13 @@ Wondering how the pieces fit — what takes effect where, and what owns what? Se
 ### Plugins
 
 <!-- sync:plugins cols=Plugin:key,Purpose:manual -->
-| Plugin                 | Purpose |
-| :--------------------- | :------ |
-| `claude-code-setup`    |         |
-| `claude-md-management` |         |
-| `code-review`          |         |
-| `pyright-lsp`          |         |
-| `superpowers`          |         |
+| Plugin                 | Purpose                                                                   |
+| :--------------------- | :------------------------------------------------------------------------ |
+| `claude-code-setup`    | Recommend Claude Code automations                                         |
+| `claude-md-management` | Audit and improve CLAUDE.md files                                         |
+| `code-review`          | Code review pull requests (`/review`, `/security-review`, `/ultrareview`) |
+| `pyright-lsp`          | Python type checking via Pyright                                          |
+| `superpowers`          | Enhanced development workflows and skills                                 |
 <!-- /sync:plugins -->
 
 Plugins are configured in [`settings.json`](settings.json) and resolved automatically by Claude Code.

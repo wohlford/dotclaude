@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.15.2 — 2026-07-04
+- docs(index): add TESTING and README indexes; regenerate all sync-docs tables
+
 ## v0.15.1 — 2026-07-04
 - docs(hooks): add HOOKS.md guide for authoring PreToolUse and PostToolUse hooks
 
