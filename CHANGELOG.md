@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.37.0 — 2026-07-16
+- feat(debrief): stop at the reviewed plan and follow up on deferrals
+
 ## v0.36.0 — 2026-07-16
 - feat(feature): run /security-review on the diff when triage flags security
 

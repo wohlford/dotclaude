@@ -1,31 +1,50 @@
 ---
 name: debrief
-description: Run the end-of-session pre-compaction routine (CLAUDE.md refresh, memory save, automation review and implementation)
+description: Run the end-of-session pre-compaction routine (deferral follow-up, CLAUDE.md refresh, memory save, automation review, and deferred design)
 disable-model-invocation: true
 ---
 
 # /debrief — End-of-Session Pre-Compaction Routine
 
-Walk through the end-of-session ritual before compacting: refresh CLAUDE.md from the
-session, save anything durable to memory, review and implement automation recommendations,
-commit the result, and hand off the manual compaction steps. Invoked deliberately by the
-user near the end of a working session.
+Walk through the end-of-session ritual before compacting: follow up on what a past debrief
+deferred, refresh CLAUDE.md from the session, save anything durable to memory, review
+automation recommendations and design the accepted ones, commit the result, and hand off the
+manual compaction steps. Invoked deliberately by the user near the end of a working session.
 
 ## Instructions
 
 The user is about to compact the conversation and wants to capture everything worth keeping
 first. Orchestrate the routine below: invoke each sub-skill in order and surface its output.
-Most steps now apply automatically — the CLAUDE.md refresh and audit (steps 1–2) and the
-memory save (step 3) auto-apply, and the automation pass (step 4) auto-accepts its top picks.
-The routine pauses only where judgment is still required: a CLAUDE.md edit that trips the
-sensitivity carve-out (below), a medium-tier automation, and the implementation plan in step 5.
+Most steps apply automatically — the CLAUDE.md refresh and audit (steps 1–2) and the memory
+save (step 3) auto-apply, and the automation pass (step 4) auto-accepts its top picks. The
+routine pauses only where judgment is genuinely required: the deferral triage (step 0, when open
+deferrals exist), a CLAUDE.md edit that trips the sensitivity carve-out (below), and a
+medium-tier automation.
 
-Seed a TodoWrite list with one item per step (1–7) so progress is visible and resumable.
+**The debrief designs; it never builds.** It is a wind-down, so it stops at a decision or a
+reviewed plan and records the rest for later. Implementing here would burn the context the user
+is about to compact, and a plan deserves a session with room to execute it.
+
+Seed a TodoWrite list with one item per step (0–7) so progress is visible and resumable.
 
 This skill stops at the hand-off. It CANNOT run `/compact`, exit Claude, or restart it —
 those remain manual steps for the user.
 
 ### Process
+
+0. **Follow up on open deferrals.** Read `BACKLOG.md` in this session's memory directory (skip
+   silently if it doesn't exist) and report every open (`- [ ]`) entry with its age. Recommend
+   one of three dispositions for each, say why, and pause for the user's call. Each disposition
+   writes something different back to `BACKLOG.md`:
+   - **keep** — still wanted, just not now. Leave the entry untouched.
+   - **drop** — overtaken by events. Tick it to `- [x]`, append what overtook it, and move it
+     under `## Closed`.
+   - **promote** — worth doing next session. Leave it open, but stamp the line
+     (`promoted <YYYY-MM-DD>`) so a later debrief can see it was already called up and ask why
+     it stalled, rather than re-reading it as freshly deferred.
+
+   Never implement a promoted item here; name it in the step-7 hand-off as the next session's
+   first job.
 
 1. **Refresh CLAUDE.md from the session.** Invoke `claude-md-management:revise-claude-md`.
    **Auto-apply** its proposed CLAUDE.md edits, then show the resulting diff so the change
@@ -59,58 +78,79 @@ those remain manual steps for the user.
    ones (noting what was dropped), and **pause for the user's decision on any medium-tier**
    recommendation, regardless of count. If nothing is accepted, skip to step 6.
 
-5. **Design and implement the accepted automations via the `/feature` pipeline** (only when one
-   or more were accepted in step 4):
+5. **Design the accepted automations, then defer them** (only when one or more were accepted in
+   step 4):
    1. For the accepted automations — as one cohesive set only when they share a mechanism or
-      touch the same files, otherwise each on its own — **follow** the
-      `/feature` design pipeline documented in `skills/feature/SKILL.md`: Step 0 risk triage, then
-      the chosen lane (brainstorming → spec/plan, an ultrathink-level self-review, the optional
-      empirical spike, and the budget-gated diverse-model review) to produce a reviewed plan.
-      Follow `/feature`'s documented steps directly rather than firing it via the Skill tool: the
-      routine continues past `/feature`'s stop-at-plan boundary (step 5.3 below), so it orchestrates
-      the pipeline inline. The SKILL.md is the single source of truth.
-   2. **Present the reviewed plan and pause** for the user's confirmation.
-   3. On confirmation, **implement** the plan (`superpowers:subagent-driven-development`).
-      This deliberately continues past `/feature`'s stop-at-plan boundary — a standalone
-      `/feature` run hands off here, but the debrief routine owns execution. Because this routine
-      owns execution, it also owns `/feature`'s commit invariant: **make every task commit through
-      `/commit`, in the foreground** — a signed-commit repo cannot sign inside a background
-      subagent, so the controller commits each completed task via `/commit` (which applies the
-      repo's per-commit semver tag) rather than relying on SDD subagents to `git commit`. Never
-      bare `git commit`: it skips the tag and corrupts the release sequence.
-      After implementation, **finish with `superpowers:finishing-a-development-branch`** to merge
-      the feature branch back to its base — matching `/feature`'s own default end action. If the
-      merge is deferred, the step-7 hand-off must tell the user the repo is still on an unmerged
-      feature branch.
+      touch the same files, otherwise each on its own — run **`/feature --plan-only`**, which
+      ends at the reviewed plan. (Whether that plan lands as a commit depends on the repo —
+      step 5.4 owns that.)
+   2. **Defer every plan; never implement one here.** Do not ask the user whether to implement —
+      the answer is always "not in the debrief". Record the deferral (5.3) and move on.
+   3. **Record the deferral in the private backlog.** Deferrals live in this session's memory
+      directory, outside every repo: private by construction, and durable through the
+      `git clean -fdx` that would wipe a gitignored `plans/`. Write both halves:
+      - **The design**, as its own memory file (`type: project`, one deferral per file)
+        following the step-3 memory protocol. It **must be self-contained** — enough to
+        re-derive the plan from scratch, including the rationale and any defect a review
+        caught. The plan file itself is *not* durable (`plans/` is commonly gitignored), so
+        name its path as a convenience but never let the entry be a bare pointer to it.
+      - **The index entry**, appended under `## Open` in `BACKLOG.md` in that same directory.
+        Create the file if absent — same frontmatter shape as any memory file, plus its
+        `MEMORY.md` pointer — but note it is an *index*, one line per deferral, not a one-fact
+        memory. Each line is what step 0 reads back:
+
+        ```text
+        - [ ] <YYYY-MM-DD> — <one line: what it is, and why it's worth doing> — [[<memory-slug>]]
+        ```
+
+        Record why the work *matters*, not why the debrief didn't build it — that reason is
+        always the same and carries no signal.
+
+   4. **Return to the base branch, always.** `/feature --plan-only` creates a feature branch and
+      leaves it checked out. **Check the base branch back out before step 6** — otherwise step 6
+      commits the routine's own CLAUDE.md edits and step-3 repo files onto an abandoned feature
+      branch, where they are invisible to `/propagate` and to the next session. Then, by what the
+      branch holds:
+      - **Zero commits** — the normal case when `plans/` is gitignored, so the plan was never
+        committable. Delete the branch (after checking out the base; you cannot delete the branch
+        you are standing on). An empty branch is litter, not state.
+      - **The plan commit landed** — keep the branch and name it in the hand-off, so the user
+        knows where the plan lives and that it is unmerged.
 
 6. **Commit what the routine changed.** If the working tree has tracked changes from this
-   routine (accepted CLAUDE.md edits, any repo files written in step 3, and — only when step
-   5's merge was deferred — automation changes the SDD flow didn't already commit), invoke
-   `/commit` to commit them. The commit skill is granular by default,
-   so it splits unrelated changes into separate commits and tags. If there are no tracked
-   changes, say so and continue.
+   routine (accepted CLAUDE.md edits, any repo files written in step 3), invoke `/commit` to
+   commit them. The commit skill is granular by default, so it splits unrelated changes into
+   separate commits and tags. If there are no tracked changes, say so and continue.
 
-7. **Hand-off.** Tell the user the routine is complete and print the three manual steps the
-   skill cannot perform:
+7. **Hand-off.** Tell the user the routine is complete. Report any state they must act on:
+   - a deferral **promoted** in step 0 — the next session's first job
+   - a plan **deferred** in step 5, and where its backlog entry lives
+   - a feature branch left in place, if step 5.4 kept one
+
+   Then print the three manual steps the skill cannot perform:
    1. Run `/compact`.
    2. Exit Claude.
    3. Restart Claude to reload configuration.
 
 ### Rules
 
+- **Design, never build.** Step 0 stops at a disposition and step 5 stops at a reviewed plan.
+  Neither implements, and neither asks the user whether to — a promoted or deferred item is
+  named in the hand-off and executed in a later session.
 - Steps 1–3 auto-apply (CLAUDE.md refresh/audit, memory); step 4 auto-accepts the top picks
-  and auto-declines low picks. Pause only for: a CLAUDE.md edit that trips the sensitivity
-  carve-out, a medium-tier automation (step 4), and the implementation plan (step 5).
+  and auto-declines low picks. Pause only for: the deferral triage (step 0, when open deferrals
+  exist), a CLAUDE.md edit that trips the sensitivity carve-out, and a medium-tier automation
+  (step 4).
 - **Sensitivity carve-out:** never auto-write into a tracked public file (CLAUDE.md or any
   other) content the repo keeps out of public history (operational-security notes — see
   private memory); surface it for confirmation and prefer private memory or `.claude.local.md`.
 - After an auto-applied CLAUDE.md change (steps 1–2), show the diff so the result stays visible.
 - Never run `/compact`, exit, or restart Claude — stop at the hand-off and let the user do
   those.
-- Memory entries persist through Claude Code's memory store, which lives outside this repo;
-  only repo files need committing in step 6.
-- In step 5, follow `/feature`'s artifact convention (spec/plan under `specs/`/`plans/`); those
-  files are governed by the repo's own tracking rules (often gitignored), so only the implemented
-  changes need committing in step 6.
+- **The backlog is private and repo-external.** `BACKLOG.md` and the per-deferral memory files
+  live in the session's memory directory — never in a repo, which keeps them out of public
+  history and off the propagate path. Only repo files need committing in step 6.
 - In step 3, follow the memory protocol: one fact per file with frontmatter and a
   `MEMORY.md` pointer line; update an existing memory file rather than duplicating it.
+- In step 5, `/feature` owns its own artifact convention (spec/plan under `specs/`/`plans/`) and
+  its own commit discipline; the debrief does not restate them.
