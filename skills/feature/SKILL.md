@@ -89,8 +89,11 @@ The value is a **different model than the author** catching blind spots same-mod
   Fable is unavailable** (when Anthropic has it disabled, the Agent returns a "Fable … currently
   unavailable" error), **explicitly fall back to Sonnet** (Opus only if you are Sonnet), and
   state which model actually reviewed (not Fable). Announce the choice.
-- Spawn it with the **Agent tool**, `model:` = the chosen **alias** (`fable` / `sonnet` / `opus` /
-  `haiku`), and a skeptical critical-review prompt asking for prioritized findings
+- Spawn it with the **Agent tool**, `model:` = the chosen **alias** — `fable`, `sonnet`, or `opus`.
+  **Never `haiku`:** critiquing a plan is design judgment, the top of the tier ladder
+  ([agents/README.md](../../agents/README.md)), and a cheap reviewer here buys a cheap review of
+  the one artifact the whole pipeline rests on. Use a skeptical critical-review prompt asking for
+  prioritized findings
   (`[BLOCKER|MAJOR|MINOR] location — problem — fix`), passing the artifact path + relevant files.
 - **Detect silent degradation:** ask the reviewer to state its exact model id as the first line of its
   reply; if it doesn't match what you requested, treat the pass as the fallback and say so. **Never
