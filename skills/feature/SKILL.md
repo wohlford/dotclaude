@@ -7,7 +7,8 @@ description: Run the methodical, risk-tiered pipeline for a change (triage → s
 
 Drive a change from idea to a **merged change**: a risk-triaged design half (spec → spike → plan →
 review) followed by **subagent-driven execution and a merge**. Orchestrates the `superpowers` skills
-and adds risk triage, an empirical spike, and a diverse-model review. **Scale the rigor to the
+and adds risk triage, an empirical spike, a diverse-model review, and — when triage flags security — a
+`/security-review` of the implemented diff. **Scale the rigor to the
 uncertainty.** Pass `--plan-only` to stop at the reviewed plan instead.
 
 ## Instructions
@@ -105,7 +106,13 @@ With the plan reviewed and committed, **continue** (do not stop):
    subagent, so the controller commits each completed task via `/commit` (which applies the repo's
    per-commit semver tag) rather than relying on SDD subagents to `git commit`. Never bare `git
    commit`: it skips the tag and corrupts the release sequence.
-2. **Finish** with `superpowers:finishing-a-development-branch`: verify the project's test suite
+2. **Security-review the diff (conditional; either lane).** If Step 0's triage flagged the change as
+   touching **security or a fail-closed gate**, run **`/security-review`** (code-review plugin) over
+   the branch's implemented diff before finishing. This **complements — never replaces — the
+   diverse-model review**: that one critiques the *plan* at design time; this one inspects the *code
+   that actually landed*, which is where security defects live. Fold any findings (fixing via
+   `/commit`), re-run until clean, then continue. If triage did not flag security, skip it and say so.
+3. **Finish** with `superpowers:finishing-a-development-branch`: verify the project's test suite
    passes (if the repo has none, say so and rely on the per-task reviews), then
    **merge the feature branch** back to its base and clean up. The **merge is the default end
    action** — do not pause to choose it. If tests fail, stop and report; do not merge.
@@ -129,8 +136,12 @@ the plan is approved, the feature branch is left in place, and execution is a se
 - **Every commit the pipeline creates goes through `/commit`** (semver tag + `CONTRIBUTING.md`
   conventions), design-phase and implementation alike, run in the **foreground** for signing. This is
   the invariant that keeps the release sequence intact — never fall back to bare `git commit`.
+- **Security-flagged changes get `/security-review` before the merge** (either lane), reusing Step 0's
+  own trigger. It inspects the implemented diff — the diverse-model review only ever saw the plan, so
+  one never substitutes for the other.
 - Time/scope-box the spike to one assumption; bias borderline triage to the full lane.
 - Budget: the diverse-model agent pass — default to **one** (on the plan); ultrathink is cheap; the
   spike substitutes for a second reasoning pass; the fast lane skips the diverse pass unless stakes
   warrant it. The default execute-then-merge phase adds the SDD subagent passes (one implementer +
-  reviews per task); `--plan-only` skips all execution cost.
+  reviews per task), plus one `/security-review` pass when triage flagged security; `--plan-only`
+  skips all execution cost.

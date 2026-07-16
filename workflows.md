@@ -28,7 +28,8 @@ only if it's high-stakes → execute → merge.
 
 **Execute & merge (both lanes):** present the reviewed plan and **pause for confirmation**, then
 `subagent-driven-development` runs it task-by-task — a fresh subagent per task with per-task and
-whole-branch reviews — then `finishing-a-development-branch` verifies the suite passes and merges. If
+whole-branch reviews. When triage flagged security, `/security-review` inspects the implemented diff
+before the merge. Then `finishing-a-development-branch` verifies the suite passes and merges. If
 tests fail, stop and report; don't merge.
 
 ## The primitives
