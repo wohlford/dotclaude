@@ -53,10 +53,15 @@ the end (no merge).
 #### Fast lane (low uncertainty)
 
 1. Use `superpowers:brainstorming` lightly to produce a **short combined spec+plan** (a few sentences
-   of what/why + the task steps) — or just a short plan if there's no design to settle. Save to
-   `plans/YYYY-MM-DD-<name>.md`; commit via `/commit`.
-2. Do **one deep self-review** (ultrathink-level): placeholders, contradictions, missed steps, scope.
-   Revise inline.
+   of what/why + the task steps) — or just a short plan if there's no design to settle. "Lightly"
+   trims the collaborative dialogue (the one-question-at-a-time exploration, the 2–3 alternative
+   approaches) — **not** its spec self-review, which still runs and which step 2 depends on having
+   run. Save to `plans/YYYY-MM-DD-<name>.md`; commit via `/commit`.
+2. **Ultrathink the design, not the checklist.** If `brainstorming` ran, its own self-review already
+   covered placeholders, internal consistency, scope, and ambiguity — do **not** repeat that. If you
+   took the short-plan path and skipped brainstorming, nothing has run those checks: do one quick pass
+   over them first. Either way, the pass that earns its keep is the one no checklist can make: is this
+   the right design, is the decomposition sound, does it solve the actual problem? Revise inline.
 3. Run a diverse-model review **only if** it touches security / high stakes (see below); else skip.
 4. Present for confirmation, then **execute and merge** (below).
 
@@ -65,7 +70,11 @@ the end (no merge).
 1. **Spec.** Use `superpowers:brainstorming` to produce the spec. When brainstorming reaches its
    terminal "invoke `writing-plans`" step, **do NOT follow it** — return here to step 2 (you interpose
    the spike + reviews first). Save the spec to `specs/YYYY-MM-DD-<name>.md`; commit via `/commit`.
-2. **Ultrathink the spec.** Deep self-review; revise inline. For high-stakes designs, a second
+2. **Ultrathink the spec — the design, not the checklist.** `brainstorming` already self-reviewed for
+   placeholders, internal consistency, scope, and ambiguity; re-running that list is a second
+   same-model pass over the same blind spot, which is exactly what the step-6 diverse review exists to
+   cover. Ask instead what its checklist cannot: is this the right approach, are the boundaries sound,
+   what did we fail to consider? Revise inline. For high-stakes designs, a second
    diverse-model review of the *spec* (the step-6 mechanism) is opt-in — offer it here, before
    the spike.
 3. **Spike the #1 risk.** Name the assumption whose failure invalidates the most downstream work. If
@@ -75,7 +84,10 @@ the end (no merge).
    adjust, maybe loop to step 1). If the top risk is empirical but **not** cheaply probeable, say so
    and rely on the plan's decision-gates instead. If it isn't empirical, say "no spike" and continue.
 4. **Plan.** Use `superpowers:writing-plans`. Save to `plans/YYYY-MM-DD-<name>.md`; commit via `/commit`.
-5. **Ultrathink the plan.** Deep self-review; revise inline.
+5. **Ultrathink the plan — the design, not the checklist.** `writing-plans` already self-reviewed for
+   spec coverage, placeholders, and type consistency. Your pass asks what it cannot: does the task
+   decomposition hold, does the spike's result still hold, is each task independently reviewable?
+   Revise inline.
 6. **One diverse-model review of the plan** (see below). Fold findings; revise; recommit via `/commit`. (If a
    review at this stage invalidates the spec, loop back to step 1 as with spike
    invalidation.)
@@ -109,6 +121,21 @@ With the plan reviewed and committed, **continue** (do not stop):
    subagent, so the controller commits each completed task via `/commit` (which applies the repo's
    per-commit semver tag) rather than relying on SDD subagents to `git commit`. Never bare `git
    commit`: it skips the tag and corrupts the release sequence.
+
+   **Scale execution to Step 0's lane** — the triage governs rigor here too, not just the design half.
+   **Scale by model tier, never by dropping a review.** SDD's per-task review and its final
+   whole-branch review ask different questions of the same code (did this task build what its brief
+   demanded, vs. does the branch hold together), and SDD names skipping either a hard *never* — even
+   on a single-task plan, where they read the same diff through different rubrics. Honor its contract:
+   the lane changes *what you pay per pass*, not *how many gates the code clears*.
+   - **Always pass the model explicitly.** SDD inherits *your session's* model when none is given, so
+     every implementer and reviewer silently runs at the session tier — usually the most capable and
+     most expensive. That one omission costs more than every review in this pipeline combined, and it
+     is invisible: nothing reports it.
+   - Dispatch per the tier ladder in [agents/README.md](../../agents/README.md): **implementers** at
+     the cheapest tier that fits (a task whose plan text carries the complete code is transcription →
+     `haiku`; multi-file integration or judgment → `sonnet`); **task reviewers** at `sonnet`; the
+     **final whole-branch review** at `opus` on the full lane, `sonnet` on the fast lane.
 2. **Security-review the diff (conditional; either lane).** If Step 0's triage flagged the change as
    touching **security or a fail-closed gate**, run **`/security-review`** (code-review plugin) over
    the branch's implemented diff before finishing. This **complements — never replaces — the
@@ -146,5 +173,12 @@ the plan is approved, the feature branch is left in place, and execution is a se
 - Budget: the diverse-model agent pass — default to **one** (on the plan); ultrathink is cheap; the
   spike substitutes for a second reasoning pass; the fast lane skips the diverse pass unless stakes
   warrant it. The default execute-then-merge phase adds the SDD subagent passes (one implementer +
-  reviews per task), plus one `/security-review` pass when triage flagged security; `--plan-only`
-  skips all execution cost.
+  reviews per task, plus the final whole-branch review), and one `/security-review` pass when triage
+  flagged security; `--plan-only`
+  skips all execution cost. **Execution spend is controlled by tier, not by cutting gates** — see
+  "Scale execution to Step 0's lane"; never trade a review away to save budget.
+- **Never spend two same-model passes on one artifact.** Each sub-skill (`brainstorming`,
+  `writing-plans`) already self-reviews its own output against a mechanical checklist; the
+  ultrathink steps own the altitude question those checklists cannot ask, and nothing else.
+  Repeating a checklist doubles the pass that shares the author's blind spot — the reason the
+  diverse-model review exists at all. Independence is what catches defects, not repetition.

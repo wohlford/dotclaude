@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.39.0 — 2026-07-16
+- feat(feature): scale execution by tier and end duplicate self-review
+
 ## v0.38.0 — 2026-07-16
 - feat(models): add a tier policy and match each process to it
 
