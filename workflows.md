@@ -36,9 +36,9 @@ tests fail, stop and report; don't merge.
 ### Explore → Plan → Code → Commit
 For lighter work, or *inside* a `/feature` task. **Explore** (read the relevant context, write no code
 yet) → **Plan** (reach for a thinking trigger — `think` / `think hard` / `ultrathink` — for deeper
-analysis) → **Code** (verify reasonableness as you go, work incrementally) → **Commit** (granular; see
-[CONTRIBUTING.md](CONTRIBUTING.md)). Separating research from coding is what stops premature
-implementation.
+analysis) → **Code** (verify reasonableness as you go, work incrementally) → **Commit** (granular, via
+`/commit`; see [CONTRIBUTING.md](CONTRIBUTING.md)). Separating research from coding is what stops
+premature implementation.
 
 ### Test-Driven Development
 The default for anything testable, and how `/feature` execution actually works:
@@ -46,7 +46,7 @@ The default for anything testable, and how `/feature` execution actually works:
 1. Write the failing test from the expected behavior.
 2. Run it — confirm it fails for the right reason (**RED**).
 3. Write the minimal implementation.
-4. Run — confirm it passes (**GREEN**). Commit.
+4. Run — confirm it passes (**GREEN**). Commit via `/commit`.
 
 Don't let the implementation edit the tests. A change to a gate or hook should land with its failing
 test first — the check that would have caught the regression.
@@ -74,8 +74,12 @@ why alongside the fix — in the commit message or a code comment.
   the main context focused — then use their conclusions instead of redoing the search.
 - **Verify before claiming done.** Evidence before assertions: run the check and show the output. If
   tests fail, say so; if a step was skipped, say that.
-- **Granular commits.** One logical change per commit ([CONTRIBUTING.md](CONTRIBUTING.md)); the pipeline
-  commits per task, tagging each.
+- **Granular commits, via `/commit`.** One logical change per commit —
+  [CONTRIBUTING.md](CONTRIBUTING.md) holds the conventions; `/commit` applies them and adds the
+  semver tag and changelog entry. Run it in the **foreground**: a signed repo can't sign inside a
+  background subagent, and bare `git commit` skips the tag, corrupting the release sequence. The
+  pipeline commits per task, tagging each. `/recast` is the one exception — it owns its own
+  per-brick commit/tag/changelog discipline.
 
 ## Choosing the approach
 
