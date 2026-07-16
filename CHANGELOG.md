@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.34.0 — 2026-07-16
+- feat(recast): dispatch /idempotency-tester for the provisioning double-run
+
 ## v0.33.0 — 2026-07-16
 - feat(recast): forbid /commit for brick commits and tags
 

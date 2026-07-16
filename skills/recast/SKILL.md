@@ -118,8 +118,10 @@ assumes a DAG). The caller approves and may override any classification.
    no changes = idempotent; library/tooling → run the tool + its tests **on the runtime that
    component declares** — its own version-pin file (`.tool-versions`, `package.json` engines,
    `pyproject.toml`, shebang), never the caller's ambient environment; other component shapes →
-   the most direct functional check the brick supports). **Flaky verify:** on
-   failure, re-run **once**; if it fails twice, halt.
+   the most direct functional check the brick supports). For the provisioning-like double-run,
+   dispatch **`/idempotency-tester`** — the ready-made compliance gate for exactly this check
+   (`f(f(x)) == f(x)`, run twice in an env-redirected sandbox) — rather than hand-rolling it.
+   **Flaky verify:** on failure, re-run **once**; if it fails twice, halt.
 3. **Gate** (the history is the artifact): `--verify` passed; linters clean; **no forward references**;
    and — **default** — the provenance + leak sweep (`recast-recon.sh` on the delta, **passing the same
    `--redact` file**; **comprehensive** — traces + names — unless `--keep-code`, which recons
