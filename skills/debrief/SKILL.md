@@ -72,7 +72,12 @@ those remain manual steps for the user.
    2. **Present the reviewed plan and pause** for the user's confirmation.
    3. On confirmation, **implement** the plan (`superpowers:subagent-driven-development`).
       This deliberately continues past `/feature`'s stop-at-plan boundary — a standalone
-      `/feature` run hands off here, but the debrief routine owns execution.
+      `/feature` run hands off here, but the debrief routine owns execution. Because this routine
+      owns execution, it also owns `/feature`'s commit invariant: **make every task commit through
+      `/commit`, in the foreground** — a signed-commit repo cannot sign inside a background
+      subagent, so the controller commits each completed task via `/commit` (which applies the
+      repo's per-commit semver tag) rather than relying on SDD subagents to `git commit`. Never
+      bare `git commit`: it skips the tag and corrupts the release sequence.
       After implementation, **finish with `superpowers:finishing-a-development-branch`** to merge
       the feature branch back to its base — matching `/feature`'s own default end action. If the
       merge is deferred, the step-7 hand-off must tell the user the repo is still on an unmerged
