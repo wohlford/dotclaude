@@ -62,7 +62,7 @@ chore(build)!: drop support for Node 6
 
 ## Semantic versioning
 
-Releases follow [Semantic Versioning 2.0.0](https://semver.org/). A version is `MAJOR.MINOR.PATCH`, and each release is recorded as an annotated git tag (`v1.2.3`).
+Releases follow [Semantic Versioning 2.0.0](https://semver.org/). A version is `MAJOR.MINOR.PATCH`, and each publish is recorded as an annotated git tag (`v1.2.3`).
 
 | Bump | When |
 |------|------|
@@ -70,26 +70,25 @@ Releases follow [Semantic Versioning 2.0.0](https://semver.org/). A version is `
 | **MINOR** | A `feat` commit (new, backward-compatible functionality) |
 | **PATCH** | Every other type (`fix`, `perf`, `docs`, `style`, `refactor`, `test`, `chore`, `ci`, `revert`) |
 
-**Before v1.0.0 (the `0.x` line):** a breaking `!` bumps **MINOR**, not MAJOR — per SemVer, "anything MAY change" in `0.x`, so `v0.4.0` + `feat!` → `v0.5.0`. Reaching **1.0.0 is a deliberate decision**, made with an explicit tag, never an automatic side effect of the first breaking change. (The `/commit` skill applies this rule.)
+**Before v1.0.0 (the `0.x` line):** a breaking `!` bumps **MINOR**, not MAJOR — per SemVer, "anything MAY change" in `0.x`, so `v0.4.0` + `feat!` → `v0.5.0`. Reaching **1.0.0 is a deliberate decision** you make with an explicit `git tag`, never an automatic side effect of the first breaking change.
 
-When several logical changes land together, the highest-ranked change sets the bump: a single `feat!` outranks any number of patches.
+**Cadence:** each publish is tagged from its single publish message. When you batch several commits into one publish, write that message with the highest-ranked change's type — a `feat!` outranks any number of patches.
 
-Because the types map directly onto these rules, the commit history is usually enough to determine the next version — by hand or with a tool that reads the log. Reverts and other edge cases still warrant a human glance before tagging.
+Because the types map onto these rules, the commit history determines the next version — tool that reads the log or by hand: `git tag -a vX.Y.Z -m "<subject>"`. Reverts and other edge cases still warrant a human glance before tagging.
 
 ## Changelog
 
-`CHANGELOG.md` keeps a **living entry per release**, newest-first, each mirroring that release's annotated tag (the same `<type>(scope): subject`). The entry lands in the **same commit** as the change it describes — a release and its changelog line together, never batched at the end. Where a `/commit`-style skill is used, it adds the entry automatically.
+`CHANGELOG.md` keeps a **living entry per release**, newest-first, each mirroring that release's annotated tag (the same `<type>(scope): subject`). The entry lands in the **same commit** as the change it describes — a release and its changelog line together, never batched at the end.
 
 The annotated tags remain the canonical, full-granularity history; the inline changelog is the human-readable digest.
 
 ## Branches and merges
 
-Feature work goes on a `<type>/<kebab-name>` branch (`feat/oauth-support`, `fix/null-parse`) and merges back when done. A merge commit — when one is created — is the one exception to the single-line semantic format: use `Merge <branch>: <summary>`. It never sets the version bump; the bump comes from the commits it brings in.
+Feature work goes on a `<type>/<kebab-name>` (`feat/oauth-support`, `fix/null-parse`). Merge commits are the one exception to the single-line semantic format — use `Merge <branch>: <summary>`. A merge commit never sets the version bump; the bump comes from the commits it brings in.
 
 ## Never commit
 
-Never commit: secrets (`.env`, `*.key`, `*.pem`), dependencies (`node_modules/`, `.venv/`),
-generated files (`.pyc`, `dist/`), OS files (`.DS_Store`), logs, or temp files.
+Never commit: secrets (`.env`, `.env.local`, `*.key`, `*.pem`); large data files or datasets (use git-lfs or a scratch path — never the repo); scheduler output (`slurm-*.out`); build/dependency dirs (`node_modules/`, `.venv/`, `__pycache__/`); OS files (`.DS_Store`); logs; or temp files.
 
 ## Principles
 

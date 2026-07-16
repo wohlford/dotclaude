@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.29.2 — 2026-07-16
+- docs(CONTRIBUTING.md): generalize conventions and expand never-commit
+
 ## v0.29.1 — 2026-07-05
 - docs(hooks): note per-edit hooks trip on invalid intermediate states
 
