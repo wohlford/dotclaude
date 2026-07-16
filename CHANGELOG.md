@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.30.0 — 2026-07-16
+- feat(feature): route pipeline commits through /commit in the foreground
+
 ## v0.29.2 — 2026-07-16
 - docs(CONTRIBUTING.md): generalize conventions and expand never-commit
 

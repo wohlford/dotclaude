@@ -53,7 +53,7 @@ the end (no merge).
 
 1. Use `superpowers:brainstorming` lightly to produce a **short combined spec+plan** (a few sentences
    of what/why + the task steps) — or just a short plan if there's no design to settle. Save to
-   `plans/YYYY-MM-DD-<name>.md`; commit.
+   `plans/YYYY-MM-DD-<name>.md`; commit via `/commit`.
 2. Do **one deep self-review** (ultrathink-level): placeholders, contradictions, missed steps, scope.
    Revise inline.
 3. Run a diverse-model review **only if** it touches security / high stakes (see below); else skip.
@@ -63,7 +63,7 @@ the end (no merge).
 
 1. **Spec.** Use `superpowers:brainstorming` to produce the spec. When brainstorming reaches its
    terminal "invoke `writing-plans`" step, **do NOT follow it** — return here to step 2 (you interpose
-   the spike + reviews first). Save the spec to `specs/YYYY-MM-DD-<name>.md`; commit.
+   the spike + reviews first). Save the spec to `specs/YYYY-MM-DD-<name>.md`; commit via `/commit`.
 2. **Ultrathink the spec.** Deep self-review; revise inline. For high-stakes designs, a second
    diverse-model review of the *spec* (the step-6 mechanism) is opt-in — offer it here, before
    the spike.
@@ -73,9 +73,9 @@ the end (no merge).
    ISO?"), not the whole thing ("does the 60-min install finish?"). Fold the result in (invalidated →
    adjust, maybe loop to step 1). If the top risk is empirical but **not** cheaply probeable, say so
    and rely on the plan's decision-gates instead. If it isn't empirical, say "no spike" and continue.
-4. **Plan.** Use `superpowers:writing-plans`. Save to `plans/YYYY-MM-DD-<name>.md`; commit.
+4. **Plan.** Use `superpowers:writing-plans`. Save to `plans/YYYY-MM-DD-<name>.md`; commit via `/commit`.
 5. **Ultrathink the plan.** Deep self-review; revise inline.
-6. **One diverse-model review of the plan** (see below). Fold findings; revise; recommit. (If a
+6. **One diverse-model review of the plan** (see below). Fold findings; revise; recommit via `/commit`. (If a
    review at this stage invalidates the spec, loop back to step 1 as with spike
    invalidation.)
 7. Present the committed spec + plan. Pause for the user's confirmation, then **execute and merge** (below).
@@ -100,7 +100,11 @@ The value is a **different model than the author** catching blind spots same-mod
 With the plan reviewed and committed, **continue** (do not stop):
 1. **Execute** the plan with `superpowers:subagent-driven-development` on the feature branch — fresh
    subagent per task, per-task spec+quality reviews, and a final whole-branch review. (When
-   `writing-plans` offers to set up execution, this IS that execution.)
+   `writing-plans` offers to set up execution, this IS that execution.) **Make every task commit
+   through `/commit`, in the foreground** — a signed-commit repo cannot sign inside a background
+   subagent, so the controller commits each completed task via `/commit` (which applies the repo's
+   per-commit semver tag) rather than relying on SDD subagents to `git commit`. Never bare `git
+   commit`: it skips the tag and corrupts the release sequence.
 2. **Finish** with `superpowers:finishing-a-development-branch`: verify the project's test suite
    passes (if the repo has none, say so and rely on the per-task reviews), then
    **merge the feature branch** back to its base and clean up. The **merge is the default end
@@ -121,7 +125,10 @@ the plan is approved, the feature branch is left in place, and execution is a se
   `writing-plans`' execution offer).
 - **Invocation** — model-invocable; launch it (or let the user run `/feature`) only for changes
   that warrant methodical design, not trivial edits. A deliberate, scale-to-uncertainty kickoff.
-- Save spec/plan at the repo root (`specs/`, `plans/`, `YYYY-MM-DD-<name>.md`); commit each as produced.
+- Save spec/plan at the repo root (`specs/`, `plans/`, `YYYY-MM-DD-<name>.md`); commit each as produced via `/commit`.
+- **Every commit the pipeline creates goes through `/commit`** (semver tag + `CONTRIBUTING.md`
+  conventions), design-phase and implementation alike, run in the **foreground** for signing. This is
+  the invariant that keeps the release sequence intact — never fall back to bare `git commit`.
 - Time/scope-box the spike to one assumption; bias borderline triage to the full lane.
 - Budget: the diverse-model agent pass — default to **one** (on the plan); ultrathink is cheap; the
   spike substitutes for a second reasoning pass; the fast lane skips the diverse pass unless stakes
