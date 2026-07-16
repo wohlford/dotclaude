@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.33.0 — 2026-07-16
+- feat(recast): forbid /commit for brick commits and tags
+
 ## v0.32.0 — 2026-07-16
 - feat(debrief): route SDD task commits through /commit in the foreground
 

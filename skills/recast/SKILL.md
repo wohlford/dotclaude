@@ -132,7 +132,11 @@ assumes a DAG). The caller approves and may override any classification.
      docs/config seed, runs nothing, and states the project's *intent*, not an inventory.
 4. **Commit** with a conventional-commit subject + an **annotated semver tag** (default on;
    `--no-tag` to skip) + a **living CHANGELOG entry** (append `[declared, not proven]` when the brick
-   used `--verify true`). Any date in the entry is **date-only** (`YYYY-MM-DD`), taken from the brick's
+   used `--verify true`). **Never via `/commit`** — recast owns this discipline itself: brick versions
+   come from the approved brick-plan rather than being derived from the message type, entries carry the
+   `[declared, not proven]` suffix, and the target is a *different* repo (commit with
+   `git -C <target>`; `/commit` acts on the current one). `/commit`'s SKILL.md carves this out
+   reciprocally. Any date in that CHANGELOG entry is **date-only** (`YYYY-MM-DD`), taken from the brick's
    own commit rather than an independent clock call — so every entry is reproducible from the
    history alone and carries no time-of-day noise. Grow docs to describe only what now works, and **regenerate any
    generated index/manifest this brick affects — the target's `<!-- sync:* -->` tables, a plugin
