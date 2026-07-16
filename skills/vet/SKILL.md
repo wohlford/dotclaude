@@ -9,7 +9,8 @@ Review an **authored** skill, agent, or script by dispatching the repo's reviewe
 its type, then report their findings. Read-only and non-blocking — it surfaces issues; the caller
 decides what to fix. Best run once an artifact's content is written (a fresh scaffold is still stubs,
 so a reviewer would mostly flag placeholders). Pass `--all` to sweep the whole repo (see Repo-wide
-mode below).
+mode below). Complements `/audit` (deterministic linters, format, link, exec-bit, and config-validity
+checks — the mechanical half); the two together cover a full repo audit.
 
 ## Instructions
 
@@ -99,3 +100,6 @@ Vet every shipping artifact in the repo, batched by category, in one pass:
 - **`--all` announces the artifact + subagent count before firing** — a large fan-out is never silent.
   Bare `/vet` (no path, no `--all`) asks what to vet. `--all` defaults to shipping artifacts; `--tests`
   opts into test code (which has only a narrow, Python-only STYLE exemption).
+- Never run `/vet` as a substitute for `/audit` — model reviewers judge content and structure; they
+  never run the mechanical sweep (linters, format, links, exec-bit, config validity). `/vet --all`
+  and `/audit` are the two halves of a full repo audit.
