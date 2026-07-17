@@ -1,7 +1,6 @@
 ---
 name: init-python
 description: Scaffold a new Python module from the standard template in templates.md
-disable-model-invocation: true
 ---
 
 # /init-python — Scaffold a Python Module

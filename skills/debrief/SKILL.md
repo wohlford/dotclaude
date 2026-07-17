@@ -9,7 +9,8 @@ disable-model-invocation: true
 Walk through the end-of-session ritual before compacting: follow up on what a past debrief
 deferred, refresh CLAUDE.md from the session, save anything durable to memory, review
 automation recommendations and design the accepted ones, commit the result, and hand off the
-manual compaction steps. Invoked deliberately by the user near the end of a working session.
+manual compaction steps. **User-invoked only — deciding when a session has ended is the user's call,
+not Claude's** — so it is run deliberately, near the end of one.
 
 ## Instructions
 

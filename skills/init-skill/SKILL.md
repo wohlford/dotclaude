@@ -1,7 +1,6 @@
 ---
 name: init-skill
 description: Scaffold a new skill at skills/<name>/SKILL.md following the standard structure
-disable-model-invocation: true
 ---
 
 # /init-skill — Scaffold a Skill
@@ -19,7 +18,7 @@ The user must provide:
 - A one-line description (used verbatim as the frontmatter `description:`; the heading's `<Subject>` is a short Title-Case noun phrase distilled from it — e.g., description "Create a git commit with automatic semver tagging…" → heading `# /commit — Create a Git Commit`)
 
 The user may optionally provide:
-- `--user-only` — set `disable-model-invocation: true` in the frontmatter (skill is invokable only via `/<name>`, not by Claude during a session). Use for skills with side effects (deploy, push, send) — e.g., `skills/propagate/SKILL.md` sets it. (Note: `skills/commit/SKILL.md` deliberately omits the flag so `/debrief` can invoke it — a documented exception, not the pattern to copy.)
+- `--user-only` — set `disable-model-invocation: true` in the frontmatter (skill is invokable only via `/<name>`, not by Claude during a session). Use it only when the skill is **outward-facing or irreversible** (e.g. `skills/propagate/SKILL.md` pushes to a remote), or when the act is the **user's prerogative** to authorise — in which case state that reason in the skill's own summary using the literal phrase `the user's call`, since that exact wording is the marker `skill-reviewer` greps for; a paraphrase reads like a reason but fails the check. Writing a file is not itself a reason: Claude can Write the same file directly, so the flag would block only the template. See `agents/skill-reviewer.md` for the canonical rule.
 - `--with-dynamic-context` — include a `## Dynamic Context` section with placeholder bash blocks (modeled on `skills/commit/SKILL.md`). Use for skills that need fresh git/system state at invocation.
 
 ### Process
@@ -39,7 +38,7 @@ The scaffolded `SKILL.md` follows this layout:
 ---
 name: <name>
 description: <one-line description>
-[disable-model-invocation: true]   # only if --user-only
+[disable-model-invocation: true]   # only if --user-only; a prerogative claim must say "the user's call" in the summary
 ---
 
 # /<name> — <Subject>

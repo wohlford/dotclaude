@@ -1,7 +1,6 @@
 ---
 name: init-bash
 description: Scaffold a new Bash script from the standard template in templates.md
-disable-model-invocation: true
 ---
 
 # /init-bash — Scaffold a Bash Script

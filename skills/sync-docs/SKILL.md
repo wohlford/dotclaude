@@ -1,7 +1,6 @@
 ---
 name: sync-docs
 description: Regenerate index regions of README.md and CLAUDE.md from authoritative sources
-disable-model-invocation: true
 ---
 
 # /sync-docs — Sync Documentation Indexes

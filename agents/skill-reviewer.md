@@ -29,13 +29,25 @@ Read an existing well-formed skill first (e.g. `skills/commit/SKILL.md` or
 - `name:` present, in `kebab-case`, and **matches the parent directory name**
   (`skills/<name>/SKILL.md`)
 - `description:` present, a single line, no trailing period
-- `disable-model-invocation: true` is present for **side-effectful** skills — anything that
-  commits, deploys, pushes, sends, or otherwise changes external state (e.g. propagate,
-  init-* scaffolds). Flag its absence on such skills; flag its presence on a purely
-  informational skill as suspicious. **Exception:** a side-effectful skill may stay
-  model-invocable by design — `commit` omits the flag so `/debrief` can invoke it
-  programmatically, and `/feature` omits it so Claude can launch the design pipeline directly;
-  treat a documented model-invocable role as intended, not a defect.
+- `disable-model-invocation: true` is present when **either** limb holds — and only then:
+  - **Risk** — **any mode** of the act is outward-facing or irreversible: it *can* publish beyond
+    this machine, or cannot be undone. **Judge the act's whole surface, never its default mode** —
+    `propagate` is entirely local by default and publishes only with `--push`; it is flagged
+    because it *can* publish, not because it usually does.
+  - **Prerogative** — only the human can decide the act is warranted, whatever its risk (e.g.
+    `debrief` ends a working session; `recast` commits the user to re-developing a whole history).
+    **A skill claiming this limb must say so in its own text, in the words `the user's call`** —
+    that exact phrase is the marker, so `grep -q "the user's call"` decides it. A reason worded any
+    other way is not mechanically checkable, which defeats the requirement; treat a prerogative
+    flag without the phrase as suspicious.
+
+  **Judge the act's reach and reversibility — never whether it writes a file.** Claude can Write any
+  file directly, so flagging a scaffolder blocks the template, not the write.
+
+  Flag the line's absence on a skill either limb covers. Flag its presence on a skill neither
+  covers: **no mode** of `commit` or `feature` publishes — they create local, reversible history, and
+  publishing is a separate act behind its own guard (`push-guard`, `/propagate`). Both are therefore
+  model-invocable by this rule, with no exception needed.
 
 ### Heading and summary
 
@@ -65,7 +77,7 @@ Read an existing well-formed skill first (e.g. `skills/commit/SKILL.md` or
 | Severity | Item | Issue |
 | :------- | :--- | :---- |
 | error | frontmatter name | `name: commits` does not match dir `commit` |
-| warning | disable-model-invocation | side-effectful (pushes) but flag absent |
+| warning | disable-model-invocation | outward-facing (pushes) but flag absent |
 ```
 
 If reviewing multiple skills, report each separately, then a summary count.

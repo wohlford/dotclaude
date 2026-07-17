@@ -1,7 +1,6 @@
 ---
 name: init-js
 description: Scaffold a new JavaScript module from the standard template in templates.md
-disable-model-invocation: true
 ---
 
 # /init-js — Scaffold a JavaScript Module

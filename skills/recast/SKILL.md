@@ -9,7 +9,8 @@ disable-model-invocation: true
 Re-develop a **source** repo's functionality into a **target** repo as a genuine, ground-up git
 history — every functional commit a runnable increment **proven before it lands**, converging to
 **functional equivalence** with the source. The source (frozen at a ref) is the *specification of
-the destination*, **not a tree to copy**. User-invoked only; **never auto-pushes**.
+the destination*, **not a tree to copy**. **User-invoked only — committing to a ground-up
+re-development of an entire history is the user's call to make, not Claude's**; **never auto-pushes**.
 
 This is **complementary to `/propagate`**, not a replacement: `/propagate` fast-forward-mirrors a
 **shared** history; `/recast` founds & grows a **divorced** history (ground-up rebuild + scrub).
