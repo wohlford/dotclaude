@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.42.3 — 2026-07-17
+- fix(feature): judge Step 0 risk on two axes, not uncertainty alone
+
 ## v0.42.2 — 2026-07-17
 - docs(CLAUDE.md): warn a line-based grep misses a phrase that wraps
 

@@ -32,13 +32,19 @@ The user may optionally provide:
 
 #### Step 0 — Risk triage (always; state the verdict)
 
-Judge the work's uncertainty. Choose the **full lane** if any hold:
+Judge the work's **risk** on two axes. They are independent — either one alone routes to the
+**full lane**, and a change can be high on one and low on the other.
+
+**Uncertainty** — how likely you are to be wrong; reasoning alone cannot settle it:
 - a novel mechanism or unfamiliar tool/library;
-- an **empirical** unknown reasoning can't settle (e.g. "will this boot?", "does this API behave like X?");
+- an **empirical** unknown reasoning can't settle (e.g. "will this boot?", "does this API behave like X?").
+
+**Stakes** — what it costs when you are wrong:
 - it touches security or a fail-closed gate;
 - large blast radius (hard to reverse; many consumers).
 
-Otherwise the **fast lane**. Announce the lane and why. Bias borderline cases to the full lane.
+Otherwise the **fast lane**. Announce the lane, **which axis routed it** (or that neither fired), and
+why. Bias borderline cases to the full lane.
 
 **The security trigger is absolute:** a security-flagged change *is* a full-lane change, so no
 fast-lane change is ever security-flagged. If security surfaces after triage, the triage was wrong —
