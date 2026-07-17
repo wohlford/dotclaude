@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.41.6 — 2026-07-16
+- fix(init-bash): follow INPUT_FILE out of main when scaffolding a no-arg script
+
 ## v0.41.5 — 2026-07-16
 - fix(feature): fold the fast lane's diverse-review findings before presenting
 
