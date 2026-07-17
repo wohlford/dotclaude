@@ -119,6 +119,24 @@ if __name__ == "__main__":
     sys.exit(1)
 PY
 
+# missing_set_matches <checker_output> <expected_token...>
+# Exit 0 iff the set of tokens the checker reported missing (the `<tok>` in each
+# `references <tok>;` line) equals the expected set exactly -- order and dupes
+# ignored. This is stricter than "every expected token appears": it also fails
+# when the checker reports a token the caller did NOT expect, so a future
+# allowlist/template edit that introduces a surprise miss cannot pass green.
+missing_set_matches() {
+  local output="$1"; shift
+  local actual expected
+  actual="$(sed -nE 's/^.*references ([^;]+);.*/\1/p' <<< "$output" | sort -u)"
+  if [[ "$#" -eq 0 ]]; then
+    expected=""
+  else
+    expected="$(printf '%s\n' "$@" | sort -u)"
+  fi
+  [[ "$actual" == "$expected" ]]
+}
+
 # check_case <label> <templates_file> <skill_file> <want_exit> [expected_missing...]
 check_case() {
   local label="$1" templates_file="$2" skill_file="$3" want="$4"
@@ -134,18 +152,11 @@ check_case() {
     return
   fi
 
-  local missing_ok=1 token
-  for token in "${expected_missing[@]}"; do
-    if ! grep -qF "references $token;" <<< "$output"; then
-      missing_ok=0
-    fi
-  done
-
-  if [[ "$missing_ok" -eq 1 ]]; then
+  if missing_set_matches "$output" "${expected_missing[@]}"; then
     printf 'PASS  %s (exit %d)\n' "$label" "$got"
     pass=$((pass + 1))
   else
-    printf 'FAIL  %s (missing-token report incomplete)\n%s\n' "$label" "$output"
+    printf 'FAIL  %s (missing-token set mismatch)\n%s\n' "$label" "$output"
     fail=$((fail + 1))
   fi
 }
@@ -211,6 +222,40 @@ cat > "$bug3_skill" << 'EOF'
 EOF
 check_case "bug3-shape: input-file/process_file/\$INPUT_FILE present, \$input absent" \
   "$templates_md" "$bug3_skill" 1 "input"
+
+# 5. meta -- the missing-set assertion must be exact equality, not a subset
+#    check. The first assertion is the standing regression guard for the Minor
+#    fixed here: under the old "every expected token present" logic, a checker
+#    output with an UNEXPECTED extra miss passed green (the extra was swallowed).
+#    missing_set_matches must reject it. The other two pin the remaining
+#    directions (a phantom expected token; the exact order-independent match).
+two_miss_output="$(printf '%s\n' \
+  'templates.md references input; init-bash never mentions it' \
+  'templates.md references src_file; init-bash never mentions it')"
+
+if missing_set_matches "$two_miss_output" "input"; then
+  printf 'FAIL  meta: set-equality swallows an unexpected extra miss (subset weakness)\n'
+  fail=$((fail + 1))
+else
+  printf 'PASS  meta: set-equality rejects an unexpected extra miss\n'
+  pass=$((pass + 1))
+fi
+
+if missing_set_matches "$two_miss_output" "input" "src_file" "phantom"; then
+  printf 'FAIL  meta: set-equality accepts a phantom expected token\n'
+  fail=$((fail + 1))
+else
+  printf 'PASS  meta: set-equality rejects a phantom expected token\n'
+  pass=$((pass + 1))
+fi
+
+if missing_set_matches "$two_miss_output" "src_file" "input"; then
+  printf 'PASS  meta: set-equality accepts the exact set (order-independent)\n'
+  pass=$((pass + 1))
+else
+  printf 'FAIL  meta: set-equality rejects the exact set\n'
+  fail=$((fail + 1))
+fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
