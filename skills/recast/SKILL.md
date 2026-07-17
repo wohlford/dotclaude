@@ -54,7 +54,7 @@ Optional (with defaults):
   annotated semver tag; bump `feat`→minor, `!`→major, else patch — but **before v1.0.0 a breaking
   `!`→minor**, per CONTRIBUTING's 0.x rule, which applies to nearly every recast).
 - `--fresh-every <N>` — from-scratch verify cadence (default: each subsystem boundary).
-- `--keep-code` — keep tool-**name** mentions (Claude/Anthropic/GEMINI) in the recast while **still
+- `--keep-code` — keep tool-**name** mentions (Claude/Anthropic/Gemini) in the recast while **still
   scrubbing** the generation-trace "marketing" (credits, footers, `🤖`); recons `--traces-only`. For a
   source that *legitimately discusses* these tools, not one attributing authorship to them. Identity
   fields (commit author/committer, tagger) are **always** scrubbed comprehensively — `--keep-code`
@@ -78,7 +78,7 @@ Optional (with defaults):
 | `UNPUBLISHED` | **Halt and ask**: resume (append on top), full recast (rewrite — valid **only** here), or abort. Never wipe silently. |
 | `PUBLISHED` | **Append + resume only.** Refuse full recast — never rewrite a published frontier. |
 
-**Resume mechanism (no state file — the commit history is the ledger):** the approved brick-plan
+**Resume mechanism (no state file — the commit history is the ledger):** the approved brick plan
 (see step 3) is an ordered list of capabilities, each mapped to its planned conventional-commit subject. On resume,
 read `git -C <target> log --oneline` and continue from the **first plan entry whose subject has no
 matching commit**; earlier bricks are kept untouched. **Mode-mismatch guard:** the scrub mode
@@ -91,10 +91,10 @@ mix keep-levels across bricks.
 **2. Freeze + recon the source.** Pin `--ref`. Run `skills/recast/recast-recon.sh [--traces-only]
 <source-tree> [<redact-file>]` (the `--redact` file is passed **positionally**). The **default sweep
 is comprehensive** — generation **traces** (`Co-Authored-By`, "generated with", `🤖`) *and*
-tool-**name** mentions (Claude/Anthropic/GEMINI) — so the recast reveals no tell that AI was used.
+tool-**name** mentions (Claude/Anthropic/Gemini) — so the recast reveals no tell that AI was used.
 Bare names over-match (`.claude`, model ids, AI-topic prose): if the source **legitimately discusses**
 these tools rather than attributing authorship, run `/recast --keep-code`, which recons `--traces-only`
-(keeps the mentions, still scrubs the marketing traces). Names cover Claude/Anthropic/GEMINI only —
+(keeps the mentions, still scrubs the marketing traces). Names cover Claude/Anthropic/Gemini only —
 **other assistants (Copilot/GPT/Cursor/…) and non-Anthropic model ids need a `--redact` file.** The
 sweep now also flags file/dir **names** (a `claude-config.md` file or `.claude/` dir is itself a
 tell), reporting `path:line` / `path:name` only (never content). **Default:** halt on hits —
@@ -144,7 +144,7 @@ assumes a DAG). The caller approves and may override any classification.
 4. **Commit** with a conventional-commit subject + an **annotated semver tag** (default on;
    `--no-tag` to skip) + a **living CHANGELOG entry** (append `[declared, not proven]` when the brick
    used `--verify true`). **Never via `/commit`** — recast owns this discipline itself: brick versions
-   come from the approved brick-plan rather than being derived from the message type, entries carry the
+   come from the approved brick plan rather than being derived from the message type, entries carry the
    `[declared, not proven]` suffix, and the target is a *different* repo (commit with
    `git -C <target>`; `/commit` acts on the current one). `/commit`'s SKILL.md carves this out
    reciprocally. Any date in that CHANGELOG entry is **date-only** (`YYYY-MM-DD`), taken from the brick's
