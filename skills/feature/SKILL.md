@@ -7,9 +7,10 @@ description: Run the methodical, risk-tiered pipeline for a change (triage → s
 
 Drive a change from idea to a **merged change**: a risk-triaged design half (spec → spike → plan →
 review) followed by **subagent-driven execution and a merge**. Orchestrates the `superpowers` skills
-and adds risk triage, an empirical spike, a diverse-model review, and — when triage flags security — a
-`/security-review` of the implemented diff. **Scale the rigor to the
-uncertainty.** Pass `--plan-only` to stop at the reviewed plan instead.
+and adds risk triage, an empirical spike, a diverse-model review, an `/audit` sweep before the merge,
+and — conditionally — `/vet` on any skill or agent the diff touches and a `/security-review` of the
+branch's diff. **Scale the rigor to the uncertainty.** Pass `--plan-only` to stop at the reviewed plan
+instead.
 
 ## Instructions
 
@@ -136,13 +137,41 @@ With the plan reviewed and committed, **continue** (do not stop):
      the cheapest tier that fits (a task whose plan text carries the complete code is transcription →
      `haiku`; multi-file integration or judgment → `sonnet`); **task reviewers** at `sonnet`; the
      **final whole-branch review** at `opus` on the full lane, `sonnet` on the fast lane.
-2. **Security-review the diff (conditional; either lane).** If Step 0's triage flagged the change as
+2. **Sweep the mechanics — `/audit` (always).** Run `/audit` over the repo before the merge and fix,
+   via `/commit`, every `FAIL` **this branch introduced**. A repo may carry **pre-existing** FAILs the
+   change never touched (generated content, a lint rule adopted after the fact): report those and
+   leave them — do not loop chasing a clean sweep this branch cannot deliver, and never widen the
+   change's scope to fix them here. **Decide which bucket a FAIL is in mechanically, never by
+   impression:** it is pre-existing if it also fires with `/audit` on the base branch, or if its
+   offending file is absent from `git diff <base>...HEAD`; otherwise this branch introduced it and it
+   must be fixed. Every other gate in this pipeline is model judgment;
+   this is the only deterministic one, and `superpowers:finishing-a-development-branch` verifies the
+   test suite and nothing else — so without this a branch merges with a broken relative link, a lost
+   exec bit, or drifted index tables, none of which a reviewer reliably catches and all of which
+   `/audit` catches exactly. The per-edit hooks already cover most of it, but only for files touched
+   via Edit/Write: a task that writes a file from a shell heredoc trips no hook, so this is the
+   backstop. Read-only, deterministic, seconds — run it **first**, before the model gates below, so
+   mechanical breakage fails fast instead of after a paid review. Relay any `SKIP` — each is a
+   coverage gap, not a clean bill of health.
+3. **Vet the skills and agents the diff touches (conditional).** If the branch's diff touches
+   `skills/*/SKILL.md` or `agents/*.md`, run **`/vet <paths>`** over them. Nothing else here knows the
+   canonical skill/agent shape: SDD's reviewers judge the code as code and will pass a `SKILL.md`
+   whose `name` contradicts its directory or whose frontmatter is malformed. `/vet` dispatches the
+   reviewers that do. Fold findings (fixing via `/commit`) and re-run until clean; **verify each
+   finding against the artifact and `STYLE.md`'s documented carve-outs before applying it** — the
+   reviewers are advisory and do produce false positives. A finding you verified as a false positive
+   and said so does **not** block "clean" if a re-run restates it — record the dismissal and move on.
+   If `/vet` reports a reviewer as **failed or unavailable** instead of a verdict, say so and continue
+   — never loop waiting on a verdict that cannot arrive. If the diff touches neither, skip and say so.
+4. **Security-review the diff (conditional; either lane).** If Step 0's triage flagged the change as
    touching **security or a fail-closed gate**, run **`/security-review`** (code-review plugin) over
-   the branch's implemented diff before finishing. This **complements — never replaces — the
+   the branch's diff before finishing. This **complements — never replaces — the
    diverse-model review**: that one critiques the *plan* at design time; this one inspects the *code
    that actually landed*, which is where security defects live. Fold any findings (fixing via
-   `/commit`), re-run until clean, then continue. If triage did not flag security, skip it and say so.
-3. **Finish** with `superpowers:finishing-a-development-branch`: verify the project's test suite
+   `/commit`), re-run until clean, then continue. If `/security-review` reports that it could not
+   complete instead of returning a verdict, say so and continue — as with `/vet`, never loop waiting
+   on a verdict that cannot arrive. If triage did not flag security, skip it and say so.
+5. **Finish** with `superpowers:finishing-a-development-branch`: verify the project's test suite
    passes (if the repo has none, say so and rely on the per-task reviews), then
    **merge the feature branch** back to its base and clean up. The **merge is the default end
    action** — do not pause to choose it. If tests fail, stop and report; do not merge.
@@ -166,15 +195,24 @@ the plan is approved, the feature branch is left in place, and execution is a se
 - **Every commit the pipeline creates goes through `/commit`** (semver tag + `CONTRIBUTING.md`
   conventions), design-phase and implementation alike, run in the **foreground** for signing. This is
   the invariant that keeps the release sequence intact — never fall back to bare `git commit`.
+- **Never merge on judgment alone.** `/audit` runs before every merge — it is the pipeline's only
+  deterministic gate, and the model reviews do not substitute for it any more than it substitutes for
+  them (`/audit` = the mechanical half, `/vet` and the reviews = the judgment half; a full review is
+  both). It is read-only and near-free, so it is never the thing to cut for budget.
+- **A change that *touches* a `SKILL.md` or an `agents/*.md` gets `/vet` before the merge** — editing
+  an existing one counts, not just authoring a new one. The generic reviewers judge code as code; only
+  `/vet`'s reviewers know the canonical skill/agent shape. Self-limiting — the condition never fires
+  in a repo that has neither.
 - **Security-flagged changes get `/security-review` before the merge** (either lane), reusing Step 0's
-  own trigger. It inspects the implemented diff — the diverse-model review only ever saw the plan, so
+  own trigger. It inspects the branch's diff — the diverse-model review only ever saw the plan, so
   one never substitutes for the other.
 - Time/scope-box the spike to one assumption; bias borderline triage to the full lane.
 - Budget: the diverse-model agent pass — default to **one** (on the plan); ultrathink is cheap; the
   spike substitutes for a second reasoning pass; the fast lane skips the diverse pass unless stakes
   warrant it. The default execute-then-merge phase adds the SDD subagent passes (one implementer +
-  reviews per task, plus the final whole-branch review), and one `/security-review` pass when triage
-  flagged security; `--plan-only`
+  reviews per task, plus the final whole-branch review), one `/security-review` pass when triage
+  flagged security, and `/vet`'s reviewer dispatch when the diff touches a skill or agent (`/audit` is
+  deterministic and near-free — excluded from this accounting, and never cut for budget); `--plan-only`
   skips all execution cost. **Execution spend is controlled by tier, not by cutting gates** — see
   "Scale execution to Step 0's lane"; never trade a review away to save budget.
 - **Never spend two same-model passes on one artifact.** Each sub-skill (`brainstorming`,

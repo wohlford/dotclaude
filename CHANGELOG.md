@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.40.0 — 2026-07-16
+- feat(feature): gate the merge on /audit and vet touched skills and agents
+
 ## v0.39.0 — 2026-07-16
 - feat(feature): scale execution by tier and end duplicate self-review
 
