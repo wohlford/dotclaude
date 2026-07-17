@@ -83,6 +83,10 @@ Vet every shipping artifact in the repo, batched by category, in one pass:
      empty.)
    - **Skip** plain docs (STYLE/README/CLAUDE/templates/workflows/CONTRIBUTING/CHANGELOG) — no reviewer
      covers them.
+
+   **Absolutize every discovered path here** — they arrive repo-relative from `git ls-files`; per
+   Process step 1's rule, normalize at discovery, where the boundary belongs, so every later step
+   (announce, batch, dispatch) works in absolute paths and no dispatch fires a relative one.
 2. **Announce the scale first.** State the artifact count per category and the rough subagent count
    (each `SKILL.md` draws two reviewers), so the caller sees the cost before dozens of agents fire.
 3. **Batch by category** (skills → agents → scripts → python → javascript), reporting each category as it
@@ -90,9 +94,9 @@ Vet every shipping artifact in the repo, batched by category, in one pass:
    Agent-tool dispatches (one message, multiple Agent calls) suffice; for more, orchestrate each
    category as a background workflow via the **Workflow tool**, which caps concurrency automatically.
    Invoking `/vet --all` is itself the opt-in for this multi-agent fan-out.
-4. **Dispatch** the matching reviewer(s) per artifact (the mapping in Process step 2), passing each
-   path **absolutized** per Process step 1 — discovery is `git ls-files`, which emits repo-relative
-   paths, and this is the mode with the most dispatches by far.
+4. **Dispatch** the matching reviewer(s) per artifact (the mapping in Process step 2), passing the
+   **absolute** paths this mode's step 1 normalized — this is the mode with the most dispatches by
+   far, so a stray relative path here would do the most damage.
 5. **Close with a consolidated summary** across all categories — grouped by file, most-severe first,
    non-blocking as always. (Per-category reports stream as they finish; this is the final roll-up.)
 

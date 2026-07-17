@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.43.5 — 2026-07-17
+- fix(vet): normalize discovered paths at discovery, before dispatch
+
 ## v0.43.4 — 2026-07-17
 - fix(init): surface presumed-uninstalled imports in the closing step
 
