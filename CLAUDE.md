@@ -126,7 +126,9 @@ plan and base you are actually executing before trusting any line; reset it when
 - **Checking for a *multi-line* literal is one of those cases.** `grep -F` treats an embedded newline
   as *alternation*, not a sequence: `grep -Fc "$(printf 'a\nb')"` counts lines matching **either**,
   so a multi-line check returns a plausible-but-wrong count and reads as verified. Use
-  `python3 -c "..."` (`needle in open(f).read()`) or `grep -Pzo`.
+  `python3 -c "..."` (`needle in open(f).read()`) or `grep -Pzo`. **In wrapped text, use it even for
+  a phrase you believe is one line** — if it happens to wrap, a line-based grep returns 0 and absence
+  is not evidence of absence.
 
 ### Package Management
 

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.42.2 — 2026-07-17
+- docs(CLAUDE.md): warn a line-based grep misses a phrase that wraps
+
 ## v0.42.1 — 2026-07-17
 - docs(CLAUDE.md): warn the SDD ledger has no plan identity
 
