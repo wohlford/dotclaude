@@ -28,8 +28,9 @@ The user may optionally provide:
    - Set the module docstring to the user's description (or a placeholder)
    - Add requested classes/functions as stubs with docstrings and type hints
    - Add specified imports (maintaining stdlib > third-party > local order). Installing the packages
-     (`uv pip install <package>`) is out of scope — note any uninstalled third-party imports to the
-     user at the end
+     (`uv pip install <package>`) is out of scope — since scaffolding never installs, treat every
+     third-party import you add as presumed-uninstalled and list them in step 6 so the user can
+     install any not already present
    - Keep `main()` entry point and `if __name__ == "__main__":` block
 3. Write the file to the specified path — if the parent directory doesn't exist, create it (`mkdir -p`) before writing
 4. Settle the shebang/exec-bit pairing per STYLE.md's script rule: if the module is an entry-point
@@ -41,7 +42,7 @@ The user may optionally provide:
    without its shebang fails only when someone runs it by path. Never leave a shebang on a
    non-executable file — the exec-bit-guard hook blocks committing a new 644 shebang file.
 5. Run `/sync-docs` to regenerate any `<!-- sync:scripts -->` index tables in the repo (no-op if no such markers exist).
-6. Confirm creation and summarize the module structure
+6. Confirm creation, summarize the module structure, and list the presumed-uninstalled third-party imports from step 2 (if any) so the user knows what to install
 
 ### Template Requirements (from STYLE.md)
 
