@@ -176,14 +176,15 @@ With the plan reviewed and committed, **continue** (do not stop):
 4. **Security-review the diff (conditional; full lane only).** If Step 0's triage flagged the change as
    touching **security or a fail-closed gate**, run **`/security-review`** (code-review plugin) over
    the branch's diff before finishing. This **complements — never replaces — the
-   diverse-model review**: that one critiques the *plan* at design time; this one inspects the *code
-   that actually landed*, which is where security defects live. Fold any findings (fixing via
-   `/commit`), re-run until clean, then continue. If `/security-review` reports that it could not
-   complete instead of returning a verdict, say so and continue — as with `/vet`, never loop waiting
-   on a verdict that cannot arrive. If triage did not flag security, skip it and say so — **every**
-   fast-lane change skips here by construction, since Step 0 routes security to the full lane
-   without exception. If security has surfaced *since* triage, the triage was wrong: re-triage per
-   Step 0 rather than bolting this review onto a fast-lane change.
+   diverse-model review**: that one critiques the *design* (the plan, and on the full lane optionally
+   the spec) before this code existed; this one inspects the *code that actually landed*, which is
+   where security defects live. Fold any findings (fixing via `/commit`), re-run until clean, then
+   continue. If `/security-review` reports that it could not complete instead of returning a verdict,
+   say so and continue — as with `/vet`, never loop waiting on a verdict that cannot arrive. If
+   triage did not flag security, skip it and say so — **every** fast-lane change skips here by
+   construction, since Step 0 routes security to the full lane without exception. If security has
+   surfaced *since* triage, the triage was wrong: re-triage per Step 0 rather than bolting this
+   review onto a fast-lane change.
 5. **Finish** with `superpowers:finishing-a-development-branch`: verify the project's test suite
    passes (if the repo has none, say so and rely on the per-task reviews), then
    **merge the feature branch** back to its base and clean up. The **merge is the default end
@@ -218,7 +219,8 @@ the plan is approved, the feature branch is left in place, and execution is a se
   in a repo that has neither.
 - **Security-flagged changes get `/security-review` before the merge**, reusing Step 0's own trigger
   — which means the full lane, always. It inspects the branch's diff — the diverse-model review only
-  ever saw the plan, so one never substitutes for the other.
+  ever critiqued the design (the plan, and optionally the spec) before this code existed, so one
+  never substitutes for the other.
 - Time/scope-box the spike to one assumption; bias borderline triage to the full lane.
 - Budget: the diverse-model agent pass — default to **one** (on the plan); ultrathink is cheap; the
   spike substitutes for a second reasoning pass; the fast lane skips the diverse pass unless stakes

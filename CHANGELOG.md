@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.41.16 — 2026-07-17
+- fix(feature): say the diverse review saw the design, not just the plan
+
 ## v0.41.15 — 2026-07-17
 - fix(recast): name the deviation-file obligation in both directions
 
