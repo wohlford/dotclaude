@@ -41,7 +41,11 @@ Optional (with defaults):
   If `--source` has no `.git`, **fail fast** with a clear error (non-git sources are out of scope).
 - `--ref <tag|commit|branch>` — default `HEAD`; **frozen for the whole run** (the oracle for final
   behaviour, never lifted mid-build).
-- `--strip <glob>…` — opt-in removals (**keep-all default**); confirm before applying.
+- `--strip <glob>…` — opt-in removals (**keep-all default**); confirm before applying. Stripped paths
+  are intentionally absent from the target, so **`--strip` obligates a deviation-file at Final audit**
+  (Process step 5): without one, every stripped path reports as an `unexpected absent` and the
+  structure check exits 1 — and an intentional omission is indistinguishable from a brick the recast
+  forgot to build. Keep the confirmed globs; they are what that file is built from.
 - `--redact <file>` — caller-owned, **gitignored** pattern file (one regex per line; blank lines and
   `#` comments ignored). Never inline or echo patterns.
 - `--templates <dir>` — source of *standard* files (CONTRIBUTING, license) — taken from here, **not**
@@ -183,6 +187,14 @@ over the full history** (commit messages, tag annotations, and author/committer/
 (halt) so no tree *or* commit betrays AI involvement. Under `--keep-code`, recon `--traces-only`
 (names intentionally kept in textual surfaces; author/committer/tagger identity is still swept
 comprehensively); under `--no-scrub`, the whole sweep is report-only. Report. **Do not push.**
+
+- **deviation-file** (the optional 4th argument to `recast-verify.sh` above): one glob per line —
+  blank lines and `#` comments ignored — naming paths intentionally absent from, or intentionally
+  added to, the target; a matching path is exempt from **both** the `unexpected presents` and
+  `unexpected absents` reports. Globs are matched with bash `[[ == glob ]]` per path, where `*` spans
+  `/`. **`--strip` obligates one:** without it every stripped path reports as an `unexpected absent`
+  and the structure check exits 1 — an intentional omission being indistinguishable from a brick the
+  recast forgot to build. Build it from the confirmed strip globs.
 
 ### Rules
 
