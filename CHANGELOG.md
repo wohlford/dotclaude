@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.43.0 — 2026-07-17
+- feat(debrief): run the routine to completion without pausing
+
 ## v0.42.9 — 2026-07-17
 - test(scaffold): add reference-coverage test for init-bash no-args strip
 
