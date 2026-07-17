@@ -17,6 +17,11 @@ repo_root="$(cd "$here/../.." && pwd)"
 templates_md="$repo_root/templates.md"
 init_bash_skill="$repo_root/skills/init-bash/SKILL.md"
 
+if ! command -v python3 >/dev/null 2>&1; then
+  printf 'SKIP  python3 not available\n'
+  exit 0
+fi
+
 sandbox="$(mktemp -d)"
 trap 'rm -rf "$sandbox"' EXIT
 
