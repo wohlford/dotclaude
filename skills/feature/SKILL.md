@@ -77,9 +77,15 @@ the end (no merge).
    lane's step-5 question of any task that carries a verification: **is that check falsifiable?**
    Judge it by the three tests step 5 lists — the defect class does not care which lane produced the
    plan. Revise inline.
-3. Run a diverse-model review **only if** the change is high stakes (see below); else skip.
-   If it ran, **fold its findings; revise; recommit via `/commit`** — same as the full lane's step 6.
-   A review whose findings are not folded is a review you paid for and did not use.
+3. Run a diverse-model review **only if** the change's **stakes** are real even though they stayed
+   under Step 0's bar — the fast lane means the design is easy to reason about, not that being wrong
+   is cheap. The clearest case is stakes that sit in the **rework, not the reach**: a long mechanical
+   change, few consumers, cleanly reversible, but a wrong plan means implementing all of it twice.
+   One outside read is worth it there; a spec and a spike are not. Above Step 0's bar you would be on
+   the full lane, whose step 6 reviews the plan regardless. Else skip. Pick the reviewer per
+   **Diverse-model review** below. If it ran, **fold its findings; revise; recommit via `/commit`** —
+   same as the full lane's step 6. A review whose findings are not folded is a review you paid for
+   and did not use.
 4. Present for confirmation, then **execute and merge** (below). If the user declines or asks for
    changes, revise and re-present — never execute an unconfirmed plan.
 
