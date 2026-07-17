@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.41.5 — 2026-07-16
+- fix(feature): fold the fast lane's diverse-review findings before presenting
+
 ## v0.41.4 — 2026-07-16
 - fix(recast): stop asking the caller about imported-but-atomic files
 

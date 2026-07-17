@@ -64,6 +64,8 @@ the end (no merge).
    over them first. Either way, the pass that earns its keep is the one no checklist can make: is this
    the right design, is the decomposition sound, does it solve the actual problem? Revise inline.
 3. Run a diverse-model review **only if** it touches security / high stakes (see below); else skip.
+   If it ran, **fold its findings; revise; recommit via `/commit`** — same as the full lane's step 6.
+   A review whose findings are not folded is a review you paid for and did not use.
 4. Present for confirmation, then **execute and merge** (below).
 
 #### Full lane (real unknowns)
