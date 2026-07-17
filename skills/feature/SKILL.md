@@ -103,11 +103,12 @@ the end (no merge).
    diverse-model review of the *spec* (the step-6 mechanism) is opt-in — offer it here, before the
    spike.
 3. **Spike the #1 risk.** Name the assumption whose failure invalidates the most downstream work. If
-   it is **empirical** and its cheapest *decisive* signal is **cheap to probe**, run a throwaway,
-   time-boxed probe now — probe the decisive signal ("does GRUB appear when a blank VM boots the
-   ISO?"), not the whole thing ("does the 60-min install finish?"). Fold the result in (invalidated →
-   adjust, maybe loop to step 1). If the top risk is empirical but **not** cheaply probeable, say so
-   and rely on the plan's decision-gates instead. If it isn't empirical, say "no spike" and continue.
+   it is **empirical** and its cheapest *decisive* signal is **cheap to probe**, run a throwaway
+   probe of that one assumption now — probe the decisive signal ("does GRUB appear when a blank VM
+   boots the ISO?"), not the whole thing ("does the 60-min install finish?"). Fold the result in
+   (invalidated → adjust, maybe loop to step 1). If the top risk is empirical but **not** cheaply
+   probeable, say so and rely on the plan's decision-gates instead. If it isn't empirical, say "no
+   spike" and continue.
 4. **Plan.** Use `superpowers:writing-plans`. Save to `plans/YYYY-MM-DD-<name>.md`; commit via `/commit`.
 5. **Ultrathink the plan — the design, not `writing-plans`' checklist.** `writing-plans` already
    self-reviewed for spec coverage, placeholders, and type consistency. Your pass asks what it
@@ -246,7 +247,7 @@ the plan is approved, the feature branch is left in place, and execution is a se
   — which means the full lane, always. It inspects the branch's diff — the diverse-model review only
   ever critiqued the design (the plan, and optionally the spec) before this code existed, so one
   never substitutes for the other.
-- Time/scope-box the spike to one assumption; bias borderline triage to the full lane.
+- Scope the spike to one assumption; bias borderline triage to the full lane.
 - Budget: the diverse-model agent pass — default to **one** (on the plan); ultrathink is cheap; the
   spike substitutes for a second reasoning pass; the fast lane skips the diverse pass unless stakes
   warrant it. The default execute-then-merge phase adds the SDD subagent passes (one implementer +

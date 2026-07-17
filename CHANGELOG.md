@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.42.8 — 2026-07-17
+- fix(feature): drop the spike's unstated time bound and align workflows.md
+
 ## v0.42.7 — 2026-07-17
 - fix(feature): name which checklist each ultrathink step must not repeat
 

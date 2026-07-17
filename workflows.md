@@ -1,6 +1,6 @@
 # Development Workflows
 
-How work gets done: **scale the rigor to the uncertainty.** A trivial edit or a conversational answer
+How work gets done: **scale the rigor to the risk.** A trivial edit or a conversational answer
 happens directly. Anything with real design, risk, or blast radius runs through the `/feature`
 pipeline. The classic loops — Explore→Plan→Code→Commit and TDD — are the *primitives* that pipeline
 orchestrates, and remain the right frame for lighter work.
@@ -18,13 +18,13 @@ review. `--plan-only` stops at the reviewed, committed plan instead of executing
   gate; or large blast radius (hard to reverse, many consumers). Bias borderline cases here.
 - **Fast lane** otherwise.
 
-**Full lane:** brainstorming → **spec** → ultrathink self-review → **spike the #1 risk** (a throwaway,
-time-boxed probe of the one assumption whose failure invalidates the most downstream work — probe the
-decisive signal, not the whole thing) → **writing-plans** → ultrathink → **diverse-model review** of
-the plan → execute → merge.
+**Full lane:** brainstorming → **spec** → ultrathink self-review → **spike the #1 risk** (a throwaway
+probe of the one assumption whose failure invalidates the most downstream work — probe the decisive
+signal, not the whole thing) → **writing-plans** → ultrathink → **diverse-model review** of the plan →
+execute → merge.
 
 **Fast lane:** a short combined spec+plan → one deep (ultrathink-level) self-review → a diverse review
-only if it's high-stakes → execute → merge.
+only when stakes warrant it → execute → merge.
 
 **Execute & merge (both lanes):** present the reviewed plan and **pause for confirmation**, then
 `subagent-driven-development` runs it task-by-task — a fresh subagent per task with per-task and
@@ -90,5 +90,5 @@ why alongside the fix — in the commit message or a code comment.
 | Testable change with clear input/output | TDD (RED→GREEN→commit) |
 | Fixing a discovered bug | Regression test first — failing test, then the fix |
 | Real design, risk, or blast radius | `/feature` — full lane |
-| Well-scoped, low-uncertainty change | `/feature` — fast lane |
+| Well-scoped, low-risk change | `/feature` — fast lane |
 | Want a reviewed plan but not execution | `/feature --plan-only` |
