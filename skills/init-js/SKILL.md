@@ -29,7 +29,9 @@ The user may optionally provide:
    - Add requested functions/classes as stubs with JSDoc and parameter names
    - Add specified `import` lines (`require` only when scaffolding explicit CommonJS). Installing
      the packages (`npm install <package>`) is out of scope — since scaffolding never installs, treat
-     every third-party import you add as presumed-uninstalled and list them in step 6 so the user can
+     every third-party import you add (not a Node builtin like `fs` or `node:*`, not a relative import)
+     as presumed-uninstalled and record it for step 6 by its install target: the package to install,
+     usually the specifier itself but its root for a subpath (`lodash/fp` → `lodash`), so the user can
      install any not already present
    - Keep the `main()` entry point and the template's `import.meta.url` entry-point guard; swap it for `if (require.main === module)` only when the user explicitly asked for CommonJS
 3. Write the file to the specified path — if the parent directory doesn't exist, create it (`mkdir -p`) before writing
@@ -41,7 +43,7 @@ The user may optionally provide:
    absent or does not settle which it is, ask; do not guess. Never leave a shebang on a
    non-executable file — the exec-bit-guard hook blocks committing a new 644 shebang file.
 5. Run `/sync-docs` to regenerate any `<!-- sync:scripts -->` index tables in the repo (no-op if no such markers exist).
-6. Confirm creation, summarize the module structure, and list the presumed-uninstalled third-party imports from step 2 (if any) so the user knows what to install
+6. Confirm creation, summarize the module structure, and list each presumed-uninstalled third-party import's install target from step 2 (if any) so the user knows what to install
 
 ### Template Requirements (from STYLE.md)
 
