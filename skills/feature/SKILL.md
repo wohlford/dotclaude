@@ -9,7 +9,7 @@ Drive a change from idea to a **merged change**: a risk-triaged design half (spe
 review) followed by **subagent-driven execution and a merge**. Orchestrates the `superpowers` skills
 and adds risk triage, an empirical spike, a diverse-model review, an `/audit` sweep before the merge,
 and — conditionally — `/vet` on any skill or agent the diff touches and a `/security-review` of the
-branch's diff. **Scale the rigor to the uncertainty.** Pass `--plan-only` to stop at the reviewed plan
+branch's diff. **Scale the rigor to the risk.** Pass `--plan-only` to stop at the reviewed plan
 instead.
 
 ## Instructions
@@ -62,7 +62,7 @@ the user before proceeding; if they decline, ask which branch to use (or create 
 `<type>/<kebab-name>` branch). With `--plan-only`, the branch is still created but is left in place at
 the end (no merge).
 
-#### Fast lane (low uncertainty)
+#### Fast lane (low risk on both axes)
 
 1. Use `superpowers:brainstorming` lightly to produce a **short combined spec+plan** (a few sentences
    of what/why + the task steps) — or just a short plan if there's no design to settle. "Lightly"
@@ -83,7 +83,7 @@ the end (no merge).
 4. Present for confirmation, then **execute and merge** (below). If the user declines or asks for
    changes, revise and re-present — never execute an unconfirmed plan.
 
-#### Full lane (real unknowns)
+#### Full lane (real unknowns or high stakes)
 
 1. **Spec.** Use `superpowers:brainstorming` to produce the spec. When brainstorming reaches its
    terminal "invoke `writing-plans`" step, **do NOT follow it** — return here to step 2 (you interpose
@@ -222,7 +222,7 @@ the plan is approved, the feature branch is left in place, and execution is a se
   defaulting to a merge. **Only `--plan-only` stops at the plan** (then never implement; decline
   `writing-plans`' execution offer).
 - **Invocation** — model-invocable; launch it (or let the user run `/feature`) only for changes
-  that warrant methodical design, not trivial edits. A deliberate, scale-to-uncertainty kickoff.
+  that warrant methodical design, not trivial edits. A deliberate, scale-to-risk kickoff.
 - Save spec/plan at the repo root (`specs/`, `plans/`, `YYYY-MM-DD-<name>.md`); commit each as produced via `/commit`.
 - **Every commit the pipeline creates goes through `/commit`** (semver tag + `CONTRIBUTING.md`
   conventions), design-phase and implementation alike, run in the **foreground** for signing. This is
