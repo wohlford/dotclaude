@@ -49,7 +49,9 @@ Optional (with defaults):
 - `--redact <file>` — caller-owned, **gitignored** pattern file (one regex per line; blank lines and
   `#` comments ignored). Never inline or echo patterns.
 - `--templates <dir>` — source of *standard* files (CONTRIBUTING, license) — taken from here, **not**
-  the source.
+  the source. Any file it supplies that the source lacks lands in the target only, and **each such
+  file obligates a deviation-file at Final audit** (Process step 5) exactly as `--strip` does:
+  without one each reports as an `unexpected present` and the structure check exits 1.
 - `--no-tag` — opt out of per-brick tagging (**tagging is ON by default**; every commit gets an
   annotated semver tag; bump `feat`→minor, `!`→major, else patch — but **before v1.0.0 a breaking
   `!`→minor**, per CONTRIBUTING's 0.x rule, which applies to nearly every recast).
@@ -192,9 +194,14 @@ comprehensively); under `--no-scrub`, the whole sweep is report-only. Report. **
   blank lines and `#` comments ignored — naming paths intentionally absent from, or intentionally
   added to, the target; a matching path is exempt from **both** the `unexpected presents` and
   `unexpected absents` reports. Globs are matched with bash `[[ == glob ]]` per path, where `*` spans
-  `/`. **`--strip` obligates one:** without it every stripped path reports as an `unexpected absent`
-  and the structure check exits 1 — an intentional omission being indistinguishable from a brick the
-  recast forgot to build. Build it from the confirmed strip globs.
+  `/`. **Deliberate divergence in *either* direction obligates one.** `--strip` is one half: without
+  a deviation-file every stripped path reports as an `unexpected absent` and the structure check
+  exits 1 — an intentional omission being indistinguishable from a brick the recast forgot to build.
+  Build that half from the confirmed strip globs. **Target-side additions are the mirror half and
+  fail identically:** any file that lands in the target while the *source* lacks it — a `--templates`
+  standard file (CONTRIBUTING, license), the living CHANGELOG — reports as an `unexpected present`
+  and exits 1 just the same. Build that half from the standard files `--templates` supplied and the
+  CHANGELOG, less anything the source already ships.
 
 ### Rules
 
