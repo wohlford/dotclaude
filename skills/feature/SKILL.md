@@ -162,7 +162,12 @@ With the plan reviewed and committed, **continue** (do not stop):
    via Edit/Write: a task that writes a file from a shell heredoc trips no hook, so this is the
    backstop. Read-only, deterministic, seconds — run it **first**, before the model gates below, so
    mechanical breakage fails fast instead of after a paid review. Relay any `SKIP` — each is a
-   coverage gap, not a clean bill of health.
+   coverage gap, not a clean bill of health. **If `/audit` cannot run at all** — a non-zero exit with
+   no verdict lines — do not read that as a pass: an empty sweep is not a clean sweep. "Say so and
+   continue" is the *wrong* answer here, unlike steps 3 and 4 below: continuing past the pipeline's
+   only deterministic gate is exactly merging on judgment alone. A usage error (a bad flag, a
+   `--scope` that isn't a git repo) is yours to fix — correct the invocation and re-run. If it still
+   cannot run, stop and report; do not merge.
 3. **Vet the skills and agents the diff touches (conditional).** If the branch's diff touches
    `skills/*/SKILL.md` or `agents/*.md`, run **`/vet <paths>`** over them. Nothing else here knows the
    canonical skill/agent shape: SDD's reviewers judge the code as code and will pass a `SKILL.md`
