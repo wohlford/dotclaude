@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.41.8 — 2026-07-16
+- fix(feature): route every security-flagged change to the full lane
+
 ## v0.41.7 — 2026-07-16
 - docs(CLAUDE.md): drop the deprecated /ultrareview from the plugin table
 

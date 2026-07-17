@@ -40,6 +40,11 @@ Judge the work's uncertainty. Choose the **full lane** if any hold:
 
 Otherwise the **fast lane**. Announce the lane and why. Bias borderline cases to the full lane.
 
+**The security trigger is absolute:** a security-flagged change *is* a full-lane change, so no
+fast-lane change is ever security-flagged. If security surfaces after triage, the triage was wrong —
+re-triage to the full lane rather than staying in the fast lane and relying on the merge-time
+`/security-review` to compensate.
+
 #### Step 0.5 — Create the work branch (always)
 
 Before producing artifacts, ensure work is on a dedicated feature branch so the design commits and
@@ -63,7 +68,7 @@ the end (no merge).
    took the short-plan path and skipped brainstorming, nothing has run those checks: do one quick pass
    over them first. Either way, the pass that earns its keep is the one no checklist can make: is this
    the right design, is the decomposition sound, does it solve the actual problem? Revise inline.
-3. Run a diverse-model review **only if** it touches security / high stakes (see below); else skip.
+3. Run a diverse-model review **only if** the change is high stakes (see below); else skip.
    If it ran, **fold its findings; revise; recommit via `/commit`** — same as the full lane's step 6.
    A review whose findings are not folded is a review you paid for and did not use.
 4. Present for confirmation, then **execute and merge** (below).
@@ -165,14 +170,17 @@ With the plan reviewed and committed, **continue** (do not stop):
    and said so does **not** block "clean" if a re-run restates it — record the dismissal and move on.
    If `/vet` reports a reviewer as **failed or unavailable** instead of a verdict, say so and continue
    — never loop waiting on a verdict that cannot arrive. If the diff touches neither, skip and say so.
-4. **Security-review the diff (conditional; either lane).** If Step 0's triage flagged the change as
+4. **Security-review the diff (conditional; full lane only).** If Step 0's triage flagged the change as
    touching **security or a fail-closed gate**, run **`/security-review`** (code-review plugin) over
    the branch's diff before finishing. This **complements — never replaces — the
    diverse-model review**: that one critiques the *plan* at design time; this one inspects the *code
    that actually landed*, which is where security defects live. Fold any findings (fixing via
    `/commit`), re-run until clean, then continue. If `/security-review` reports that it could not
    complete instead of returning a verdict, say so and continue — as with `/vet`, never loop waiting
-   on a verdict that cannot arrive. If triage did not flag security, skip it and say so.
+   on a verdict that cannot arrive. If triage did not flag security, skip it and say so — **every**
+   fast-lane change skips here by construction, since Step 0 routes security to the full lane
+   without exception. If security has surfaced *since* triage, the triage was wrong: re-triage per
+   Step 0 rather than bolting this review onto a fast-lane change.
 5. **Finish** with `superpowers:finishing-a-development-branch`: verify the project's test suite
    passes (if the repo has none, say so and rely on the per-task reviews), then
    **merge the feature branch** back to its base and clean up. The **merge is the default end
@@ -205,9 +213,9 @@ the plan is approved, the feature branch is left in place, and execution is a se
   an existing one counts, not just authoring a new one. The generic reviewers judge code as code; only
   `/vet`'s reviewers know the canonical skill/agent shape. Self-limiting — the condition never fires
   in a repo that has neither.
-- **Security-flagged changes get `/security-review` before the merge** (either lane), reusing Step 0's
-  own trigger. It inspects the branch's diff — the diverse-model review only ever saw the plan, so
-  one never substitutes for the other.
+- **Security-flagged changes get `/security-review` before the merge**, reusing Step 0's own trigger
+  — which means the full lane, always. It inspects the branch's diff — the diverse-model review only
+  ever saw the plan, so one never substitutes for the other.
 - Time/scope-box the spike to one assumption; bias borderline triage to the full lane.
 - Budget: the diverse-model agent pass — default to **one** (on the plan); ultrathink is cheap; the
   spike substitutes for a second reasoning pass; the fast lane skips the diverse pass unless stakes
