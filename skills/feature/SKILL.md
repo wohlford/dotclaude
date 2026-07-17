@@ -94,13 +94,14 @@ the end (no merge).
 1. **Spec.** Use `superpowers:brainstorming` to produce the spec. When brainstorming reaches its
    terminal "invoke `writing-plans`" step, **do NOT follow it** — return here to step 2 (you interpose
    the spike + reviews first). Save the spec to `specs/YYYY-MM-DD-<name>.md`; commit via `/commit`.
-2. **Ultrathink the spec — the design, not the checklist.** `brainstorming` already self-reviewed for
-   placeholders, internal consistency, scope, and ambiguity; re-running that list is a second
-   same-model pass over the same blind spot, which is exactly what the step-6 diverse review exists to
-   cover. Ask instead what its checklist cannot: is this the right approach, are the boundaries sound,
-   what did we fail to consider? Revise inline. For high-stakes designs, a second
-   diverse-model review of the *spec* (the step-6 mechanism) is opt-in — offer it here, before
-   the spike.
+2. **Ultrathink the spec — the design, not `brainstorming`'s checklist.** `brainstorming` already
+   self-reviewed for placeholders, internal consistency, scope, and ambiguity; re-running that list
+   is a second same-model pass over the same blind spot, which is exactly what the step-6 diverse
+   review exists to cover. Ask instead what its checklist cannot: is this the right approach, are the
+   boundaries sound, what did we fail to consider? Revise inline. **High stakes** here means Step 0's
+   stakes axis — the one naming security and large blast radius. For such designs a second
+   diverse-model review of the *spec* (the step-6 mechanism) is opt-in — offer it here, before the
+   spike.
 3. **Spike the #1 risk.** Name the assumption whose failure invalidates the most downstream work. If
    it is **empirical** and its cheapest *decisive* signal is **cheap to probe**, run a throwaway,
    time-boxed probe now — probe the decisive signal ("does GRUB appear when a blank VM boots the
