@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.41.14 — 2026-07-17
+- fix(workflows): label the security step as full lane
+
 ## v0.41.13 — 2026-07-16
 - docs(CLAUDE.md): warn grep -F treats a newline as alternation
 
