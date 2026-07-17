@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.41.2 — 2026-07-16
+- fix(audit): relay stderr on a usage error instead of an empty summary
+
 ## v0.41.1 — 2026-07-16
 - fix(init): make the scaffolders agree on parent dirs and the exec bit
 

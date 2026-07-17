@@ -29,8 +29,14 @@ The user may optionally provide:
 
 1. Run `~/.claude/skills/audit/audit.sh`, forwarding `--scope`/`--tests` as given.
 2. Surface its stdout verbatim — the per-check verdict lines and the summary line.
-3. Summarize: counts (passed/failed/skipped) and which checks FAILed, if any.
-4. On FAIL, point the caller at the output; do not attempt a fix unless asked.
+3. **On a non-zero exit with no verdict lines, relay stderr and the exit code — never an empty
+   summary.** `audit.sh` returns 2 for a usage error (missing `--scope` value, unknown flag, or a
+   scope that isn't a git repo) after printing to stderr and before any check runs, so stdout is
+   empty. Report the exit code and whatever stderr said. **An empty sweep is not a clean sweep** —
+   and note that the stderr is only the bare usage synopsis, so on exit 2 say which flags were
+   actually passed; the synopsis alone does not identify the cause.
+4. Summarize: counts (passed/failed/skipped) and which checks FAILed, if any.
+5. On FAIL, point the caller at the output; do not attempt a fix unless asked.
 
 The sweep runs 13 checks: `format-trailing-ws`, `format-crlf`, `format-final-newline`,
 `format-tabs` (formatting); `shellcheck`, `ruff` (linters); `markdownlint` (opt-in, see Rules);
