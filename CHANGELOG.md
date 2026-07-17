@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.41.10 — 2026-07-16
+- fix(init-python): put package installation out of scope like init-js
+
 ## v0.41.9 — 2026-07-16
 - fix(recast): document the deviation-file that --strip obligates
 

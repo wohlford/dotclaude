@@ -27,7 +27,9 @@ The user may optionally provide:
 2. Customize the template:
    - Set the module docstring to the user's description (or a placeholder)
    - Add requested classes/functions as stubs with docstrings and type hints
-   - Add specified imports (maintaining stdlib > third-party > local order)
+   - Add specified imports (maintaining stdlib > third-party > local order). Installing the packages
+     (`uv pip install <package>`) is out of scope — note any uninstalled third-party imports to the
+     user at the end
    - Keep `main()` entry point and `if __name__ == "__main__":` block
 3. Write the file to the specified path — if the parent directory doesn't exist, create it (`mkdir -p`) before writing
 4. Settle the shebang/exec-bit pairing per STYLE.md's script rule: if the module is an entry-point
