@@ -67,7 +67,10 @@ the end (no merge).
    covered placeholders, internal consistency, scope, and ambiguity — do **not** repeat that. If you
    took the short-plan path and skipped brainstorming, nothing has run those checks: do one quick pass
    over them first. Either way, the pass that earns its keep is the one no checklist can make: is this
-   the right design, is the decomposition sound, does it solve the actual problem? Revise inline.
+   the right design, is the decomposition sound, does it solve the actual problem? Then ask the full
+   lane's step-5 question of any task that carries a verification: **is that check falsifiable?**
+   Judge it by the three tests step 5 lists — the defect class does not care which lane produced the
+   plan. Revise inline.
 3. Run a diverse-model review **only if** the change is high stakes (see below); else skip.
    If it ran, **fold its findings; revise; recommit via `/commit`** — same as the full lane's step 6.
    A review whose findings are not folded is a review you paid for and did not use.
@@ -95,8 +98,12 @@ the end (no merge).
 4. **Plan.** Use `superpowers:writing-plans`. Save to `plans/YYYY-MM-DD-<name>.md`; commit via `/commit`.
 5. **Ultrathink the plan — the design, not the checklist.** `writing-plans` already self-reviewed for
    spec coverage, placeholders, and type consistency. Your pass asks what it cannot: does the task
-   decomposition hold, does the spike's result still hold, is each task independently reviewable?
-   Revise inline.
+   decomposition hold, does the spike's result still hold, is each task independently reviewable, and
+   **is each task's verification falsifiable** — would it actually fail if the task were done wrong?
+   On that last one, read each task's check and not just its instructions: does it test the real
+   deliverable or a proxy that can pass while the requirement is missed; is it anchored by content
+   rather than a line number the task's own earlier steps will shift; does it contradict the text it
+   verifies? Revise inline.
 6. **One diverse-model review of the plan** (see below). Fold findings; revise; recommit via `/commit`. (If a
    review at this stage invalidates the spec, loop back to step 1 as with spike
    invalidation.)

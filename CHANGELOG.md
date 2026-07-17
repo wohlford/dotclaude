@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.42.0 — 2026-07-17
+- feat(feature): check each task's verification, not just its content
+
 ## v0.41.18 — 2026-07-17
 - fix(vet): resolve paths to absolute before dispatching reviewers
 
