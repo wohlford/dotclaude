@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.43.6 — 2026-07-17
+- fix(feature): mechanize re-triage's opus re-run and scope its exclusions
+
 ## v0.43.5 — 2026-07-17
 - fix(vet): normalize discovered paths at discovery, before dispatch
 

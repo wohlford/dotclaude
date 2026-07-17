@@ -212,11 +212,13 @@ With the plan reviewed and committed, **continue** (do not stop):
    surfaced *since* triage, the triage was wrong: re-triage per Step 0 rather than bolting this
    review onto a fast-lane change. Re-triaging here is **relabelling forward, not a rewind of the
    design phase**: it makes this `/security-review` mandatory (the gate the mis-triage skipped) and
-   re-runs the **final whole-branch review at the full lane's `opus` tier** — a code-level review
-   *can* be redone on finished code, and that is what makes re-triage more than bolting this review
-   on. It does **not** retroactively owe the design-phase spec and spike (those inform design; the
-   code is already written). A security finding this step's fold-and-re-run cannot resolve is a stop —
-   never merge around it.
+   re-runs the **final whole-branch review at `opus`** — spawn one over the branch diff with the
+   Agent tool, the same dispatch that SDD's final review and the diverse-model review use; a *code-level*
+   review can be redone on finished code, which is what makes re-triage more than bolting this review
+   on. It does **not** retroactively owe the full lane's **design-half** gates — its spec, its spike,
+   or its diverse-model *plan* review — because each critiques the design or plan, which the finished,
+   already-reviewed code supersedes. A security finding this step's fold-and-re-run cannot resolve is
+   a stop — never merge around it.
 5. **Finish** with `superpowers:finishing-a-development-branch`: verify the project's test suite
    passes (if the repo has none, say so and rely on the per-task reviews), then
    **merge the feature branch** back to its base and clean up. The **merge is the default end
