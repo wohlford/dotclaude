@@ -104,9 +104,13 @@ removed — warn that its patterns are reported, not stripped (and are matched c
 proposed for omission from the brick plan, and the caller confirms each one before it is excluded.
 For each in-scope path, run the classification checklist — *(1) modified by
 >1 brick? (2) meaningful partial state? (3) imported/sourced by other in-scope files?* — yes to (1)
-or (2) → **evolving** (authored fresh, thin→grown); all no → **atomic** (reproduced from the frozen
-source at the brick where built, via `git show <ref>:<path>`); conflicting answers → **AMBIGUOUS**,
-surface to the caller. Then build a **dependency-ordered capability-slice brick plan**: each brick is
+or (2) → **evolving** (authored fresh, thin→grown); no to both (1) and (2) → **atomic** (reproduced
+from the frozen source at the brick where built, via `git show <ref>:<path>`) **whatever (3) says**.
+Only (1) and (2) decide the verdict; **this rule assigns (3) a different job** — being imported by
+others constrains *when* a file must land, not *how* it is authored, so (3) is an input to the
+dependency ordering below. **AMBIGUOUS** means indeterminate, not conflicting: (1) or (2) cannot be
+answered yes-or-no from the frozen source. Surface those to the caller rather than guessing.
+Then build a **dependency-ordered capability-slice brick plan**: each brick is
 "the next smallest thing that runs end-to-end," subsystems built **when reached** (never early);
 declare inter-subsystem dependencies and **surface any cycles for manual linearization** (the order
 assumes a DAG). The caller approves and may override any classification.

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.41.4 — 2026-07-16
+- fix(recast): stop asking the caller about imported-but-atomic files
+
 ## v0.41.3 — 2026-07-16
 - fix(propagate): confirm the settings.json blocker from the merge error
 
