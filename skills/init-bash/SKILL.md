@@ -33,7 +33,10 @@ The user may optionally provide:
      shipping them
    - If no arguments are expected, simplify `parse_arguments`: remove the
      positional `INPUT_FILE` case and its required-arg check, keeping only the
-     `-h`/`-v`/`-n` option handling
+     `-h`/`-v`/`-n` option handling — **and remove the template's
+     `[[ $# -eq 0 ]] && show_help` guard**, which exists to catch a missing
+     required argument. Left in place, a script that takes no arguments prints
+     help and exits on every ordinary run
 3. Before writing, apply the Rules checks: the filename is `kebab-case.sh` (else propose the corrected name and confirm) and the target doesn't already exist (else stop and ask). Then write the file to the specified path — if the parent directory doesn't exist, create it (`mkdir -p`) before writing
 4. Make it executable: `chmod +x <file>`
 5. Run `/sync-docs` to regenerate any `<!-- sync:scripts -->` index tables in the repo (no-op if no such markers exist).

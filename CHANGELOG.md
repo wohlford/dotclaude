@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.41.1 — 2026-07-16
+- fix(init): make the scaffolders agree on parent dirs and the exec bit
+
 ## v0.41.0 — 2026-07-16
 - feat(skills): judge model-invocation by risk and prerogative, not by writing
 
