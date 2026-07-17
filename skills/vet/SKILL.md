@@ -39,8 +39,12 @@ to a whole-repo sweep.
 
 ### Process
 
-1. **Resolve each path.** A `skills/<name>/` directory resolves to its `skills/<name>/SKILL.md`.
-   If a path does not exist, report it as missing and continue with the remaining valid paths.
+1. **Resolve each path to an absolute path.** A `skills/<name>/` directory resolves to its
+   `skills/<name>/SKILL.md`. **Absolutize before dispatching:** a reviewer resolves a relative path
+   against its own working directory, which you do not control — and where a second copy of the same
+   tree exists (a deployed or vendored one), that can land it in the wrong copy, reading stale
+   content that looks exactly like a defect. An absolute path removes the ambiguity. If a path does
+   not exist, report it as missing and continue with the remaining valid paths.
 2. **Classify by type** and pick the reviewer(s):
 
    | Path | Reviewer agent(s) |
@@ -50,10 +54,10 @@ to a whole-repo sweep.
    | a code file (`*.sh`, `*.py`, `*.js`) | `style-reviewer` (against `STYLE.md`) |
 
    If a path fits no category, ask the caller rather than guessing.
-3. **Dispatch** the chosen reviewer(s) with the Agent tool, passing the path(s). When a file draws
-   more than one reviewer (a `SKILL.md`), or several files are given, launch them **in parallel** —
-   one message, multiple Agent calls. If a reviewer dispatch fails or returns nothing, report that
-   reviewer as failed/unavailable for that file rather than silently dropping it.
+3. **Dispatch** the chosen reviewer(s) with the Agent tool, passing the absolute path(s). When a
+   file draws more than one reviewer (a `SKILL.md`), or several files are given, launch them **in
+   parallel** — one message, multiple Agent calls. If a reviewer dispatch fails or returns nothing,
+   report that reviewer as failed/unavailable for that file rather than silently dropping it.
 4. **Report** the findings grouped by file and reviewer, with each reviewer's verdict. Order
    most-severe first — files with any reviewer FAIL before files where every reviewer passes; within
    a file, most-severe first on each reviewer's own scale (error/major before warning/minor;
@@ -86,7 +90,9 @@ Vet every shipping artifact in the repo, batched by category, in one pass:
    Agent-tool dispatches (one message, multiple Agent calls) suffice; for more, orchestrate each
    category as a background workflow via the **Workflow tool**, which caps concurrency automatically.
    Invoking `/vet --all` is itself the opt-in for this multi-agent fan-out.
-4. **Dispatch** the matching reviewer(s) per artifact (the mapping in Process step 2).
+4. **Dispatch** the matching reviewer(s) per artifact (the mapping in Process step 2), passing each
+   path **absolutized** per Process step 1 — discovery is `git ls-files`, which emits repo-relative
+   paths, and this is the mode with the most dispatches by far.
 5. **Close with a consolidated summary** across all categories — grouped by file, most-severe first,
    non-blocking as always. (Per-category reports stream as they finish; this is the final roll-up.)
 

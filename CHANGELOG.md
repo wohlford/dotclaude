@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.41.18 — 2026-07-17
+- fix(vet): resolve paths to absolute before dispatching reviewers
+
 ## v0.41.17 — 2026-07-17
 - fix(feature): say what to do when /audit cannot run
 
