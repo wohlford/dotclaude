@@ -116,6 +116,10 @@ requesting-code-review, executing-plans) reads or writes a plan/spec, use these 
 - **Secondary**: Python for complex tasks requiring rich libraries
 - Favor command-line tools and shell scripts over GUI methods
 - Use Python when Bash becomes unwieldy or complex data structures are needed
+- **Checking for a *multi-line* literal is one of those cases.** `grep -F` treats an embedded newline
+  as *alternation*, not a sequence: `grep -Fc "$(printf 'a\nb')"` counts lines matching **either**,
+  so a multi-line check returns a plausible-but-wrong count and reads as verified. Use
+  `python3 -c "..."` (`needle in open(f).read()`) or `grep -Pzo`.
 
 ### Package Management
 
