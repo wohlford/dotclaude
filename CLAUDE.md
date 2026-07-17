@@ -100,6 +100,13 @@ at the repo root, dropping the `docs/superpowers/` prefix. Keep the `YYYY-MM-DD-
 filename convention. When a skill (writing-plans, brainstorming, subagent-driven-development,
 requesting-code-review, executing-plans) reads or writes a plan/spec, use these paths instead.
 
+### Superpowers SDD: the progress ledger has no plan identity
+
+`subagent-driven-development`'s `.superpowers/sdd/progress.md` records `Task N: complete` with **no
+reference to which plan** — yet the skill says to trust it over your own recollection. A ledger left
+by a *previous* plan therefore reads as if this plan's tasks are already done. Confirm it names the
+plan and base you are actually executing before trusting any line; reset it when starting a new plan.
+
 ## Environment
 
 - **Platform**: macOS with MacPorts package manager
