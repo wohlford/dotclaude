@@ -210,7 +210,13 @@ With the plan reviewed and committed, **continue** (do not stop):
    triage did not flag security, skip it and say so — **every** fast-lane change skips here by
    construction, since Step 0 routes security to the full lane without exception. If security has
    surfaced *since* triage, the triage was wrong: re-triage per Step 0 rather than bolting this
-   review onto a fast-lane change.
+   review onto a fast-lane change. Re-triaging here is **relabelling forward, not a rewind of the
+   design phase**: it makes this `/security-review` mandatory (the gate the mis-triage skipped) and
+   re-runs the **final whole-branch review at the full lane's `opus` tier** — a code-level review
+   *can* be redone on finished code, and that is what makes re-triage more than bolting this review
+   on. It does **not** retroactively owe the design-phase spec and spike (those inform design; the
+   code is already written). A security finding this step's fold-and-re-run cannot resolve is a stop —
+   never merge around it.
 5. **Finish** with `superpowers:finishing-a-development-branch`: verify the project's test suite
    passes (if the repo has none, say so and rely on the per-task reviews), then
    **merge the feature branch** back to its base and clean up. The **merge is the default end
