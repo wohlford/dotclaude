@@ -94,7 +94,16 @@ authorized action gated by the push-guard.
      reconcile; never merge/rebase/reset automatically. (A deliberately *divorced* takeover — production
      and dev share no history — is a one-off the user performs by hand, not this skill.)
    - **If the only blocker is the runtime `settings.json`** (skip-worktree, so it never shows in
-     `git status --porcelain`): park it, fast-forward, restore it so the runtime prefs (`model`,
+     `git status --porcelain`) — **confirm that from the failed merge's own error before parking
+     anything.** `--ff-only` names the paths it refuses to overwrite ("Your local changes to the
+     following files would be overwritten by merge: …"); this is the settings.json case only when
+     that list is exactly `settings.json`. If it names anything else, take the "any other tracked
+     file blocks" branch below instead of stashing. **Do not substitute a `git diff` probe:**
+     `skip-worktree` makes git assume worktree == index for this path, so no plain diff can see the
+     runtime modification — which is the whole reason this bullet exists. (A standalone probe would
+     have to lift the flag first: `update-index --no-skip-worktree settings.json`, then
+     `git diff --name-only HEAD`, then re-set it — the merge error is cheaper and already in hand.)
+     Then: park it, fast-forward, restore it so the runtime prefs (`model`,
      `enabledPlugins`) survive, then hand-add any new hook entries the committed version gained —
      enumerate them with `git -C "$live" diff FETCH_HEAD -- settings.json` after the restore (the
      runtime file vs the incoming commit: copy over missing `hooks` entries, keep the runtime
