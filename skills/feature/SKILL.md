@@ -71,7 +71,8 @@ the end (no merge).
 3. Run a diverse-model review **only if** the change is high stakes (see below); else skip.
    If it ran, **fold its findings; revise; recommit via `/commit`** — same as the full lane's step 6.
    A review whose findings are not folded is a review you paid for and did not use.
-4. Present for confirmation, then **execute and merge** (below).
+4. Present for confirmation, then **execute and merge** (below). If the user declines or asks for
+   changes, revise and re-present — never execute an unconfirmed plan.
 
 #### Full lane (real unknowns)
 
@@ -99,7 +100,9 @@ the end (no merge).
 6. **One diverse-model review of the plan** (see below). Fold findings; revise; recommit via `/commit`. (If a
    review at this stage invalidates the spec, loop back to step 1 as with spike
    invalidation.)
-7. Present the committed spec + plan. Pause for the user's confirmation, then **execute and merge** (below).
+7. Present the committed spec + plan. Pause for the user's confirmation, then **execute and merge**
+   (below). If the user declines or asks for changes, revise and re-present — never execute an
+   unconfirmed plan.
 
 #### Diverse-model review
 
