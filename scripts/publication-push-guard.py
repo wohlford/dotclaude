@@ -86,11 +86,37 @@ PREFIX = "publication-push-guard:"
 
 # Cheap pre-filter: a standalone "git" word anywhere in the command. Deliberately broad (mirrors
 # push-guard.sh's own word-boundary match) — it only decides whether the more expensive,
-# fail-closed evaluation below is worth entering, never whether to block.
+# fail-closed evaluation below is worth entering, never whether to block. Matched against the
+# DEQUOTED view of the command (see _dequote below), not the raw string — a raw-text match would
+# miss a quote-split `gi''t`/`g""it`/`gi\t`, which shlex (and a real shell) collapse to `git` before
+# execution, so a raw-only check could fail-OPEN on an obfuscated push. Dequoting only removes
+# characters, so it can reveal a hidden `git` but can never manufacture one that isn't there.
 GIT_WORD_RE = re.compile(r"(?:^|[^A-Za-z0-9_])git(?:[^A-Za-z0-9_]|$)")
 
-# Coarse, whole-command detection of a repo-root override. See the "COARSE" residual above.
+# Coarse, whole-command detection of a repo-root override. See the "COARSE" residual above. Also
+# matched against the DEQUOTED view (see _dequote below) so a quote-split `--git-di''r=`/
+# `GIT_DI''R=` can't hide a real override from this check — same reasoning as GIT_WORD_RE.
 GITDIR_RE = re.compile(r"--git-dir|--work-tree|(?<![A-Za-z0-9_])GIT_DIR=")
+
+# Shell quoting/escaping metacharacters stripped to produce the dequoted view GIT_WORD_RE and
+# GITDIR_RE actually match against. This mirrors (approximately, and only in the direction that
+# matters here) the quote-removal a real shell — and this hook's own shlex tokenizer — performs
+# before a command runs: `'`, `"`, and `\` are removed outright, so `gi''t` reads as `git` and
+# `--git-di''r=` reads as `--git-dir=`. It is intentionally NOT a full shell-quoting parser (it does
+# not track quote state, so it also collapses quote characters that a real shell would keep as
+# literal content); that is safe here because dequoting is used only to WIDEN these two detectors,
+# never to decide what actually gets tokenized/executed — removing extra characters can make a
+# detector fire on something it previously missed, never suppress a real match, so over-collapsing
+# only trades a few more false blocks for zero missed obfuscated pushes.
+_DEQUOTE_CHARS = str.maketrans("", "", "'\"\\")
+
+
+def _dequote(command: str) -> str:
+    """Strip quote/backslash characters so quote-split obfuscation reads as the plain word it
+    resolves to at shell-execution time. Used only to feed GIT_WORD_RE/GITDIR_RE — see their
+    comments and _DEQUOTE_CHARS above for why this is safe as a widen-only transform."""
+    return command.translate(_DEQUOTE_CHARS)
+
 
 # git subcommands that are never `push` and never worth an alias-config lookup (the common case,
 # kept fast). Anything NOT in this set — including genuinely unknown words — is treated as a
@@ -592,7 +618,7 @@ def _find_block_reason(command: str, cwd: str) -> str | None:
     sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
     import git_command as gitcmd  # noqa: E402
 
-    gitdir_override = bool(GITDIR_RE.search(command))
+    gitdir_override = bool(GITDIR_RE.search(_dequote(command)))
 
     # Raises ValueError on tokenizing ambiguity — propagated, uncaught, to the caller's fail-closed
     # try/except. iter_git_invocations tokenizes the identical normalized command with the same
@@ -631,8 +657,8 @@ def main() -> int:
     cwd = data.get("cwd") or os.getcwd()
     if not isinstance(cwd, str):
         cwd = os.getcwd()
-    if not command or not GIT_WORD_RE.search(command):
-        return 0  # cheap: nothing resembling a git invocation at all
+    if not command or not GIT_WORD_RE.search(_dequote(command)):
+        return 0  # cheap: nothing resembling a git invocation at all, even after de-quoting
 
     try:
         reason = _find_block_reason(command, cwd)

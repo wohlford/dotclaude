@@ -231,6 +231,36 @@ got=0
 printf '[1,2,3]' | python3 "$guard" >/dev/null 2>&1 || got=$?
 assert_eq "$got" 0 "regression: non-dict JSON payload (bare list) -> 0, not a crash"
 
+# ================= Regression: quote-split obfuscation of the "git" word (Finding 1) =================
+# `gi''t`/`gi\t` are collapsed to `git` by a real shell AND by this hook's own shlex tokenizer, but
+# the cheap pre-filter historically matched the RAW command text — which has no contiguous "git" —
+# so it returned 0 (ALLOW) before ever reaching the tokenizer/adoption logic. Verified live: a real
+# shell runs `git push origin dev` and publishes `dev` while the pre-fix hook exits 0.
+build_repo 1
+gi "$REPO" checkout -q dev
+push_run "$REPO" "gi''t push origin dev" 2 "regression: quote-split gi''t bypassing the git-word pre-filter -> blocked"
+
+build_repo 1
+gi "$REPO" checkout -q dev
+push_run "$REPO" "gi\\t push origin dev" 2 "regression: backslash-split gi\\t bypassing the git-word pre-filter -> blocked"
+
+# ================= Regression: quote-split obfuscation of --git-dir (Finding 2) =================
+# `--git-di''r=<path>` is collapsed to `--git-dir=<path>` by a real shell AND by this hook's own
+# shlex tokenizer, but GITDIR_RE historically matched the RAW command text, missing the quote-split
+# form — so the root-unknown block never fired and the guard resolved the root from `cwd` instead
+# (a non-adopted repo, dormant), silently allowing a push that real git routes into the adopted
+# repo via --git-dir. Verified live: a real shell pushes `dev` into the adopted repo from a
+# non-adopted cwd while the pre-fix hook exits 0.
+build_repo 1
+build_elsewhere
+push_run "$ELSEWHERE" "git --git-di''r=$REPO/.git push origin dev" 2 "regression: quote-split --git-di''r= bypassing the gitdir pre-check -> blocked (root-unknown)"
+
+# ================= Positive control: quoting alone must not make the pre-filter over-block =========
+# A normal non-git command that happens to contain quotes must still exit 0 via the cheap
+# pre-filter — de-quoting widens what counts as "the word git", not what counts as "contains a
+# quote character".
+push_run "$REPO" 'echo "hello"' 0 "positive control: quoted non-git command still exits 0 fast"
+
 # ================= A blocked push must emit a distinct, greppable stderr message =================
 msg="$(push_json "git push origin dev" "$REPO" | python3 "$guard" 2>&1 1>/dev/null)"
 case "$msg" in

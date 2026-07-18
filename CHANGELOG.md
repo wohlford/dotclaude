@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.45.3 — 2026-07-18
+- fix(publication-guard): close shell-quote-split bypass of the git/gitdir pre-checks
+
 ## v0.45.2 — 2026-07-18
 - docs(publication-guard): reconcile dormancy claims with the non-adopted root-unknown block
 
