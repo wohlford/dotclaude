@@ -46,7 +46,10 @@ The pattern: **one source of truth → enforced at edit time (hook) + on demand 
 
 ## The staging → live lifecycle
 
-Edits don't take effect where you make them. There are two working clones plus the remote:
+Edits don't take effect where you make them. There are two working clones plus the remote. (A
+separate, in-progress **dev/main publication model** — a private `dev` history promoted to a curated
+public `main` — layers on top of this for repos that adopt it; see
+[`publication-model.md`](publication-model.md).)
 
 ```text
   dotclaude-staging  ──/propagate──▶  origin (GitHub)  ──▶  dotclaude (live)

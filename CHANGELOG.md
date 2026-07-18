@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.45.1 — 2026-07-18
+- docs(publication-model): document the .publication.toml marker and dev-block
+
 ## v0.45.0 — 2026-07-18
 - feat(hooks): wire publication-guard hook + shared-dep test runner
 
