@@ -30,7 +30,7 @@ no dedicated check was needed.
 ## The dev-block hook
 
 In a repo that has adopted the model, `scripts/publication-push-guard.py` is a PreToolUse hook that
-keeps `dev` private. It differs from the general `push-guard.sh` in two ways:
+keeps `dev` private. It differs from the general `push-guard.py` in two ways:
 
 - **Fail-closed.** Any ambiguity — an unparseable command, an unresolvable repo root, a wildcard or
   revision-suffix refspec, an unresolved alias chain — blocks rather than allows.

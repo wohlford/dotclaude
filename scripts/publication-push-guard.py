@@ -12,7 +12,7 @@ untouched (the mechanism is dormant until a repo adopts) — EXCEPT the one boun
 below where the target repo cannot be determined at all: root-unknown blocks regardless of marker,
 in an adopted repo or not, because "unknown repo" means adoption can't be confirmed either way.
 
-THIS IS A FAIL-CLOSED SECURITY GATE, not a deliberateness nudge like push-guard.sh: it is NOT
+THIS IS A FAIL-CLOSED SECURITY GATE, not a deliberateness nudge like push-guard.py: it is NOT
 overridable by `ALLOW_PUSH=1`, and ambiguity of any kind — an unparseable command, an unresolvable
 repo root, a `--git-dir`/`--work-tree`/`GIT_DIR=` override, an unresolvable refspec — blocks rather
 than allows. Detection is an ALLOWLIST: a push is judged safe only when every refspec it carries
@@ -84,8 +84,8 @@ from pathlib import Path
 
 PREFIX = "publication-push-guard:"
 
-# Cheap pre-filter: a standalone "git" word anywhere in the command. Deliberately broad (mirrors
-# push-guard.sh's own word-boundary match) — it only decides whether the more expensive,
+# Cheap pre-filter: a standalone "git" word anywhere in the command. Deliberately broad — it
+# only decides whether the more expensive,
 # fail-closed evaluation below is worth entering, never whether to block. Matched against the
 # DEQUOTED view of the command (see _dequote below), not the raw string — a raw-text match would
 # miss a quote-split `gi''t`/`g""it`/`gi\t`, which shlex (and a real shell) collapse to `git` before

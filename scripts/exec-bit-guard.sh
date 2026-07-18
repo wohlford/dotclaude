@@ -9,7 +9,7 @@ set -euo pipefail
 #   0 — allow (no commit segment, override, fileMode=false, not a repo, or any internal error → fail open)
 #   2 — blocked: the staged commit would introduce a non-executable script (stderr fed back to Claude)
 #
-# A DELIBERATENESS gate, not an adversarial defense (same posture as push-guard.sh). Scope is
+# A DELIBERATENESS gate, not an adversarial defense (same posture as push-guard.py). Scope is
 # introduction-only: a NEW shebang file staged 100644, or a 100755→100644 downgrade — editing a
 # pre-existing 644 shebang file passes, so foreign repos with intentional 644 shebangs don't
 # chronically block. Broad segment match (a `git` word AND a `commit` word) deliberately over-scans

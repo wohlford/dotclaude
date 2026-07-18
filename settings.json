@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/scripts/push-guard.sh"
+            "command": "$HOME/.claude/scripts/push-guard.py"
           },
           {
             "type": "command",
