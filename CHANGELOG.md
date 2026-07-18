@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.45.0 — 2026-07-18
+- feat(hooks): wire publication-guard hook + shared-dep test runner
+
 ## v0.44.0 — 2026-07-18
 - feat(publication-guard): add fail-closed guard barring dev from remotes
 

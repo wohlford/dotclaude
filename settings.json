@@ -25,6 +25,11 @@
             "type": "command",
             "command": "$HOME/.claude/scripts/recast-commit-gate.py",
             "timeout": 600
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/publication-push-guard.py",
+            "timeout": 60
           }
         ]
       }
@@ -89,6 +94,11 @@
             "type": "command",
             "command": "$HOME/.claude/scripts/audit-test.sh",
             "timeout": 120
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/publication-push-guard-test.sh",
+            "timeout": 600
           }
         ]
       }

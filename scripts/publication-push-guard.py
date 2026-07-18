@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # Script: publication-push-guard.py
-# Purpose: PreToolUse hook — fail-closed dev-block: keep `dev` local in a repo that has adopted
-#          the dev/main publication model
+# Purpose: PreToolUse hook — fail-closed dev-block keeping `dev` private in a repo that adopted the dev/main publication model
 """PreToolUse hook — keep `dev` local in a repo that has adopted the dev/main publication model.
 
 Called by Claude Code hooks with the tool-call JSON on stdin. When a `git push` (or an alias that
