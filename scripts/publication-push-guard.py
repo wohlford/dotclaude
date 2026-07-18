@@ -7,8 +7,10 @@ Called by Claude Code hooks with the tool-call JSON on stdin. When a `git push` 
 expands to one) is about to run and the target repo has a `.publication.toml` marker at its root
 (the "adopted" signal — see specs/2026-07-18-publication-model-foundation.md), this blocks (exit 2)
 any push that could publish `dev` — as a plain branch refspec, via a bare push whose current branch
-is `dev`, or via a tag reachable only from `dev`. A repo with no marker is untouched (the mechanism
-is dormant until a repo adopts).
+is `dev`, or via a tag reachable only from `dev`. An ordinary push in a repo with no marker is
+untouched (the mechanism is dormant until a repo adopts) — EXCEPT the one bounded case described
+below where the target repo cannot be determined at all: root-unknown blocks regardless of marker,
+in an adopted repo or not, because "unknown repo" means adoption can't be confirmed either way.
 
 THIS IS A FAIL-CLOSED SECURITY GATE, not a deliberateness nudge like push-guard.sh: it is NOT
 overridable by `ALLOW_PUSH=1`, and ambiguity of any kind — an unparseable command, an unresolvable
@@ -51,9 +53,13 @@ Known, documented residuals (bounded, never silent — same posture as recast-co
   - `--git-dir`/`--work-tree`/`GIT_DIR=` detection is COARSE (a whole-command substring check, not
     scoped to the specific invocation that carries it) — a command containing any of these anywhere
     forces every push candidate in that command to block, which can over-block a compound command
-    where the override applies to an unrelated git invocation. Accepted: precise per-invocation
-    scoping would require re-deriving the exact global-option token span this hook otherwise avoids
-    duplicating from git_command, and over-blocking is the safe direction.
+    where the override applies to an unrelated git invocation. This check runs BEFORE the
+    `.publication.toml` adoption check (see `_judge_invocation`), so it fires in a non-adopted repo
+    too, not only an adopted one: root-unknown blocks regardless of marker, by design, because a
+    repo whose identity can't be pinned down is one whose adoption can't be confirmed either way.
+    Accepted: precise per-invocation scoping would require re-deriving the exact global-option
+    token span this hook otherwise avoids duplicating from git_command, and over-blocking is the
+    safe direction.
   - `remote.<name>.push` is consulted only when the command names its remote explicitly
     (`git push <remote>`, no refspec); a fully bare `git push` with no remote does not resolve the
     implicit default remote to check its `remote.push` config (this hook still checks HEAD's branch
@@ -64,8 +70,9 @@ Known, documented residuals (bounded, never silent — same posture as recast-co
 
 Exit codes:
   0 — allow: no git push found, the repo is not adopted, or every push found is unambiguously safe.
-  2 — block: an adopted repo's push targets `dev` (directly, via a tag, or ambiguously) — stderr
-      names this guard so a runbook can grep for it specifically.
+  2 — block: EITHER an adopted repo's push targets `dev` (directly, via a tag, or ambiguously) OR
+      the repo the push targets could not be determined at all (root-unknown blocks regardless of
+      marker, adopted or not) — stderr names this guard so a runbook can grep for it specifically.
 """
 
 import json

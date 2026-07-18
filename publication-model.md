@@ -12,8 +12,9 @@ correctly), and the one-time orphan cutover that establishes a repo's first publ
 ## The `.publication.toml` marker
 
 Presence of `.publication.toml` at a repo's root is the adoption signal: a repo with the file has
-adopted the model; a repo without it is untouched by any of this. Its contents are one bit — which
-branch is the production target:
+adopted the model; a repo without it sees no ordinary effect from any of this (the one bounded
+exception — a push the dev-block hook cannot attribute to any repo — is described below). Its
+contents are one bit — which branch is the production target:
 
 ```toml
 # .publication.toml — presence signals this repo uses the dev/main publication model
@@ -36,11 +37,15 @@ keeps `dev` private. It differs from the general `push-guard.sh` in two ways:
 - **Non-overridable.** It does not honor `ALLOW_PUSH=1`. In an adopted repo it is the only defense
   against publishing `dev`, so the general override has no effect on it.
 
-It is also **marker-gated**: a repo without `.publication.toml` is never touched by this hook. Where
-it does apply, it works from an allowlist rather than a `dev` denylist: it blocks any push naming
-`dev` as a source or destination — including force-push and revision-suffix forms — and blocks any
-push it cannot classify precisely, while allowing an ordinary `main` push, a force-push of `main`
-(reserved for the one-time cutover), and any tag reachable from `main`.
+It is also **marker-gated**: an ordinary push in a repo without `.publication.toml` is untouched by
+this hook. The one bounded exception is fail-closed by design, not a gap — if the hook cannot
+determine which repo a push targets at all (an unresolvable repo root, a `--git-dir`/`--work-tree`/
+`GIT_DIR=` override pointing elsewhere, or an unparseable command), it blocks regardless of any
+marker, because an unknown repo means adoption can't be confirmed either way. Where the repo is
+known and adopted, the hook works from an allowlist rather than a `dev` denylist: it blocks any push
+naming `dev` as a source or destination — including force-push and revision-suffix forms — and
+blocks any push it cannot classify precisely, while allowing an ordinary `main` push, a force-push
+of `main` (reserved for the one-time cutover), and any tag reachable from `main`.
 
 See [`scripts/HOOKS.md`](scripts/HOOKS.md) for how hooks like this one are built, and
 [`ARCHITECTURE.md`](ARCHITECTURE.md) for where the publication model fits among this repo's other

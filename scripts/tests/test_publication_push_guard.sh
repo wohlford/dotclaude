@@ -152,6 +152,17 @@ push_run "$REPO" "git push --all" 0 "allowed: non-adopted repo, --all"
 build_elsewhere
 push_run "$ELSEWHERE" "git -C $ELSEWHERE push origin dev" 0 "allowed: non-adopted repo via -C"
 
+# ================= Deliberate over-block: --git-dir still blocks a NON-adopted repo's push =====
+# Root-unknown blocks regardless of marker, by design (see _judge_invocation and the module
+# docstring's --git-dir residual note): --git-dir makes the target repo unresolvable to the guard
+# BEFORE it ever reaches the .publication.toml check, so an otherwise-ordinary `main` push into a
+# repo that never adopted the model is blocked anyway. This is intentional fail-closed behavior,
+# not a bug — an unknown repo means adoption can't be confirmed either way, so the guard cannot
+# prove the push is safe and refuses rather than guesses.
+build_repo 0
+build_elsewhere
+push_run "$ELSEWHERE" "git --git-dir=$REPO/.git push origin main" 2 "deliberate over-block: --git-dir into a non-adopted repo still blocks (root-unknown)"
+
 # ================= Bonus: alias resolution (Fable MAJOR) =================
 build_repo 1
 gi "$REPO" config alias.deploy "push origin dev" >/dev/null 2>&1
