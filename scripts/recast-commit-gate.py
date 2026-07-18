@@ -45,15 +45,15 @@ import importlib.util
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import git_command  # noqa: E402
+
 SOURCE_RE = re.compile(r"^skills/(recast)/.*\.(sh|py)$")
 
-# git *global* options (before the subcommand) that consume a following value token.
-GLOBAL_VALUE_OPTS = {"-c", "--git-dir", "--work-tree", "--namespace"}
 # `git commit` short options that consume a value (attached, e.g. -mMSG, or the next token).
 COMMIT_VALUE_SHORT = set("mFCct")
 COMMIT_VALUE_LONG = {
@@ -69,99 +69,11 @@ COMMIT_VALUE_LONG = {
     "--squash",
     "--trailer",
 }
-ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-
-# Exec-wrappers that run their argument as a command, so `git` right after one is still in command
-# position (`sudo git commit`, `time git commit`). Bounded on purpose — an unknown leading word
-# (`echo git commit`) is treated as NOT a command, preserving the phantom-commit guard.
-WRAPPERS = {
-    "time",
-    "env",
-    "sudo",
-    "doas",
-    "nice",
-    "ionice",
-    "nohup",
-    "setsid",
-    "stdbuf",
-    "command",
-    "xargs",
-    "timeout",
-}
 
 # git subcommands (other than add/stage) that mutate what the next commit will include. Seeing one
 # before a commit means files it names WILL be committed even if they show no diff yet (a `git rm`
 # of an unmodified tracked file), so their pathspecs are folded in — fail closed.
 INDEX_MUTATING = {"rm", "mv"}
-
-
-def tokenize(command: str) -> list[str]:
-    """shlex with punctuation_chars: control/redirect operators become their own tokens even when
-    fused to a word (`-A&&git`), while quoted values stay intact. Raises ValueError on unbalanced
-    quotes (caller fails open)."""
-    lex = shlex.shlex(command, posix=True, punctuation_chars="();<>|&")
-    lex.whitespace_split = True
-    return list(lex)
-
-
-def is_op(token: str) -> bool:
-    """A control operator / command boundary: `&&`, `||`, `;`, `|`, `&`, `(`, `)` — not a redirect."""
-    return (
-        bool(token)
-        and all(c in "();|&" for c in token)
-        and not any(c in "<>" for c in token)
-    )
-
-
-def is_redirect(token: str) -> bool:
-    """A redirection operator token: `>`, `>>`, `<`, `>&`, `&>`, …"""
-    return (
-        bool(token)
-        and all(c in "<>&|" for c in token)
-        and any(c in "<>" for c in token)
-    )
-
-
-def strip_redirects(seg: list[str]) -> list[str]:
-    """Drop redirection operators, their targets, and a preceding bare fd number (`2 >& 1`), so a
-    redirect is never misread as a commit pathspec — a phantom pathspec would silently narrow the
-    gate's scope to nothing (fail open)."""
-    out: list[str] = []
-    i = 0
-    while i < len(seg):
-        t = seg[i]
-        if is_redirect(t):
-            if out and out[-1].isdigit():
-                out.pop()  # the fd number in e.g. `2 >& 1`
-            i += 2  # skip the operator and its target
-            continue
-        out.append(t)
-        i += 1
-    return out
-
-
-def is_git(token: str) -> bool:
-    """True if token invokes git (bare name or a path ending in /git)."""
-    return token == "git" or token.endswith("/git")
-
-
-def starts_command(tokens: list[str], idx: int) -> bool:
-    """True if tokens[idx] is in *command position* — reachable from the input start or a control
-    operator by stepping back over only leading `VAR=val` env assignments and known exec-wrappers
-    (`sudo`/`time`/`env`/…). A bare word before it (e.g. `echo`) means it is that command's
-    argument, so `echo VAR=1 git commit` is NOT mistaken for a commit, while `sudo git commit` and
-    `ALLOW_GIT_WRITE=1 git commit` are. (Redirects are stripped globally before this runs, so a
-    leading `2>&1 git commit` also resolves to command position.)"""
-    j = idx - 1
-    while j >= 0:
-        prev = tokens[j]
-        if is_op(prev):
-            return True
-        if ENV_ASSIGN.match(prev) or prev in WRAPPERS:
-            j -= 1
-            continue
-        return False
-    return True
 
 
 def parse_commits(command: str) -> list[dict]:
@@ -176,53 +88,10 @@ def parse_commits(command: str) -> list[dict]:
     source is not missed. ``add_scope``/``forced`` accumulate across the scan, so each commit
     over-approximates rather than under-counts (fail closed). Returns [] on tokenizing ambiguity —
     never claim a non-commit is a commit."""
-    # Newlines join separate commands the way `;` does; normalize so a newline-joined
-    # `git add -A\ngit commit` splits into two segments. A `\n` inside a quoted message is preserved
-    # as quoted content by shlex, so this is safe. Redirects are stripped from the whole stream so a
-    # leading `2>&1 git commit` is still seen and a redirect is never misread as a pathspec.
-    command = command.replace("\n", " ; ").replace("\r", " ")
-    try:
-        tokens = strip_redirects(tokenize(command))
-    except ValueError:
-        return []
-
     commits: list[dict] = []
     add_scope = None
     forced: list[str] = []
-    i, n = 0, len(tokens)
-    while i < n:
-        if not (is_git(tokens[i]) and starts_command(tokens, i)):
-            i += 1
-            continue
-        # Skip global options to reach the subcommand, capturing `-C <dir>`.
-        j = i + 1
-        cdir = None
-        while j < n and tokens[j].startswith("-"):
-            opt = tokens[j]
-            if opt == "-C" and j + 1 < n:
-                cdir = tokens[j + 1]
-                j += 2
-            elif opt.startswith("-C") and len(opt) > 2:
-                cdir = opt[2:]
-                j += 1
-            elif opt in GLOBAL_VALUE_OPTS and "=" not in opt:
-                j += 2
-            else:
-                j += 1
-        if j >= n:
-            break
-        sub = tokens[j]
-        # Collect this segment's args until a control operator or the next `git` invocation in
-        # command position.
-        seg = []
-        k = j + 1
-        while (
-            k < n
-            and not is_op(tokens[k])
-            and not (is_git(tokens[k]) and starts_command(tokens, k))
-        ):
-            seg.append(tokens[k])
-            k += 1
+    for cdir, sub, seg in git_command.iter_git_invocations(command):
         if sub == "commit":
             if "--dry-run" not in seg:  # a dry run creates no commit — nothing to gate
                 commits.append(
@@ -243,7 +112,6 @@ def parse_commits(command: str) -> list[dict]:
             # rm/mv name paths the next commit WILL include (a deletion or rename) even with no diff
             # yet; fold them into a forced set the gate checks directly.
             forced += [t for t in seg if not t.startswith("-")]
-        i = k
     return commits
 
 

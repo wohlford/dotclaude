@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.43.8 — 2026-07-18
+- refactor(git-command): extract shared shell-command tokenizer into scripts/lib
+
 ## v0.43.7 — 2026-07-17
 - fix(init): list install targets, exclude non-installable imports
 
