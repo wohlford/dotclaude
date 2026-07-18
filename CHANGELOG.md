@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.44.0 — 2026-07-18
+- feat(publication-guard): add fail-closed guard barring dev from remotes
+
 ## v0.43.8 — 2026-07-18
 - refactor(git-command): extract shared shell-command tokenizer into scripts/lib
 

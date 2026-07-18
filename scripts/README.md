@@ -20,6 +20,7 @@ for how the index below stays in sync.
 | `markdownlint-check.sh`      | PostToolUse hook — run markdownlint-cli2 on edited markdown in opted-in repos                                              |
 | `md-links-check-test.sh`     | PostToolUse hook — run the md-links-check test suite when the checker changes                                              |
 | `md-links-check.py`          | PostToolUse hook — verify relative links and anchors in edited markdown resolve                                            |
+| `publication-push-guard.py`  | PreToolUse hook — fail-closed dev-block: keep `dev` local in a repo that has adopted                                       |
 | `push-guard.sh`              | PreToolUse hook — block `git push` unless the push segment leads with an ALLOW_PUSH=1 override                             |
 | `recast-commit-gate.py`      | PreToolUse hook — run the recast suite before a commit that touches recast source                                          |
 | `recast-test.sh`             | PostToolUse hook — run the matching recast test file when a recast source changes                                          |
