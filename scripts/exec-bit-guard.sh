@@ -92,12 +92,12 @@ base_ref="$(git -C "$dir" rev-parse -q --verify HEAD 2>/dev/null)" \
 offenders=""
 while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
   read -r src dst _ _ status <<< "${meta#:}"
-  if [ "$status" = "A" ] && [ "$dst" = "100644" ]; then
-    # || true inside the substitution — a SIGPIPEd git under pipefail must not discard the bytes
+  if [[ "$status" = "A" && "$dst" = "100644" ]]; then
+    # || true inside the substitution — a SIGPIPEd git under pipefail must not discard the bytes.
     first2="$(git -C "$dir" cat-file blob ":$path" 2>/dev/null | head -c 2 || true)"
     [ "$first2" = "#!" ] && offenders="${offenders}  ${path} — new shebang file staged as 644
 "
-  elif [ "$status" = "M" ] && [ "$src" = "100755" ] && [ "$dst" = "100644" ]; then
+  elif [[ "$status" = "M" && "$src" = "100755" && "$dst" = "100644" ]]; then
     offenders="${offenders}  ${path} — staged mode downgrade 755 -> 644
 "
   fi
@@ -106,7 +106,7 @@ done < <(git -C "$dir" diff --cached "$base_ref" --raw -z --no-renames --diff-fi
 if [ "$wtscan" = 1 ]; then
   while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
     read -r src dst _ _ status <<< "${meta#:}"
-    if [ "$status" = "M" ] && [ "$src" = "100755" ] && [ "$dst" = "100644" ]; then
+    if [[ "$status" = "M" && "$src" = "100755" && "$dst" = "100644" ]]; then
       offenders="${offenders}  ${path} — worktree lost the exec bit and -a will commit it as 644
 "
     fi

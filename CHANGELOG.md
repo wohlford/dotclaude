@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.48.3 — 2026-07-19
+- style(scripts): conform shell scripts to STYLE.md
+
 ## v0.48.2 — 2026-07-19
 - test(publication-push-guard): add cutover force-push cross-check cases
 
