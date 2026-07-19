@@ -113,7 +113,7 @@ Per logical group, the order is **stage → version → changelog → commit →
    - `!` suffix → **MAJOR** (reset minor+patch to 0) — **except before v1.0.0**: when the base tag's MAJOR is `0`, a breaking `!` bumps **MINOR** (SemVer 0.x: "anything may change"; reaching 1.0.0 is a deliberate choice, never an automatic consequence of the first `feat!`).
    - `feat` → **MINOR** (reset patch to 0).
    - all other types → **PATCH**.
-   **Base tag:** for the first commit of the invocation, the latest tag from dynamic context (default `v0.0.0`); for each later commit in the same invocation, the tag you created in the previous iteration. Increment it to get `vX.Y.Z`.
+   **Base tag:** for the first commit of the invocation, the latest tag from dynamic context (default `v0.0.0`); for each later commit in the same invocation, the tag you created in the previous iteration. If no previous iteration in this invocation was tagged (e.g. the publication-model default skipped earlier groups and this group re-enables tagging via a named `--tag`), trace back to the last tagged iteration in this invocation; if there is none, fall back to the dynamic-context base tag (`git describe --tags`). Increment it to get `vX.Y.Z`.
 6. **Living changelog entry.** Prepend a section that mirrors the tag (subject to the **Format guard** below):
 
    ```text
@@ -135,12 +135,13 @@ Per logical group, the order is **stage → version → changelog → commit →
 
    Show it: `git log --oneline -1`.
 8. **Tag** (skip under the same conditions as step 5 — explicit `--no-tag`, or the publication-model default with no `--tag` override): `git tag -a vX.Y.Z -m "<message>"` — `<message>` is the same message frozen in step 4 (signing follows `tag.gpgsign`; never `-s`). Show: `git log --oneline -1 --decorate`.
+   - **Recovery.** If `git tag -a vX.Y.Z` fails because the tag already exists (a re-run after a partial prior attempt), move it with `git tag -f -a vX.Y.Z -m "<message>"` **only if** it's a leftover pointing at a prior attempt of this same commit; otherwise stop and report.
 9. **If more groups remain, return to step 3.**
 10. Final summary: `git log --oneline -<N> --decorate` (N = commits created).
 
 `/commit` does **not** regenerate index/manifest tables — index freshness is the edit-time `sync-docs`-style hook's job, not the commit's. A commit that skips tagging — via `--no-tag` or the publication-model default — never appears in the changelog, by design. In a `/recast` build, bricks follow **recast's own** changelog rules (date from the brick's commit; `[declared, not proven]` suffix), not these.
 
-**Amend flow (`--amend`):** skip the grouping loop; run `git commit --amend` (message via `-m` heredoc, or `--no-edit`). Do not create a new tag; if the amended commit was tagged, move it: `git tag -f -a <tag> -m "<amended subject>"`. **Keep the changelog in sync:** if a living-format `CHANGELOG.md` is present and its tip `## v<tag>` bullet differs from the amended subject, edit that one bullet in place and include `CHANGELOG.md` in the amend. **Tolerate a missing tip entry** (the commit may predate this feature or was `--no-tag`) — do not fabricate one.
+**Amend flow (`--amend`):** skip the grouping loop; run `git commit --amend` (message via `-m` heredoc, or `--no-edit`). Do not create a new tag; if the amended commit was tagged (check with `git tag --points-at HEAD`), move it: `git tag -f -a <tag> -m "<amended subject>"`. **Keep the changelog in sync:** if a living-format `CHANGELOG.md` is present and its tip `## v<tag>` bullet differs from the amended subject, edit that one bullet in place and include `CHANGELOG.md` in the amend. **Tolerate a missing tip entry** (the commit may predate this feature or was `--no-tag`) — do not fabricate one.
 
 ### Publication model awareness
 
