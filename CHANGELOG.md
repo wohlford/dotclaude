@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.48.8 — 2026-07-19
+- fix(init-js): check the target module type before scaffolding ESM
+
 ## v0.48.7 — 2026-07-19
 - fix(commit): add base-tag fallback and tag-recovery guidance
 

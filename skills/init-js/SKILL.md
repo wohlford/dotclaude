@@ -34,6 +34,11 @@ The user may optionally provide:
      usually the specifier itself but its root for a subpath (`lodash/fp` → `lodash`), so the user can
      install any not already present
    - Keep the `main()` entry point and the template's `import.meta.url` entry-point guard; swap it for `if (require.main === module)` only when the user explicitly asked for CommonJS
+   - Make the ESM scaffold actually load: check the target project's nearest `package.json` for
+     `"type": "module"`. If it's absent or `"commonjs"`, a `.js` ESM file throws
+     `SyntaxError: Cannot use import statement outside a module` — either scaffold to a `.mjs`
+     extension or note that the project needs `"type": "module"` (or produce a CommonJS scaffold if
+     the user prefers)
 3. Write the file to the specified path — if the parent directory doesn't exist, create it (`mkdir -p`) before writing
 4. Settle the shebang/exec-bit pairing per STYLE.md's script rule: if the module is an entry-point
    run by path (a standalone CLI), keep the template's shebang and `chmod +x <file>`; if it is only
