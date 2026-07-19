@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.46.0 — 2026-07-18
+- feat(feature): re-derive onto dev as the marker-scoped adopted-repo finish
+
 ## v0.45.5 — 2026-07-18
 - chore(publication): adopt the dev-main publication model
 

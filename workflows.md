@@ -7,9 +7,11 @@ orchestrates, and remain the right frame for lighter work.
 
 ## The spine: `/feature`
 
-`/feature <description>` drives a change from idea to a merged result through a risk-tiered pipeline.
-It orchestrates the `superpowers` skills and adds risk triage, an empirical spike, and a diverse-model
-review. `--plan-only` stops at the reviewed, committed plan instead of executing.
+`/feature <description>` drives a change from idea to an integrated result through a risk-tiered
+pipeline — merged in a non-adopted repo, re-derived onto `dev` in a repo that has adopted the
+publication model (`.publication.toml` present at the repo root). It orchestrates the `superpowers`
+skills and adds risk triage, an empirical spike, and a diverse-model review. `--plan-only` stops at the
+reviewed, committed plan instead of executing.
 
 **Step 0 — Risk triage.** Pick the lane and say why:
 
@@ -21,16 +23,20 @@ review. `--plan-only` stops at the reviewed, committed plan instead of executing
 **Full lane:** brainstorming → **spec** → ultrathink self-review → **spike the #1 risk** (a throwaway
 probe of the one assumption whose failure invalidates the most downstream work — probe the decisive
 signal, not the whole thing) → **writing-plans** → ultrathink → **diverse-model review** of the plan →
-execute → merge.
+execute → integrate.
 
 **Fast lane:** a short combined spec+plan → one deep (ultrathink-level) self-review → a diverse review
-only when stakes warrant it → execute → merge.
+only when stakes warrant it → execute → integrate.
 
-**Execute & merge (both lanes):** present the reviewed plan and **pause for confirmation**, then
+**Execute & integrate (both lanes):** present the reviewed plan and **pause for confirmation**, then
 `subagent-driven-development` runs it task-by-task — a fresh subagent per task with per-task and
 whole-branch reviews. When triage flagged security — which means the full lane — `/security-review`
-inspects the implemented diff before the merge. Then `finishing-a-development-branch` verifies the
-suite passes and merges. If tests fail, stop and report; don't merge.
+inspects the implemented diff before the branch integrates. Then, per whether `.publication.toml`
+marks the repo as adopted: a **non-adopted** repo tags each task commit as today and
+`finishing-a-development-branch` verifies the suite passes and merges the branch to its base; an
+**adopted** repo commits each task untagged (`--no-tag`, versioning is `main`-only) and re-derives the
+gate-passed result onto `dev` as clean bricks instead of merging (`skills/feature/SKILL.md` has the
+full procedure). If tests fail, stop and report; don't finish.
 
 ## The primitives
 
@@ -76,19 +82,27 @@ why alongside the fix — in the commit message or a code comment.
 - **Verify before claiming done.** Evidence before assertions: run the check and show the output. If
   tests fail, say so; if a step was skipped, say that.
 - **Granular commits, via `/commit`.** One logical change per commit —
-  [CONTRIBUTING.md](CONTRIBUTING.md) holds the conventions; `/commit` applies them and adds the
-  semver tag and changelog entry. Run it in the **foreground**: a signed repo can't sign inside a
-  background subagent, and bare `git commit` skips the tag, corrupting the release sequence. The
-  pipeline commits per task, tagging each. `/recast` is the one exception — it owns its own
-  per-brick commit/tag/changelog discipline.
+  [CONTRIBUTING.md](CONTRIBUTING.md) holds the conventions; `/commit` applies them. Run it in the
+  **foreground**: a signed repo can't sign inside a background subagent, and bare `git commit` skips
+  `/commit`'s discipline entirely. **Tagging is marker-scoped:** in a non-adopted repo `/commit` adds
+  the semver tag and changelog entry, and the pipeline commits per task, tagging each, as today. On
+  `dev` in a repo that has adopted the publication model (`.publication.toml` present), `/commit
+  --no-tag` is untagged — no tag, no changelog entry; versioning is `main`-only, minted at publish. The
+  invariant that never bends is `/commit`, always, in the foreground, never bare `git commit`; only the
+  tagging it applies is marker-conditional. `/recast` is the one exception to the commit path itself —
+  it owns its own per-brick commit/tag/changelog discipline.
 
 ## Choosing the approach
 
 | Situation | Approach |
 |---|---|
-| Trivial edit, or a conversational answer | Direct — no pipeline |
+| Trivial edit, or a conversational answer | Direct — no pipeline* |
 | Testable change with clear input/output | TDD (RED→GREEN→commit) |
 | Fixing a discovered bug | Regression test first — failing test, then the fix |
 | Real design, risk, or blast radius | `/feature` — full lane |
 | Well-scoped, low-risk change | `/feature` — fast lane |
 | Want a reviewed plan but not execution | `/feature --plan-only` |
+
+\* Tagging is marker-scoped, same as everywhere else: a non-adopted repo's direct `/commit` tags as
+today. On `dev` in a repo that has adopted the publication model (`.publication.toml` present), direct
+`/commit` is untagged (`--no-tag`) — versioning is `main`-only, minted at publish.
