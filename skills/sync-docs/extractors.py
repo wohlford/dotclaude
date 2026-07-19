@@ -27,7 +27,11 @@ def extract_chain(path: Path, chain: list[Extractor]) -> dict[str, Any]:
     for ex in chain:
         try:
             partial = ex.extract(path)
-        except Exception:
+        except (AttributeError, KeyError, TypeError, ValueError, re.error, OSError):
+            # Expected ways a plugged-in extractor can fail on a given file
+            # (missing attr/key, bad type, bad value, malformed regex, unreadable
+            # file): skip it and let later extractors fill the gap. Any other
+            # exception is a genuine bug and propagates rather than being masked.
             continue
         for k, v in partial.items():
             if k not in result and v is not None and v != "":

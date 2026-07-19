@@ -55,6 +55,10 @@ def parse_directives(s: str) -> dict[str, str]:
     with no separator; segments end at whitespace (outside quotes). This
     supports embedded quoted substrings like cols=Agent:key,"Used by":manual.
     Quotes in the source are stripped from the captured value.
+
+    Raises:
+        ValueError: if a key is not followed by '=' (or the key is empty), or a
+            quoted segment is left unterminated (unbalanced quote).
     """
     result: dict[str, str] = {}
     i, n = 0, len(s)

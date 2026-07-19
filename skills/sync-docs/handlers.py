@@ -163,6 +163,10 @@ class SkillsHandler:
         marker_dir: Path,
         directives: dict[str, str],
     ) -> list[Source]:
+        """Discover SKILL.md files (repo and .claude globs), extract metadata,
+        de-dup, apply any filter= directive, and default each skill's name to
+        its parent directory name.
+        """
         chain = get_chain(
             directives.get("extract", "yaml-frontmatter,heading-meta").split(",")
         )
@@ -198,6 +202,13 @@ class SkillsHandler:
         directives: dict[str, str],
         existing_body: list[str],
     ) -> list[str]:
+        """Render one row per skill.
+
+        Per column: `Command` -> `/name`; `Skill`/`Name` -> `name`; a column
+        whose lowercased name matches an extracted field renders that field;
+        any other auto/key column falls back to the description. `manual`
+        columns are emitted blank for _preserve_manual to backfill.
+        """
         cols_spec = directives.get("cols", "Command:key,Purpose:auto")
         cols = _parse_cols(cols_spec)
         err = _validate_cols(cols, self.name)
@@ -246,6 +257,10 @@ class AgentsHandler:
         marker_dir: Path,
         directives: dict[str, str],
     ) -> list[Source]:
+        """Discover agent definition files (repo and .claude globs), extract
+        metadata, skip README/index and duplicates, apply any filter=
+        directive, and default each agent's name to its filename stem.
+        """
         chain = get_chain(
             directives.get("extract", "yaml-frontmatter,heading-meta").split(",")
         )
@@ -278,6 +293,13 @@ class AgentsHandler:
         directives: dict[str, str],
         existing_body: list[str],
     ) -> list[str]:
+        """Render one row per agent.
+
+        Per column: `Agent` -> `name`; `Skill`/`Name` -> `name`; a column whose
+        lowercased name matches an extracted field renders that field; any other
+        auto/key column falls back to the description. `manual` columns are
+        emitted blank for _preserve_manual to backfill.
+        """
         cols_spec = directives.get("cols", "Agent:key,Purpose:auto")
         cols = _parse_cols(cols_spec)
         err = _validate_cols(cols, self.name)
@@ -326,6 +348,11 @@ class PluginsHandler:
         marker_dir: Path,
         directives: dict[str, str],
     ) -> list[Source]:
+        """Discover enabled plugins from settings.json's enabledPlugins map.
+
+        Returns empty on a missing or unparseable settings.json. Each plugin's
+        `name` is the part of its "name@vendor" id before the '@'.
+        """
         settings = repo_root / "settings.json"
         if not settings.exists():
             return []
@@ -353,6 +380,11 @@ class PluginsHandler:
         directives: dict[str, str],
         existing_body: list[str],
     ) -> list[str]:
+        """Render one row per plugin.
+
+        `Plugin` -> `name`; every other column (including `Purpose`) starts
+        blank so _preserve_manual can backfill it from the existing table.
+        """
         cols_spec = directives.get("cols", "Plugin:key,Purpose:manual")
         cols = _parse_cols(cols_spec)
         err = _validate_cols(cols, self.name)
@@ -393,6 +425,13 @@ class HooksHandler:
         marker_dir: Path,
         directives: dict[str, str],
     ) -> list[Source]:
+        """Discover hook entries from settings.json's hooks map.
+
+        Returns empty on a missing or unparseable settings.json. Emits one
+        Source per hook carrying event, matcher, script basename, and a purpose
+        pulled from the script's header comment when its path resolves locally
+        (else the raw command's basename with an empty purpose).
+        """
         settings = repo_root / "settings.json"
         if not settings.exists():
             return []
@@ -448,6 +487,12 @@ class HooksHandler:
         directives: dict[str, str],
         existing_body: list[str],
     ) -> list[str]:
+        """Render one row per hook.
+
+        Per column: `Event` -> event; `Matcher`/`Script` -> the field
+        backticked (blank when empty); `Purpose` -> description; any other
+        column blank. Manual columns are backfilled by _preserve_manual.
+        """
         cols_spec = directives.get(
             "cols", "Event:auto,Matcher:auto,Script:key,Purpose:auto"
         )
@@ -494,6 +539,9 @@ class ScriptsHandler:
         marker_dir: Path,
         directives: dict[str, str],
     ) -> list[Source]:
+        """Discover scripts/*.sh and scripts/*.py, extract each file's
+        metadata, de-dup, and default a missing name to the filename.
+        """
         chain = get_chain(
             directives.get(
                 "extract", "bash-header,py-docstring,h1-and-paragraph"
@@ -520,6 +568,11 @@ class ScriptsHandler:
         directives: dict[str, str],
         existing_body: list[str],
     ) -> list[str]:
+        """Render one row per script.
+
+        `Script` -> the backticked filename; `Purpose` -> description; any
+        other column blank. Manual columns are backfilled by _preserve_manual.
+        """
         cols_spec = directives.get("cols", "Script:key,Purpose:auto")
         cols = _parse_cols(cols_spec)
         err = _validate_cols(cols, self.name)
@@ -561,6 +614,10 @@ class IndexHandler:
         marker_dir: Path,
         directives: dict[str, str],
     ) -> list[Source]:
+        """Discover the marker directory's children, filtering by the kind=,
+        extensions=, and pattern= directives (dotfiles and README.md always
+        skipped), and attach a per-child summary per summary-from=.
+        """
         kind = directives.get("kind", "all")
         extensions = directives.get("extensions")
         pattern = directives.get("pattern")
@@ -646,6 +703,12 @@ class IndexHandler:
         directives: dict[str, str],
         existing_body: list[str],
     ) -> list[str]:
+        """Render a fixed Entry/Summary table.
+
+        Sorts by the sort= directive (mtime, else name; ,desc reverses),
+        applies limit=, and renders `Entry` -> the backticked name (directories
+        get a trailing slash) and `Summary` -> the extracted summary.
+        """
         # Always compute canonical body. Lint vs sync semantics are enforced by
         # the dispatcher (process_file) — lint mode reports drift but does not
         # write the rendered body back to the file.
@@ -702,6 +765,12 @@ class CustomHandler:
         marker_dir: Path,
         directives: dict[str, str],
     ) -> list[Source]:
+        """Discover files matching the source= glob and extract metadata via
+        the extract= chain (default yaml-frontmatter,heading-meta).
+
+        Raises:
+            ValueError: if the required source= directive is missing.
+        """
         source = directives.get("source")
         if not source:
             raise ValueError("sync:custom requires source=<glob>")
@@ -723,6 +792,16 @@ class CustomHandler:
         directives: dict[str, str],
         existing_body: list[str],
     ) -> list[str]:
+        """Render one row per source.
+
+        Per column: `File`/`Path` -> backticked filename; `Name` -> backticked
+        stem; a column whose lowercased name matches an extracted field renders
+        that field; any other column blank. Manual columns are backfilled by
+        _preserve_manual.
+
+        Raises:
+            ValueError: if the required cols= directive is missing.
+        """
         cols_spec = directives.get("cols")
         if not cols_spec:
             raise ValueError("sync:custom requires cols=<col-spec>")
