@@ -208,13 +208,16 @@ in the same brick) — but brick **application**, once the boundary is chosen, i
    ```
 
    A prior publish that minted tags and advanced local `main` but died before pushing leaves local
-   `main` **ahead** of `origin`. On that mismatch, **abort with recovery** — reset local `main` to
-   `origin/main` and delete the minted-but-unpushed `vX.Y.Z` tags (safe: they never reached
-   `origin`), then stop and report; never continue a half-finished publish:
+   `main` **ahead** of `origin`. On that mismatch, **abort with recovery** — delete the
+   minted-but-unpushed `vX.Y.Z` tags *first*, while `main` still points past `origin` so they are
+   reachable to enumerate (safe: they never reached `origin`), *then* reset local `main` to
+   `origin/main`, then stop and report; never continue a half-finished publish. Order matters: after
+   the reset `main == origin/main`, so `--no-merged origin/main` would match nothing and the tags
+   would be orphaned instead of deleted.
 
    ```bash
+   git tag --merged main --no-merged origin/main | while read -r t; do git tag -d "$t"; done
    git reset --hard origin/main
-   git tag -d <each vX.Y.Z tag on a commit in origin/main..main>
    ```
 
    Only once local and `origin` match, read the **watermark** — the `dev` commit whose tree `main`'s
@@ -230,7 +233,7 @@ in the same brick) — but brick **application**, once the boundary is chosen, i
    a watermark stranded *ahead* of a failed push, but **not** one stranded *behind* a **succeeded**
    push whose watermark-advance (step 7) never ran — a crash between steps 6 and 7 leaves `main` and
    `origin/main` already equal, so that check passes. Assert the watermark still matches what `main`
-   reflects, reusing step 5's convergence predicate:
+   reflects, reusing step 5's convergence predicate (defined below; the equivalent is given inline here):
 
    ```bash
    git diff --quiet "$watermark" main -- . ':(exclude)CHANGELOG.md'
