@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.48.5 — 2026-07-19
+- docs(guards): document tokenizer and guard contracts, annotate gitcmd
+
 ## v0.48.4 — 2026-07-19
 - refactor(sync-docs): narrow the extractor catch and document handler contracts
 

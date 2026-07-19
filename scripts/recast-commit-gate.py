@@ -193,7 +193,7 @@ def changed_files(root: Path, base: Path, info: dict) -> set[str]:
         == 0
     )
 
-    def tracked(paths):
+    def tracked(paths: list[str] | None) -> set[str]:
         if paths:
             return set(
                 git_lines(
@@ -209,10 +209,10 @@ def changed_files(root: Path, base: Path, info: dict) -> set[str]:
             git_lines(root, "diff", "HEAD" if head else "--cached", "--name-only")
         )
 
-    def staged():
+    def staged() -> set[str]:
         return set(git_lines(root, "diff", "--cached", "--name-only"))
 
-    def untracked(paths):
+    def untracked(paths: list[str] | None) -> set[str]:
         if paths:
             return set(
                 git_lines(

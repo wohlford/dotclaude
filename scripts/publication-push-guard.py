@@ -81,6 +81,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 
 PREFIX = "publication-push-guard:"
 
@@ -243,23 +244,33 @@ def _combine(base: str | None, sub: str | None) -> str | None:
 
 
 def _cwd_overrides_by_invocation_index(
-    command: str, base_cwd: str, gitcmd
+    command: str, base_cwd: str, gitcmd: ModuleType
 ) -> list[str | None]:
     """One entry per `git` invocation in command position, in the same left-to-right order
     git_command.iter_git_invocations walks the same token stream — so the Nth entry here lines up
-    with the Nth tuple that function returns. Each entry is the effective working directory in
-    force at that invocation's START, after applying every `cd`/`pushd` target seen earlier in the
-    stream (iter_git_invocations exposes a per-invocation `-C` but has no notion of `cd` state,
-    which is a shell-wide effect that persists across `;`/`&&` boundaries, unlike `-C`).
+    with the Nth tuple that function returns.
 
     Deliberately does NOT re-implement iter_git_invocations' global-option/segment parsing — it only
     needs to recognize a `git` token in command position (identical predicate,
     `git_command.is_git` + `git_command.starts_command`) to record the cwd state at that point, and
     the actual (cdir, subcommand, args) triple is fetched from iter_git_invocations itself.
 
-    Raises ValueError (propagated, uncaught) on tokenizing ambiguity — the caller's outer
-    try/except turns that into a block; unlike iter_git_invocations, this function does NOT
-    swallow that error, because for THIS gate "can't tell" must fail closed.
+    Args:
+        command: The raw shell-command string to walk.
+        base_cwd: The working directory the command starts in.
+        gitcmd: The lazily-imported `git_command` module, supplying the tokenizer and predicates.
+
+    Returns:
+        One entry per `git` invocation in command position, in command order. Each entry is the
+        effective working directory in force at that invocation's START, after applying every
+        `cd`/`pushd` target seen earlier in the stream (or None once a target becomes unresolvable).
+        iter_git_invocations exposes a per-invocation `-C` but has no notion of `cd` state, which is
+        a shell-wide effect that persists across `;`/`&&` boundaries, unlike `-C`.
+
+    Raises:
+        ValueError: On tokenizing ambiguity — propagated, uncaught, so the caller's outer
+            try/except turns it into a block. Unlike iter_git_invocations, this function does NOT
+            swallow that error, because for THIS gate "can't tell" must fail closed.
     """
     normalized = command.replace("\n", " ; ").replace("\r", " ")
     tokens = gitcmd.strip_redirects(gitcmd.tokenize(normalized))
@@ -527,21 +538,31 @@ def _judge_push(root: str, args: list[str]) -> str | None:
 
 
 def _resolve_alias_chain(
-    root: str, sub: str, seg: list[str], gitcmd, max_depth: int = 10
+    root: str, sub: str, seg: list[str], gitcmd: ModuleType, max_depth: int = 10
 ) -> tuple[str, list[str] | None]:
     """Chase `git config alias.<X>` recursively — the way real git resolves an alias chain — with a
     depth cap and cycle guard standing in for git's own loop-abort (real git aborts on an alias
-    loop; 10 hops is generous headroom for any legitimate chain). Returns one of:
-      ("none", None)  — `sub` is not configured as an alias at all: not a push, allow.
-      ("safe", None)  — the chain resolves (at any depth) to a subcommand in
-                         KNOWN_SAFE_SUBCOMMANDS: allow.
-      ("push", args)  — the chain resolves (at any depth) to `push`. The caller blocks this
-                         UNCONDITIONALLY — reproducing git's own alias-argument substitution well
-                         enough to prove such a push safe is not attempted (see module docstring);
-                         `args` is returned only for diagnostics.
-      ("block", None) — the chain is a shell alias (`!...`), unparseable, cyclic, exceeds
-                         max_depth, or a hop lands on a subcommand that is itself neither a
-                         resolvable alias nor a known-safe built-in: ambiguous, fails closed.
+    loop; 10 hops is generous headroom for any legitimate chain).
+
+    Args:
+        root: The repo toplevel to consult `git config alias.<X>` in.
+        sub: The initial subcommand token to resolve.
+        seg: The argument tokens following `sub` (folded into diagnostics on a `push` result).
+        gitcmd: The lazily-imported `git_command` module, supplying the tokenizer.
+        max_depth: Hop cap before a too-deep chain fails closed.
+
+    Returns:
+        A ``(kind, args)`` tuple, one of:
+          ("none", None)  — `sub` is not configured as an alias at all: not a push, allow.
+          ("safe", None)  — the chain resolves (at any depth) to a subcommand in
+                             KNOWN_SAFE_SUBCOMMANDS: allow.
+          ("push", args)  — the chain resolves (at any depth) to `push`. The caller blocks this
+                             UNCONDITIONALLY — reproducing git's own alias-argument substitution well
+                             enough to prove such a push safe is not attempted (see module
+                             docstring); `args` is returned only for diagnostics.
+          ("block", None) — the chain is a shell alias (`!...`), unparseable, cyclic, exceeds
+                             max_depth, or a hop lands on a subcommand that is itself neither a
+                             resolvable alias nor a known-safe built-in: ambiguous, fails closed.
     """
     current_sub, current_args = sub, seg
     seen: set[str] = set()
@@ -581,7 +602,11 @@ def _resolve_alias_chain(
 
 
 def _judge_invocation(
-    effective_dir: str | None, sub: str, seg: list[str], gitcmd, gitdir_override: bool
+    effective_dir: str | None,
+    sub: str,
+    seg: list[str],
+    gitcmd: ModuleType,
+    gitdir_override: bool,
 ) -> str | None:
     """Judge one git invocation. Returns a block reason, or None to allow it."""
     if gitdir_override:

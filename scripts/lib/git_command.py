@@ -41,8 +41,17 @@ WRAPPERS = {
 
 def tokenize(command: str) -> list[str]:
     """shlex with punctuation_chars: control/redirect operators become their own tokens even when
-    fused to a word (`-A&&git`), while quoted values stay intact. Raises ValueError on unbalanced
-    quotes (caller fails open)."""
+    fused to a word (`-A&&git`), while quoted values stay intact.
+
+    Args:
+        command: The raw shell-command string to tokenize.
+
+    Returns:
+        The command's tokens in order, with control/redirect operators split into their own tokens.
+
+    Raises:
+        ValueError: On unbalanced quotes (the caller fails open).
+    """
     lex = shlex.shlex(command, posix=True, punctuation_chars="();<>|&")
     lex.whitespace_split = True
     return list(lex)
@@ -109,8 +118,7 @@ def starts_command(tokens: list[str], idx: int) -> bool:
 
 
 def iter_git_invocations(command: str) -> list[tuple[str | None, str, list[str]]]:
-    """Return one (cdir, subcommand, arg_tokens) tuple per `git` invocation in *command position*,
-    in command order (empty list if none or on tokenizing ambiguity).
+    """Find every `git` invocation in *command position*, in command order.
 
     ``cdir`` is that invocation's `-C <dir>` value (or None), ``subcommand`` is the token
     immediately following git's global options, and ``arg_tokens`` is the segment of tokens from
@@ -121,9 +129,21 @@ def iter_git_invocations(command: str) -> list[tuple[str | None, str, list[str]]
     Newlines join separate commands the way `;` does; normalized first so a newline-joined
     `git add -A\\ngit commit` splits into two segments. A `\\n` inside a quoted message is preserved
     as quoted content by shlex, so this is safe. Redirects are stripped from the whole stream so a
-    leading `2>&1 git commit` is still seen and a redirect is never misread as a pathspec. Raises
-    nothing — a ValueError from `tokenize` (unbalanced quotes) fails to an empty list, never
-    claiming an invocation exists on ambiguous input."""
+    leading `2>&1 git commit` is still seen and a redirect is never misread as a pathspec.
+
+    Args:
+        command: The raw shell-command string to scan.
+
+    Returns:
+        One ``(cdir, subcommand, arg_tokens)`` tuple per `git` invocation in command position, in
+        command order — ``cdir`` is the invocation's `-C <dir>` value or None, ``subcommand`` is the
+        token after git's global options, and ``arg_tokens`` is that invocation's argument segment.
+        Empty list if none are found or on tokenizing ambiguity.
+
+    Raises:
+        Nothing — a ValueError from `tokenize` (unbalanced quotes) is swallowed to an empty list,
+        never claiming an invocation exists on ambiguous input.
+    """
     command = command.replace("\n", " ; ").replace("\r", " ")
     try:
         tokens = strip_redirects(tokenize(command))
