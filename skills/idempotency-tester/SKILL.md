@@ -19,8 +19,8 @@ bash ~/.claude/skills/idempotency-tester/idempotency-test.sh [opts] -- <target> 
 
 **Exit codes:** `0` idempotent · `1` not idempotent — when the two runs' **exit codes** differ, only
 an exit-parity-mismatch message is printed to stderr (no diff); when **state** diverges, a `diff` is
-printed to stderr · `2` harness or target error (bad usage — including a missing target or `--seed` dir —
-`--setup` failed, run 1 failed without `--allow-nonzero`).
+printed to stderr · `2` harness or target error, from any of: bad usage (e.g. a missing target or a
+nonexistent `--seed` dir), `--setup` failed, or run 1 failed without `--allow-nonzero`.
 
 The printed diff covers `work/` only (the manifest that decides pass/fail also compares the
 redirected `home/`/`xdg/` roots and the synthesized `.git` porcelain) — an **empty diff with
@@ -44,8 +44,10 @@ only), so treat the exit code, not the diff contents, as authoritative.
 - `--allow-nonzero` — don't abort when run 1 exits non-zero (still requires run-2 exit parity).
 - `--keep` — keep the sandbox on exit and print its path.
 - `{{SANDBOX}}` (in args / `--env` values / the *contents* of the `--stdin` file — not its
-  path) expands to the sandbox path;
-  `$IDEMPOTENCY_SANDBOX` is exported into the target/setup environment.
+  path) expands to the sandbox path; `$IDEMPOTENCY_SANDBOX` is exported into the target/setup
+  environment. Use the `{{SANDBOX}}` template form for anything statically substituted before the
+  run — args, `--env` values, and stdin-file contents, which aren't live env — and
+  `$IDEMPOTENCY_SANDBOX` when the target reads the path from its own environment at runtime.
 
 ### How another skill or process calls it
 
@@ -53,6 +55,9 @@ only), so treat the exit code, not the diff contents, as authoritative.
 bash ~/.claude/skills/idempotency-tester/idempotency-test.sh \
   --seed skills/sync-docs/tests/fixtures/dotclaude-shaped -- skills/sync-docs/sync_docs.py --scope .
 ```
+
+The target and `--setup` commands run with cwd set to the sandbox's `work/` copy of the seed, so a
+relative path like `--scope .` operates on the seeded fixture, not the real repo.
 
 ### Process
 

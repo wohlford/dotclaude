@@ -88,7 +88,8 @@ those remain manual steps for the user.
    The debrief does not accept or design an automation unattended — that path (step 5's
    `/feature --plan-only`) ends at an approval pause and defers to the backlog regardless, so an
    unattended run reports the recommendations tiered rather than acting on them. If there is
-   nothing worth reporting, say so and skip to step 6.
+   nothing worth reporting, say so and skip to step 6 (unless step 5's own trigger — a
+   user-requested automation design at invocation — is set, in which case proceed to step 5).
 
 5. **Design the automation(s) the user directed, then defer them** (only when the user asked *at
    invocation* for a specific automation to be designed — e.g. `/debrief, and design the caching
@@ -122,7 +123,8 @@ those remain manual steps for the user.
         Record why the work *matters*, not why the debrief didn't build it — that reason is
         always the same and carries no signal.
 
-   4. **Return to the base branch, always.** `/feature --plan-only` creates a feature branch and
+   4. **Return to the base branch, always** (the branch checked out before `/feature --plan-only`
+      created the feature branch). `/feature --plan-only` creates a feature branch and
       leaves it checked out. **Check the base branch back out before step 6** — otherwise step 6
       commits the routine's own CLAUDE.md edits and step-3 repo files onto an abandoned feature
       branch, where they are invisible to `/propagate` and to the next session. Then, by what the
@@ -152,6 +154,12 @@ those remain manual steps for the user.
    1. Run `/compact`.
    2. Exit Claude.
    3. Restart Claude to reload configuration.
+
+### Arguments
+
+The user may optionally name a specific automation to design (e.g. `/debrief, and design the
+caching hook`), which sets step 5's trigger. A plain `/debrief` takes neither an automation to
+design nor any other argument — it runs the routine to completion and skips step 5.
 
 ### Rules
 

@@ -53,6 +53,8 @@ to a whole-repo sweep.
    | an `agents/*.md` | `agent-reviewer` (structure) |
    | a code file (`*.sh`, `*.py`, `*.js`) | `style-reviewer` (against `STYLE.md`) |
 
+   An explicitly-passed `agents/README.md` or `index.md` is **skipped** — it is documentation, not an
+   agent definition (matching agent-reviewer's own exclusions and Repo-wide mode's `agents` drop).
    If a path fits no category, ask the caller rather than guessing.
 3. **Dispatch** the chosen reviewer(s) with the Agent tool, passing the absolute path(s). When a
    file draws more than one reviewer (a `SKILL.md`), or several files are given, launch them **in
@@ -90,10 +92,13 @@ Vet every shipping artifact in the repo, batched by category, in one pass:
 2. **Announce the scale first.** State the artifact count per category and the rough subagent count
    (each `SKILL.md` draws two reviewers), so the caller sees the cost before dozens of agents fire.
 3. **Batch by category** (skills → agents → scripts → python → javascript), reporting each category as it
-   completes. **Scale the mechanism to the count:** for ~10 artifacts or fewer, direct parallel
+   completes. **Scale the mechanism to the count** (measured in subagent dispatches, not artifacts —
+   each `SKILL.md` draws two): for ~10 dispatches or fewer, direct parallel
    Agent-tool dispatches (one message, multiple Agent calls) suffice; for more, orchestrate each
-   category as a background workflow via the **Workflow tool**, which caps concurrency automatically.
-   Invoking `/vet --all` is itself the opt-in for this multi-agent fan-out.
+   category as a background workflow via the **Workflow tool**, which caps concurrency automatically —
+   or, if the Workflow tool isn't available, fall back to batched direct parallel Agent-tool
+   dispatches, a bounded number at a time. Invoking `/vet --all` is itself the opt-in for this
+   multi-agent fan-out.
 4. **Dispatch** the matching reviewer(s) per artifact (the mapping in Process step 2), passing the
    **absolute** paths this mode's step 1 normalized — this is the mode with the most dispatches by
    far, so a stray relative path here would do the most damage.

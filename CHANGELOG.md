@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.48.9 — 2026-07-19
+- docs(skills): address vet content findings across skills
+
 ## v0.48.8 — 2026-07-19
 - fix(init-js): check the target module type before scaffolding ESM
 

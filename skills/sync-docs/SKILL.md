@@ -41,7 +41,7 @@ The user may provide:
 
 2. Surface stdout and stderr to the user verbatim.
 
-3. If exit code is non-zero, briefly explain to the user what state the repo is in — naming which of the three known states applies (drift detected, parser errors, unknown `add` handler), nothing beyond that; the raw output has already been shown in full. Do not retry, do not "fix" anything Claude infers from the error.
+3. If exit code is non-zero, briefly explain to the user what state the repo is in — naming which of the known states applies (drift detected, an operational failure such as `add custom` without `--source`/`--cols` or an aborted `init` prompt, parser errors, unknown `add` handler), nothing beyond that; the raw output has already been shown in full. Do not retry, do not "fix" anything Claude infers from the error.
 
 ### Rules
 

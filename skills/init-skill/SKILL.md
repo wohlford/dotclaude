@@ -15,7 +15,7 @@ The user wants to create a new skill. Generate `skills/<name>/SKILL.md` with val
 
 The user must provide:
 - A skill name in `kebab-case` (e.g., `gen-test`, `api-doc`)
-- A one-line description (used verbatim as the frontmatter `description:`; the heading's `<Subject>` is a short Title-Case noun phrase distilled from it — e.g., description "Create a git commit with automatic semver tagging…" → heading `# /commit — Create a Git Commit`)
+- A one-line description (used as the frontmatter `description:` — strip any trailing period, which `skill-reviewer` rejects; the heading's `<Subject>` is a short Title-Case noun phrase distilled from it — e.g., description "Create a git commit with automatic semver tagging…" → heading `# /commit — Create a Git Commit`)
 
 The user may optionally provide:
 - `--user-only` — set `disable-model-invocation: true` in the frontmatter (skill is invokable only via `/<name>`, not by Claude during a session). Use it only when the skill is **outward-facing or irreversible** (e.g. `skills/propagate/SKILL.md` pushes to a remote), or when the act is the **user's prerogative** to authorise — in which case state that reason in the skill's own summary using the literal phrase `the user's call`, since that exact wording is the marker `skill-reviewer` greps for; a paraphrase reads like a reason but fails the check. Writing a file is not itself a reason: Claude can Write the same file directly, so the flag would block only the template. See `agents/skill-reviewer.md` for the canonical rule.
@@ -26,9 +26,9 @@ The user may optionally provide:
 1. If the name or the one-line description was not provided, ask the user for it before proceeding. Validate the name is `kebab-case` (lowercase letters, digits, dashes only — no underscores or capitals). If it isn't, stop and ask the user for a corrected kebab-case name.
 2. Verify `skills/<name>/` does not already exist. If it does, stop and ask the user for a different name or explicit confirmation before touching the existing skill.
 3. Create the directory `skills/<name>/`.
-4. Write `skills/<name>/SKILL.md` with the frontmatter and section stubs shown below. Include the `disable-model-invocation: true` line only if `--user-only` was given, and the `## Dynamic Context` section only if `--with-dynamic-context` was given (the template's bracket comments mark both). Substitute `<name>`, `<one-line description>`, and `<Subject>` with the provided values; leave every other bracketed placeholder in the body verbatim as an authoring prompt — do not invent Process steps or Rules from the one-line description; a later authoring pass (the user, or a follow-up session working the skill's content) fills those in before `/vet`.
+4. Write `skills/<name>/SKILL.md` with the frontmatter and section stubs shown below. Include the `disable-model-invocation: true` line only if `--user-only` was given, and the `## Dynamic Context` section only if `--with-dynamic-context` was given (the template's bracket comments mark both). Substitute `<name>` and `<one-line description>` with the user's values and `<Subject>` with the Title-Case noun phrase you distilled from the description; leave every other bracketed placeholder in the body verbatim as an authoring prompt — do not invent Process steps or Rules from the one-line description; a later authoring pass (the user, or a follow-up session working the skill's content) fills those in before `/vet`.
 5. Run `/sync-docs` to regenerate any `<!-- sync:skills -->` index tables in the repo (CLAUDE.md, README.md, skills/README.md, etc.). The new skill registers automatically.
-6. **Nudge a review.** Once the content is authored (beyond the stubs), suggest running `/vet skills/<name>/SKILL.md` — it dispatches `skill-reviewer` (structure) + `skill-content-reviewer` (content).
+6. **Nudge a review.** This scaffold stops at placeholder substitution (step 4), so the content isn't authored yet — leave a reminder that once a later authoring pass fills in the stubs, running `/vet skills/<name>/SKILL.md` dispatches `skill-reviewer` (structure) + `skill-content-reviewer` (content).
 
 ### Skill Structure
 
@@ -57,7 +57,7 @@ git status -s
 
 <what the user wants and the high-level approach>
 
-### Arguments
+### Arguments                      # omit this section for a skill that takes no arguments
 
 The user must provide:
 - <required arg>
