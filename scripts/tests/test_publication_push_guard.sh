@@ -135,6 +135,29 @@ push_run "$REPO" "git push --force origin main" 0 "allowed: --force origin main"
 push_run "$REPO" "git push --force-with-lease origin main" 0 "allowed: --force-with-lease origin main"
 push_run "$REPO" "git push origin +main" 0 "allowed: +main (leading-plus force)"
 
+# ================= Cutover guard cross-check (executed cases, not a stated
+# verdict) =====================================================================================
+# Proves the real force-push the cutover runbook runs is judged correctly by THIS guard,
+# by actually running it here rather than reasoning about the code. Two of the five ground-truth
+# cases are already covered above and are not repeated: forced-main bare lease is "allowed:
+# --force-with-lease origin main" two lines up, and forced-dev is "blocked: --force ... dev" in the
+# "BLOCKED: force of dev" section earlier in this file. The three cases below are the load-bearing
+# NEW coverage: the exact locked-lease refspec form the runbook actually runs, why a SHA-shaped
+# source is rejected by the plain-name grammar (documenting WHY the runbook pushes the branch name
+# `main`, never a commit SHA), and a force-with-lease refspec that disguises a `dev` source behind
+# an explicit `refs/heads/main` destination.
+build_repo 1
+push_run "$REPO" "ALLOW_PUSH=1 git push --force-with-lease=main:0000000000000000000000000000000000000000 origin main:refs/heads/main" 0 \
+  "cutover cross-check: forced main, locked lease, explicit refspec -> allowed"
+
+build_repo 1
+push_run "$REPO" "ALLOW_PUSH=1 git push --force-with-lease=main:0000000000000000000000000000000000000000 origin deadbeefdeadbeefdeadbeefdeadbeefdeadbeef:refs/heads/main" 2 \
+  "cutover cross-check: forced SHA-shaped source refspec fails the plain-name grammar -> blocked"
+
+build_repo 1
+push_run "$REPO" "git push --force-with-lease origin dev:refs/heads/main" 2 \
+  "cutover cross-check: disguised force-with-lease refspec targeting dev -> blocked"
+
 # ================= ALLOWED: tag reachable from main =================
 build_repo 1
 gi "$REPO" tag maintag >/dev/null 2>&1
