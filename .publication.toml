@@ -1,0 +1,2 @@
+# .publication.toml — presence signals this repo uses the dev/main publication model
+production = "dev"   # dogfood the latest working state live before publishing

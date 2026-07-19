@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.45.5 — 2026-07-18
+- chore(publication): adopt the dev-main publication model
+
 ## v0.45.4 — 2026-07-18
 - fix(git-guard): detect git-remote publishing by subcommand, not substring
 
