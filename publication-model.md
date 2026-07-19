@@ -3,11 +3,12 @@
 An opt-in model for repos that want a private working history and a curated public one. `dev` is the
 private, local-only branch where day-to-day work happens; `main` is the curated, published history —
 not a raw merge of `dev`, but a ground-up re-derivation of it (see `/recast`) that only the deliberate
-promotion step produces. **Only the Foundation is built so far**: the `.publication.toml` marker below
-and the `publication-push-guard` hook that keeps `dev` from leaving the machine. Model-aware
-`/feature` and `/propagate` (so day-to-day tooling branches from and promotes through `dev`/`main`
-correctly), and the one-time orphan cutover that establishes a repo's first published `main`, are
-**forthcoming** — not yet built.
+promotion step produces. **Built:** the Foundation (the `.publication.toml` marker below and the
+`publication-push-guard` hook that keeps `dev` from leaving the machine), model-aware `/feature`
+(its branch-finish re-derives onto `dev` rather than merging), and model-aware `/propagate` (the
+dev→main publish/recast engine and its `refs/published/main` watermark — see
+[Publishing: the dev→main recast](#publishing-the-devmain-recast) below). The one piece still
+**forthcoming** is the one-time orphan cutover that establishes a repo's first published `main`.
 
 ## The `.publication.toml` marker
 
@@ -50,6 +51,33 @@ of `main` (reserved for the one-time cutover), and any tag reachable from `main`
 See [`scripts/HOOKS.md`](scripts/HOOKS.md) for how hooks like this one are built, and
 [`ARCHITECTURE.md`](ARCHITECTURE.md) for where the publication model fits among this repo's other
 moving parts.
+
+## Publishing: the dev→main recast
+
+Model-aware `/propagate --push` is the publish/recast engine. In an adopted repo, `--push` **recasts
+the unpublished `dev` work into clean bricks appended onto public `main`** and pushes them to
+`origin/main`; it publishes **`main` only**. Production is not touched by this: in a dogfood repo
+(`production = "dev"`) production tracks `dev`, which shares no ancestry with the divorced `main`
+recast, so a plain local `/propagate` (no flag) promotes production separately, on its own schedule.
+
+Published `main` is **append-only and immutable** once the one-time orphan cutover establishes it: a
+publish never rewrites a brick that already reached `origin`. That splits how a fix is folded — a fix
+to work that hasn't been published yet folds into the brick it fixes, same as the `dev`
+re-derivation; a fix that targets already-published work becomes its **own new brick** instead, since
+the brick it would have folded into can no longer change.
+
+**The published watermark** — `refs/published/main` — is a custom ref, deliberately **neither a tag
+nor a branch**, recording the `dev` commit whose tree `main`'s current tip reflects. A tag or a
+branch would both be swept up by an ordinary `git push --tags`/`--follow-tags` or a branch push,
+publishing private `dev` history right along with it; a `refs/published/` ref is swept by neither, so
+it stays local unconditionally. It advances only **after** a publish's push has actually succeeded —
+never before, so a failed push can never leave the watermark claiming work is published that isn't.
+
+Versioning and `CHANGELOG.md` are **main-only**, minted per brick at publish time; `dev`-side commits
+stay untagged throughout, consistent with `/commit`'s adopted-repo default.
+
+See [`skills/propagate/SKILL.md`](skills/propagate/SKILL.md) — "The publish path (adopted `--push`)"
+and "The watermark ref convention" — for the operational procedure and mechanics.
 
 ## Limitations
 

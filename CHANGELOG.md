@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.48.1 — 2026-07-18
+- docs(publication-model): document the publish engine and built state
+
 ## v0.48.0 — 2026-07-18
 - feat(propagate): make /propagate aware of the dev/main publication model
 
