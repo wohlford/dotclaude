@@ -109,7 +109,7 @@ Per logical group, the order is **stage → version → changelog → commit →
 2. **Group changes into logical units.** If multiple independent commits are needed, plan them before staging anything, then walk each group through steps 3–8. **If `CHANGELOG.md` is already modified** in the working tree before you start, those hand edits are their *own* group — commit them separately when their intent is clear, or flag them to the user when it isn't; never let step 6 silently fold them into another group.
 3. For the current group, stage only its files (prefer explicit filenames over `git add .` / `git add -A`).
 4. Draft the single-line message `<type>[(scope)][!]: <subject>` per **Commit Message Format** and **Choosing a scope** (imperative mood; `!` if breaking; under 72 chars). **This freezes the message** — the version (5) and changelog entry (6) derive from it; if you later refine it, redo 5–6.
-5. **Determine the version.** *If `--no-tag` was passed, skip this step, the changelog step (6), and the tag step (8) — still stage and commit.* Otherwise apply the first matching rule:
+5. **Determine the version.** *Skip this step, the changelog step (6), and the tag step (8) — still stage and commit — if `--no-tag` was passed, or if the publication-model no-tag default applies (see **Publication model awareness** below, which also defines how to override it).* Otherwise apply the first matching rule:
    - `!` suffix → **MAJOR** (reset minor+patch to 0) — **except before v1.0.0**: when the base tag's MAJOR is `0`, a breaking `!` bumps **MINOR** (SemVer 0.x: "anything may change"; reaching 1.0.0 is a deliberate choice, never an automatic consequence of the first `feat!`).
    - `feat` → **MINOR** (reset patch to 0).
    - all other types → **PATCH**.
@@ -134,13 +134,26 @@ Per logical group, the order is **stage → version → changelog → commit →
    ```
 
    Show it: `git log --oneline -1`.
-8. **Tag** (skip if `--no-tag`): `git tag -a vX.Y.Z -m "<message>"` — `<message>` is the same message frozen in step 4 (signing follows `tag.gpgsign`; never `-s`). Show: `git log --oneline -1 --decorate`.
+8. **Tag** (skip under the same conditions as step 5 — explicit `--no-tag`, or the publication-model default with no `--tag` override): `git tag -a vX.Y.Z -m "<message>"` — `<message>` is the same message frozen in step 4 (signing follows `tag.gpgsign`; never `-s`). Show: `git log --oneline -1 --decorate`.
 9. **If more groups remain, return to step 3.**
 10. Final summary: `git log --oneline -<N> --decorate` (N = commits created).
 
-`/commit` does **not** regenerate index/manifest tables — index freshness is the edit-time `sync-docs`-style hook's job, not the commit's. A `--no-tag` commit never appears in the changelog, by design. In a `/recast` build, bricks follow **recast's own** changelog rules (date from the brick's commit; `[declared, not proven]` suffix), not these.
+`/commit` does **not** regenerate index/manifest tables — index freshness is the edit-time `sync-docs`-style hook's job, not the commit's. A commit that skips tagging — via `--no-tag` or the publication-model default — never appears in the changelog, by design. In a `/recast` build, bricks follow **recast's own** changelog rules (date from the brick's commit; `[declared, not proven]` suffix), not these.
 
 **Amend flow (`--amend`):** skip the grouping loop; run `git commit --amend` (message via `-m` heredoc, or `--no-edit`). Do not create a new tag; if the amended commit was tagged, move it: `git tag -f -a <tag> -m "<amended subject>"`. **Keep the changelog in sync:** if a living-format `CHANGELOG.md` is present and its tip `## v<tag>` bullet differs from the amended subject, edit that one bullet in place and include `CHANGELOG.md` in the amend. **Tolerate a missing tip entry** (the commit may predate this feature or was `--no-tag`) — do not fabricate one.
+
+### Publication model awareness
+
+Check once, before step 5 of the first group: does `.publication.toml` exist at the repo root, **and** is the current branch `dev`? Both conditions must hold.
+
+```bash
+test -f "$(git rev-parse --show-toplevel)/.publication.toml" && [ "$(git branch --show-current)" = dev ]
+```
+
+- **Both hold (adopted repo, on `dev`).** `--no-tag` becomes the **default** — steps 5, 6, and 8 are skipped for every group in this invocation exactly as if `--no-tag` had been passed, unless the user explicitly requests a tag (`--tag`, or plainly asking to tag this commit). **That request scopes to the whole invocation by default** — it re-enables tagging for every remaining group — unless the user names a specific group, in which case only that group is tagged.
+- **Either condition fails** — no `.publication.toml` (non-adopted repo), or an adopted repo on any other branch (`main`, a feature branch, etc.) — **unchanged, today's behavior**: tagging is the default, exactly as before this section existed.
+
+This only changes the *default*; the explicit `--no-tag` argument and the process it triggers are unchanged.
 
 ### Arguments
 
@@ -150,6 +163,7 @@ The user may provide:
 - `--amend` — amend the previous commit instead of creating a new one
 - `--batch` — bundle related changes into a single commit even when they could be split
 - `--no-tag` — skip version tagging for this commit
+- `--tag` — force version tagging even when the publication-model default (see **Publication model awareness**) would otherwise skip it; scopes to the whole invocation unless a specific group is named (per that section); no effect outside that default, since tagging is already the default everywhere else
 - No arguments — analyze staged/unstaged changes and draft the message
 
 ### Rules
