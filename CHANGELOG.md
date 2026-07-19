@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.48.0 — 2026-07-18
+- feat(propagate): make /propagate aware of the dev/main publication model
+
 ## v0.47.0 — 2026-07-18
 - feat(commit): default to no-tag on dev of an adopted repo
 
