@@ -125,12 +125,16 @@ plan and base you are actually executing before trusting any line; reset it when
 - **Secondary**: Python for complex tasks requiring rich libraries
 - Favor command-line tools and shell scripts over GUI methods
 - Use Python when Bash becomes unwieldy or complex data structures are needed
-- **Checking for a *multi-line* literal is one of those cases.** `grep -F` treats an embedded newline
+- **Multi-line literal checks are one such case.** `grep -F` treats an embedded newline
   as *alternation*, not a sequence: `grep -Fc "$(printf 'a\nb')"` counts lines matching **either**,
   so a multi-line check returns a plausible-but-wrong count and reads as verified. Use
   `python3 -c "..."` (`needle in open(f).read()`) or `grep -Pzo`. **In wrapped text, use it even for
   a phrase you believe is one line** — if it happens to wrap, a line-based grep returns 0 and absence
   is not evidence of absence.
+- **A pipeline's exit status is the LAST command's.** `some-check | tail -20` reports `tail`'s
+  success however the check exited — so a run that "completed (exit code 0)" can have proven
+  nothing, and a backgrounded one reads as a clean pass. Read the tool's own verdict/summary lines
+  rather than the rc, or don't pipe it (`set -o pipefail`, or `${PIPESTATUS[0]}`, when you must).
 
 ### Package Management
 
