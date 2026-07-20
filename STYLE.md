@@ -8,7 +8,7 @@ Universal code style and formatting standards. Full templates: [templates.md](./
 - **Trailing whitespace**: Remove from all lines
 - **Indentation**: 2 spaces (no tabs) for Bash, JavaScript, YAML, and JSON; **Python uses 4 spaces** per PEP 8
 - **Empty lines**: No indentation on blank lines
-- **Scripts**: an executed entry-point script (run by path) carries `chmod +x` and a shebang; a **sourced library** carries no `+x` and a source guard (see Source Guard); a **Python module run via `python3 …`** needs neither
+- **Scripts**: every Bash script carries `chmod +x` and a shebang — a **sourced library** too, which additionally carries a source guard (see Source Guard); a **Python module run via `python3 …`** needs neither
 
 ### File Naming
 
@@ -102,6 +102,12 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   exit 1
 fi
 ```
+
+**The guard, not the file mode, is what prevents execution** — `bash lib.sh` runs a library whatever
+its exec bit, so stripping `+x` buys nothing the guard doesn't already cover. Sourced libraries
+therefore stay `chmod +x` like every other Bash script: one uniform rule, and it agrees with the two
+mechanisms that enforce it (the `exec-bit` audit check and the `exec-bit-guard` hook both require a
+tracked shebang file to be executable). Don't "fix" a library back to `644` — that trips both.
 
 ### Path Resolution
 

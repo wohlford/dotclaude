@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.48.11 — 2026-07-20
+- docs(STYLE.md): require the exec bit on sourced libraries too
+
 ## v0.48.10 — 2026-07-20
 - style(shellcheck-check): use the long-form severity flag
 
