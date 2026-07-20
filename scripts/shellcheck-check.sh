@@ -37,8 +37,8 @@ if ! command -v shellcheck >/dev/null 2>&1; then
 fi
 
 # ---------- Run shellcheck (set -e-safe exit capture) ----------
-# -S warning: report warnings + errors only (skip style/info, which style-check.sh covers).
-output=$(shellcheck -S warning "$file_path" 2>&1) && rc=0 || rc=$?
+# --severity=warning: report warnings + errors only (skip style/info, which style-check.sh covers).
+output=$(shellcheck --severity=warning "$file_path" 2>&1) && rc=0 || rc=$?
 
 if [[ "$rc" -ne 0 ]]; then
   printf 'shellcheck flagged %s:\n' "$file_path" >&2
