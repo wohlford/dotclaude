@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.49.0 — 2026-07-23
+- feat(sync-docs): skip handler blocks declared external in project config
+
 ## v0.48.12 — 2026-07-23
 - docs(CLAUDE.md): warn a pipeline's exit status is the last command's
 

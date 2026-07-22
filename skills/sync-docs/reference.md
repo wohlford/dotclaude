@@ -152,6 +152,9 @@ handlers:
     source: "content/posts/*.md"
     extract: yaml-frontmatter,heading-meta
     cols: "File:key,Title:auto,Date:auto"
+  index-files:                           # owned by the project's own generator
+    external: true
+    owner: scripts/index-gen.py          # free-form note; not interpreted
 
 init:
   exclude:
@@ -161,5 +164,13 @@ init:
 ```
 
 When `<!-- sync:posts -->` appears in a marker, it routes to the `custom` handler with the directives merged from the config.
+
+### `external: true` — blocks owned by other tooling
+
+A project may own a marker format whose body its *own* generator produces — typically because the cells are curated (hand- or LLM-written) and cannot be re-derived from the filesystem. Declaring the handler `external: true` makes sync-docs skip those blocks entirely: never rendered, never rewritten, never an `unknown handler` error. The declaration is checked before the built-in lookup, so it also works to hand a built-in handler's name back to the project.
+
+Delegation is **opt-in per handler name and always reported** — a run prints `N block(s) delegated to external tooling: <names>`, so an undeclared or misspelled marker still fails loudly rather than being swallowed. Only a truthy `external:` delegates; `external: false` falls through to normal handling. `external` wins over `source`/`cols` if both are present.
+
+Drift detection for a delegated format is the project generator's job, not sync-docs'. (Live example: the court repo's `sync:index-files` INDEX tables — `scripts/index-gen.py --check` verifies them, and the `index-md-auditor` agent aggregates that repo-wide.)
 
 Requires `pyyaml`: `uv pip install pyyaml`. If pyyaml is not installed, the file is ignored with a warning.

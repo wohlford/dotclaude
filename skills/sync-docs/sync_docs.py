@@ -183,33 +183,43 @@ def process_file(
     path: Path,
     repo_root: Path,
     config: dict | None = None,
-) -> tuple[str, str, list[str], list[str], list[markers.ParseError], int]:
+) -> tuple[str, str, list[str], list[str], list[markers.ParseError], int, list[str]]:
     """Parse a markdown file and regenerate its sync blocks.
 
     Returns:
-        A 6-tuple (original, regenerated, sync_changes, lint_drifts, errors,
-        block_count). sync_changes lists blocks that would be (or were)
-        rewritten. lint_drifts lists blocks in mode=lint where the expected
-        body differs from the existing body — reported but never written.
-        block_count is the number of marker blocks parsed (used by callers to
-        distinguish "no markers" from "markers all clean").
+        A 7-tuple (original, regenerated, sync_changes, lint_drifts, errors,
+        block_count, delegated). sync_changes lists blocks that would be (or
+        were) rewritten. lint_drifts lists blocks in mode=lint where the
+        expected body differs from the existing body — reported but never
+        written. block_count is the number of marker blocks parsed (used by
+        callers to distinguish "no markers" from "markers all clean").
+        delegated names the handler of each block skipped as `external: true`,
+        one entry per block, so callers can report the delegation.
     """
     config = config or {}
     original = path.read_text(encoding="utf-8")
     doc = markers.parse(original)
     if not doc.blocks:
-        return original, original, [], [], doc.errors, 0
+        return original, original, [], [], doc.errors, 0, []
 
     config_handlers = config.get("handlers", {})
 
     changes: list[str] = []
     lint_drifts: list[str] = []
+    delegated: list[str] = []
     body_replacements: dict[int, list[str]] = {}
     for idx, block in enumerate(doc.blocks):
-        handler = handlers.get_handler(block.handler)
         directives = dict(block.directives)
+        block_def = config_handlers.get(block.handler, {})
+        # An `external: true` declaration hands the block to the repo's own
+        # generator: never rendered, never rewritten, never an error. Checked
+        # before the built-in lookup so an explicit declaration always wins.
+        if isinstance(block_def, dict) and block_def.get("external"):
+            delegated.append(block.handler)
+            continue
+        handler = handlers.get_handler(block.handler)
         if handler is None:
-            custom_def = config_handlers.get(block.handler, {})
+            custom_def = block_def
             if isinstance(custom_def, dict) and custom_def.get("source"):
                 handler = handlers.get_handler("custom")
                 for k, v in custom_def.items():
@@ -246,7 +256,15 @@ def process_file(
             changes.append(f"  {block.handler} (line {block.open_line})")
 
     regenerated = markers.render(doc, body_replacements)
-    return original, regenerated, changes, lint_drifts, doc.errors, len(doc.blocks)
+    return (
+        original,
+        regenerated,
+        changes,
+        lint_drifts,
+        doc.errors,
+        len(doc.blocks),
+        delegated,
+    )
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
@@ -262,12 +280,19 @@ def cmd_sync(args: argparse.Namespace) -> int:
     marker_files = 0
     total_changes: list[tuple[Path, list[str], str, str]] = []
     total_lint_drifts: list[tuple[Path, list[str]]] = []
+    delegated_names: list[str] = []
 
     for md in md_files:
         try:
-            original, regenerated, changes, lint_drifts, errors, block_count = (
-                process_file(md, repo_root, config)
-            )
+            (
+                original,
+                regenerated,
+                changes,
+                lint_drifts,
+                errors,
+                block_count,
+                delegated,
+            ) = process_file(md, repo_root, config)
         except Exception as e:
             print(f"error processing {md.relative_to(repo_root)}: {e}", file=sys.stderr)
             return 2
@@ -286,6 +311,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
         if lint_drifts:
             lint_files.append(md)
             total_lint_drifts.append((md, lint_drifts))
+        delegated_names.extend(delegated)
 
     if marker_files == 0:
         if not args.check:
@@ -303,6 +329,12 @@ def cmd_sync(args: argparse.Namespace) -> int:
     for md, err in all_errors:
         rel = md.relative_to(repo_root)
         print(f"{rel}:{err.line}: {err.message}", file=sys.stderr)
+
+    # Delegated blocks are informational, never drift — but always reported, so
+    # an `external: true` declaration can't silently swallow a typo'd marker.
+    if delegated_names:
+        names = ", ".join(sorted(set(delegated_names)))
+        print(f"{len(delegated_names)} block(s) delegated to external tooling: {names}")
 
     def _print_lint_drifts(stream: TextIO) -> None:
         """Print the lint-drift summary to the given stream."""
