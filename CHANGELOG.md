@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.49.1 — 2026-07-23
+- docs(CLAUDE.md): add history-rewrite and time-of-day standing rules
+
 ## v0.49.0 — 2026-07-23
 - feat(sync-docs): skip handler blocks declared external in project config
 

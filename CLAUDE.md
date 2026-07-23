@@ -14,9 +14,18 @@ Universal instructions for all projects.
 > `git push` is blocked; lead the command with `ALLOW_PUSH=1` only on explicit authorization).
 > `/propagate` promotes to production locally by default; `/propagate --push` publishes to `origin`.
 
+> **Rewriting published history never unpublishes.** Old commits stay reachable by SHA on the host
+> and in every existing clone or fork; and any **tag** still pointing at them keeps them fully
+> browsable, so a branch force-push that leaves tags behind removes nothing. Delete those tags as
+> part of the rewrite, and describe the result as not-current — never as erased.
+
 > **Bugs get a regression test first.** When a bug is found, reproduce it as a failing test *before*
 > fixing it (RED→GREEN; see [workflows.md](./workflows.md)). Skipping is a flagged exception — state
 > why at fix time (e.g. untestable: timing/environment/interactive), never skip silently.
+
+> **Never state a time of day** ("this morning", "tonight") unless you just read the clock (`date`) —
+> name the trigger or step instead ("the push step", "next session"). Don't echo a time word from
+> earlier in the conversation; time has moved since.
 
 ## Skills (Slash Commands)
 
