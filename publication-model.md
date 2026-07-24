@@ -7,8 +7,10 @@ promotion step produces. **Built:** the Foundation (the `.publication.toml` mark
 `publication-push-guard` hook that keeps `dev` from leaving the machine), model-aware `/feature`
 (its branch-finish re-derives onto `dev` rather than merging), and model-aware `/propagate` (the
 dev→main publish/recast engine and its `refs/published/main` watermark — see
-[Publishing: the dev→main recast](#publishing-the-devmain-recast) below). The one piece still
-**forthcoming** is the one-time orphan cutover that establishes a repo's first published `main`.
+[Publishing: the dev→main recast](#publishing-the-devmain-recast) below). The model is **complete**:
+the one-time orphan cutover that establishes a repo's first published `main` ships as
+`/propagate --cutover` — a deliberate operator act, run once per adopting repo, outside ordinary
+publishing.
 
 ## The `.publication.toml` marker
 

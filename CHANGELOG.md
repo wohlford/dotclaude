@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.49.2 — 2026-07-24
+- docs(publication-model): the orphan cutover shipped, not forthcoming
+
 ## v0.49.1 — 2026-07-23
 - docs(CLAUDE.md): add history-rewrite and time-of-day standing rules
 
