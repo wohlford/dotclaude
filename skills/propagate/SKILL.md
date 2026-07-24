@@ -224,6 +224,13 @@ folded into the brick it fixes, bricks building on each other, converging to `de
 state. Published `main` is **immutable/append-only** — once a brick is pushed it is never rewritten;
 every subsequent publish only **appends** new bricks and fast-forwards.
 
+**Scope — what this path cannot do.** Appending is the entire repertoire: it can add to published
+history but structurally **cannot remove anything already published**. If the goal is to take
+content *out* of `main`, this path cannot do it — and running it anyway silently produces the
+opposite of the intent: the content stays published and a new brick lands on top of it. A rewrite
+is a separate, deliberate operation, out of scope here — and even a rewrite only makes content
+not-current, never unpublished.
+
 Two ancestry-independent apply primitives do the mechanical work: `git cherry-pick <dev-commit>` for
 a 1:1 (unfolded) brick, and `git diff <base> <target> | git apply --index` for a folded/synthesized
 brick. Brick **boundaries** are judgment — the same brick-boundary discipline the

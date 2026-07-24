@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.49.4 — 2026-07-24
+- fix(propagate): state the publish path cannot remove published content
+
 ## v0.49.3 — 2026-07-24
 - fix(propagate): assert production is on the marker's branch before merging
 
