@@ -4,9 +4,10 @@
 // off; everything else runs. Principle: fix genuine findings, disable systemic noise.
 {
   // Untracked design drafts; the hook also carves these out itself.
-  // .superpowers/sdd/** is this feature pipeline's own scratch tracking (task
-  // briefs/reports); it carries its own `*` .gitignore and is never committed.
-  "ignores": ["plans/**", "specs/**", ".superpowers/sdd/**"],
+  // .superpowers/** is tooling scratch space (the feature pipeline's task
+  // briefs/reports under sdd/, and whatever else a superpowers skill parks
+  // there); it is never committed and is not ours to lint.
+  "ignores": ["plans/**", "specs/**", ".superpowers/**"],
   "config": {
     // 919 hits: prose and sync-docs table rows exceed any sane limit; ruff-style,
     // line length is not markdown's concern here.

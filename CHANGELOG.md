@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.49.5 — 2026-07-24
+- chore(markdownlint): widen the superpowers ignore to the whole directory
+
 ## v0.49.4 — 2026-07-24
 - fix(propagate): state the publish path cannot remove published content
 
