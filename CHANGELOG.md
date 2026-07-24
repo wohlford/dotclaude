@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.49.6 — 2026-07-24
+- docs(CLAUDE.md): extend the exit-status and history-rewrite standing rules
+
 ## v0.49.5 — 2026-07-24
 - chore(markdownlint): widen the superpowers ignore to the whole directory
 

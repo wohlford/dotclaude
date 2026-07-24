@@ -17,7 +17,10 @@ Universal instructions for all projects.
 > **Rewriting published history never unpublishes.** Old commits stay reachable by SHA on the host
 > and in every existing clone or fork; and any **tag** still pointing at them keeps them fully
 > browsable, so a branch force-push that leaves tags behind removes nothing. Delete those tags as
-> part of the rewrite, and describe the result as not-current — never as erased.
+> part of the rewrite, and describe the result as not-current — never as erased. **Then sweep every
+> clone you control, not just the one you rewrote** — a second checkout keeps the old commits alive
+> through its own stale tags *and* a stale local branch. Verify by asking which refs still **contain**
+> the commit, never which tags you deleted.
 
 > **Bugs get a regression test first.** When a bug is found, reproduce it as a failing test *before*
 > fixing it (RED→GREEN; see [workflows.md](./workflows.md)). Skipping is a flagged exception — state
@@ -144,6 +147,9 @@ plan and base you are actually executing before trusting any line; reset it when
   success however the check exited — so a run that "completed (exit code 0)" can have proven
   nothing, and a backgrounded one reads as a clean pass. Read the tool's own verdict/summary lines
   rather than the rc, or don't pipe it (`set -o pipefail`, or `${PIPESTATUS[0]}`, when you must).
+  **A script, function, or `{ … }` wrapper exits with its last command's status too** — so a
+  diagnostic `echo` appended after an assertion discards the verdict it was meant to report, and the
+  check reports the *echo's* success. Capture `rc=$?` on the very next line, then `exit "$rc"`.
 
 ### Package Management
 
