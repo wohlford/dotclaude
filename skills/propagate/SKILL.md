@@ -129,7 +129,40 @@ test -f "$(git rev-parse --show-toplevel)/.publication.toml"
    - **Non-adopted repo, `--cutover`:** report and refuse — the publication model, and the cutover,
      require the `.publication.toml` marker.
 
-5. **Fast-forward production (never force).** Fetch from `src` and `--ff-only` merge:
+5. **Fast-forward production (never force).**
+
+   **Adopted repos — first, assert production is on the branch the marker names.** Read the
+   `production` value from **this (dev) repo's** `.publication.toml` — never production's own copy,
+   which a drifted production would supply from the very branch under suspicion — and compare it
+   against production's actual checkout:
+
+   ```bash
+   marker="${dev:?}/.publication.toml"
+   [ -r "$marker" ] || { echo "cannot read $marker — refusing to guess the production branch" >&2; exit 1; }
+   want="$(sed -nE 's/^[[:space:]]*production[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' "$marker")"
+   want="${want:-main}"   # empty ⇒ "main" — an absent key, never an unreadable file
+   got="$(git -C "${live:?}" rev-parse --abbrev-ref HEAD)"
+   [ "$want" = "$got" ]
+   ```
+
+   The extraction tolerates the trailing comment the marker ships with, and collapses the documented
+   defaults into one rule: **empty ⇒ `"main"`**. The `-r` test and the `${dev:?}`/`${live:?}`
+   expansions are what keep that rule honest — without them an unreadable marker, or an unset path
+   left over from a fresh shell, would silently yield `"main"` (or compare the dev repo against
+   itself) and **pass** a drifted production. Every such case must abort, never default.
+   (A detached production reports the literal `HEAD`, which mismatches every marker value — the
+   desired outcome, since a detached checkout cannot fast-forward either.)
+
+   On mismatch, **report and STOP — do not fetch, do not merge.** Production is serving a different
+   branch than the model says it should, so promoting would either fail confusingly (`--ff-only`
+   across divorced lineages) or fast-forward a branch that isn't the production target. Name both
+   branches — the one production is on and the one the marker specifies — and let the user
+   reconcile: checking production out onto the named branch is the usual fix, but a deliberate
+   excursion is theirs to end, not this skill's to undo. **Non-adopted repos skip this** — no
+   marker, no expected value, behavior unchanged. (The **adopted** publish-only `--push` and
+   `--cutover` arms never reach this step, so a publish is never blocked by drift it doesn't touch.)
+
+   Then fetch from `src` and `--ff-only` merge:
 
    ```bash
    git -C "$live" fetch "$src" "$branch" --tags
@@ -373,7 +406,8 @@ way, never as proof that every fold landed in the right brick.
 
 ### Rules
 - **Marker-aware dispatch.** Read `.publication.toml` at the repo root once per invocation
-  (see **Publication model awareness**); a non-adopted repo runs the unchanged procedure below.
+  (see **Publication model awareness**) for dispatch; step 5's branch assertion additionally reads
+  its `production` value. A non-adopted repo runs the unchanged procedure below.
 - **Local by default.** Plain `/propagate` never touches `origin` — it promotes dev → production
   locally so you can try things in production without publishing. Unchanged in an adopted repo.
 - **Publishing is explicit.** Only `--push` (or an explicit user request) pushes to `origin`, and it
