@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.51.2 — 2026-07-25
+- docs(CLAUDE.md): route open questions to Fable before the user
+
 ## v0.51.1 — 2026-07-25
 - docs(CLAUDE.md): group verification hazards, add unrun-command rule
 

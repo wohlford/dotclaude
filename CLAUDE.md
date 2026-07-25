@@ -35,6 +35,21 @@ Universal instructions for all projects.
 > name the trigger or step instead ("the push step", "next session"). Don't echo a time word from
 > earlier in the conversation; time has moved since.
 
+## Asking Questions
+
+**Default to deciding.** Make the call, state the reasoning and the assumption you made, and keep
+going — a wrong-but-stated assumption is cheap to correct; a stalled turn is not.
+
+**When a question does feel genuinely open, put it to a Fable subagent before putting it to the
+user** (Agent tool, `model: fable` — a diverse model when you are Opus). Ask it both halves: to
+answer the question on the merits, *and* to judge whether this is really the user's call. Bring back
+the conclusion and its reasoning — never a menu of options for the user to arbitrate.
+
+**Ask the user directly only for:** authorization (anything outward-facing or hard to reverse), risk
+appetite they own (how strict a gate should be, what false-block rate is acceptable), the scope they
+are paying for, and anything where proceeding wrongly would be unsafe or waste substantial work.
+Batch whatever survives — ask once, at a natural checkpoint, not as each item arises.
+
 ## Skills (Slash Commands)
 
 <!-- sync:skills cols=Command:key,Purpose:auto -->
