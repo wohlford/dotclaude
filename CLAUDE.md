@@ -142,7 +142,10 @@ plan and base you are actually executing before trusting any line; reset it when
 - **Secondary**: Python for complex tasks requiring rich libraries
 - Favor command-line tools and shell scripts over GUI methods
 - Use Python when Bash becomes unwieldy or complex data structures are needed
-- **Multi-line literal checks are one such case.** `grep -F` treats an embedded newline
+
+### Verification hazards — instruments that read as verified while proving nothing
+
+- **Multi-line literal checks are a case for Python.** `grep -F` treats an embedded newline
   as *alternation*, not a sequence: `grep -Fc "$(printf 'a\nb')"` counts lines matching **either**,
   so a multi-line check returns a plausible-but-wrong count and reads as verified. Use
   `python3 -c "..."` (`needle in open(f).read()`) or `grep -Pzo`. **In wrapped text, use it even for
@@ -155,6 +158,11 @@ plan and base you are actually executing before trusting any line; reset it when
   **A script, function, or `{ … }` wrapper exits with its last command's status too** — so a
   diagnostic `echo` appended after an assertion discards the verdict it was meant to report, and the
   check reports the *echo's* success. Capture `rc=$?` on the very next line, then `exit "$rc"`.
+- **A command you write into documentation is unverified until you run it.** An un-runnable one
+  reads exactly like a working one, so prose review never catches it — only execution does. Seen: a
+  flag rejecting the arity it was given (`git check-ignore -q a b` → `fatal: --quiet is only valid
+  with a single pathname`), and a snippet its own guard blocks. Run every documented command once
+  **as written**; when one needs a hand workaround twice, the doc is the defect, not the workaround.
 
 ### Package Management
 
