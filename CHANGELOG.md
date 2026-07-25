@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.50.0 — 2026-07-25
+- feat(feature,workflows): let only one agent run the test suite
+
 ## v0.49.9 — 2026-07-25
 - docs(CLAUDE.md): warn against skipping the last gate before publishing
 

@@ -201,6 +201,11 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
      the cheapest tier that fits (a task whose plan text carries the complete code is transcription →
      `haiku`; multi-file integration or judgment → `sonnet`); **task reviewers** at `sonnet`; the
      **final whole-branch review** at `opus` on the full lane, `sonnet` on the fast lane.
+   - **Parallelize writes, serialize the suite.** Concurrent tasks may edit freely, but only **one**
+     agent runs the tests at a time, and only after the writes it depends on have landed — suites read
+     the code under test from the shared working tree, so a peer mid-write means a sibling executes a
+     half-written file. Never explain away a contended run as flakiness: its verdict proves nothing
+     either way, so quiesce the writes and re-run rather than re-reading the result.
 2. **Sweep the mechanics — `/audit` (always).** Run `/audit` over the repo before the branch integrates
    and fix, via `/commit`, every `FAIL` **this branch introduced**. A repo may carry **pre-existing** FAILs the
    change never touched (generated content, a lint rule adopted after the fact): report those and

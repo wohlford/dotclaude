@@ -78,7 +78,12 @@ why alongside the fix — in the commit message or a code comment.
   real id under a direct re-ask as same-model and **void**. When working autonomously, a
   confirmed-diverse reviewer can serve as the deciding vote on a fork rather than deciding solo.
 - **Subagents for breadth.** Delegate exploration and independent, parallel work to subagents to keep
-  the main context focused — then use their conclusions instead of redoing the search.
+  the main context focused — then use their conclusions instead of redoing the search. **But only one
+  agent runs the test suite, and only once writes have quiesced.** A suite that resolves the code
+  under test from the working tree (rather than an installed copy) sandboxes its *fixtures* and not
+  its *subject*, so a sibling mid-write means a peer executes a half-written file. That is structural,
+  not flakiness — and a contended run's verdict is worthless in **both** directions: a spurious FAIL
+  costs a session chasing nothing, a spurious PASS ships the defect it was meant to catch.
 - **Verify before claiming done.** Evidence before assertions: run the check and show the output. If
   tests fail, say so; if a step was skipped, say that.
 - **Granular commits, via `/commit`.** One logical change per commit —
