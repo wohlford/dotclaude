@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.51.0 — 2026-07-25
+- feat(feature): prove design records durable, route ignored to memory
+
 ## v0.50.0 — 2026-07-25
 - feat(feature,workflows): let only one agent run the test suite
 

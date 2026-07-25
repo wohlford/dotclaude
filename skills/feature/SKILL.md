@@ -16,7 +16,8 @@ the risk.** Pass `--plan-only` to stop at the reviewed plan instead.
 ## Instructions
 
 The user wants to carry a change through the risk-tiered pipeline. Triage the work, run the
-appropriate design lane (orchestrating the `superpowers` skills) to a reviewed, committed plan, then
+appropriate design lane (orchestrating the `superpowers` skills) to a reviewed, durably recorded plan
+(committed, or in memory per Step 0.5's durability rule), then
 **execute it with `superpowers:subagent-driven-development` and integrate the result** — merge in a
 non-adopted repo, re-derive onto `dev` in an adopted repo — unless `--plan-only` was passed, in which
 case stop at the plan.
@@ -27,7 +28,8 @@ The user must provide:
 - `<one-line description of the change>` — seeds the brainstorming.
 
 The user may optionally provide:
-- `--plan-only` — stop at the reviewed, committed plan (the legacy design-only behavior) instead
+- `--plan-only` — stop at the reviewed, durably recorded plan (committed, or in memory per Step 0.5's
+  durability rule; the legacy design-only behavior) instead
   of executing and merging.
 
 ### Process
@@ -75,13 +77,46 @@ execution/gate commits under **Execute and integrate** alike — is a dev-side c
 non-adopted repo every pipeline commit is tagged per `/commit`, exactly as today. The design-lane
 steps below and **Execute and integrate** apply this rule; they do not re-decide it.
 
+**Design records must be proven durable — settle the destination once, here, for the whole run.**
+
+- **Prove each record landed — the obligation is unconditional, every repo; only the instrument
+  depends on where the record went.** For a **committed** artifact assert **both**:
+  `git log --oneline -1 -- <artifact-path>` names a commit, **and**
+  `git diff --quiet HEAD -- <artifact-path>` is clean. Neither alone suffices — the first passes on
+  stale committed content, the second passes on a file never committed at all. An empty working tree
+  is indistinguishable from a completed commit, and `nothing to commit, working tree clean` is a
+  **failure reported calmly**; never infer success from the absence of an error.
+- **Where that cannot hold, route to private memory — the remedy, not an escalation.** Probe each
+  directory **separately** — `git check-ignore -q specs`, then `git check-ignore -q plans`; `-q`
+  takes a **single** pathname and dies `fatal: --quiet is only valid with a single pathname` if given
+  two — and you learn this before wasting the attempt. A gitignored `plans/` is common, anywhere
+  those roots collide with Claude Code's own runtime dirs. Treat the two answers **independently**:
+  only the ignored one reroutes. **Whether you learned it from that probe or from the post-condition
+  failing**, the record then goes to memory *instead of* that commit — never as a routine second copy
+  beside a healthy one — in the **primary checkout's** project memory directory: the main repo the
+  worktree was made from. (`/feature` can run under worktree isolation, and a worktree's own memory
+  directory is keyed to its path, where no later session will look.) One file per change named for
+  the artifact's `YYYY-MM-DD-<name>` slug, spec and plan together, written to `/debrief` step 5's
+  bar: **self-contained enough to re-derive the plan from scratch, including the rationale and any
+  defect a review caught.** **Update that same file in place** at every later fold/recommit — a
+  record that exists but has gone stale rebuilds this same bug one level up. The working file still
+  lives at `specs/`/`plans/` for the pipeline and SDD to read; restore it from the memory record if
+  it vanishes mid-run. **Then prove the memory record just as concretely** — it exists, is non-empty,
+  and its content reflects the fold you just made. Same standard as bullet 1, not a weaker one.
+- **Never `git add -f` a design artifact past an ignore rule.** Force-tracking publishes it: the
+  publish path's convergence gate diffs the whole tree bar `CHANGELOG.md`, so anything tracked at
+  `dev`'s tip is forced onto public `main` — and a design record routinely carries unfixed defects
+  and live vulnerability detail.
+
+The design-lane steps below apply this rule too; they do not re-decide it.
+
 #### Fast lane (low risk on both axes)
 
 1. Use `superpowers:brainstorming` lightly to produce a **short combined spec+plan** (a few sentences
    of what/why + the task steps) — or just a short plan if there's no design to settle. "Lightly"
    trims the collaborative dialogue (the one-question-at-a-time exploration, the 2–3 alternative
    approaches) — **not** its spec self-review, which still runs and which step 2 depends on having
-   run. Save to `plans/YYYY-MM-DD-<name>.md`; commit via `/commit` (tagging per the Step 0.5 rule).
+   run. Save to `plans/YYYY-MM-DD-<name>.md`; commit via `/commit` (tagging and durability per the Step 0.5 rules).
 2. **Ultrathink the design, not `brainstorming`'s checklist.** If `brainstorming` ran, its own
    self-review already covered placeholders, internal consistency, scope, and ambiguity — do **not**
    repeat that. If you took the short-plan path and skipped brainstorming, nothing has run those
@@ -97,9 +132,10 @@ steps below and **Execute and integrate** apply this rule; they do not re-decide
    One outside read is worth it there; a spec and a spike are not. Above Step 0's bar you would be on
    the full lane, whose step 6 reviews the plan regardless. Else skip. Pick the reviewer per
    **Diverse-model review** below. If it ran, **fold its findings; revise; recommit via `/commit`**
-   (tagging per the Step 0.5 rule) — same as the full lane's step 6. A review whose findings are not
+   (tagging and durability per the Step 0.5 rules) — same as the full lane's step 6. A review whose findings are not
    folded is a review you paid for and did not use.
-4. Present for confirmation, then **execute and integrate** (below). If the user declines or asks for
+4. Present the recorded spec+plan (committed, or in memory per Step 0.5's durability rule) for
+   confirmation, then **execute and integrate** (below). If the user declines or asks for
    changes, revise and re-present — never execute an unconfirmed plan.
 
 #### Full lane (real unknowns or high stakes)
@@ -107,7 +143,7 @@ steps below and **Execute and integrate** apply this rule; they do not re-decide
 1. **Spec.** Use `superpowers:brainstorming` to produce the spec. When brainstorming reaches its
    terminal "invoke `writing-plans`" step, **do NOT follow it** — return here to step 2 (you interpose
    the spike + reviews first). Save the spec to `specs/YYYY-MM-DD-<name>.md`; commit via `/commit`
-   (tagging per the Step 0.5 rule).
+   (tagging and durability per the Step 0.5 rules).
 2. **Ultrathink the spec — the design, not `brainstorming`'s checklist.** `brainstorming` already
    self-reviewed for placeholders, internal consistency, scope, and ambiguity; re-running that list
    is a second same-model pass over the same blind spot, which is exactly what the step-6 diverse
@@ -124,7 +160,7 @@ steps below and **Execute and integrate** apply this rule; they do not re-decide
    probeable, say so and rely on the plan's decision-gates instead. If it isn't empirical, say "no
    spike" and continue.
 4. **Plan.** Use `superpowers:writing-plans`. Save to `plans/YYYY-MM-DD-<name>.md`; commit via
-   `/commit` (tagging per the Step 0.5 rule).
+   `/commit` (tagging and durability per the Step 0.5 rules).
 5. **Ultrathink the plan — the design, not `writing-plans`' checklist.** `writing-plans` already
    self-reviewed for spec coverage, placeholders, and type consistency. Your pass asks what it
    cannot: does the task decomposition hold, does the spike's result still hold, is each task
@@ -134,9 +170,10 @@ steps below and **Execute and integrate** apply this rule; they do not re-decide
    missed; is it anchored by content rather than a line number the task's own earlier steps will
    shift; does it contradict the text it verifies? Revise inline.
 6. **One diverse-model review of the plan** (see below). Fold findings; revise; recommit via
-   `/commit` (tagging per the Step 0.5 rule). (If a review at this stage invalidates the spec, loop
+   `/commit` (tagging and durability per the Step 0.5 rules). (If a review at this stage invalidates the spec, loop
    back to step 1 as with spike invalidation.)
-7. Present the committed spec + plan. Pause for the user's confirmation, then **execute and integrate**
+7. Present the recorded spec + plan (committed, or in memory per Step 0.5's durability rule). Pause
+   for the user's confirmation, then **execute and integrate**
    (below). If the user declines or asks for changes, revise and re-present — never execute an
    unconfirmed plan.
 
@@ -160,7 +197,8 @@ The value is a **different model than the author** catching blind spots same-mod
 
 #### Execute and integrate (default; both lanes)
 
-With the plan reviewed and committed, **continue** (do not stop). **Check the publication model
+With the plan reviewed and durably recorded (committed, or in memory per Step 0.5's durability rule),
+**continue** (do not stop). **Check the publication model
 once, here, before starting** — Step 0.5 already set the pipeline-wide tagging rule; this check
 determines how *this phase's* commits carry that rule out and how the branch finishes, and nothing
 else in this section depends on it: does `.publication.toml` exist at the repo root?
@@ -333,7 +371,8 @@ per-brick suite coverage this procedure does not run.
 
 #### Stop at the plan (`--plan-only`)
 
-When invoked with `--plan-only`, `/feature` **ends at the approved, committed plan.** Do not invoke
+When invoked with `--plan-only`, `/feature` **ends at the approved, durably recorded plan** (committed,
+or in memory per Step 0.5's durability rule). Do not invoke
 an execution skill — when `writing-plans` offers to set up execution, **decline it.** Tell the user
 the plan is approved, the feature branch is left in place, and execution is a separate step — e.g.
 `superpowers:executing-plans` or `superpowers:subagent-driven-development`.
@@ -347,7 +386,10 @@ the plan is approved, the feature branch is left in place, and execution is a se
   `--plan-only` stops at the plan** (then never implement; decline `writing-plans`' execution offer).
 - **Invocation** — model-invocable; launch it (or let the user run `/feature`) only for changes
   that warrant methodical design, not trivial edits. A deliberate, scale-to-risk kickoff.
-- Save spec/plan at the repo root (`specs/`, `plans/`, `YYYY-MM-DD-<name>.md`); commit each as produced via `/commit`.
+- Save spec/plan at the repo root (`specs/`, `plans/`, `YYYY-MM-DD-<name>.md`); commit each as
+  produced via `/commit` — **unless that path is gitignored**, in which case the durable record goes
+  to private memory instead and is never force-added past the ignore (Step 0.5's durability rule).
+  Either way, confirm the record actually landed rather than reading an empty tree as success.
 - **Every commit the pipeline creates goes through `/commit`**, design-phase and implementation
   alike, run in the **foreground** for signing — never fall back to bare `git commit`. Tagging is
   marker-conditional: non-adopted repos get the repo's per-commit semver tag + `CONTRIBUTING.md`
