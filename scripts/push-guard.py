@@ -114,7 +114,7 @@ def _has_unauthorized_push(command: str) -> bool:
     """Newline-normalize, tokenize, strip redirects, split into control-operator-delimited
     segments, and check each for an unauthorized push op. Raises on a tokenizer `ValueError`
     (unbalanced quotes) — the caller's try/except turns that into fail-open."""
-    normalized = command.replace("\n", " ; ").replace("\r", " ")
+    normalized = gitcmd.normalize_command(command)
     tokens = gitcmd.strip_redirects(gitcmd.tokenize(normalized))
 
     seg_start = 0

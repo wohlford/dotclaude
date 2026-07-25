@@ -150,3 +150,30 @@ def test_global_value_opt_consumes_next_token():
 def test_unbalanced_quotes_yield_empty_list():
     got = git_command.iter_git_invocations("git commit -m 'unterminated")
     assert got == []
+
+
+# ---------- line continuations (regression: a backslash-newline hid the subcommand) ----------
+# `\` + newline is how any long git command is written. Newlines were rewritten to ` ; ` BEFORE
+# shlex saw the backslash, so the injected space got escaped and became the subcommand token:
+# `git \<nl>  push origin dev` resolved to subcommand " ", and both push gates allowed it.
+
+
+def test_continuation_before_subcommand_is_folded():
+    got = git_command.iter_git_invocations("git \\\n  push origin dev")
+    assert got == [(None, "push", ["origin", "dev"])]
+
+
+def test_continuation_mid_arguments_is_folded():
+    got = git_command.iter_git_invocations("git push \\\n  origin dev")
+    assert got == [(None, "push", ["origin", "dev"])]
+
+
+def test_continuation_with_crlf_is_folded():
+    got = git_command.iter_git_invocations("git \\\r\n  push origin dev")
+    assert got == [(None, "push", ["origin", "dev"])]
+
+
+def test_real_newline_still_separates_commands():
+    """Folding continuations must not swallow ordinary newline-joined commands."""
+    got = git_command.iter_git_invocations("git status\ngit push origin dev")
+    assert [sub for _c, sub, _s in got] == ["status", "push"]

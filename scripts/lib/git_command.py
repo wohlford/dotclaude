@@ -57,6 +57,30 @@ def tokenize(command: str) -> list[str]:
     return list(lex)
 
 
+def normalize_command(command: str) -> str:
+    """Fold line continuations, then treat remaining newlines as command separators.
+
+    **Order is load-bearing.** A backslash-newline is a *continuation* — the shell removes both and
+    joins the lines — so it must be folded BEFORE newlines are rewritten to ``;``. Doing it the
+    other way round leaves the backslash escaping the injected separator, so
+    ``git \\<newline> push origin dev`` tokenizes with a single SPACE as its subcommand and the
+    push becomes invisible to every consumer. That was a live fail-open in both push gates, and
+    `\\` + newline is simply how a long git command is written.
+
+    Folding is deliberately unconditional, including inside single quotes where a real shell would
+    keep the backslash literal. That divergence is safe by direction: folding only ever *joins*
+    text, which can reveal a command the scan would otherwise miss, and can never hide one.
+
+    Args:
+        command: The raw shell-command string.
+
+    Returns:
+        The command with continuations folded and newlines rewritten as ``;`` separators.
+    """
+    command = command.replace("\\\r\n", "").replace("\\\n", "")
+    return command.replace("\n", " ; ").replace("\r", " ")
+
+
 def is_op(token: str) -> bool:
     """A control operator / command boundary: `&&`, `||`, `;`, `|`, `&`, `(`, `)` — not a redirect."""
     return (
@@ -144,7 +168,7 @@ def iter_git_invocations(command: str) -> list[tuple[str | None, str, list[str]]
         Nothing — a ValueError from `tokenize` (unbalanced quotes) is swallowed to an empty list,
         never claiming an invocation exists on ambiguous input.
     """
-    command = command.replace("\n", " ; ").replace("\r", " ")
+    command = normalize_command(command)
     try:
         tokens = strip_redirects(tokenize(command))
     except ValueError:

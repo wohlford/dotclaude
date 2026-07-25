@@ -272,7 +272,7 @@ def _cwd_overrides_by_invocation_index(
             try/except turns it into a block. Unlike iter_git_invocations, this function does NOT
             swallow that error, because for THIS gate "can't tell" must fail closed.
     """
-    normalized = command.replace("\n", " ; ").replace("\r", " ")
+    normalized = gitcmd.normalize_command(command)
     tokens = gitcmd.strip_redirects(gitcmd.tokenize(normalized))
 
     overrides: list[str | None] = []

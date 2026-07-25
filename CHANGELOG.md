@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.49.7 — 2026-07-24
+- fix(git_command): fold line continuations before rewriting newlines
+
 ## v0.49.6 — 2026-07-24
 - docs(CLAUDE.md): extend the exit-status and history-rewrite standing rules
 

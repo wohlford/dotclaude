@@ -101,6 +101,15 @@ assert "bash -c 'git push'" 0 'CONCEDED RESIDUAL: push hidden inside an opaque s
 # --- CONCEDED RESIDUAL: a wrapper WITH its own arguments is not stepped over by starts_command ---
 assert 'sudo -u deploy git push' 0 'CONCEDED RESIDUAL: wrapper-with-args is not recognized as a bare wrapper'
 
+# --- regression: a line continuation must not hide the subcommand ---
+# `\` + newline is how any long git command is written. Newlines were rewritten to ` ; ` BEFORE
+# shlex saw the backslash, so the escaped space became the subcommand and this exited 0.
+assert "$(printf 'git \\\n  push origin dev')" 2 'regression: continuation before the subcommand'
+assert "$(printf 'git push \\\n  origin dev')" 2 'regression: continuation mid-arguments'
+assert "$(printf 'ALLOW_PUSH=1 git \\\n  push origin dev')" 0 'continuation + override still authorized'
+# The fold must not swallow a real newline separating two commands.
+assert "$(printf 'git status\ngit push origin dev')" 2 'newline-separated push still blocked'
+
 # --- a blocked push must emit the EXACT stderr message (full string compare, not a glob) ---
 want_msg='blocked by push-guard: pushing is explicit-only. Lead the push segment with ALLOW_PUSH=1 (e.g. ALLOW_PUSH=1 git push ...) to authorize it.'
 got_msg="$(printf '%s' "$(python3 -c 'import json;print(json.dumps({"tool_input":{"command":"git push"}}))')" | python3 "$guard" 2>&1 1>/dev/null)"

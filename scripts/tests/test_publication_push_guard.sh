@@ -291,5 +291,18 @@ case "$msg" in
   *) printf 'FAIL  block stderr message missing/unhelpful: %s\n' "$msg"; fail=$((fail + 1)) ;;
 esac
 
+# ================= Regression: a line continuation must not hide the subcommand =================
+# `\` + newline is how any long git command is written. Newlines were rewritten to ` ; ` BEFORE
+# shlex saw the backslash, so the injected space got escaped and BECAME the subcommand (` `), and
+# the push was invisible. Verified live: both push gates exited 0 on the first form.
+build_repo 1 dev
+cont_before="$(printf 'git \\\n  push origin dev')"
+cont_midarg="$(printf 'git push \\\n  origin dev')"
+push_run "$REPO" "$cont_before" 2 'regression: continuation before the subcommand -> still blocked'
+push_run "$REPO" "$cont_midarg" 2 'regression: continuation mid-arguments -> still blocked'
+# Guard against the fix over-reaching: a REAL newline still separates two commands.
+push_run "$REPO" 'git status
+git push origin dev' 2 'regression: newline-separated push still blocked (fold must not swallow it)'
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
