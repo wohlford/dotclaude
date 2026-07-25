@@ -304,5 +304,20 @@ push_run "$REPO" "$cont_midarg" 2 'regression: continuation mid-arguments -> sti
 push_run "$REPO" 'git status
 git push origin dev' 2 'regression: newline-separated push still blocked (fold must not swallow it)'
 
+# ================= Regression: a non-literal subcommand is UNRESOLVABLE, not "not a push" =======
+# `git $s` cannot be resolved statically. The alias resolver treated a failed `git config
+# alias.$s` lookup at depth 0 as "not configured as an alias, therefore not a push" and ALLOWED.
+# That was a pure asymmetry: the very same guard is already fail-CLOSED one token to the right,
+# where `git push origin "$B"` blocks because "$B" is not a valid plain ref name.
+# shellcheck disable=SC2016  # the UNEXPANDED $s is the point: the guard must see it literally
+push_run "$REPO" 's=push; git $s origin dev' 2 'non-literal subcommand ($s) is unresolvable -> blocked'
+# shellcheck disable=SC2016
+push_run "$REPO" 'set -- push; git "$@" origin dev' 2 'non-literal subcommand ("$@") is unresolvable -> blocked'
+# shellcheck disable=SC2016
+push_run "$REPO" 'git ${s} origin dev' 2 'non-literal subcommand (${s}) is unresolvable -> blocked'
+# Positive control: ordinary literal subcommands must stay allowed, or the rule is too broad.
+push_run "$REPO" 'git status -s' 0 'literal subcommand still allowed'
+push_run "$REPO" 'git rev-parse --abbrev-ref HEAD' 0 'hyphenated literal subcommand still allowed'
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

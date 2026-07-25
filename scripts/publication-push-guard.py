@@ -111,6 +111,13 @@ GITDIR_RE = re.compile(r"--git-dir|--work-tree|(?<![A-Za-z0-9_])GIT_DIR=")
 # only trades a few more false blocks for zero missed obfuscated pushes.
 _DEQUOTE_CHARS = str.maketrans("", "", "'\"\\")
 
+# A real git subcommand is a literal name. A token that is not — `$s`, `"$@"`, `${x}` — cannot be
+# resolved statically at all, so it is UNRESOLVABLE, never "not a push". Treating an unresolvable
+# subcommand as benign was a fail-open, and a purely asymmetric one: the refspec slot one token to
+# the right already fails closed on exactly this ambiguity (see _valid_plain_name), so
+# `git push origin "$B"` blocked while `git $s origin dev` sailed through.
+LITERAL_SUBCOMMAND_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]*$")
+
 
 def _dequote(command: str) -> str:
     """Strip quote/backslash characters so quote-split obfuscation reads as the plain word it
@@ -572,6 +579,12 @@ def _resolve_alias_chain(
             return "push", current_args
         if current_sub in KNOWN_SAFE_SUBCOMMANDS:
             return "safe", None
+        if not LITERAL_SUBCOMMAND_RE.match(current_sub):
+            # `git $s`, `git "$@"`, `git ${x}`: the subcommand only exists after expansion, so it
+            # can be neither recognized nor resolved. Ambiguous -> fail closed. Without this, the
+            # `git config alias.<X>` lookup below returns rc!=0 and depth==0 reports "none"
+            # (not an alias, therefore not a push) — allowing an invocation that may well be one.
+            return "block", None
         if current_sub in seen or depth >= max_depth:
             return "block", None  # cycle, or chain too deep to trust
         seen.add(current_sub)

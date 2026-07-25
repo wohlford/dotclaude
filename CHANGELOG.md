@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.49.8 — 2026-07-24
+- fix(publication-push-guard): treat a non-literal subcommand as unresolvable
+
 ## v0.49.7 — 2026-07-24
 - fix(git_command): fold line continuations before rewriting newlines
 

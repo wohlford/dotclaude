@@ -101,6 +101,14 @@ assert "bash -c 'git push'" 0 'CONCEDED RESIDUAL: push hidden inside an opaque s
 # --- CONCEDED RESIDUAL: a wrapper WITH its own arguments is not stepped over by starts_command ---
 assert 'sudo -u deploy git push' 0 'CONCEDED RESIDUAL: wrapper-with-args is not recognized as a bare wrapper'
 
+# --- CONCEDED RESIDUAL: a non-literal subcommand is not resolved here ---
+# `git $s` cannot be recognized as a push without expansion. publication-push-guard now FAILS
+# CLOSED on this (it guards branch privacy, where an ambiguous target must never pass); this hook
+# is a deliberateness nudge, and blocking here would demand ALLOW_PUSH=1 for a command that may
+# not be a push at all. Recorded deliberately so the asymmetry is documented, not discovered.
+# shellcheck disable=SC2016
+assert 's=push; git $s origin dev' 0 'CONCEDED RESIDUAL: non-literal subcommand not resolved here'
+
 # --- regression: a line continuation must not hide the subcommand ---
 # `\` + newline is how any long git command is written. Newlines were rewritten to ` ; ` BEFORE
 # shlex saw the backslash, so the escaped space became the subcommand and this exited 0.
