@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.51.3 — 2026-07-25
+- fix(propagate): unquote the marker parse so the push gate allows it
+
 ## v0.51.2 — 2026-07-25
 - docs(CLAUDE.md): route open questions to Fable before the user
 

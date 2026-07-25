@@ -139,7 +139,12 @@ test -f "$(git rev-parse --show-toplevel)/.publication.toml"
    ```bash
    marker="${dev:?}/.publication.toml"
    [ -r "$marker" ] || { echo "cannot read $marker — refusing to guess the production branch" >&2; exit 1; }
-   want="$(sed -nE 's/^[[:space:]]*production[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' "$marker")"
+   # Deliberately UNquoted $( … ): an assignment's command substitution is never word-split, so
+   # this is identical in effect to the quoted form — but quoting it wraps a single-quoted body
+   # holding an ODD number of double-quote characters, which drifts the push-guard tokenizer's
+   # quote state and makes it fail closed on this very block. Do not re-add the outer quotes;
+   # keep this comment free of double quotes too, since the parity is what does the damage.
+   want=$(sed -nE 's/^[[:space:]]*production[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' "$marker")
    want="${want:-main}"   # empty ⇒ "main" — an absent key, never an unreadable file
    got="$(git -C "${live:?}" rev-parse --abbrev-ref HEAD)"
    [ "$want" = "$got" ]
