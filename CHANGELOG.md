@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.51.4 — 2026-07-26
+- docs(CLAUDE.md): treat a killed run as unproven, not as a pass
+
 ## v0.51.3 — 2026-07-25
 - fix(propagate): unquote the marker parse so the push gate allows it
 

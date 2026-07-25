@@ -173,6 +173,13 @@ plan and base you are actually executing before trusting any line; reset it when
   **A script, function, or `{ … }` wrapper exits with its last command's status too** — so a
   diagnostic `echo` appended after an assertion discards the verdict it was meant to report, and the
   check reports the *echo's* success. Capture `rc=$?` on the very next line, then `exit "$rc"`.
+- **A killed run never ran — absence of a verdict is not a pass.** A check stopped by a timeout
+  (SIGTERM, rc 143) prints a *prefix* of `PASS` lines, never emits one for the check still in flight,
+  and never reaches its summary — so grepping for `FAIL` finds nothing and the output reads clean.
+  Require the specific verdict line **and** the summary to be *present*; "no FAIL" is not "passed".
+  Record the real exit status **inside** the artifact you will read, so its **absence** is itself the
+  signal that the run died — and remember a backgrounded wrapper reports its *last* element's status,
+  so the harness can announce "completed (exit code 0)" for a run that was killed.
 - **A command you write into documentation is unverified until you run it.** An un-runnable one
   reads exactly like a working one, so prose review never catches it — only execution does. Seen: a
   flag rejecting the arity it was given (`git check-ignore -q a b` → `fatal: --quiet is only valid
