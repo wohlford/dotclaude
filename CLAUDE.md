@@ -26,6 +26,11 @@ Universal instructions for all projects.
 > fixing it (RED→GREEN; see [workflows.md](./workflows.md)). Skipping is a flagged exception — state
 > why at fix time (e.g. untestable: timing/environment/interactive), never skip silently.
 
+> **Never reason your way past the last gate before something irreversible.** Publishing, deploying,
+> force-pushing, or a destructive migration is where the gate you can argue is redundant — *"the suite
+> already passed on an identical tree"* — is the one to actually run. That argument is usually right,
+> which is what makes skipping it a habit, and a skipped gate is indistinguishable from no gate.
+
 > **Never state a time of day** ("this morning", "tonight") unless you just read the clock (`date`) —
 > name the trigger or step instead ("the push step", "next session"). Don't echo a time word from
 > earlier in the conversation; time has moved since.

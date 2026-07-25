@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.49.9 — 2026-07-25
+- docs(CLAUDE.md): warn against skipping the last gate before publishing
+
 ## v0.49.8 — 2026-07-24
 - fix(publication-push-guard): treat a non-literal subcommand as unresolvable
 
