@@ -178,8 +178,18 @@ plan and base you are actually executing before trusting any line; reset it when
   and never reaches its summary — so grepping for `FAIL` finds nothing and the output reads clean.
   Require the specific verdict line **and** the summary to be *present*; "no FAIL" is not "passed".
   Record the real exit status **inside** the artifact you will read, so its **absence** is itself the
-  signal that the run died — and remember a backgrounded wrapper reports its *last* element's status,
-  so the harness can announce "completed (exit code 0)" for a run that was killed.
+  signal that the run died — the harness will otherwise announce "completed (exit code 0)" for a run
+  that was killed, for the reason above.
+  **The same holds for a check that never fired:** editing outside your tooling's normal path skips
+  its hooks silently — they do not fail, they never run — and a hand-substitute is reliably narrower
+  than what it replaced. Name what you skipped and run it, or use the normal path.
+- **A change that is only correct in COMBINATION is one unit of work.** Two halves of a fix can be
+  individually wrong in *opposite* directions — one alone over-blocks, the other alone lets the bug
+  through — so landing half is not partial progress, it is a regression. And it is one no suite can
+  catch: every test passes at both commits, because the broken state exists only *between* them.
+  Seen: a filter and the flag that makes it safe, split across two tasks; the interval shipped the
+  over-blocking half and broke a real workflow while three suites stayed green. Ship them together,
+  or say plainly that the interval is broken and why.
 - **A command you write into documentation is unverified until you run it.** An un-runnable one
   reads exactly like a working one, so prose review never catches it — only execution does. Seen: a
   flag rejecting the arity it was given (`git check-ignore -q a b` → `fatal: --quiet is only valid

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.52.4 — 2026-07-27
+- docs(CLAUDE.md): treat a combination-only fix as one unit of work
+
 ## v0.52.3 — 2026-07-26
 - fix(push-guard): see nested contexts and fail closed on git ambiguity
 
