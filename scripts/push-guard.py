@@ -20,18 +20,28 @@ while every direct push shape (`git push`, `sudo git push`, `git -C <dir> push`,
 `git <globals> push`, `git subtree push`, in any control-operator or newline-joined position) stays
 blocked unless authorized.
 
-CONCEDED RESIDUALS (deliberate; same class of gap `git_command.py`'s own docstring already
-concedes): `push` hidden inside an opaque string (`bash -c 'git push'`, `` echo `git push` ``) is
-invisible to the tokenizer, and a wrapper WITH its own arguments (`sudo -u deploy git push`,
-`timeout 60 git push`) is not stepped over — `starts_command` only steps over a *bare* wrapper. See
-specs/2026-07-18-guard-tokenizer-detection.md §Conceded residuals for the rationale: re-catching
-these would reintroduce the false-positive class this change exists to kill.
+NESTED COMMAND CONTEXTS ARE COVERED. A push inside `$( … )`, backticks, `<( … )` or `>( … )` — at
+any depth, and including one inside another git command's own argument span
+(`git commit -m "$(git push …)"`) — is seen and judged. `ALLOW_PUSH=1` stays *segment*-scoped
+inside each context, matching the shell.
 
-Fails OPEN on anything ambiguous: unparseable/missing JSON, a missing `.tool_input.command`, an empty
-command, a tokenizer `ValueError` (unbalanced quotes), or any other unexpected exception — all exit
-0 (allow). This is the OPPOSITE posture of the sibling `publication-push-guard.py`, which fails
-CLOSED: that hook is a security boundary (keeping a `dev` branch private), this one is a nudge
-against an accidental, undeliberate push.
+CONCEDED RESIDUALS (deliberate; the same class `git_command.py`'s own docstring concedes): `push`
+hidden inside a string another program shell-executes (`bash -c 'git push'`, `eval`, `/bin/sh -c`,
+pipe-into-shell, a herestring) is invisible to the tokenizer, and a wrapper WITH its own arguments
+(`sudo -u deploy git push`, `timeout 60 git push`) is not stepped over — `starts_command` only
+steps over a *bare* wrapper. Backticks were listed here until nested contexts were covered; they
+are no longer a residual. Re-catching the wrapper class would reintroduce the false-positive class
+this detection exists to kill, and the class is open-ended rather than closed.
+
+AMBIGUITY POSTURE — split, deliberately. A tokenizer `ValueError` on a command that MENTIONS git
+now BLOCKS (exit 2) rather than being swallowed: "I could not parse it" must not silently become
+"there is no push here", which was the same fail-open class as the nested-context bypasses.
+Everything else still fails OPEN — unparseable/missing JSON, a missing `.tool_input.command`, an
+empty command, a `ValueError` on a command with no git word, and any other unexpected exception all
+exit 0. The blast radius is therefore push-shaped, and a bug in the scanner cannot brick every
+command in the session. This is a NARROWER fail-closed than the sibling
+`publication-push-guard.py`, which is a security boundary (keeping a `dev` branch private); this
+one remains a nudge against an accidental, undeliberate push.
 
 Exit codes:
   0 — allow: no push op found, the push op is authorized, or any internal error (fail open).
@@ -48,6 +58,14 @@ import git_command as gitcmd  # noqa: E402
 BLOCK_MESSAGE = (
     "blocked by push-guard: pushing is explicit-only. Lead the push segment with "
     "ALLOW_PUSH=1 (e.g. ALLOW_PUSH=1 git push ...) to authorize it."
+)
+
+AMBIGUOUS_MESSAGE = (
+    "blocked by push-guard: this command mentions git but could not be parsed unambiguously, "
+    "so it is refused rather than allowed unchecked. Simplify the quoting and retry. "
+    "Note that an env assignment does not reach a command substitution in a sibling assignment "
+    '(ALLOW_PUSH=1 out="$(git push ...)" does NOT authorize that push) - put the override '
+    "inside the substitution instead."
 )
 
 
@@ -111,19 +129,29 @@ def _segment_has_unauthorized_push(seg: list[str]) -> bool:
 
 
 def _has_unauthorized_push(command: str) -> bool:
-    """Newline-normalize, tokenize, strip redirects, split into control-operator-delimited
-    segments, and check each for an unauthorized push op. Raises on a tokenizer `ValueError`
-    (unbalanced quotes) — the caller's try/except turns that into fail-open."""
-    normalized = gitcmd.normalize_command(command)
-    tokens = gitcmd.strip_redirects(gitcmd.tokenize(normalized))
+    """Check EVERY command context for an unauthorized push op.
 
-    seg_start = 0
-    n = len(tokens)
-    for i in range(n + 1):
-        if i == n or gitcmd.is_op(tokens[i]):
-            if _segment_has_unauthorized_push(tokens[seg_start:i]):
-                return True
-            seg_start = i + 1
+    Each context's tokens are split into control-operator-delimited segments and judged
+    independently, so `ALLOW_PUSH=1` authorizes only the segment that leads with it — inside a
+    nested context exactly as at the top level, matching the shell: `x="$(ALLOW_PUSH=1 git push …)"`
+    really does export the variable for that push.
+
+    Consumes `iter_context_token_streams`, NOT `iter_git_invocations_with_cwd`. This gate's rule is
+    *segment*-scoped, and the invocation tuple has already dropped the segment's leading env
+    assignments — a version rebuilt on it could not see any authorization and would block every
+    push, including this repo's own publish.
+
+    Raises:
+        ValueError: On tokenizing ambiguity or excessive nesting. `main` decides what that means.
+    """
+    for tokens in gitcmd.iter_context_token_streams(command):
+        seg_start = 0
+        n = len(tokens)
+        for i in range(n + 1):
+            if i == n or gitcmd.is_op(tokens[i]):
+                if _segment_has_unauthorized_push(tokens[seg_start:i]):
+                    return True
+                seg_start = i + 1
     return False
 
 
@@ -147,7 +175,22 @@ def main() -> int:
     blocked = False
     try:
         blocked = _has_unauthorized_push(command)
-    except Exception:  # noqa: BLE001 - deliberate: any crash here must fail OPEN
+    except ValueError:
+        # D1: "I could not parse it" must stop meaning "there is no push here" -- that swallow was
+        # the same fail-open class as the nested-context bypasses this change closes. Bounded by
+        # has_git_word so the blast radius stays push-shaped: an unparseable command with no git
+        # word still fails OPEN, exactly as before.
+        #
+        # This `except` MUST precede the blanket one below: ValueError is a subclass of Exception,
+        # so the broad handler would otherwise win and D1 would silently not happen while every
+        # test still passed.
+        if gitcmd.has_git_word(command):
+            print(AMBIGUOUS_MESSAGE, file=sys.stderr)
+            return 2
+        return 0
+    except Exception:  # noqa: BLE001 - deliberate: any OTHER crash must still fail OPEN
+        # D1 changes the AMBIGUITY posture, not the crash posture. A bug in the scanner must not
+        # brick every git command in the session.
         return 0
 
     if blocked:

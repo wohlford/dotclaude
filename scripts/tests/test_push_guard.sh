@@ -94,7 +94,11 @@ assert 'git --git-dir=/x push' 2 'a --git-dir= global option is skipped to reach
 assert 'ALLOW_PUSH=1 git subtree push origin main' 0 'authorized git subtree push'
 assert 'git subtree pull origin main' 0 'git subtree pull: "push" not among its args -> not a push op'
 assert 'ALLOW_PUSH=12 git push' 2 'ALLOW_PUSH=12 is not the exact token ALLOW_PUSH=1'
-assert 'git push "oops' 0 'unbalanced quote -> tokenizer ValueError -> fail open'
+# D1 (2026-07-26): this used to fail OPEN. An unparseable command that MENTIONS git is now refused
+# rather than allowed unchecked -- that swallow was the same fail-open class as the nested-context
+# bypasses. The non-git counterpart below pins the unchanged fail-open posture, which is what keeps
+# the blast radius push-shaped.
+assert 'git push "oops' 2 'unbalanced quote + git word -> fail closed'
 
 # --- CONCEDED RESIDUAL: an opaque string hides `push` from the tokenizer entirely ---
 assert "bash -c 'git push'" 0 'CONCEDED RESIDUAL: push hidden inside an opaque shell -c string'
@@ -126,6 +130,64 @@ if [[ "$got_msg" == "$want_msg" ]]; then
 else
   printf 'FAIL  block stderr mismatch\n  want: %s\n  got:  %s\n' "$want_msg" "$got_msg"; fail=$((fail + 1))
 fi
+
+# --- nested command contexts: an unauthorized push is still a push (exit 2) ---
+assert 'x="$(git push origin dev)"' 2 'push inside quoted $( )'
+assert 'x=`git push origin dev`' 2 'push inside backticks'
+assert 'x="$(git push origin dev)" && git status' 2 'push in $( ) with trailing git'
+assert 'x="$(echo `git push origin dev`)"' 2 'backtick nested inside $( )'
+assert 'cat <(git push origin dev)' 2 'push inside process substitution'
+assert 'x=`echo \`git push origin dev\`` ' 2 'escaped backticks at depth 2'
+
+# --- the span rule (spec 4.6, evidence rows 10-12) ---
+assert 'git commit -m "$(git push origin dev)"' 2 'push in commit'"'"'s own arg span'
+assert 'git tag -a v1 -m "$(git push origin dev)"' 2 'push in tag'"'"'s own arg span'
+assert 'git -c x="$(git push origin dev)" status' 2 'push in the global-option run'
+assert 'git status > "$(git push origin dev)"' 2 'push in a redirect target'
+
+# --- evidence row 13: a trailing # comment must not swallow the next line ---
+assert 'git status  # note
+git push origin dev' 2 'comment truncation no longer hides the push'
+
+# --- D1: ambiguity now fails CLOSED, but ONLY when the command mentions git ---
+assert 'x="$(git push origin dev' 2 'unterminated context fails closed'
+
+# Depth overflow must also fail closed at the GATE, not only in the unit tests. Build the nested
+# string in bash rather than writing ten literal levels by hand.
+deep='git push origin dev'
+for _ in 1 2 3 4 5 6 7 8 9 10; do deep="x=\"\$($deep)\""; done
+assert "$deep" 2 'nesting past the depth limit fails closed'
+
+# BLAST-RADIUS BOUND: an unparseable command with NO git word must still fail OPEN. Without this,
+# D1 turns push-guard from a push gate into a gate on every malformed command in the session.
+assert "echo 'unterminated" 0 'unparseable NON-git command still fails open'
+assert 'sed -nE '"'"'s/a"b"c"d/\1/p'"'"' /dev/null' 0 'quote-heavy non-git command still allowed'
+
+# --- the ALLOW_PUSH override survives, at top level and inside a context ---
+assert 'ALLOW_PUSH=1 git push origin dev' 0 'override at top level is honored'
+assert 'x="$(ALLOW_PUSH=1 git push origin dev)"' 0 'override INSIDE a context is honored'
+assert 'ALLOW_PUSH=1 git push origin dev && git status' 0 'override + trailing benign git'
+
+# --- CONCEDED RESIDUALS (spec 7b): still ALLOW; pinning current behavior, not an aspiration ---
+# If one goes red, something CLOSED it -- investigate and move the row, never invert the assertion.
+assert 'sh -c "git push origin dev"' 0 'RESIDUAL: sh -c still allows'
+assert "bash -c 'git push origin dev'" 0 'RESIDUAL: bash -c still allows'
+assert 'eval "git push origin dev"' 0 'RESIDUAL: eval still allows'
+assert "bash -lc 'git push origin dev'" 0 'RESIDUAL: bash -lc still allows'
+assert "/bin/sh -c 'git push origin dev'" 0 'RESIDUAL: path-qualified shell still allows'
+assert "echo 'git push origin dev' | sh" 0 'RESIDUAL: pipe-into-shell still allows'
+assert 'sh <<< "git push origin dev"' 0 'RESIDUAL: herestring still allows'
+
+# --- NOT residuals: green today, must stay green ---
+assert 'echo origin dev | xargs git push' 2 'bare xargs git push still blocks'
+assert 'git \
+ push origin dev' 2 'backslash-newline continuation still blocks (v0.49.7)'
+
+# --- protected baselines: unchanged ---
+assert "echo 'git push origin dev'" 0 'single-quoted literal is not a push'
+assert 'x="$(( 1 + 2 ))" && git status' 0 'arithmetic expansion is not a push'
+assert 'x="$(git status)"' 0 'non-push git inside a substitution stays allowed'
+
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

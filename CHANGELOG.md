@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.52.3 — 2026-07-26
+- fix(push-guard): see nested contexts and fail closed on git ambiguity
+
 ## v0.52.2 — 2026-07-26
 - fix(publication-push-guard): judge pushes in nested command contexts
 

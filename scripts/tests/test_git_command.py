@@ -571,25 +571,21 @@ def test_comment_inside_a_substitution_body_does_not_truncate_it():
     assert "push" in _subs('x="$(echo hi  # )\ngit push origin dev)"')
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Closes only when `tokenize` sets commenters='', which lands with the change that routes "
-        "every consumer through strip_comments — not before. STRICT on purpose: the moment that "
-        "lands, this XPASSes and strict turns that into a failure, forcing the marker off."
-    ),
-)
 def test_comment_stripping_that_drifts_still_exposes_the_push():
     """`strip_comments` tracks quotes linearly over pre-split text — the class Defect A says drifts.
 
     On an odd-inner-quote body it fails to strip, and the surviving `#` must then be INERT rather
     than a comment, or shlex (newlines already `;`) eats the rest of the command. Measured: the
-    push vanished entirely — a live bypass, currently OPEN and pinned here.
+    push vanished entirely.
 
-    The fix is `commenters = ""` in `tokenize`, paired with `strip_comments`; the two are
-    complementary and neither is safe alone. Setting it before every consumer routes through
-    `strip_comments` was measured to regress 3 of 6 ordinary commands, so it is deliberately
-    deferred. This test is the tripwire that the deferral was honored and then discharged.
+    Closed by pairing `strip_comments` with `commenters = ""` in `tokenize`. The two are
+    complementary and neither is safe alone — setting `commenters = ""` before every consumer
+    routed through `strip_comments` was measured to regress 3 of 6 ordinary commands, so it was
+    deliberately deferred to the change that completed the wiring.
+
+    This case spent that interval as `xfail(strict=True)`, which is why the deferral could not be
+    silently forgotten: the moment the pairing landed it XPASSed, and strict turned that into a
+    failure demanding the marker be removed. Keep it as a plain assertion now.
     """
     cmd = 'x="$(sed -nE \'s/a"b"c"d/\\1/p\' /dev/null)"  # note\ngit push origin dev'
     assert "push" in _subs(cmd)

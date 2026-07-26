@@ -396,17 +396,25 @@ def tokenize(command: str) -> list[str]:
     """
     lex = shlex.shlex(command, posix=True, punctuation_chars="();<>|&")
     lex.whitespace_split = True
-    # NOTE: shlex's default `commenters="#"` is deliberately LEFT IN PLACE here for now.
+    # BOTH comment layers are required, and they are complementary rather than redundant:
+    #   `strip_comments` removes real comments, so nothing here has to.
+    #   `commenters = ""` makes any `#` that SURVIVES that pass a literal word, not a comment.
     #
-    # The eventual design pairs `strip_comments` (which removes real comments) with
-    # `lex.commenters = ""` (which makes any `#` surviving that pass an inert word rather than a
-    # comment). The two are complementary and fail in OPPOSITE directions -- see `strip_comments`.
+    # Neither alone is safe, and they fail in OPPOSITE directions:
+    #   - `commenters = ""` alone FALSE-BLOCKS. Comment CONTENT becomes live tokens; measured, that
+    #     turned `ALLOW_PUSH=1 git push origin main  # publish the bricks` -- this repo's own
+    #     publish command -- into a refused push, and made an apostrophe in a comment an unbalanced
+    #     quote. It regressed 3 of 6 ordinary commands while every gate suite still passed.
+    #   - `strip_comments` alone leaves a BYPASS. Its quote tracking is linear over pre-split text,
+    #     the very thing Defect A shows drifts, so on an odd-inner-quote body it fails to strip and
+    #     the surviving `#` reaches shlex, which (newlines already `;`) eats the rest of the
+    #     COMMAND. Measured: the push vanished entirely.
     #
-    # But `commenters = ""` is only safe where `strip_comments` has ALREADY run, and no consumer
-    # routes through it yet. Setting it now was measured to regress 3 of 6 ordinary commands,
-    # including `ALLOW_PUSH=1 git push origin main  # publish the bricks`, while every gate suite
-    # still passed. It must land in the same change that routes every consumer through
-    # `strip_comments`, never before.
+    # ORDERING: this line may only exist once EVERY consumer routes through `strip_comments`, and it
+    # was deliberately held back until that was true. Composed, ordinary input reaches shlex with no
+    # `#` at all (no false block), while anything that survives drifted and becomes inert
+    # (over-block, loud) -- the divergence principle's direction.
+    lex.commenters = ""
     return list(lex)
 
 
