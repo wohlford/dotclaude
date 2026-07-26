@@ -177,3 +177,139 @@ def test_real_newline_still_separates_commands():
     """Folding continuations must not swallow ordinary newline-joined commands."""
     got = git_command.iter_git_invocations("git status\ngit push origin dev")
     assert [sub for _c, sub, _s in got] == ["status", "push"]
+
+
+# ---------- command-context scanner (syntactic) ----------
+
+
+def test_split_extracts_quoted_command_substitution():
+    outer, ctxs = git_command.split_command_contexts('x="$(git push origin dev)"')
+    assert [c.text for c in ctxs] == ["git push origin dev"]
+    assert outer == 'x="__GIT_COMMAND_SUBST_0__"'
+
+
+def test_split_outer_is_tokenizable_after_substitution():
+    """The Defect A fix: the outer text's quotes re-balance once bodies are removed."""
+    cmd = r"""x="$(sed -nE 's/a"b"c"d/\1/p' /dev/null)" && git rev-parse --show-toplevel"""
+    outer, ctxs = git_command.split_command_contexts(cmd)
+    assert git_command.tokenize(outer)  # must NOT raise
+    assert ctxs[0].text == r"""sed -nE 's/a"b"c"d/\1/p' /dev/null"""
+
+
+def test_split_extracts_backticks():
+    _outer, ctxs = git_command.split_command_contexts("x=`git push origin dev`")
+    assert [c.text for c in ctxs] == ["git push origin dev"]
+
+
+def test_split_extracts_process_substitution():
+    _outer, ctxs = git_command.split_command_contexts("cat <(git push origin dev)")
+    assert [c.text for c in ctxs] == ["git push origin dev"]
+
+
+def test_split_ignores_contexts_inside_single_quotes():
+    """Protected baseline: a single-quoted literal is inert to the shell and must stay inert."""
+    outer, ctxs = git_command.split_command_contexts("echo 'git push origin dev'")
+    assert ctxs == []
+    assert outer == "echo 'git push origin dev'"
+
+
+def test_split_process_substitution_inert_inside_double_quotes():
+    _outer, ctxs = git_command.split_command_contexts('echo "<(git push)"')
+    assert ctxs == []
+
+
+def test_split_arithmetic_body_contains_no_command():
+    """Protected baseline: $(( )) needs no special case — its body has nothing in command position."""
+    _outer, ctxs = git_command.split_command_contexts('x="$(( 1 + 2 ))" && git status')
+    assert all("push" not in c.text for c in ctxs)
+    assert all(git_command.iter_git_invocations(c.text) == [] for c in ctxs)
+
+
+def test_split_honors_backslash_escaped_backtick():
+    r"""Evidence row 15, and it takes TWO fixes that fail independently.
+
+    Measured fail-open on both gates 2026-07-25. Depth-2 backtick nesting REQUIRES backslashes in
+    bash, so this is the only form nested backticks take.
+
+    1. `\`` must not CLOSE the context early, or the body leaks into the outer string and glues
+       onto the placeholder.
+    2. The extracted body must then be UNESCAPED, or the recursion never opens the nested context
+       and the tokenizer produces `` `git `` — which `is_git` does not match.
+
+    Fix 1 alone gives a correct context boundary around inert contents, which passes every
+    structural assertion while the bypass stays open. This test asserts the INNER push is
+    reachable, not merely that the outer body was captured.
+    """
+    outer, ctxs = git_command.split_command_contexts(
+        r"x=`echo \`git push origin dev\``"
+    )
+    assert outer == "x=__GIT_COMMAND_SUBST_0__"
+    _inner_outer, inner = git_command.split_command_contexts(
+        ctxs[0].text, ctxs[0].depth
+    )
+    assert [c.text for c in inner] == ["git push origin dev"]
+
+
+def test_split_honors_backslash_escaped_paren():
+    r"""A `\)` must not close a `$( )` context early — same mechanism as the backtick case."""
+    _outer, ctxs = git_command.split_command_contexts(
+        r'x="$(echo \) ; git push origin dev)"'
+    )
+    assert ctxs[0].text.endswith("git push origin dev")
+
+
+def test_split_raises_on_unterminated_substitution():
+    with pytest.raises(ValueError):
+        git_command.split_command_contexts('x="$(git push origin dev')
+
+
+def test_split_raises_on_unbalanced_quote():
+    with pytest.raises(ValueError):
+        git_command.split_command_contexts("echo 'unterminated")
+
+
+def test_split_refuses_input_containing_the_reserved_marker():
+    """Reachable by ordinary work — `git grep __GIT_COMMAND_SUBST_0__` finds this very file.
+
+    Must be ValueError, never IndexError: consumers swallow only ValueError, so anything else
+    escapes into a third gate as an uncaught traceback.
+    """
+    with pytest.raises(ValueError):
+        git_command.split_command_contexts(
+            f"git grep {git_command.PLACEHOLDER_PREFIX}0__ scripts/"
+        )
+
+
+# ---------- comment stripping (evidence row 13) ----------
+
+
+def test_strip_comments_removes_a_trailing_comment():
+    assert git_command.strip_comments("git status  # note") == "git status  "
+
+
+def test_strip_comments_keeps_the_newline_that_ends_a_comment():
+    """The terminating newline is load-bearing downstream — it separates the next command."""
+    assert (
+        git_command.strip_comments("git status  # note\ngit push origin dev")
+        == "git status  \ngit push origin dev"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git log --pretty=%h#%d",
+        "git checkout feature#123",
+        'git commit -m "#42 fix"',
+        "echo '#!/bin/bash'",
+        "git push origin dev#notacomment",
+        "curl https://example.test/x#frag",
+    ],
+)
+def test_strip_comments_never_removes_real_command_text(command):
+    """A false positive here is a BYPASS, not a false block — it deletes text before anything sees it.
+
+    The `#`-must-be-at-word-start rule is deliberately a SUBSET of bash's real comment boundaries:
+    it may over-keep (costing at most a loud false block) but must never over-remove.
+    """
+    assert git_command.strip_comments(command) == command

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.52.0 — 2026-07-26
+- feat(git_command): add a quote-aware nested command-context scanner
+
 ## v0.51.4 — 2026-07-26
 - docs(CLAUDE.md): treat a killed run as unproven, not as a pass
 
