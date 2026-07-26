@@ -250,74 +250,6 @@ def _combine(base: str | None, sub: str | None) -> str | None:
     return sub if sub.startswith("/") else str(Path(base) / sub)
 
 
-def _cwd_overrides_by_invocation_index(
-    command: str, base_cwd: str, gitcmd: ModuleType
-) -> list[str | None]:
-    """One entry per `git` invocation in command position, in the same left-to-right order
-    git_command.iter_git_invocations walks the same token stream — so the Nth entry here lines up
-    with the Nth tuple that function returns.
-
-    Deliberately does NOT re-implement iter_git_invocations' global-option/segment parsing — it only
-    needs to recognize a `git` token in command position (identical predicate,
-    `git_command.is_git` + `git_command.starts_command`) to record the cwd state at that point, and
-    the actual (cdir, subcommand, args) triple is fetched from iter_git_invocations itself.
-
-    Args:
-        command: The raw shell-command string to walk.
-        base_cwd: The working directory the command starts in.
-        gitcmd: The lazily-imported `git_command` module, supplying the tokenizer and predicates.
-
-    Returns:
-        One entry per `git` invocation in command position, in command order. Each entry is the
-        effective working directory in force at that invocation's START, after applying every
-        `cd`/`pushd` target seen earlier in the stream (or None once a target becomes unresolvable).
-        iter_git_invocations exposes a per-invocation `-C` but has no notion of `cd` state, which is
-        a shell-wide effect that persists across `;`/`&&` boundaries, unlike `-C`.
-
-    Raises:
-        ValueError: On tokenizing ambiguity — propagated, uncaught, so the caller's outer
-            try/except turns it into a block. Unlike iter_git_invocations, this function does NOT
-            swallow that error, because for THIS gate "can't tell" must fail closed.
-    """
-    normalized = gitcmd.normalize_command(command)
-    tokens = gitcmd.strip_redirects(gitcmd.tokenize(normalized))
-
-    overrides: list[str | None] = []
-    cwd_state: str | None = base_cwd
-    i, n = 0, len(tokens)
-    while i < n:
-        tok = tokens[i]
-        if tok in ("cd", "pushd") and gitcmd.starts_command(tokens, i):
-            j = i + 1
-            target = None
-            while j < n and not gitcmd.is_op(tokens[j]):
-                if not tokens[j].startswith("-"):
-                    target = tokens[j]
-                    break
-                j += 1
-            if cwd_state is not None:
-                if target is None or target == "-" or "$" in target or "~" in target:
-                    cwd_state = (
-                        None  # unresolvable target -> everything after it is unresolved
-                    )
-                else:
-                    cwd_state = _combine(cwd_state, target)
-            i += 1
-            continue
-        if tok == "popd" and gitcmd.starts_command(tokens, i):
-            cwd_state = (
-                None  # no stack tracked — see the popd residual in the module docstring
-            )
-            i += 1
-            continue
-        if gitcmd.is_git(tok) and gitcmd.starts_command(tokens, i):
-            overrides.append(cwd_state)
-            i += 1
-            continue
-        i += 1
-    return overrides
-
-
 def _resolve_root(effective_dir: str) -> str | None:
     """The toplevel of the repo containing effective_dir, or None if it cannot be resolved."""
     out = subprocess.run(
@@ -658,13 +590,18 @@ def _find_block_reason(command: str, cwd: str) -> str | None:
 
     gitdir_override = bool(GITDIR_RE.search(_dequote(command)))
 
-    # Raises ValueError on tokenizing ambiguity — propagated, uncaught, to the caller's fail-closed
-    # try/except. iter_git_invocations tokenizes the identical normalized command with the same
-    # primitives, so it is guaranteed to succeed (and align 1:1 by order) once the line above does.
-    overrides = _cwd_overrides_by_invocation_index(command, cwd, gitcmd)
-    invocations = gitcmd.iter_git_invocations(command)
-
-    for effective_dir, (cdir, sub, seg) in zip(overrides, invocations, strict=True):
+    # ONE walk yields both the invocations and the working directory each runs in, so there is no
+    # second sequence to fall out of alignment with. This replaces a pair of independently-ordered
+    # walks zipped together with `strict=True`: that pairing was asserted by comment rather than
+    # structure, and it raised — silently converting a nested-context command into a fail-closed
+    # block — as soon as the two walks stopped finding the same number of invocations.
+    #
+    # Raises ValueError on tokenizing ambiguity, propagated uncaught to the caller's fail-closed
+    # handler. Context-aware, so `cd`/`pushd`/`popd` and subshell isolation are resolved inside the
+    # library where token position and invocation identity come from the same traversal.
+    for effective_dir, cdir, sub, seg in gitcmd.iter_git_invocations_with_cwd(
+        command, cwd
+    ):
         if sub != "push" and sub in KNOWN_SAFE_SUBCOMMANDS:
             continue
         root_dir = _combine(effective_dir, cdir)

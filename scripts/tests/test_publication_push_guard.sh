@@ -319,5 +319,88 @@ push_run "$REPO" 'git ${s} origin dev' 2 'non-literal subcommand (${s}) is unres
 push_run "$REPO" 'git status -s' 0 'literal subcommand still allowed'
 push_run "$REPO" 'git rev-parse --abbrev-ref HEAD' 0 'hyphenated literal subcommand still allowed'
 
+# ---------- nested command contexts (Defect B): a push inside a context must BLOCK ----------
+build_repo 1 dev
+push_run "$REPO" 'x="$(git push origin dev)"' 2 'push inside quoted $( ) blocks'
+push_run "$REPO" 'x=`git push origin dev`' 2 'push inside backticks blocks'
+push_run "$REPO" 'x="$(git push origin dev)" && git status' 2 'push in $( ) + trailing git blocks'
+push_run "$REPO" 'x="$(echo `git push origin dev`)"' 2 'backtick nested in $( ) blocks'
+push_run "$REPO" 'cat <(git push origin dev)' 2 'push in process substitution blocks'
+push_run "$REPO" 'x=`echo \`git push origin dev\`` ' 2 'escaped backticks at depth 2 block'
+
+# ---------- the span rule (spec 4.6, evidence rows 10-12) ----------
+# A substitution inside a git command's OWN token span. Bash runs it first; the visible command is
+# entirely benign. Row 10 is named in spec success criterion 1.
+push_run "$REPO" 'git commit -m "$(git push origin dev)"' 2 'push in commit'"'"'s arg span blocks'
+push_run "$REPO" 'git tag -a v1 -m "$(git push origin dev)"' 2 'push in tag'"'"'s arg span blocks'
+push_run "$REPO" 'git -c x="$(git push origin dev)" status' 2 'push in the global-option run blocks'
+push_run "$REPO" 'git status > "$(git push origin dev)"' 2 'push in a redirect target blocks'
+
+# ---------- evidence row 13: comment truncation ----------
+push_run "$REPO" 'git status  # note
+git push origin dev' 2 'a trailing # comment no longer swallows the next line'
+
+# ---------- regression pin: the SHIPPED v0.49.7 continuation fold ----------
+# Green before this change and must stay green. It goes red the moment the walk re-derives
+# normalization instead of calling normalize_command.
+push_run "$REPO" 'git \
+ push origin dev' 2 'backslash-newline continuation still blocks'
+
+# ---------- CONCEDED RESIDUALS (spec 7b) — these must still ALLOW ----------
+# NOT a to-do list and NOT an aspiration: each shape below is a live fail-open that this change
+# deliberately does NOT close (D2', operator-approved 2026-07-25). The assertions pin CURRENT
+# behavior so a future change that closes one shows up as a deliberate improvement. If one of these
+# goes red, something CLOSED it -- investigate and move the row, never "fix" the assertion.
+# Do NOT add a shape here that has not been measured as allowing today: `xargs git push` BLOCKS,
+# and an allow-assertion on it could only be made green by weakening a working gate.
+push_run "$REPO" 'sh -c "git push origin dev"' 0 'RESIDUAL: sh -c still allows'
+push_run "$REPO" "bash -c 'git push origin dev'" 0 'RESIDUAL: bash -c still allows'
+push_run "$REPO" 'eval "git push origin dev"' 0 'RESIDUAL: eval still allows'
+push_run "$REPO" "bash -lc 'git push origin dev'" 0 'RESIDUAL: bash -lc still allows'
+push_run "$REPO" "/bin/sh -c 'git push origin dev'" 0 'RESIDUAL: path-qualified shell still allows'
+push_run "$REPO" "echo 'git push origin dev' | sh" 0 'RESIDUAL: pipe-into-shell still allows'
+push_run "$REPO" 'sh <<< "git push origin dev"' 0 'RESIDUAL: herestring still allows'
+
+# ---------- NOT a residual: measured to block today, and must keep blocking ----------
+# `build_repo 1 dev` leaves HEAD on `main`, and this gate legitimately ALLOWS a bare push when
+# HEAD is main (the suite pins that separately). `xargs git push` reduces to a bare push, so this
+# row only means anything with HEAD on dev. The original measurement was taken in the live dev
+# repo and did NOT transfer to the sandbox -- a verdict that is context-dependent, exactly like
+# the fenced-block sweep. Check the harness's own state before importing a measured verdict.
+gi "$REPO" checkout -q dev
+push_run "$REPO" 'echo origin dev | xargs git push' 2 'bare xargs git push still blocks'
+gi "$REPO" checkout -q main
+
+# ---------- Defect A: quote-heavy substitutions must no longer false-block ----------
+push_run "$REPO" 'x="$(sed -nE '"'"'s/a"b"c"d/\1/p'"'"' /dev/null)" && git rev-parse --show-toplevel' 0 \
+  'odd inner-quote substitution no longer false-blocks'
+push_run "$REPO" 'want="$(sed -nE '"'"'s/^[[:space:]]*production[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p'"'"' "$marker")" && git -C "'"$REPO"'" rev-parse --abbrev-ref HEAD' 0 \
+  'real /propagate step-5 marker parse is allowed'
+
+# ---------- protected baselines: verdicts must be unchanged ----------
+push_run "$REPO" 'echo '"'"'git push origin dev'"'"'' 0 'single-quoted literal stays inert'
+push_run "$REPO" 'x="$(( 1 + 2 ))" && git status' 0 'arithmetic expansion stays inert'
+
+# ---------- cwd isolation, BOTH directions ----------
+build_elsewhere
+# A cd INSIDE a subshell must not leak: the push after it still targets the adopted repo.
+push_run "$REPO" 'x="$(cd '"$ELSEWHERE"' && true)" && git push origin dev' 2 \
+  'cd inside a subshell does not leak to the outer push'
+# A cd in the OUTER context must still apply: the push targets elsewhere, so it is allowed.
+push_run "$REPO" 'cd '"$ELSEWHERE"' && git push origin dev' 0 \
+  'cd in the outer context still applies'
+# popd forfeits cwd knowledge (no stack is tracked), so the push blocks. This pins behavior the
+# guard implements TODAY and that Step 3 moves into the library -- it is green before this change
+# and must stay green. If it goes red, the port dropped the rule.
+push_run "$REPO" 'cd '"$ELSEWHERE"' && popd && git push origin dev' 2 \
+  'popd makes the cwd unresolvable, so the push blocks'
+# A cd whose target is itself a substitution is unresolvable for the same reason as `cd "$VAR"`.
+push_run "$REPO" 'cd "$(echo '"$ELSEWHERE"')" && git push origin dev' 2 \
+  'cd to a substitution target is unresolvable, so the push blocks'
+
+# ---------- limits ----------
+push_run "$REPO" 'x="$(git push origin dev' 2 'unterminated context blocks'
+
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
