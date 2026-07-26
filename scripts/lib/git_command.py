@@ -13,6 +13,7 @@ positive): a command reached only through a git alias (``git ci``), wrapped in `
 in command position). Resolving aliases and nested command strings is out of scope here.
 """
 
+import os
 import re
 import shlex
 from typing import NamedTuple
@@ -493,74 +494,319 @@ def starts_command(tokens: list[str], idx: int) -> bool:
     return True
 
 
+def _resolve_cd(cwd_state: str | None, target: str | None) -> str | None:
+    """Apply one `cd`/`pushd` target to the tracked working directory.
+
+    Args:
+        cwd_state: Directory in force before the `cd`, or None if already unresolvable.
+        target: The `cd` target token, or None when the command names no target.
+
+    Returns:
+        The new directory, or None meaning *unresolvable* — the conservative answer whenever the
+        target cannot be resolved statically (`cd -`, `cd "$VAR"`, `cd ~`, `cd "$(…)"`).
+    """
+    if cwd_state is None:
+        return None
+    if target is None or target == "-" or "$" in target or "~" in target:
+        return None
+    # A cd whose target is a command substitution is no more statically resolvable than `cd "$VAR"`,
+    # and joining the placeholder as a path segment would invent a directory that is NOT the adopted
+    # repo — turning a push that should block into one that is allowed. Same rule, same reason.
+    if PLACEHOLDER_PREFIX in target:
+        return None
+    if os.path.isabs(target):
+        return os.path.normpath(target)
+    return os.path.normpath(os.path.join(cwd_state, target))
+
+
+def _prepare(text: str, depth: int) -> tuple[str, list[CommandContext]]:
+    r"""Apply the fixed preparation order and split out one level of nested contexts.
+
+    ORDER IS LOAD-BEARING and `normalize_command` is deliberately SPLIT, because its two halves
+    belong on opposite sides of the scan. Composing them in this order is exactly
+    `normalize_command`, which is what keeps the shipped continuation fold intact rather than
+    re-derived:
+
+      1. strip comments   — FIRST, while the newlines that TERMINATE them still exist. A backslash
+         does not continue a comment, so folding first would join the next line into the comment
+         and eat both.
+      2. fold continuations — BEFORE the scan. `x="$\<newline>(git push)"` is a real substitution
+         to the shell; a scanner on raw text walks past the split `$` and `(`, and folding
+         afterwards reassembles a `$(` that nothing ever scans.
+      3. scan for contexts — here.
+      4. newlines to `;`  — AFTER the scan, done by the caller, because the body scanners' own
+         comment handling needs the newline that ends a comment.
+
+    Args:
+        text: The context's raw command text.
+        depth: Nesting depth of `text` itself. MUST be threaded through — extracted contexts get
+            `depth + 1`, and that is the only thing that makes `MAX_CONTEXT_DEPTH` enforceable.
+            Letting it default here silently pins every child at depth 1, so the limit never trips
+            and deeply nested input recurses until Python raises `RecursionError` — which is
+            OUTSIDE this module's ValueError taxonomy and would escape a consumer that swallows
+            only ValueError.
+
+    Returns:
+        The outer string (contexts replaced by placeholders, newlines still present) and the
+        extracted contexts.
+
+    Raises:
+        ValueError: On unbalanced quotes, an unterminated context, or a reserved marker in input.
+    """
+    return split_command_contexts(fold_continuations(strip_comments(text)), depth)
+
+
+def _walk_context(
+    ctx: CommandContext, base_cwd: str | None, max_depth: int
+) -> tuple[list[tuple[str | None, str | None, str, list[str]]], str | None]:
+    """Walk ONE context in source order, recursing into the contexts it introduces.
+
+    Args:
+        ctx: The context to walk.
+        base_cwd: Working directory in force when this context starts.
+        max_depth: Maximum nesting depth before the input is treated as ambiguous.
+
+    Returns:
+        The invocations found — each ``(effective_dir, cdir, subcommand, arg_tokens)`` — and the
+        working directory in force at the END of this context.
+
+    Raises:
+        ValueError: On unbalanced quotes, an unterminated context, or excessive nesting.
+    """
+    if ctx.depth > max_depth:
+        raise ValueError("maximum command-context depth exceeded")
+
+    outer, nested = _prepare(ctx.text, ctx.depth)
+    tokens = strip_redirects(tokenize(newlines_to_separators(outer)))
+
+    results: list[tuple[str | None, str | None, str, list[str]]] = []
+    cwd_state = base_cwd
+    walked: set[int] = set()
+
+    def _descend(span: list[str], cwd: str | None) -> None:
+        """Walk every nested context marked anywhere in `span`, in source order.
+
+        A nested context executes BEFORE the command whose tokens carry it, so its invocations are
+        appended first. All contexts are real subshells: each sees `cwd`, none of their `cd`s
+        escape.
+        """
+        for tok in span:
+            for idx in _placeholder_indices(tok):
+                if idx >= len(nested):
+                    # Unreachable while the marker is unforgeable, but a bare IndexError here would
+                    # escape this module's documented ValueError taxonomy and reach a consumer that
+                    # swallows only ValueError.
+                    raise ValueError("context marker index out of range")
+                if idx in walked:
+                    continue
+                walked.add(idx)
+                sub_results, _ = _walk_context(nested[idx], cwd, max_depth)
+                results.extend(sub_results)
+
+    i, n = 0, len(tokens)
+    subshell_cwds: list[str | None] = []
+    while i < n:
+        tok = tokens[i]
+
+        # An ordinary `( … )` subshell isolates cwd exactly as a substitution does. COUNT the
+        # parens inside any all-operator token rather than comparing the token: `punctuation_chars`
+        # GROUPS operator runs, so `((cd /x && ls))` arrives as `((` and `))`, and
+        # `(cd /x && ls)&&git push` arrives as `)&&`. A check written against the spaced, depth-1
+        # form passes its own test and leaks everywhere else — and a leaked cwd is the direction
+        # that ALLOWS.
+        if tok and all(c in "();|&" for c in tok) and ("(" in tok or ")" in tok):
+            for ch in tok:
+                if ch == "(":
+                    subshell_cwds.append(cwd_state)
+                elif ch == ")":
+                    cwd_state = subshell_cwds.pop() if subshell_cwds else None
+            i += 1
+            continue
+
+        if tok in ("cd", "pushd") and starts_command(tokens, i):
+            j = i + 1
+            target = None
+            while j < n and not is_op(tokens[j]):
+                if not tokens[j].startswith("-"):
+                    target = tokens[j]
+                    break
+                j += 1
+            _descend(tokens[i : j + 1], cwd_state)
+            cwd_state = _resolve_cd(cwd_state, target)
+            i += 1
+            continue
+
+        # `popd` is not tracked as a stack: any popd makes the cwd unresolvable. This mirrors the
+        # rule a consumer gate implements today, and porting it is MANDATORY — that gate's own cwd
+        # walk is deleted once it consumes this primitive, so omitting it opens a new hole.
+        if tok == "popd" and starts_command(tokens, i):
+            cwd_state = None
+            i += 1
+            continue
+
+        if is_git(tok) and starts_command(tokens, i):
+            j = i + 1
+            cdir = None
+            while j < n and tokens[j].startswith("-"):
+                opt = tokens[j]
+                if opt == "-C" and j + 1 < n:
+                    cdir = tokens[j + 1]
+                    j += 2
+                elif opt.startswith("-C") and len(opt) > 2:
+                    cdir = opt[2:]
+                    j += 1
+                elif opt in GLOBAL_VALUE_OPTS and "=" not in opt:
+                    j += 2
+                else:
+                    j += 1
+            if j >= n:
+                # Truncated invocation: no subcommand. Still descend into the global-option run
+                # before giving up, or a context hidden there is lost.
+                _descend(tokens[i:n], cwd_state)
+                break
+            seg: list[str] = []
+            k = j + 1
+            while (
+                k < n
+                and not is_op(tokens[k])
+                and not (is_git(tokens[k]) and starts_command(tokens, k))
+            ):
+                seg.append(tokens[k])
+                k += 1
+            # THE SPAN RULE. Descend into every token this invocation consumes — its global-option
+            # run AND its argument segment — not just the token in command position.
+            # `git commit -m "$(git push origin dev)"` hides the push in the argument segment, and
+            # the walk jumps `i = k` straight past it.
+            _descend(tokens[i:k], cwd_state)
+            results.append((cwd_state, cdir, tokens[j], seg))
+            i = k
+            continue
+
+        _descend([tok], cwd_state)
+        i += 1
+
+    # BACKSTOP: no extracted context may be silently dropped. `strip_redirects` deletes a redirect
+    # operator AND its target, so a context used as a redirect target never reaches the loop above
+    # — yet the shell still executes it. Rather than enumerate every token-consuming path, assert
+    # the invariant directly. Walk these with an UNRESOLVABLE cwd, never `base_cwd`: we do not know
+    # where in the command they ran, and guessing the entry directory MIS-ATTRIBUTES them, which is
+    # the direction that allows.
+    for idx, context in enumerate(nested):
+        if idx not in walked:
+            sub_results, _ = _walk_context(context, None, max_depth)
+            results.extend(sub_results)
+
+    return results, cwd_state
+
+
+def iter_git_invocations_with_cwd(
+    command: str, base_cwd: str | None, max_depth: int = MAX_CONTEXT_DEPTH
+) -> list[tuple[str | None, str | None, str, list[str]]]:
+    """Find every `git` invocation in command position, across all contexts, with its cwd.
+
+    This is the primitive an invocation-shaped consumer derives from. Tracking `cd` here rather
+    than in a caller is deliberate: only this walk knows both a token's position and which
+    invocation it belongs to, so alignment between the two is structural instead of asserted.
+
+    Args:
+        command: The raw shell-command string to scan.
+        base_cwd: Working directory the command starts in, or None if already unknown.
+        max_depth: Maximum context nesting depth before the input is treated as ambiguous.
+
+    Returns:
+        One ``(effective_dir, cdir, subcommand, arg_tokens)`` tuple per invocation, in command
+        order. ``effective_dir`` is None when the directory could not be resolved statically.
+
+    Raises:
+        ValueError: On unbalanced quotes, an unterminated context, a reserved marker in the input,
+            nesting deeper than ``max_depth``, or input longer than ``MAX_COMMAND_LENGTH``.
+            Callers decide whether that means block or allow.
+    """
+    if len(command) > MAX_COMMAND_LENGTH:
+        raise ValueError("command exceeds the maximum length this scanner will parse")
+    results, _ = _walk_context(CommandContext(command, 0), base_cwd, max_depth)
+    return results
+
+
+def iter_context_token_streams(
+    command: str, max_depth: int = MAX_CONTEXT_DEPTH
+) -> list[list[str]]:
+    """Every command context's normalized token stream, outermost first, in source order.
+
+    For a consumer whose own logic is token- or segment-shaped rather than invocation-shaped: it
+    gets each context's tokens and applies its existing rules per context, instead of re-deriving
+    them from an invocation tuple that has already discarded segment structure.
+
+    Preparation MUST match `_walk_context` exactly — both call `_prepare`, so the two primitives
+    can never disagree about what a context contains. Placeholders appear as ordinary word tokens
+    (never `git`, never a control operator), so they are inert to a caller's command-position and
+    segment logic.
+
+    Args:
+        command: The raw shell-command string to scan.
+        max_depth: Maximum context nesting depth before the input is treated as ambiguous.
+
+    Returns:
+        One token list per context, the top-level command first.
+
+    Raises:
+        ValueError: Same conditions as `iter_git_invocations_with_cwd`.
+    """
+    if len(command) > MAX_COMMAND_LENGTH:
+        raise ValueError("command exceeds the maximum length this scanner will parse")
+    streams: list[list[str]] = []
+
+    def _collect(ctx: CommandContext) -> None:
+        if ctx.depth > max_depth:
+            raise ValueError("maximum command-context depth exceeded")
+        outer, nested = _prepare(ctx.text, ctx.depth)
+        streams.append(strip_redirects(tokenize(newlines_to_separators(outer))))
+        for child in nested:
+            _collect(child)
+
+    _collect(CommandContext(command, 0))
+    return streams
+
+
+# Deliberately GENEROUS: this decides whether an UNPARSEABLE command is worth failing closed over,
+# so a false positive costs a loud block on a command that mentions git, while a false negative
+# silently reopens the fail-open it exists to close. It must over-match, never under-match — which
+# is why it runs on dequoted text and ignores quoting entirely. Quoting controls EXPANSION, not
+# EXECUTION: `'git' 'push'` still pushes.
+GIT_WORD_RE = re.compile(r"(?:^|[^A-Za-z0-9_])git(?:[^A-Za-z0-9_]|$)")
+_QUOTING_CHARS = re.compile(r"""['"\\]""")
+
+
+def has_git_word(command: str) -> bool:
+    """True if `command` mentions `git` at all, ignoring quoting and escaping.
+
+    Args:
+        command: The raw shell-command string.
+
+    Returns:
+        True if a `git` word appears anywhere in the dequoted text.
+    """
+    return bool(GIT_WORD_RE.search(_QUOTING_CHARS.sub("", command)))
+
+
 def iter_git_invocations(command: str) -> list[tuple[str | None, str, list[str]]]:
-    """Find every `git` invocation in *command position*, in command order.
+    """Find every `git` invocation in command position, across all nested contexts.
 
-    ``cdir`` is that invocation's `-C <dir>` value (or None), ``subcommand`` is the token
-    immediately following git's global options, and ``arg_tokens`` is the segment of tokens from
-    just after the subcommand up to the next control operator or the next git invocation in
-    command position. An invocation whose subcommand token is missing (the command ends mid
-    global-options) is not included, matching how the scan stops today.
-
-    Newlines join separate commands the way `;` does; normalized first so a newline-joined
-    `git add -A\\ngit commit` splits into two segments. A `\\n` inside a quoted message is preserved
-    as quoted content by shlex, so this is safe. Redirects are stripped from the whole stream so a
-    leading `2>&1 git commit` is still seen and a redirect is never misread as a pathspec.
+    Thin wrapper over `iter_git_invocations_with_cwd` that drops the resolved directory, preserving
+    this function's original signature and its swallow-to-empty behavior.
 
     Args:
         command: The raw shell-command string to scan.
 
     Returns:
-        One ``(cdir, subcommand, arg_tokens)`` tuple per `git` invocation in command position, in
-        command order — ``cdir`` is the invocation's `-C <dir>` value or None, ``subcommand`` is the
-        token after git's global options, and ``arg_tokens`` is that invocation's argument segment.
-        Empty list if none are found or on tokenizing ambiguity.
-
-    Raises:
-        Nothing — a ValueError from `tokenize` (unbalanced quotes) is swallowed to an empty list,
-        never claiming an invocation exists on ambiguous input.
+        One ``(cdir, subcommand, arg_tokens)`` tuple per invocation. Empty on any tokenizing
+        ambiguity — this function never raises, so a caller needing fail-closed behavior must use
+        `iter_git_invocations_with_cwd` directly.
     """
-    command = normalize_command(command)
     try:
-        tokens = strip_redirects(tokenize(command))
+        return [
+            (cdir, sub, seg)
+            for _dir, cdir, sub, seg in iter_git_invocations_with_cwd(command, None)
+        ]
     except ValueError:
         return []
-
-    invocations: list[tuple[str | None, str, list[str]]] = []
-    i, n = 0, len(tokens)
-    while i < n:
-        if not (is_git(tokens[i]) and starts_command(tokens, i)):
-            i += 1
-            continue
-        # Skip global options to reach the subcommand, capturing `-C <dir>`.
-        j = i + 1
-        cdir = None
-        while j < n and tokens[j].startswith("-"):
-            opt = tokens[j]
-            if opt == "-C" and j + 1 < n:
-                cdir = tokens[j + 1]
-                j += 2
-            elif opt.startswith("-C") and len(opt) > 2:
-                cdir = opt[2:]
-                j += 1
-            elif opt in GLOBAL_VALUE_OPTS and "=" not in opt:
-                j += 2
-            else:
-                j += 1
-        if j >= n:
-            break
-        sub = tokens[j]
-        # Collect this invocation's args until a control operator or the next `git` invocation in
-        # command position.
-        seg = []
-        k = j + 1
-        while (
-            k < n
-            and not is_op(tokens[k])
-            and not (is_git(tokens[k]) and starts_command(tokens, k))
-        ):
-            seg.append(tokens[k])
-            k += 1
-        invocations.append((cdir, sub, seg))
-        i = k
-    return invocations

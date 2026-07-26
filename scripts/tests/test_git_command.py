@@ -313,3 +313,321 @@ def test_strip_comments_never_removes_real_command_text(command):
     it may over-keep (costing at most a loud false block) but must never over-remove.
     """
     assert git_command.strip_comments(command) == command
+
+
+# ---------- unified walk: every bypass must become visible ----------
+
+
+def _subs(command):
+    """Every git subcommand the walk finds, across all contexts."""
+    return [
+        sub
+        for _dir, _cdir, sub, _seg in git_command.iter_git_invocations_with_cwd(
+            command, "/repo"
+        )
+    ]
+
+
+BYPASSES = [
+    ('x="$(git push origin dev)"', "quoted $( )"),
+    ("x=`git push origin dev`", "backticks"),
+    ('x="$(git push origin dev)" && git status', "quoted + trailing git"),
+    ('x="$(echo `git push origin dev`)"', "backtick inside $( )"),
+    ("cat <(git push origin dev)", "process substitution"),
+    # THE SPAN RULE (spec 4.6, evidence rows 10-12). A substitution inside a git command's OWN
+    # token span. Bash evaluates it FIRST, then runs the benign-looking outer command; the guard
+    # sees only commit/tag/status, all in KNOWN_SAFE_SUBCOMMANDS. Row 10 is named in success
+    # criterion 1. A walk that checks placeholders only at command-position tokens passes every
+    # other case here and still fails these three.
+    ('git commit -m "$(git push origin dev)"', "subst in commit's arg span"),
+    ('git tag -a v1 -m "$(git push origin dev)"', "subst in tag's arg span"),
+    ('git -c x="$(git push origin dev)" status', "subst in the global-option run"),
+    # Evidence row 15: the escape must be honored or the context ends early (see Task 1).
+    (r"x=`echo \`git push origin dev\``", "escaped backticks, depth 2"),
+    # Evidence row 13: shlex's default commenters="#" eats every line after a trailing comment,
+    # because newlines are normalized to `;` BEFORE tokenizing.
+    ("git status  # note\ngit push origin dev", "# comment truncation"),
+    # Regression pin for the SHIPPED v0.49.7 continuation fold. Green today; it goes red the moment
+    # the walk re-derives normalization instead of calling normalize_command.
+    ("git \\\n push origin dev", "backslash-newline continuation"),
+    # The dropped-context backstop: strip_redirects deletes a redirect operator AND its target, so
+    # this context never reaches the token loop -- but bash still executes it.
+    ('git status > "$(git push origin dev)"', "context as a redirect target"),
+]
+
+# CONCEDED RESIDUALS (spec 7b, operator-approved 2026-07-25). These are live fail-opens and
+# STAY that way: the exec-wrapper class is out of scope. Asserted here so current behavior is
+# pinned -- a future change that closes one shows up as a deliberate improvement, and the
+# concession can never be mistaken for an oversight. DO NOT move these into BYPASSES.
+CONCEDED_RESIDUALS = [
+    ('sh -c "git push origin dev"', "sh -c"),
+    ("bash -c 'git push origin dev'", "bash -c"),
+    ('eval "git push origin dev"', "eval"),
+    ("bash -lc 'git push origin dev'", "bash -lc bundled"),
+    ("/bin/sh -c 'git push origin dev'", "path-qualified shell"),
+    ("echo 'git push origin dev' | sh", "pipe-into-shell"),
+    ('sh <<< "git push origin dev"', "herestring"),
+]
+
+
+@pytest.mark.parametrize(("command", "label"), BYPASSES)
+def test_every_known_bypass_exposes_the_push(command, label):
+    assert "push" in _subs(command), label
+
+
+@pytest.mark.parametrize(("command", "label"), CONCEDED_RESIDUALS)
+def test_conceded_residuals_stay_invisible(command, label):
+    """Pin the concession (spec 7b). These are GREEN from the start — a change-detector, not a proof.
+
+    If one goes red, something CLOSED it: that is an improvement to document and move out of this
+    list, never an assertion to invert. The list must not be left defined-but-unused, which is how
+    it survived the 2026-07-25 fold as dead code while the bash suites asserted the opposite.
+    """
+    assert "push" not in _subs(command), label
+
+
+def test_already_detected_shapes_still_detected():
+    for command in (
+        "git push origin dev",
+        "x=$(git push origin dev)",
+        'x="$(echo "$(git push origin dev)")"',
+    ):
+        assert "push" in _subs(command), command
+
+
+def test_protected_baselines_expose_no_push():
+    for command in (
+        "git status -s",
+        'x="$(( 1 + 2 ))" && git status',
+        "echo 'git push origin dev'",
+    ):
+        assert "push" not in _subs(command), command
+
+
+def test_defect_a_repro_parses_and_finds_no_push():
+    cmd = r"""x="$(sed -nE 's/a"b"c"d/\1/p' /dev/null)" && git rev-parse --show-toplevel"""
+    assert _subs(cmd) == ["rev-parse"]
+
+
+def test_propagate_step5_snippet_old_quoted_form_parses():
+    """The OLD (quoted) /propagate step-5 marker parse, verbatim — the shape shlex mis-parsed.
+
+    `58caf17` fixed the CALL SITE by dropping the outer quotes, not the parser. Keeping this form
+    is what stops the workaround from masking the tokenizer defect it worked around: if only the
+    shipped form were tested, the underlying bug could silently return.
+    """
+    cmd = (
+        "want=\"$(sed -nE 's/^[[:space:]]*production[[:space:]]*="
+        '[[:space:]]*"([^"]*)".*/\\1/p\' "$marker")"\n'
+        'got="$(git -C "$live" rev-parse --abbrev-ref HEAD)"'
+    )
+    assert _subs(cmd) == ["rev-parse"]
+
+
+def test_propagate_step5_snippet_new_unquoted_form_parses():
+    """The SHIPPED (unquoted) form, as it exists in skills/propagate/SKILL.md today.
+
+    Spec criterion 2 names BOTH forms; testing only the old one would leave the form actually in
+    production unverified.
+    """
+    cmd = (
+        "want=$(sed -nE 's/^[[:space:]]*production[[:space:]]*="
+        '[[:space:]]*"([^"]*)".*/\\1/p\' "$marker")\n'
+        'got="$(git -C "$live" rev-parse --abbrev-ref HEAD)"'
+    )
+    assert _subs(cmd) == ["rev-parse"]
+
+
+def test_output_process_substitution_is_a_context():
+    """`>( … )` is one of the four covered constructs and had no test until 2026-07-25."""
+    assert "push" in _subs("tee >(git push origin dev) < /dev/null")
+
+
+def test_depth_limit_raises():
+    deep = "git status"
+    for _ in range(git_command.MAX_CONTEXT_DEPTH + 2):
+        deep = f'x="$({deep})"'
+    with pytest.raises(ValueError):
+        git_command.iter_git_invocations_with_cwd(deep, "/repo")
+
+
+def test_cd_inside_a_subshell_does_not_leak():
+    """A cd in a subshell must NOT change the dir attributed to a later OUTER invocation."""
+    result = git_command.iter_git_invocations_with_cwd(
+        'x="$(cd /elsewhere && true)" && git push origin dev', "/repo"
+    )
+    push = next(r for r in result if r[2] == "push")
+    assert push[0] == "/repo"
+
+
+def test_cd_in_the_outer_context_still_applies():
+    result = git_command.iter_git_invocations_with_cwd(
+        "cd /elsewhere && git push origin dev", "/repo"
+    )
+    push = next(r for r in result if r[2] == "push")
+    assert push[0] == "/elsewhere"
+
+
+def test_popd_makes_the_cwd_unresolvable():
+    """Ported from publication-push-guard, whose own cwd walk Task 4 deletes.
+
+    No stack is tracked, so any popd forfeits cwd knowledge. Dropping this rule during the move
+    into the library would be a NEW fail-open: an unresolvable cwd blocks, a wrongly-resolved one
+    can allow. Measured: `cd /tmp && popd && git push origin dev` blocks today.
+    """
+    result = git_command.iter_git_invocations_with_cwd(
+        "cd /tmp && popd && git push origin dev", "/repo"
+    )
+    push = next(r for r in result if r[2] == "push")
+    assert push[0] is None
+
+
+def test_cd_to_a_substitution_target_is_unresolvable():
+    """`cd "$(…)"` is no more statically resolvable than `cd "$VAR"`.
+
+    Joining the placeholder as a path segment would invent a directory that is not the adopted
+    repo, turning a push that must block into one that is allowed.
+    """
+    result = git_command.iter_git_invocations_with_cwd(
+        'cd "$(echo /repo)" && git push origin dev', "/repo"
+    )
+    push = next(r for r in result if r[2] == "push")
+    assert push[0] is None
+
+
+def test_nested_invocations_are_reported_before_their_host_command():
+    """Bash evaluates a substitution BEFORE running the command whose arguments carry it."""
+    subs = _subs('git commit -m "$(git push origin dev)"')
+    assert subs == ["push", "commit"]
+
+
+# ---------- regression pins for fixes that would otherwise ship untested ----------
+# Each of these closes a MEASURED defect. Without a committed test a later refactor regresses them
+# with every suite green -- and three of the five were themselves introduced by a previous fix.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "(cd /elsewhere && ls) && git push origin dev",  # spaced
+        "(cd /elsewhere && ls)&&git push origin dev",  # `)&&` fused into one token
+        "((cd /elsewhere && ls)) && git push origin dev",  # `((` / `))` grouped
+        "(cd /elsewhere && ls);git push origin dev",  # `);` fused
+    ],
+)
+def test_plain_subshell_cd_does_not_leak(command):
+    """A `( … )` subshell isolates cwd. Each spelling tokenizes differently; all must isolate.
+
+    The grouped and operator-fused forms are the trap: `punctuation_chars` fuses `)` to whatever
+    follows, so a check written against the spaced form passes its own test and leaks everywhere
+    else. A wrongly-RESOLVED directory is the direction that ALLOWS.
+    """
+    push = next(
+        r
+        for r in git_command.iter_git_invocations_with_cwd(command, "/repo")
+        if r[2] == "push"
+    )
+    assert push[0] == "/repo"
+
+
+def test_backstop_walks_dropped_contexts_as_UNRESOLVABLE():
+    """Discriminating shape: the cwd must be None, not the entry cwd.
+
+    `strip_redirects` deletes a redirect's target, so this context never reaches the token loop.
+    Walking it at `base_cwd` still finds the push -- so a test run from the adopted repo passes
+    under BOTH the correct and the buggy version. Only a `cd` to a different directory first
+    distinguishes them, which is why this case names one.
+    """
+    push = next(
+        r
+        for r in git_command.iter_git_invocations_with_cwd(
+            'cd /adopted && git status > "$(git push origin dev)"', "/repo"
+        )
+        if r[2] == "push"
+    )
+    assert push[0] is None
+
+
+def test_reserved_marker_in_the_input_is_refused():
+    """Reachable by ordinary work — `git grep __GIT_COMMAND_SUBST_0__` once this file contains it.
+
+    Must be ValueError, never IndexError: consumers swallow only ValueError, so anything else
+    escapes into a third gate as an uncaught traceback.
+    """
+    with pytest.raises(ValueError):
+        git_command.iter_git_invocations_with_cwd(
+            f"git grep {git_command.PLACEHOLDER_PREFIX}0__ scripts/", "/repo"
+        )
+
+
+def test_oversized_input_is_refused_rather_than_ground_through():
+    """Past the gate's hook timeout the hook is KILLED before its own fail-closed handler runs."""
+    with pytest.raises(ValueError):
+        git_command.iter_git_invocations_with_cwd("echo " + "$(x)" * 40_000, "/repo")
+
+
+def test_comment_inside_a_substitution_body_does_not_truncate_it():
+    """A `)` inside a comment must not close the context — bash agrees it does not."""
+    assert "push" in _subs('x="$(echo hi  # )\ngit push origin dev)"')
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Closes only when `tokenize` sets commenters='', which lands with the change that routes "
+        "every consumer through strip_comments — not before. STRICT on purpose: the moment that "
+        "lands, this XPASSes and strict turns that into a failure, forcing the marker off."
+    ),
+)
+def test_comment_stripping_that_drifts_still_exposes_the_push():
+    """`strip_comments` tracks quotes linearly over pre-split text — the class Defect A says drifts.
+
+    On an odd-inner-quote body it fails to strip, and the surviving `#` must then be INERT rather
+    than a comment, or shlex (newlines already `;`) eats the rest of the command. Measured: the
+    push vanished entirely — a live bypass, currently OPEN and pinned here.
+
+    The fix is `commenters = ""` in `tokenize`, paired with `strip_comments`; the two are
+    complementary and neither is safe alone. Setting it before every consumer routes through
+    `strip_comments` was measured to regress 3 of 6 ordinary commands, so it is deliberately
+    deferred. This test is the tripwire that the deferral was honored and then discharged.
+    """
+    cmd = 'x="$(sed -nE \'s/a"b"c"d/\\1/p\' /dev/null)"  # note\ngit push origin dev'
+    assert "push" in _subs(cmd)
+
+
+def test_backslash_terminated_comment_does_not_eat_the_next_line():
+    """A backslash does NOT continue a comment; bash ends it at the physical newline."""
+    assert "push" in _subs("# push to origin \\\ngit push origin dev")
+
+
+def test_both_primitives_agree_on_the_same_string():
+    """The two primitives must never disagree — a drifted build made them return opposite verdicts.
+
+    No other test drives `iter_context_token_streams`, which is exactly how that drift survived.
+    """
+    for command in (
+        'x="$(echo hi  # note\ngit status)"',
+        'x="$(echo hi  # )\ngit push origin dev)"',
+        "git status  # note\ngit push origin dev",
+    ):
+        walk_ok = streams_ok = True
+        try:
+            git_command.iter_git_invocations_with_cwd(command, "/repo")
+        except ValueError:
+            walk_ok = False
+        try:
+            git_command.iter_context_token_streams(command)
+        except ValueError:
+            streams_ok = False
+        assert walk_ok == streams_ok, command
+
+
+# REMOVED with Task 2: there is no eval modelling, so there is no eval cwd behavior to assert.
+# `eval "cd /elsewhere" && git push origin dev` is a conceded residual (spec 7b) -- the push
+# inside it is not seen at all, which is the concession, not a bug to test around.
+
+
+def test_iter_git_invocations_sees_substitution_nested_push():
+    # "wrapper" here means the metadata-free convenience function, NOT shell-wrapper detection.
+    subs = [sub for _c, sub, _s in git_command.iter_git_invocations('x="$(git push)"')]
+    assert "push" in subs
