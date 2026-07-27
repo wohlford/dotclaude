@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.54.0 — 2026-07-27
+- feat(commit-subject): add the two-tier commit-subject gate
+
 ## v0.53.0 — 2026-07-27
 - feat(commit-subject): add shared policy and tier helpers
 
