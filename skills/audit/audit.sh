@@ -15,6 +15,17 @@ set -uo pipefail
 #   0 — sweep completed, zero FAILs
 #   1 — sweep completed, at least one FAIL
 #   2 — usage error (bad/missing --scope, unknown flag)
+#   129/130/143 — died on a trapped signal (HUP/INT/TERM); 128+n for any other
+#     catchable fatal signal, though those are not trapped and the EXIT trap then
+#     reads `$?` as 0 (see audit_on_exit).
+#
+# Terminal verdict line: every run this script exits from itself prints, as its LAST
+# line of stdout, `RESULT: <STATUS> rc=<n> checks=<pass>/<fail>/<skip>` where STATUS is
+# PASS (completed, zero FAILs) | FAIL (completed, >=1 FAIL) | ERROR (usage error, no
+# sweep ran) | INCOMPLETE (died mid-sweep on a catchable signal). Clean is EXACTLY
+# `RESULT: PASS` — an allowlist, so any value not anticipated here reads as not-clean.
+# The line CANNOT be emitted on SIGKILL, so its ABSENCE never means clean: it means
+# the run did not complete.
 #
 # NOTE: no `-e` — sweep-runner exemption (STYLE.md): one failing check or tool invocation
 # must not abort the whole sweep, so every check below guards its own commands explicitly
@@ -30,6 +41,14 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 pass_count=0
 fail_count=0
 skip_count=0
+
+# Sweep state, read by audit_on_exit(). Both MUST stay global — a `local` copy would be
+# invisible to the trap. `audit_phase` goes init -> sweeping and exists only to tell a
+# usage error (the sweep never started) from a death partway through it. `audit_reported`
+# records that a verdict line has already been printed, so the exit handler stays silent
+# on the normal path rather than emitting a second one.
+audit_phase=init
+audit_reported=no
 
 usage() {
   printf 'Usage: audit.sh [--scope <path>] [--tests]\n' >&2
@@ -50,6 +69,36 @@ verdict_fail() { # name detail
 verdict_skip() { # name reason
   printf 'SKIP %s — %s\n' "$1" "$2"
   skip_count=$((skip_count + 1))
+}
+
+audit_result_line() { # status rc -> the single machine-readable terminal verdict
+  printf 'RESULT: %s rc=%d checks=%d/%d/%d\n' \
+    "$1" "$2" "$pass_count" "$fail_count" "$skip_count"
+  audit_reported=yes
+}
+
+# The completed verdicts (PASS/FAIL) are emitted by main() itself, positionally, with rc
+# derived from fail_count — never from `$?`. This handler covers only the paths main()
+# never reaches the end of, and can therefore emit ONLY ERROR or INCOMPLETE.
+#
+# That split is the whole safety property, and it is structural rather than conditional.
+# `$?` inside an EXIT trap is NOT 128+n for a signal that was never trapped — it reads 0
+# (measured: SIGUSR1 kills the process with rc 158 while the trap sees 0; SIGQUIT does
+# not run the trap at all). So any design that decides PASS-vs-not inside this handler
+# prints `RESULT: PASS rc=0` for a process killed mid-sweep. Enumerating more signals to
+# trap would only shorten the list of ways to be wrong; emitting PASS from main() instead
+# makes a clean verdict on a killed run unreachable for EVERY signal, trapped or not.
+#
+# The residual inaccuracy is confined to the rc FIELD on an untrapped signal (it reads 0
+# where the process died 128+n). The STATUS is still INCOMPLETE, which never clears the
+# allowlist, so this cannot be mistaken for a passing sweep.
+audit_on_exit() { # exit-status
+  [[ "$audit_reported" == yes ]] && return
+  if [[ "$audit_phase" == init && "$1" -eq 2 ]]; then
+    audit_result_line ERROR "$1"
+  else
+    audit_result_line INCOMPLETE "$1"
+  fi
 }
 
 print_offenders() { # detail-block (newline-separated, unindented) -> indent 2sp, cap 50 lines
@@ -444,6 +493,7 @@ main() {
     exit 2
   fi
   scope="$(cd "$scope" && pwd)"
+  audit_phase=sweeping
 
   [[ -f "$scope/.auditignore" ]] && auditignore="$(cat "$scope/.auditignore")"
 
@@ -490,11 +540,31 @@ EOF
   fi
 
   printf '%d passed, %d failed, %d skipped\n' "$pass_count" "$fail_count" "$skip_count"
+
+  # Emit the completed verdict HERE, not from the exit handler, and derive rc from
+  # fail_count rather than reading `$?`. Reaching this line is itself the proof that
+  # every check ran, so no separate "did we finish?" flag can drift out of step with it —
+  # and a process killed before this point can only ever be reported INCOMPLETE, because
+  # PASS and FAIL are unreachable from audit_on_exit().
+  if [[ "$fail_count" -eq 0 ]]; then
+    audit_result_line PASS 0
+  else
+    audit_result_line FAIL 1
+  fi
+
   [[ "$fail_count" -eq 0 ]]
 }
 
 # Guarded (not a bare `main "$@"`) so the test suite can `source` this file to unit-test
-# pick_newest_version() without also running a full sweep.
+# pick_newest_version() without also running a full sweep. The traps live INSIDE the
+# guard for the same reason: a top-level EXIT trap would install itself into any shell
+# that sources this file and append a RESULT line to that shell's stdout.
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  # Single quotes: `$?` must expand when the trap RUNS, not when it is defined, and
+  # passing it as an argument captures it before anything else can clobber it.
+  trap 'audit_on_exit "$?"' EXIT
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+  trap 'exit 129' HUP
   main "$@"
 fi

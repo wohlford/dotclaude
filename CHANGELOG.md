@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.57.3 — 2026-07-27
+- fix(audit): emit a machine-readable RESULT verdict line
+
 ## v0.57.2 — 2026-07-27
 - docs(CLAUDE.md): add the instrument-class verification rule
 

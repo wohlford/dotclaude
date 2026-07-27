@@ -54,6 +54,39 @@ run_in_cwd() {
   RC=$?
 }
 
+# run_engine_stdout SCOPE [extra-args...] -> OUT = STDOUT ONLY, RC
+# Needed for last-line assertions: run_engine merges 2>&1, and the interleaving of
+# two file descriptors into one pipe is not ordering-guaranteed, so "the last line"
+# is only well-defined on a single stream.
+run_engine_stdout() {
+  local scope="$1"
+  shift
+  OUT="$("$engine" --scope "$scope" "$@" 2>/dev/null)"
+  RC=$?
+}
+
+# run_raw_stdout [args...] -> OUT = STDOUT ONLY, RC (usage-error cases)
+run_raw_stdout() {
+  OUT="$("$engine" "$@" 2>/dev/null)"
+  RC=$?
+}
+
+assert_last_line_prefix() { # prefix label -> uses $OUT
+  local last
+  last="$(printf '%s\n' "$OUT" | tail -1)"
+  case "$last" in
+    "$1"*) pass_line "$2" ;;
+    *)
+      fail_line "$2"
+      printf '  --- last line was ---\n%s\n  ---------------------\n' "$last"
+      ;;
+  esac
+}
+
+count_result_lines() { # -> echoes the number of column-anchored RESULT: lines in $OUT
+  printf '%s\n' "$OUT" | grep -c '^RESULT:' | tr -d ' '
+}
+
 assert_rc() { # want label -> uses $RC
   check_eq "$RC" "$1" "$2"
 }
@@ -514,6 +547,97 @@ printf 'gen/*\n' > "$rL/.auditignore"
 commit_all "$rL" 'add auditignore'
 run_engine "$rL"
 assert_has 'PASS md-links' 'rL: gen/* excluded -> PASS md-links'
+
+# ============================================================================
+# rM. RESULT verdict line — the machine-readable terminal status.
+#     Regression: audit.sh's only terminal signal was the human summary, so a run
+#     that died before reaching it printed a PREFIX of PASS lines and nothing else,
+#     and grep-for-FAIL read that as clean. The fix is a line whose ABSENCE is
+#     meaningful, asserted by PRESENCE of an allowlisted value.
+#     Counts are NOT hardcoded: which checks PASS vs SKIP depends on which tools
+#     are installed on the running machine, so these pin the shape and the rc.
+# ============================================================================
+rM="$tmp/rM_result_clean"
+mk_clean_repo "$rM"
+run_engine_stdout "$rM"
+assert_rc 0 'rM1: clean repo -> exit 0'
+assert_last_line_prefix 'RESULT: PASS rc=0 checks=' 'rM1: clean run ends with RESULT: PASS rc=0'
+check_eq "$(count_result_lines)" 1 'rM2: exactly one column-anchored RESULT line (no subshell leakage)'
+
+rM3="$tmp/rM_result_fail"
+mkrepo "$rM3"
+printf 'line with trailing space \n' > "$rM3/dirty.txt"
+commit_all "$rM3" seed
+run_engine_stdout "$rM3"
+assert_rc 1 'rM3: repo with a finding -> exit 1'
+assert_last_line_prefix 'RESULT: FAIL rc=1 checks=' 'rM3: failing run ends with RESULT: FAIL rc=1'
+
+mkdir -p "$tmp/rM_not_a_repo"
+run_raw_stdout --scope "$tmp/rM_not_a_repo"
+assert_rc 2 'rM4: --scope at a non-git path -> exit 2'
+check_eq "$OUT" 'RESULT: ERROR rc=2 checks=0/0/0' 'rM4: usage error still emits a verdict line on stdout'
+
+# rM5 pins hazard 1: the traps must live INSIDE the BASH_SOURCE guard. A top-level
+# `trap ... EXIT` would install into any shell that sources the engine for unit
+# testing (see case 16) and append a RESULT line to that shell's captured stdout.
+# NOTE: this assertion passes both BEFORE and AFTER the fix — it is a tripwire
+# against one specific wrong implementation, not a RED test.
+sourced="$(bash -c 'source "$1"; printf "sentinel\n"' _ "$engine" 2>/dev/null)"
+check_eq "$sourced" 'sentinel' 'rM5: sourcing the engine installs no EXIT trap'
+
+# rM6/rM7 pin the exit handler's defining property: it can emit ONLY ERROR or
+# INCOMPLETE. PASS and FAIL are emitted by main() itself on the completed path, so a
+# process killed mid-sweep cannot produce a clean verdict no matter what `$?` says.
+# Driving audit_on_exit directly keeps this deterministic instead of racing a signal.
+incomplete="$(bash -c 'source "$1"
+audit_phase=sweeping; pass_count=7; fail_count=0; skip_count=1
+audit_on_exit 143' _ "$engine" 2>/dev/null)"
+check_eq "$incomplete" 'RESULT: INCOMPLETE rc=143 checks=7/0/1' \
+  'rM6: death mid-sweep reports INCOMPLETE, never PASS'
+
+# rM7 is the sharper half, and it models the case that motivated the restructure: an
+# UNTRAPPED fatal signal. `$?` inside an EXIT trap reads 0 for those (measured: SIGUSR1
+# kills the process with rc 158 while the trap sees 0), so the handler is handed the
+# most PASS-looking state possible — rc 0, zero failures. It must still say INCOMPLETE.
+# Any design that decides PASS-vs-not inside the handler fails this.
+killed_looks_clean="$(bash -c 'source "$1"
+audit_phase=sweeping; pass_count=3; fail_count=0; skip_count=0
+audit_on_exit 0' _ "$engine" 2>/dev/null)"
+check_eq "$killed_looks_clean" 'RESULT: INCOMPLETE rc=0 checks=3/0/0' \
+  'rM7: exit handler cannot emit PASS even at rc=0 with zero failures'
+
+# rM8 is the end-to-end signal path. Without it, deleting all three signal traps leaves
+# the suite fully green — the whole-branch review proved that by mutation, so the suite
+# was blind on precisely the axis this change exists to fix. Signalling the process
+# GROUP (not just the script) is what makes it prompt: bash defers a trap until the
+# running foreground child exits, so a script-only TERM would stall behind shellcheck.
+rM8_out="$tmp/rM8.out"
+set -m
+"$engine" --scope "$(cd "$here/../.." && pwd)" > "$rM8_out" 2>&1 &
+rM8_pid=$!
+sleep 1
+kill -TERM -"$rM8_pid" 2>/dev/null
+wait "$rM8_pid" 2>/dev/null
+rM8_rc=$?
+set +m
+# NOTE the exit code alone CANNOT tell a trapped TERM from an untrapped one: with the
+# trap deleted the process still dies by SIGTERM and `wait` still reports 128+15. Verified
+# by mutation — this assertion passes against an engine with no TERM trap at all. It is
+# kept only as a sanity check that the run died rather than completing; the RESULT line
+# below is what actually discriminates (mutant: `RESULT: INCOMPLETE rc=0`).
+check_eq "$rM8_rc" 143 'rM8: process-group TERM -> the run dies with 143'
+# Counts are whatever the sweep reached in one second, so pin the shape, not the numbers.
+# The `rc=143` in this line is the load-bearing part: it can only appear if the TERM trap
+# ran and converted the signal into a real exit status. Timing margin is ~35x — this scope
+# takes about 35 seconds to sweep and the kill lands at 1 second.
+rM8_last="$(grep '^RESULT:' "$rM8_out" | tail -1)"
+case "$rM8_last" in
+  'RESULT: INCOMPLETE rc=143 checks='*)
+    pass_line 'rM8: a real TERM mid-sweep emits RESULT: INCOMPLETE rc=143' ;;
+  *)
+    fail_line 'rM8: a real TERM mid-sweep emits RESULT: INCOMPLETE rc=143'
+    printf '  --- RESULT line was ---\n%s\n  -----------------------\n' "$rM8_last" ;;
+esac
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
