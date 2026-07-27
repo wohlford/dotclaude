@@ -30,11 +30,26 @@
             "type": "command",
             "command": "$HOME/.claude/scripts/publication-push-guard.py",
             "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/commit-subject-guard.py",
+            "timeout": 60
           }
         ]
       }
     ],
     "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/commit-subject-advisor.py",
+            "timeout": 60
+          }
+        ]
+      },
       {
         "matcher": "Edit|Write",
         "hooks": [
@@ -93,6 +108,11 @@
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/audit-test.sh",
+            "timeout": 120
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/commit-subject-test.sh",
             "timeout": 120
           },
           {

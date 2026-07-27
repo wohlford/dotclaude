@@ -91,6 +91,8 @@ Batch whatever survives — ask once, at a natural checkpoint, not as each item 
 | PreToolUse  | `Bash`                               | `exec-bit-guard.sh`              | PreToolUse hook — block `git commit` when it would record a new shebang file without the exec bit (or a 755→644 downgrade)     |
 | PreToolUse  | `Bash`                               | `recast-commit-gate.py`          | PreToolUse hook — run the recast suite before a commit that touches recast source                                              |
 | PreToolUse  | `Bash`                               | `publication-push-guard.py`      | PreToolUse hook — fail-closed dev-block keeping `dev` private in a repo that adopted the dev/main publication model            |
+| PreToolUse  | `Bash`                               | `commit-subject-guard.py`        | PreToolUse hook — refuse a commit whose subject is provably at or over the block limit                                         |
+| PostToolUse | `Bash`                               | `commit-subject-advisor.py`      | PostToolUse hook — advise an amend when a committed subject reaches the advisory limit                                         |
 | PostToolUse | `Edit\|Write`                        | `style-check.sh`                 | Global PostToolUse hook — validate file edits against STYLE.md                                                                 |
 | PostToolUse | `Edit\|Write`                        | `shellcheck-check.sh`            | PostToolUse hook — run shellcheck on edited shell scripts                                                                      |
 | PostToolUse | `Edit\|Write`                        | `ruff-check.sh`                  | PostToolUse hook — run ruff lint+format check on edited Python in ruff projects                                                |
@@ -105,6 +107,7 @@ Batch whatever survives — ask once, at a natural checkpoint, not as each item 
 | PostToolUse | `Edit\|Write`                        | `markdownlint-check-test.sh`     | PostToolUse hook — run the markdownlint-check test suite when the lint hook changes                                            |
 | PostToolUse | `Edit\|Write`                        | `exec-bit-guard-test.sh`         | PostToolUse hook — run the exec-bit-guard test suite when the gate or its suite changes                                        |
 | PostToolUse | `Edit\|Write`                        | `audit-test.sh`                  | PostToolUse hook — run the audit engine test suite when the engine or its suite changes                                        |
+| PostToolUse | `Edit\|Write`                        | `commit-subject-test.sh`         | PostToolUse hook — run the commit-subject suites, and py39-compat on any scripts/*.py edit                                     |
 | PostToolUse | `Edit\|Write`                        | `publication-push-guard-test.sh` | PostToolUse hook — run the publication-push-guard suite when the guard, its suite, or the shared git_command tokenizer changes |
 <!-- /sync:hooks -->
 

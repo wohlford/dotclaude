@@ -1,0 +1,9 @@
+# Opt in to the mechanical commit-subject length gate. An absent file leaves both hooks inert, which
+# is what every repo that has not opted in gets. The documented rule lives in CONTRIBUTING.md; these
+# are the thresholds actually enforced, and they live here so neither hook hardcodes policy.
+#
+# A malformed or unreadable file is treated as INERT, never as "use the defaults" — "I could not read
+# the policy" is the most ambiguous case there is, and these gates fail open on ambiguity.
+
+subject_advise = 72 # >= this: the PostToolUse advisor asks for an amend after the commit lands
+subject_block = 80  # >= this: the PreToolUse guard refuses the commit before it lands
