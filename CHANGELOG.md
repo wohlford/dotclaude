@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.57.0 — 2026-07-27
+- feat(security-reviewer): add the fallback security review agent
+
 ## v0.56.3 — 2026-07-27
 - docs(CLAUDE.md): add the evidence-not-instruction and liveness rules
 
