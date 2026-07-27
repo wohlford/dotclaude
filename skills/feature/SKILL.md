@@ -263,10 +263,27 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
    via Edit/Write: a task that writes a file from a shell heredoc trips no hook, so this is the
    backstop. Read-only, deterministic, seconds — run it **first**, before the model gates below, so
    mechanical breakage fails fast instead of after a paid review. Relay any `SKIP` — each is a
-   coverage gap, not a clean bill of health. **If `/audit` cannot run at all** — a non-zero exit with
-   no verdict lines — do not read that as a pass: an empty sweep is not a clean sweep. "Say so and
+   coverage gap, not a clean bill of health. **Read the verdict from `audit.sh`'s last line of
+   stdout, and read it as answering two separate questions.** First: *can this run be believed at
+   all?* Only `RESULT: PASS` and `RESULT: FAIL` mean the sweep ran to completion; `ERROR`,
+   `INCOMPLETE`, a hedged or unrecognized value, and **an absent line** all mean it did not, and
+   none of them may be treated as a result — that is an allowlist, so anything not named here is
+   not-clean by default. Second, and only once the run is believable: *did it find anything, and is
+   that anything this branch's to fix?* — which is the pre-existing/introduced bucketing above.
+   So a `RESULT: FAIL` whose FAILs are **all** mechanically confirmed pre-existing still clears this
+   gate, exactly as the paragraph above intends; an introduced FAIL does not. The verdict line
+   governs whether the run is trustworthy, never whether every check passed — `fail_count` is
+   repo-wide, not diff-scoped, so a repo carrying pre-existing FAILs can never reach `PASS` and
+   demanding it would make the gate unreachable.
+   Do not decide by counting `FAIL`
+   lines or by reading the harness's report of the exit code — a sweep killed partway through prints
+   a *prefix* of `PASS` lines and exits non-zero, so "no `FAIL` lines" and even "a non-zero exit with
+   no verdict lines" both miss it, and a backgrounded run is announced as "completed (exit code 0)"
+   whatever actually happened. The `rc=` inside the line is what makes the verdict readable without
+   trusting either. "Say so and
    continue" is the *wrong* answer here, unlike step 3 below: continuing past the pipeline's
-   only deterministic gate is exactly integrating on judgment alone. A usage error (a bad flag, a
+   only deterministic gate is exactly integrating on judgment alone. A usage error (`RESULT: ERROR
+   rc=2` — a bad flag, a
    `--scope` that isn't a git repo) is yours to fix — correct the invocation and re-run. If it still
    cannot run, stop and report; do not integrate the branch. **Adopted repos:** this branch-level run is fail-fast
    only — the authoritative mechanical gate on the adopted path is a **per-brick `/audit`** run

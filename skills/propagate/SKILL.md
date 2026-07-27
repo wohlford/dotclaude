@@ -317,7 +317,16 @@ in the same brick) — but brick **application**, once the boundary is chosen, i
      reordering), resolve it in the foreground toward the known `dev` target, or **abort — never
      leave `main` in a partial, half-applied state.**
    - Then **prove the brick: run `/audit` on `main` at that commit** — the same rigor the `dev`
-     re-derivation applies. Brick **boundaries must keep `/audit`'s holistic checks intact**: never
+     re-derivation applies. **A brick is proven only by `RESULT: PASS rc=0`**, `audit.sh`'s last
+     line of stdout; `FAIL`, `ERROR`, `INCOMPLETE`, and an **absent** line are each a failure to
+     prove. **An absent line is the one to watch**, since a killed sweep prints a prefix of
+     `PASS` lines and no summary, so every cheap instrument reads it as clean. Never infer the
+     verdict from the absence of `FAIL` lines or from the harness's account of the exit code — a
+     wrong read here is not contained to this brick, it compounds into every brick built on top of
+     it. **On anything but `PASS rc=0`, stop: do not tag or CHANGELOG this brick (step 4) and do not
+     apply the next one.** Fix the offending commit and re-run `/audit`; on `ERROR`, correct the
+     invocation rather than re-running it unchanged. Brick
+     **boundaries must keep `/audit`'s holistic checks intact**: never
      split across two bricks anything `/audit` validates as a pair — a skill and its regenerated
      `sync-docs` index entry stay in the same brick; a shebang file and the commit that sets its exec
      bit stay in the same brick. This is exactly the feature-finish brick-boundary rule, reused here
@@ -338,7 +347,15 @@ in the same brick) — but brick **application**, once the boundary is chosen, i
    **`CHANGELOG.md` is the one and only excluded path**; do not widen the exclusion beyond it, or the
    check stops proving real convergence. Once the tree-compare passes, run the **full test suite once
    more, at the tip** — the repo's suites via `/audit --tests` (shell suites + pytest) — both must
-   hold.
+   hold — and `audit.sh`'s single `tests` check already runs both sub-suites, so one verdict line
+   settles both. **That run counts as held only on `RESULT: PASS rc=0`.** `--tests` is the longest
+   sweep there is, which makes it the most likely of all to be cut short by a timeout — and a
+   cut-short run is exactly the one that reads clean to every cheap instrument. Require the verdict
+   line to be *present* and to say `PASS rc=0`. **This is the last check before step 6 makes the
+   work public and irreversible, so nothing here is advisory:** on `FAIL` or `ERROR`, stop and
+   report — do not push — fixing the offending commit for a `FAIL` and the invocation for an
+   `ERROR`; on `INCOMPLETE` or a missing line, re-run to completion and read the new verdict, never
+   conclude either way from the truncated one.
 
 6. **Push `main`.** Publish with a **plain `git push`**, led by the required override:
 
