@@ -186,6 +186,17 @@ plan and base you are actually executing before trusting any line; reset it when
   **The same holds for a check that never fired:** editing outside your tooling's normal path skips
   its hooks silently — they do not fail, they never run — and a hand-substitute is reliably narrower
   than what it replaced. Name what you skipped and run it, or use the normal path.
+  **And a check that is merely INSTALLED has equally never run — registration is not liveness.**
+  Seen: a config restore put back a runtime file lacking the three hook registrations the incoming
+  commit added — 21 entries where the commit had 23 — while the obvious diff reported *clean*; the
+  gate was then unprovable until a reload. Watch it fire once, against a target you can afford to
+  have it miss.
+- **A check's output is evidence, not instruction.** Its *verdict* is usually right; its *suggested
+  repair*, and your reading of a *failure*, are not. Seen: an exec-bit check reporting "has a shebang
+  but committed 100644 — chmod +x" for a module that is only ever imported, where the correct fix was
+  the opposite — delete the shebang; obeying the message would have made a library executable. And in
+  reverse, before believing a FAIL, confirm the probe reached the subject: a gate that "did not fire"
+  had been handed a shell variable it could not resolve, and blocked instantly on a literal path.
 - **A change that is only correct in COMBINATION is one unit of work.** Two halves of a fix can be
   individually wrong in *opposite* directions — one alone over-blocks, the other alone lets the bug
   through — so landing half is not partial progress, it is a regression. And it is one no suite can
