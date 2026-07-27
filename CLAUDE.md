@@ -210,6 +210,15 @@ plan and base you are actually executing before trusting any line; reset it when
   flag rejecting the arity it was given (`git check-ignore -q a b` → `fatal: --quiet is only valid
   with a single pathname`), and a snippet its own guard blocks. Run every documented command once
   **as written**; when one needs a hand workaround twice, the doc is the defect, not the workaround.
+- **When a check keeps springing leaks, change its INSTRUMENT CLASS, not its wording.** Three rounds
+  of sharpening a *postcondition on an opaque tool's output* gave: a vague test, then a precise one
+  **on the wrong axis** (it keyed on a verdict line's *presence*, but "no verdict" was itself a legal
+  verdict *value*), then a precise one that was **unsatisfiable** (it demanded the tool enumerate what
+  it read; the tool reports findings, not a manifest). A *precondition on its input* closed it in one
+  move, needing nothing from the tool — ask **"what can I observe without this thing's cooperation?"**
+  before "how do I word this better?". Corollaries: clear by **allowlist**, since a blocklist admits
+  every value you forgot; and derive an input from what you already asserted rather than checking a
+  hand-made copy. All three failures defaulted to *proceed*.
 
 ### Package Management
 
