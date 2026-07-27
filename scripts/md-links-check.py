@@ -21,6 +21,8 @@ Known leniencies (false negatives, by choice): links indented 4+ spaces (nested 
 and destinations containing parentheses are not checked.
 """
 
+from __future__ import annotations
+
 import json
 import re
 import sys

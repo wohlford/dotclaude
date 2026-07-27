@@ -41,6 +41,8 @@ Fail direction (two layers): "is this a git commit?" ambiguity fails OPEN; once 
 file set is the only unsafe error for a gate.
 """
 
+from __future__ import annotations
+
 import importlib.util
 import json
 import os

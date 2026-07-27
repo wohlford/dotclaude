@@ -13,6 +13,8 @@ positive): a command reached only through a git alias (``git ci``), wrapped in `
 in command position). Resolving aliases and nested command strings is out of scope here.
 """
 
+from __future__ import annotations
+
 import os
 import re
 import shlex

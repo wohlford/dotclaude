@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.52.5 — 2026-07-27
+- fix(hooks): keep the python gates alive under python 3.9
+
 ## v0.52.4 — 2026-07-27
 - docs(CLAUDE.md): treat a combination-only fix as one unit of work
 

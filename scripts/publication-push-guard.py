@@ -75,6 +75,8 @@ Exit codes:
       marker, adopted or not) — stderr names this guard so a runbook can grep for it specifically.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import re
