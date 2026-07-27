@@ -4,6 +4,7 @@ set -euo pipefail
 # Script: sync-docs-test.sh
 # Purpose: PostToolUse hook — run the sync-docs test suite when its Python changes
 # Usage: Called by Claude Code hooks with JSON on stdin
+# Ownership sentinel (do not remove): dotclaude-test-runner-hook
 #
 # Exit codes:
 #   0 — no action needed, or tests passed (silent / brief note)
@@ -29,7 +30,24 @@ esac
 
 # ---------- Resolve repo root; act only where the sync-docs suite lives ----------
 root=$(git -C "$(dirname "$file_path")" rev-parse --show-toplevel 2>/dev/null || true)
-if [[ -z "$root" ]] || [[ ! -d "$root/skills/sync-docs/tests" ]]; then
+
+# Environment fail-open: not a git repo at all. Deliberate, unchanged.
+if [[ -z "$root" ]]; then
+  exit 0
+fi
+
+# A missing suite is inert ONLY where this repo does not own these hooks. Ownership is proven by
+# the hook finding its OWN source at its own relative path — nothing is required from the suite
+# whose absence is the very thing in question, so a deletion cannot conceal itself. Where the repo
+# does own it, the suite was DELETED and the gate did not run: alarm, because a deleted test must
+# never be quieter than a failing one.
+if [[ ! -d "$root/skills/sync-docs/tests" ]]; then
+  if grep -q 'dotclaude-test-runner-hook' "$root/scripts/$(basename "$0")" 2>/dev/null; then
+    printf '%s\n' \
+      "MISSING SUITE: skills/sync-docs/tests is absent, but this repo owns $(basename "$0") — the gate did NOT run." \
+      "To remove this feature deliberately: delete its hook, remove its settings.json registration, then re-run /sync-docs." >&2
+    exit 2
+  fi
   exit 0
 fi
 

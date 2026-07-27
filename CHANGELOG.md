@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.57.5 — 2026-07-27
+- fix(hooks): alarm when a test-runner suite is missing or unrunnable
+
 ## v0.57.4 — 2026-07-27
 - fix(feature,propagate): gate on the audit RESULT verdict line
 

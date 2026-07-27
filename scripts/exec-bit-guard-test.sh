@@ -4,6 +4,7 @@ set -euo pipefail
 # Script: exec-bit-guard-test.sh
 # Purpose: PostToolUse hook — run the exec-bit-guard test suite when the gate or its suite changes
 # Usage: Called by Claude Code hooks with JSON on stdin
+# Ownership sentinel (do not remove): dotclaude-test-runner-hook
 #
 # Exit codes:
 #   0 — allow (not a guard file, suite passed, or any internal error → fail open)
@@ -20,7 +21,24 @@ case "$file_path" in
 esac
 
 root=$(git -C "$(dirname "$file_path")" rev-parse --show-toplevel 2>/dev/null) || exit 0
-if [ -z "$root" ] || [ ! -f "$root/scripts/tests/test_exec_bit_guard.sh" ]; then
+
+# Environment fail-open: not a git repo at all. Deliberate, unchanged.
+if [ -z "$root" ]; then
+  exit 0
+fi
+
+# A missing suite is inert ONLY where this repo does not own these hooks. Ownership is proven by
+# the hook finding its OWN source at its own relative path — nothing is required from the suite
+# whose absence is the very thing in question, so a deletion cannot conceal itself. Where the repo
+# does own it, the suite was DELETED and the gate did not run: alarm, because a deleted test must
+# never be quieter than a failing one.
+if [ ! -f "$root/scripts/tests/test_exec_bit_guard.sh" ]; then
+  if grep -q 'dotclaude-test-runner-hook' "$root/scripts/$(basename "$0")" 2>/dev/null; then
+    printf '%s\n' \
+      "MISSING SUITE: scripts/tests/test_exec_bit_guard.sh is absent, but this repo owns $(basename "$0") — the gate did NOT run." \
+      "To remove this feature deliberately: delete its hook, remove its settings.json registration, then re-run /sync-docs." >&2
+    exit 2
+  fi
   exit 0
 fi
 
