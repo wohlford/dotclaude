@@ -30,13 +30,13 @@ only when stakes warrant it → execute → integrate.
 
 **Execute & integrate (both lanes):** present the reviewed plan and **pause for confirmation**, then
 `subagent-driven-development` runs it task-by-task — a fresh subagent per task with per-task and
-whole-branch reviews. When triage flagged security — which means the full lane — `/security-review`
-inspects the implemented diff before the branch integrates. Then, per whether `.publication.toml`
-marks the repo as adopted: a **non-adopted** repo tags each task commit as today and
-`finishing-a-development-branch` verifies the suite passes and merges the branch to its base; an
-**adopted** repo commits each task untagged (`--no-tag`, versioning is `main`-only) and re-derives the
-gate-passed result onto `dev` as clean bricks instead of merging (`skills/feature/SKILL.md` has the
-full procedure). If tests fail, stop and report; don't finish.
+whole-branch reviews. When triage flagged security — which means the full lane — `/security-review` (or
+a fallback reviewer when it yields no valid verdict) must clear the diff before the branch integrates, or
+integration stops. Then, per whether `.publication.toml` marks the repo as adopted: a **non-adopted**
+repo tags each task commit as today and `finishing-a-development-branch` verifies the suite passes and
+merges the branch to its base; an **adopted** repo commits each task untagged (`--no-tag`, versioning
+is `main`-only) and re-derives the gate-passed result onto `dev` as clean bricks instead of merging
+(`skills/feature/SKILL.md` has the full procedure). If tests fail, stop and report; don't finish.
 
 ## The primitives
 

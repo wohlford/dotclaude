@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.57.1 — 2026-07-27
+- fix(feature): restore the security gate in adopted repos
+
 ## v0.57.0 — 2026-07-27
 - feat(security-reviewer): add the fallback security review agent
 
