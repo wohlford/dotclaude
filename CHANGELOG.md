@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.56.2 — 2026-07-27
+- docs(recast): note the commit-subject gate on replays
+
 ## v0.56.1 — 2026-07-27
 - fix(commit): assert the tag exists after tagging
 

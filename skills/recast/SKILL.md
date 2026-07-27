@@ -165,6 +165,13 @@ assumes a DAG). The caller approves and may override any classification.
    honors it) — amend the just-landed commit/tag to scrub the text or correct the identity, then
    re-run the gate before proceeding (recast never pushes, so the offending commit is still local
    and safe to amend); **`--no-scrub`:** report-only.
+
+   > **Commit-subject gate.** A repo carrying `.commit-conventions.toml` refuses an over-long commit
+   > subject before the commit lands. A recast reproduces *planned* subjects that may predate that
+   > limit, so a faithful reproduction can be refused. If a commit is refused on subject length,
+   > re-run it led by `ALLOW_LONG_SUBJECT=1` — **never shorten a reproduced subject to satisfy the
+   > gate.** Resume (step 1) matches each brick plan entry's planned subject against `git log`
+   > verbatim, so a shortened subject stops matching and resume treats a finished brick as undone.
 5. **From-scratch verify** at the seed, every `--fresh-every` bricks (default each subsystem
    boundary), on any **high-risk** brick (touches shared state / adds an external dependency /
    cumulative run reports unexpected changes), and at the end — via
