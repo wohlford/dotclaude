@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.56.1 — 2026-07-27
+- fix(commit): assert the tag exists after tagging
+
 ## v0.56.0 — 2026-07-27
 - feat(commit-subject): activate the gate in this repo
 
