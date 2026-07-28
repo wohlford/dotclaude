@@ -27,7 +27,7 @@ The user may optionally provide:
 2. Verify `skills/<name>/` does not already exist. If it does, stop and ask the user for a different name or explicit confirmation before touching the existing skill.
 3. Create the directory `skills/<name>/`.
 4. Write `skills/<name>/SKILL.md` with the frontmatter and section stubs shown below. Include the `disable-model-invocation: true` line only if `--user-only` was given, and the `## Dynamic Context` section only if `--with-dynamic-context` was given (the template's bracket comments mark both). Substitute `<name>` and `<one-line description>` with the user's values and `<Subject>` with the Title-Case noun phrase you distilled from the description; leave every other bracketed placeholder in the body verbatim as an authoring prompt — do not invent Process steps or Rules from the one-line description; a later authoring pass (the user, or a follow-up session working the skill's content) fills those in before `/vet`.
-5. Run `/sync-docs` to regenerate any `<!-- sync:skills -->` index tables in the repo (CLAUDE.md, README.md, skills/README.md, etc.). The new skill registers automatically.
+5. Run `/sync-docs` to regenerate any `<!-- sync:skills -->` index tables in the repo. The new skill registers automatically in README.md and skills/README.md; CLAUDE.md's region carries only user-only (`--user-only`) skills, so a normal skill never appears there.
 6. **Nudge a review.** This scaffold stops at placeholder substitution (step 4), so the content isn't authored yet — leave a reminder that once a later authoring pass fills in the stubs, running `/vet skills/<name>/SKILL.md` dispatches `skill-reviewer` (structure) + `skill-content-reviewer` (content).
 
 ### Skill Structure

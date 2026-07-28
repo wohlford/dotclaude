@@ -95,13 +95,13 @@ Wondering how the pieces fit — what takes effect where, and what owns what? Se
 ### Plugins
 
 <!-- sync:plugins cols=Plugin:key,Purpose:manual -->
-| Plugin                 | Purpose                                                                   |
-| :--------------------- | :------------------------------------------------------------------------ |
-| `claude-code-setup`    | Recommend Claude Code automations                                         |
-| `claude-md-management` | Audit and improve CLAUDE.md files                                         |
-| `code-review`          | Code review pull requests (`/review`, `/security-review`, `/ultrareview`) |
-| `pyright-lsp`          | Python type checking via Pyright                                          |
-| `superpowers`          | Enhanced development workflows and skills                                 |
+| Plugin                 | Purpose                                                                  |
+| :--------------------- | :----------------------------------------------------------------------- |
+| `claude-code-setup`    | Recommend Claude Code automations                                        |
+| `claude-md-management` | Audit and improve CLAUDE.md files                                        |
+| `code-review`          | Code review a diff or PR (`/code-review`, `/review`, `/security-review`) |
+| `pyright-lsp`          | Python type checking via Pyright                                         |
+| `superpowers`          | Enhanced development workflows and skills                                |
 <!-- /sync:plugins -->
 
 Plugins are configured in [`settings.json`](settings.json) and resolved automatically by Claude Code.
