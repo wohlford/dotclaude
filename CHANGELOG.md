@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.58.4 — 2026-07-28
+- docs(CLAUDE.md): add the stale-tooling hazard and a measured instance
+
 ## v0.58.3 — 2026-07-28
 - docs(CLAUDE.md): replace the duplicated indexes with a README pointer
 

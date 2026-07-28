@@ -135,6 +135,12 @@ it passes about four members, and a hazard with no measured instance does not be
 
 - **Before believing a FAIL, confirm the probe reached the subject.** A gate that "did not fire" had
   been handed a shell variable it could not resolve, and blocked instantly on a literal path.
+- **A checker that resolves its helpers relative to itself grades your branch with the OLD tools.**
+  So a change *to* the tooling is judged by the copy it replaces — the verdict is **true**, just
+  about a different question than you asked, and it reads GREEN whenever the installed copy is the
+  laxer one. Seen: one sweep gave `FAIL … drift` from the installed copy and `PASS rc=0` from the
+  branch's own, minutes apart, both correct. Run the change's own tools, and name which copy
+  produced the verdict.
 - **A change that is only correct in COMBINATION is one unit of work.** Two halves of a fix can be
   individually wrong in *opposite* directions — one alone over-blocks, the other alone lets the bug
   through — so landing half is not partial progress, it is a regression. And it is one no suite can
@@ -178,7 +184,10 @@ it passes about four members, and a hazard with no measured instance does not be
   move, needing nothing from the tool — ask **"what can I observe without this thing's cooperation?"**
   before "how do I word this better?". All three failures defaulted to *proceed*.
 - **Clear by allowlist, since a blocklist admits every value you forgot.**
-- **Derive an input from what you already asserted rather than checking a hand-made copy.**
+- **Derive an input from what you already asserted rather than checking a hand-made copy.** Seen
+  twice in one session: a gate's hand-listed file set went stale and waved through a file nobody
+  checked, and a "durable" test hand-copied the very key it existed to guard — so it would not have
+  failed if that key were renamed.
 - **A claim's grounding must be checkable from the artifact itself.** Evidence sitting where the
   reader cannot reach it — a private note, an unwritten instruction, "we settled this earlier" — is
   indistinguishable from no evidence, and doubles as a template for asserting anything. Seen: an
