@@ -101,6 +101,90 @@ def _get_key_col(cols: list[ColSpec]) -> ColSpec | None:
     return None
 
 
+def _field_matches(value: Any, want: str) -> bool:
+    """Compare an extracted field to a filter= value.
+
+    `value` is whatever an extractor yielded (str, bool, int, list, or
+    absent); `want` is always a marker-text string (parse_directives never
+    yields anything else). Booleans match case-insensitively, since
+    frontmatter `true`/`false` becomes Python `True`/`False` while the
+    filter's `want` side is always a string — a bare `==` would never match.
+
+    Every other type is compared as `str(value)`, so an int or any other
+    scalar an extractor may yield can be filtered too. A bare `==` against a
+    non-string is *always* False, which would land in the legal-empty bucket
+    and render nothing, silently — the same defect this helper exists to fix
+    for booleans, just left open for every other type.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return str(value).lower() == want.strip().lower()
+    return str(value) == want.strip()
+
+
+def _apply_filter(
+    sources: list[Source], filt: str | None, handler_name: str
+) -> list[Source]:
+    """Apply a filter=key:value directive to discovered sources.
+
+    A filter that cannot do what it says must not do it silently: the only
+    observable channel here is the process exit code (sync-docs-check.sh
+    discards both stdout and stderr), so "warn and render anyway" is not an
+    option — raising is the only signal that can escape.
+
+    Raises:
+        ValueError: if `filt` is present but contains no ':' (malformed
+            field:value syntax — this handler would otherwise skip the
+            filter entirely and render every source, unfiltered). **A
+            present-but-empty `filter=` counts**: `directives.get` returns
+            `None` only when the key is absent, so a marker written
+            `<!-- sync:skills filter= -->` yields `""`, and treating that as
+            "no filter" would silently render the full table — the very
+            defect the malformed-syntax branch exists to stop. **A
+            `filter=key:` with an empty value, or a `filter=:value` with an
+            empty key, count too**: both pass the `":" in filt` check yet
+            name no real field:value pair, and an empty value in particular
+            would match nothing and render a headers-only table at rc 0 —
+            the same silent-empty-render defect the missing-colon branch
+            exists to stop, through a spelling that still contains a colon.
+            Or if no discovered source carries `key` in its fields (the
+            filter could never match anything, including vacuously when
+            there are zero sources at all).
+
+    A key that IS carried but matches no source's value is a legal empty
+    result and stays silent — that is what a filter is for.
+    """
+    if filt is None:
+        return sources
+    if ":" not in filt:
+        raise ValueError(
+            f"sync:{handler_name} filter={filt!r} is missing ':' — "
+            f"expected field:value form, e.g. filter=category:extraction"
+        )
+    key, val = filt.split(":", 1)
+    if not key.strip():
+        raise ValueError(
+            f"sync:{handler_name} filter={filt!r} has an empty field name — "
+            f"expected field:value form, e.g. filter=category:extraction"
+        )
+    if not val.strip():
+        raise ValueError(
+            f"sync:{handler_name} filter={filt!r} has an empty value — "
+            f"expected field:value form, e.g. filter=category:extraction"
+        )
+    if not any(key in s.fields for s in sources):
+        available = sorted({f for s in sources for f in s.fields})
+        available_desc = (
+            ", ".join(available) if available else "(none — no sources discovered)"
+        )
+        raise ValueError(
+            f"sync:{handler_name} filter= key {key!r} is not carried by any "
+            f"discovered source; available fields: {available_desc}"
+        )
+    return [s for s in sources if _field_matches(s.fields.get(key), val)]
+
+
 def _preserve_manual(
     rows: list[dict[str, str]],
     cols: list[ColSpec],
@@ -189,10 +273,7 @@ class SkillsHandler:
                     fields["name"] = path.parent.name
                 sources.append(Source(path=path, fields=fields))
 
-        filt = directives.get("filter")
-        if filt and ":" in filt:
-            key, val = filt.split(":", 1)
-            sources = [s for s in sources if s.fields.get(key) == val]
+        sources = _apply_filter(sources, directives.get("filter"), self.name)
 
         return sources
 
@@ -280,10 +361,7 @@ class AgentsHandler:
                     fields["name"] = path.stem
                 sources.append(Source(path=path, fields=fields))
 
-        filt = directives.get("filter")
-        if filt and ":" in filt:
-            key, val = filt.split(":", 1)
-            sources = [s for s in sources if s.fields.get(key) == val]
+        sources = _apply_filter(sources, directives.get("filter"), self.name)
 
         return sources
 

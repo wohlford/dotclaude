@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.58.2 — 2026-07-27
+- fix(sync-docs): make filter= match reliably or fail loudly
+
 ## v0.58.1 — 2026-07-27
 - docs(CLAUDE.md): group the verification hazards and gate admissions
 

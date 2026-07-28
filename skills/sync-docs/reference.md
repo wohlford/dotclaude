@@ -41,7 +41,7 @@ Close markers carry no directives. Mismatched handler name in close marker → p
 
 | Directive | Meaning | Example |
 | :--- | :--- | :--- |
-| `filter` | Subset source files by metadata field | `filter=category:extraction` |
+| `filter` | Subset source files by metadata field (**`skills` and `agents` handlers only** — see below) | `filter=category:extraction` |
 | `cols` | Column list with role annotations | `cols=Agent:key,"Used by":manual,Purpose:auto` |
 | `sort` | Sort order | `sort=date,desc` |
 | `limit` | Max entries shown | `limit=30` |
@@ -65,6 +65,18 @@ Close markers carry no directives. Mismatched handler name in close marker → p
 | `custom` | Per `source=<glob>` directive (relative to repo root) | Per `extract=` chain and `cols=` (column names map to lowercased frontmatter fields; `File`/`Path`/`Name` render the source filename) | Generic table |
 
 The `index` handler accepts: `kind=dirs|files|all` (default `all`), `extensions=<csv>`, `pattern=<regex>`, `sort=alpha|date|mtime[,desc]`, `summary-from=README.md|first-h1|first-paragraph|none`, `limit=N`, `mode=sync|lint`.
+
+### `filter` — implemented by `skills` and `agents` only
+
+Only the `skills` and `agents` handlers honor `filter=field:value`. `custom`, `scripts`, `hooks`, `plugins`, and `index` silently ignore the directive if present — the table above lists `filter` as a common directive, but it is only common in name; `filter` is not implemented for those other five handlers.
+
+Matching rule: a boolean frontmatter value (`true`/`false`) compares case-insensitively against the filter's value, since frontmatter `true` extracts as Python `True`, not the string `"true"`. Every other value is compared as `str(value)` and is **case-sensitive** — `filter=category:extraction` does not match a field valued `Extraction`. Surrounding whitespace in the filter's value is ignored on both paths. A field the extractor did not yield at all never matches.
+
+On the `skills` and `agents` handlers, a `filter` that cannot do what it says is a hard error, never a silent no-op or a silent full-unfiltered render. `/sync-docs --check` communicates only through its exit code, so anything short of raising cannot reach the caller:
+
+- A `filter` value with no `:` (not `field:value` form, e.g. `filter=disable-model-invocation`) raises `ValueError` naming the handler and the malformed value.
+- A `filter=key:value` where **no discovered source carries `key`** in its fields raises `ValueError` naming the handler, the key, and the field names actually available across the discovered sources. This also covers the vacuous case of zero discovered sources — "no source carries the key" is true by default when there are no sources, and that is treated as fail-closed on purpose, not an oversight.
+- A key that **is** carried by at least one source but matches no source's value is a legal empty result: the region renders as an empty table, silently. That is what a filter is for, and staying silent here is what keeps the two errors above from degenerating into "any empty result is an error."
 
 ## Extractor chain
 

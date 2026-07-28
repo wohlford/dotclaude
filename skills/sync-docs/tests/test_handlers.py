@@ -7,14 +7,16 @@ import json
 import handlers
 
 
-def _make_skill(root, name, description, category=None):
+def _make_skill(root, name, description, category=None, disable_model_invocation=True):
     d = root / "skills" / name
     d.mkdir(parents=True, exist_ok=True)
     fm = ["---", f"name: {name}", f"description: {description}"]
     if category:
         fm.append(f"category: {category}")
+    if disable_model_invocation is not None:
+        val = str(disable_model_invocation).lower()
+        fm.append(f"disable-model-invocation: {val}")
     fm += [
-        "disable-model-invocation: true",
         "---",
         "",
         f"# /{name} — {description}",
@@ -65,6 +67,184 @@ def test_skills_handler_filter_by_category(tmp_path):
     sources = h.discover(tmp_path, tmp_path, {"filter": "category:extraction"})
     names = [s.fields["name"] for s in sources]
     assert names == ["a"]
+
+
+def test_skills_handler_filter_by_boolean_true(tmp_path):
+    """filter=disable-model-invocation:true must match the boolean True that
+    yaml-frontmatter extraction yields, not the literal string "true"."""
+    _make_skill(tmp_path, "a", "A1", disable_model_invocation=True)
+    _make_skill(tmp_path, "b", "B1", disable_model_invocation=False)
+    h = handlers.SkillsHandler()
+    sources = h.discover(
+        tmp_path, tmp_path, {"filter": "disable-model-invocation:true"}
+    )
+    names = [s.fields["name"] for s in sources]
+    assert names == ["a"]
+
+
+def test_skills_handler_filter_by_boolean_false(tmp_path):
+    """filter=<field>:false must match the boolean False extracted value."""
+    _make_skill(tmp_path, "a", "A1", disable_model_invocation=True)
+    _make_skill(tmp_path, "b", "B1", disable_model_invocation=False)
+    h = handlers.SkillsHandler()
+    sources = h.discover(
+        tmp_path, tmp_path, {"filter": "disable-model-invocation:false"}
+    )
+    names = [s.fields["name"] for s in sources]
+    assert names == ["b"]
+
+
+def test_skills_handler_filter_unknown_key_raises(tmp_path):
+    """T1: filter=nosuchfield:true — no discovered source carries the key at
+    all, so the filter can never match anything. Must raise, not silently
+    return an empty list (rc=0 for a table that can never be non-empty)."""
+    _make_skill(tmp_path, "a", "A1", category="extraction")
+    h = handlers.SkillsHandler()
+    import pytest
+
+    with pytest.raises(ValueError, match="nosuchfield"):
+        h.discover(tmp_path, tmp_path, {"filter": "nosuchfield:true"})
+
+
+def test_skills_handler_filter_no_colon_raises(tmp_path):
+    """T2: a filter= value with no ':' (e.g. filter=disable-model-invocation)
+    is malformed field:value syntax. Must raise, not be silently ignored
+    (which would render every source, unfiltered)."""
+    _make_skill(tmp_path, "a", "A1", disable_model_invocation=True)
+    h = handlers.SkillsHandler()
+    import pytest
+
+    with pytest.raises(ValueError, match="disable-model-invocation"):
+        h.discover(tmp_path, tmp_path, {"filter": "disable-model-invocation"})
+
+
+def test_skills_handler_filter_known_key_no_match_returns_empty(tmp_path):
+    """T3: the key IS carried by >=1 source but no value matches — this is a
+    legal empty result and must NOT raise. This is the boundary that keeps
+    the fix from degenerating into "empty result = error"."""
+    _make_skill(tmp_path, "a", "A1", category="extraction")
+    _make_skill(tmp_path, "b", "B1", category="pipeline")
+    h = handlers.SkillsHandler()
+    sources = h.discover(
+        tmp_path, tmp_path, {"filter": "category:nonexistent-category"}
+    )
+    assert sources == []
+
+
+def test_skills_handler_filter_zero_sources_raises(tmp_path):
+    """T4: with zero discovered sources, "no source carries the key" is
+    vacuously true. Pin this as a deliberate fail-closed choice, not an
+    accident of the empty-sources path."""
+    h = handlers.SkillsHandler()
+    import pytest
+
+    with pytest.raises(ValueError, match="disable-model-invocation"):
+        h.discover(tmp_path, tmp_path, {"filter": "disable-model-invocation:true"})
+
+
+def test_skills_handler_filter_empty_value_raises(tmp_path):
+    """A present-but-EMPTY filter= must raise, not render everything.
+
+    `directives.get("filter")` returns None only when the key is absent, so a
+    marker written `<!-- sync:skills filter= -->` yields `""`. A falsy check
+    would treat that as "no filter" and silently render the full unfiltered
+    table — the same defect as a colon-less value, through a spelling the
+    first fix did not cover.
+    """
+    _make_skill(tmp_path, "a", "A1", disable_model_invocation=True)
+    _make_skill(tmp_path, "b", "B1")
+    h = handlers.SkillsHandler()
+    import pytest
+
+    with pytest.raises(ValueError, match="missing ':'"):
+        h.discover(tmp_path, tmp_path, {"filter": ""})
+
+
+def test_skills_handler_filter_empty_value_after_colon_raises(tmp_path):
+    """F1: `filter=key:` (colon present, value empty) must raise, not render
+    a headers-only table at rc 0.
+
+    `":" in filt` is true, so this slips past the missing-colon check; an
+    empty `val` then matches no source's value, and the region silently
+    renders empty forever — `--check` compares the file against what sync
+    would generate, so an empty-but-consistent render never reads as drift.
+    """
+    _make_skill(tmp_path, "a", "A1", disable_model_invocation=True)
+    h = handlers.SkillsHandler()
+    import pytest
+
+    with pytest.raises(ValueError, match="empty value"):
+        h.discover(tmp_path, tmp_path, {"filter": "disable-model-invocation:"})
+
+
+def test_skills_handler_filter_empty_key_raises(tmp_path):
+    """F1 sibling: `filter=:true` (empty field name) must raise too — same
+    class as an empty value, just on the other side of the colon."""
+    _make_skill(tmp_path, "a", "A1", disable_model_invocation=True)
+    h = handlers.SkillsHandler()
+    import pytest
+
+    with pytest.raises(ValueError, match="empty field name"):
+        h.discover(tmp_path, tmp_path, {"filter": ":true"})
+
+
+def test_field_matches_non_string_scalar():
+    """A non-bool, non-str field must still be filterable.
+
+    A bare `==` against an int is always False, which lands in the
+    legal-empty bucket and renders nothing silently — the boolean defect,
+    left open for every other type.
+    """
+    assert handlers._field_matches(3, "3") is True
+    assert handlers._field_matches(3, "4") is False
+
+
+def test_field_matches_tolerates_surrounding_whitespace():
+    """Whitespace around a filter value must not cause a silent mismatch.
+
+    Stripping only in the boolean branch made `filter=category:extraction `
+    fail silently for a string field while the same slip was forgiven for a
+    boolean — an asymmetry whose failure mode is invisible.
+    """
+    assert handlers._field_matches("extraction", " extraction ") is True
+    assert handlers._field_matches(True, " TRUE ") is True
+
+
+def test_agents_handler_filter_unknown_key_raises(tmp_path):
+    """Bug B on the agents handler — identical defect to skills."""
+    _make_agent(tmp_path, "reviewer", "Reviews stuff")
+    h = handlers.AgentsHandler()
+    import pytest
+
+    with pytest.raises(ValueError, match="nosuchfield"):
+        h.discover(tmp_path, tmp_path, {"filter": "nosuchfield:haiku"})
+
+
+def test_agents_handler_filter_no_colon_raises(tmp_path):
+    """Bug C on the agents handler — identical defect to skills."""
+    _make_agent(tmp_path, "reviewer", "Reviews stuff", model="haiku")
+    h = handlers.AgentsHandler()
+    import pytest
+
+    with pytest.raises(ValueError, match="model"):
+        h.discover(tmp_path, tmp_path, {"filter": "model"})
+
+
+def test_agents_handler_filter_known_key_no_match_returns_empty(tmp_path):
+    """Boundary case on the agents handler: legal empty result, no raise."""
+    _make_agent(tmp_path, "reviewer", "Reviews stuff", model="haiku")
+    h = handlers.AgentsHandler()
+    sources = h.discover(tmp_path, tmp_path, {"filter": "model:opus"})
+    assert sources == []
+
+
+def test_agents_handler_filter_zero_sources_raises(tmp_path):
+    """Zero-source edge on the agents handler: vacuous fail-closed."""
+    h = handlers.AgentsHandler()
+    import pytest
+
+    with pytest.raises(ValueError, match="model"):
+        h.discover(tmp_path, tmp_path, {"filter": "model:haiku"})
 
 
 def test_skills_handler_rejects_missing_key_col(tmp_path):
