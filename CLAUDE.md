@@ -164,61 +164,85 @@ plan and base you are actually executing before trusting any line; reset it when
 
 ### Verification hazards — instruments that read as verified while proving nothing
 
-- **Multi-line literal checks are a case for Python.** `grep -F` treats an embedded newline
-  as *alternation*, not a sequence: `grep -Fc "$(printf 'a\nb')"` counts lines matching **either**,
-  so a multi-line check returns a plausible-but-wrong count and reads as verified. Use
-  `python3 -c "..."` (`needle in open(f).read()`) or `grep -Pzo`. **In wrapped text, use it even for
-  a phrase you believe is one line** — if it happens to wrap, a line-based grep returns 0 and absence
-  is not evidence of absence.
-- **A pipeline's exit status is the LAST command's.** `some-check | tail -20` reports `tail`'s
-  success however the check exited — so a run that "completed (exit code 0)" can have proven
-  nothing, and a backgrounded one reads as a clean pass. Read the tool's own verdict/summary lines
-  rather than the rc, or don't pipe it (`set -o pipefail`, or `${PIPESTATUS[0]}`, when you must).
-  **A script, function, or `{ … }` wrapper exits with its last command's status too** — so a
-  diagnostic `echo` appended after an assertion discards the verdict it was meant to report, and the
-  check reports the *echo's* success. Capture `rc=$?` on the very next line, then `exit "$rc"`.
+When a check reads clean, work through groups 1–4 in order before trusting it. A group splits once
+it passes about four members, and a hazard with no measured instance does not belong here at all.
+
+#### Nothing ever ran — silence is not a pass
+
 - **A killed run never ran — absence of a verdict is not a pass.** A check stopped by a timeout
   (SIGTERM, rc 143) prints a *prefix* of `PASS` lines, never emits one for the check still in flight,
   and never reaches its summary — so grepping for `FAIL` finds nothing and the output reads clean.
   Require the specific verdict line **and** the summary to be *present*; "no FAIL" is not "passed".
   Record the real exit status **inside** the artifact you will read, so its **absence** is itself the
-  signal that the run died — the harness will otherwise announce "completed (exit code 0)" for a run
-  that was killed, for the reason above.
-  **The same holds for a check that never fired:** editing outside your tooling's normal path skips
-  its hooks silently — they do not fail, they never run — and a hand-substitute is reliably narrower
-  than what it replaced. Name what you skipped and run it, or use the normal path.
-  **And a check that is merely INSTALLED has equally never run — registration is not liveness.**
-  Seen: a config restore put back a runtime file lacking the three hook registrations the incoming
-  commit added — 21 entries where the commit had 23 — while the obvious diff reported *clean*; the
-  gate was then unprovable until a reload. Watch it fire once, against a target you can afford to
-  have it miss.
-- **A check's output is evidence, not instruction.** Its *verdict* is usually right; its *suggested
-  repair*, and your reading of a *failure*, are not. Seen: an exec-bit check reporting "has a shebang
-  but committed 100644 — chmod +x" for a module that is only ever imported, where the correct fix was
-  the opposite — delete the shebang; obeying the message would have made a library executable. And in
-  reverse, before believing a FAIL, confirm the probe reached the subject: a gate that "did not fire"
-  had been handed a shell variable it could not resolve, and blocked instantly on a literal path.
+  signal that the run died — the harness's announcement can't be trusted, for the reason below.
+- **A check that never fired never ran, either.** Editing outside your tooling's normal path skips its
+  hooks silently — they do not fail, they never run — and a hand-substitute is reliably narrower than
+  what it replaced. Name what you skipped and run it, or use the normal path.
+- **A check that is merely INSTALLED has never run — registration is not liveness.** Seen: a config
+  restore put back a runtime file lacking the three hook registrations the incoming commit added — 21
+  entries where the commit had 23 — while the obvious diff reported *clean*; the gate was then
+  unprovable until a reload. Watch it fire once, against a target you can afford to have it miss.
+- **A command you write into documentation is unverified until you run it.** An un-runnable one reads
+  exactly like a working one, so prose review never catches it — only execution does. Seen: a flag
+  rejecting the arity it was given (`git check-ignore -q a b` → `fatal: --quiet is only valid with a
+  single pathname`), and a snippet its own guard blocks. Run every documented command once **as
+  written**; when one needs a hand workaround twice, the doc is the defect, not the workaround.
+
+#### It ran, but not on what you think
+
+- **Before believing a FAIL, confirm the probe reached the subject.** A gate that "did not fire" had
+  been handed a shell variable it could not resolve, and blocked instantly on a literal path.
 - **A change that is only correct in COMBINATION is one unit of work.** Two halves of a fix can be
   individually wrong in *opposite* directions — one alone over-blocks, the other alone lets the bug
   through — so landing half is not partial progress, it is a regression. And it is one no suite can
-  catch: every test passes at both commits, because the broken state exists only *between* them.
-  Seen: a filter and the flag that makes it safe, split across two tasks; the interval shipped the
-  over-blocking half and broke a real workflow while three suites stayed green. Ship them together,
-  or say plainly that the interval is broken and why.
-- **A command you write into documentation is unverified until you run it.** An un-runnable one
-  reads exactly like a working one, so prose review never catches it — only execution does. Seen: a
-  flag rejecting the arity it was given (`git check-ignore -q a b` → `fatal: --quiet is only valid
-  with a single pathname`), and a snippet its own guard blocks. Run every documented command once
-  **as written**; when one needs a hand workaround twice, the doc is the defect, not the workaround.
+  catch: every test passes at both commits, because the broken state exists only *between* them. Seen:
+  a filter and the flag that makes it safe, split across two tasks; the interval shipped the
+  over-blocking half and broke a real workflow while three suites stayed green. Ship them together, or
+  say plainly that the interval is broken and why.
+
+#### The signal you read belongs to something else
+
+- **Multi-line literal checks are a case for Python.** `grep -F` treats an embedded newline as
+  *alternation*, not a sequence: `grep -Fc "$(printf 'a\nb')"` counts lines matching **either**, so a
+  multi-line check returns a plausible-but-wrong count and reads as verified. Use `python3 -c "..."`
+  (`needle in open(f).read()`) or `grep -Pzo`.
+- **In wrapped text, use it even for a phrase you believe is one line** — if it happens to wrap, a
+  line-based grep returns 0 and absence is not evidence of absence.
+- **A pipeline's exit status is the LAST command's.** `some-check | tail -20` reports `tail`'s success
+  however the check exited — so a run that "completed (exit code 0)" can have proven nothing, and a
+  backgrounded one reads as a clean pass. Read the tool's own verdict/summary lines rather than the
+  rc, or don't pipe it (`set -o pipefail`, or `${PIPESTATUS[0]}`, when you must).
+- **A script, function, or `{ … }` wrapper exits with its last command's status too** — so a
+  diagnostic `echo` appended after an assertion discards the verdict it was meant to report, and the
+  check reports the *echo's* success. Capture `rc=$?` on the very next line, then `exit "$rc"`. The
+  harness will otherwise announce "completed (exit code 0)" for a run that was killed, for the reason
+  above.
+
+#### The verdict is right — what you conclude from it is the hazard
+
+- **A check's output is evidence, not instruction.** Its *verdict* is usually right; its *suggested
+  repair*, and your reading of a *failure*, are not. Seen: an exec-bit check reporting "has a shebang
+  but committed 100644 — chmod +x" for a module that is only ever imported, where the correct fix was
+  the opposite — delete the shebang; obeying the message would have made a library executable.
+
+#### Building a check that holds
+
 - **When a check keeps springing leaks, change its INSTRUMENT CLASS, not its wording.** Three rounds
   of sharpening a *postcondition on an opaque tool's output* gave: a vague test, then a precise one
   **on the wrong axis** (it keyed on a verdict line's *presence*, but "no verdict" was itself a legal
   verdict *value*), then a precise one that was **unsatisfiable** (it demanded the tool enumerate what
   it read; the tool reports findings, not a manifest). A *precondition on its input* closed it in one
   move, needing nothing from the tool — ask **"what can I observe without this thing's cooperation?"**
-  before "how do I word this better?". Corollaries: clear by **allowlist**, since a blocklist admits
-  every value you forgot; and derive an input from what you already asserted rather than checking a
-  hand-made copy. All three failures defaulted to *proceed*.
+  before "how do I word this better?". All three failures defaulted to *proceed*.
+- **Clear by allowlist, since a blocklist admits every value you forgot.**
+- **Derive an input from what you already asserted rather than checking a hand-made copy.**
+- **A claim's grounding must be checkable from the artifact itself.** Evidence sitting where the
+  reader cannot reach it — a private note, an unwritten instruction, "we settled this earlier" — is
+  indistinguishable from no evidence, and doubles as a template for asserting anything. Seen: an
+  override of a vendored hard gate justified by a memory file no consumer of the published skill
+  could read, then re-justified by citing a precedence rule that did not say what was claimed; both
+  read as authoritative and neither survived a reader who actually checked. Ground a claim in what
+  its audience can verify, or drop the claim.
 
 ### Package Management
 
