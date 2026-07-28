@@ -28,7 +28,9 @@ execute → integrate.
 **Fast lane:** a short combined spec+plan → one deep (ultrathink-level) self-review → a diverse review
 only when stakes warrant it → execute → integrate.
 
-**Execute & integrate (both lanes):** present the reviewed plan and **pause for confirmation**, then
+**Execute & integrate (both lanes):** present the reviewed plan and **continue in the same turn** —
+the design half ends in a presentation, not an approval gate, though authorization gates are a
+separate question and still apply — then
 `subagent-driven-development` runs it task-by-task — a fresh subagent per task with per-task and
 whole-branch reviews. When triage flagged security — which means the full lane — `/security-review` (or
 a fallback reviewer when it yields no valid verdict) must clear the diff before the branch integrates, or

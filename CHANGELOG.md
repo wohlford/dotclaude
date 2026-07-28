@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.58.0 — 2026-07-27
+- feat(feature,workflows): present the design instead of pausing
+
 ## v0.57.5 — 2026-07-27
 - fix(hooks): alarm when a test-runner suite is missing or unrunnable
 

@@ -112,6 +112,57 @@ steps below and **Execute and integrate** apply this rule; they do not re-decide
 
 The design-lane steps below apply this rule too; they do not re-decide it.
 
+#### Design approval — present and proceed (both lanes)
+
+The design half ends in a **presentation, not a gate.** At the end of either lane, present the
+recorded spec/plan and **continue into Execute and integrate in the same turn** — never stop and
+wait for the user to approve the design. The presentation is not optional and not abbreviated: it
+is the record of what was decided and the user's opportunity to redirect. Only the *blocking wait*
+is gone. If the user objects — then, or after execution has started — stop, revise, and re-present;
+work already done is discarded, not defended — unwind the commits the superseded plan produced
+rather than building on them.
+
+**This overrides `superpowers:brainstorming`'s design-approval gate in full.** That skill blocks
+**for design approval** in three places: its `<HARD-GATE>`, its per-section approval while
+presenting the design, and its wait for the user to review the written spec. Override all three —
+honoring any one of them re-creates the same stall one step further on. Identify them **by
+behavior, not by quoted text or line number**, since the plugin is versioned and its wording moves
+between releases; but identify them **only as design-approval gates**. That skill waits for other
+things too (its one-question-at-a-time dialogue, its visual-companion offer); those are not design
+approval, are outside this override, and stand.
+
+**The authority is the user-instruction layer, and it is checkable.** `CLAUDE.md` names
+`workflows.md` as this pipeline's definition, and `workflows.md` states that the design half ends in
+a presentation rather than an approval gate. `superpowers:using-superpowers` places user
+instructions — naming `CLAUDE.md` explicitly — above skills. **This subsection implements that
+instruction; it does not invent it**, and a reader who distrusts it can check every link: the two
+repo files just named, plus the precedence rule in `using-superpowers` itself. Two further signals
+need no document at all — `/feature` is user-*installed* configuration, and installing a pipeline is
+adopting it; and a run that reaches this point was invoked **without `--plan-only`**, the flag whose
+only purpose is to stop at the plan, which is the user declining that stop in the one way the
+pipeline offers.
+This is the same move `/feature` already makes three times — overriding `brainstorming`'s terminal
+"invoke `writing-plans`" step, `writing-plans`' own execution-choice menu (**Execute and integrate**
+pre-answers it rather than putting it to the user), and `finishing-a-development-branch`'s option
+menu. Identify each by behavior too, for the same versioning reason. **Never re-ground this in
+an unwritten instruction.** An override resting on a past conversation the reader cannot check is
+indistinguishable from rationalizing past the gate — and is a template for doing it to any other
+gate — which is exactly what that gate exists to prevent.
+
+**Three pauses are a different question and always survive.** This drops *is this design right?* —
+never *may I?*:
+- **`--plan-only`**, whose whole purpose is to stop at the plan;
+- **every authorization gate** — pushing, publishing, or anything outward-facing or hard to
+  reverse. CLAUDE.md owns these and `/feature` never relaxes one;
+- **Step 0.5's branch confirmation**, which asks which workspace to use, not whether the design is
+  good.
+
+That list enumerates **consent** pauses only — the points where the pipeline asks the user to choose.
+It is **not** a registry of every remaining stop. Every *failure-driven* stop is a separate,
+untouched category: an `/audit` FAIL this branch introduced, a security verdict that cannot be
+obtained, a failing suite, an unresolved conflict, a convergence check that does not match. Those
+still stop and report, and nothing here licenses continuing past one.
+
 #### Fast lane (low risk on both axes)
 
 1. Use `superpowers:brainstorming` lightly to produce a **short combined spec+plan** (a few sentences
@@ -136,9 +187,9 @@ The design-lane steps below apply this rule too; they do not re-decide it.
    **Diverse-model review** below. If it ran, **fold its findings; revise; recommit via `/commit`**
    (tagging and durability per the Step 0.5 rules) — same as the full lane's step 6. A review whose findings are not
    folded is a review you paid for and did not use.
-4. Present the recorded spec+plan (committed, or in memory per Step 0.5's durability rule) for
-   confirmation, then **execute and integrate** (below). If the user declines or asks for
-   changes, revise and re-present — never execute an unconfirmed plan.
+4. Present the recorded spec+plan (committed, or in memory per Step 0.5's durability rule), then
+   **execute and integrate** (below) **in the same turn** — per **Design approval — present and
+   proceed** above.
 
 #### Full lane (real unknowns or high stakes)
 
@@ -152,8 +203,10 @@ The design-lane steps below apply this rule too; they do not re-decide it.
    review exists to cover. Ask instead what its checklist cannot: is this the right approach, are the
    boundaries sound, what did we fail to consider? Revise inline. **High stakes** here means Step 0's
    stakes axis — the one naming security and large blast radius. For such designs a second
-   diverse-model review of the *spec* (the step-6 mechanism) is opt-in — offer it here, before the
-   spike.
+   diverse-model review of the *spec* (the step-6 mechanism) is opt-in — **decide it yourself
+   here**, before the spike, on Step 0's stakes signal (default to running it for security or large
+   blast radius), and state the call in the presentation. Do not stop to ask: which reviews to buy
+   is a budget decision this pipeline owns, not a design approval.
 3. **Spike the #1 risk.** Name the assumption whose failure invalidates the most downstream work. If
    it is **empirical** and its cheapest *decisive* signal is **cheap to probe**, run a throwaway
    probe of that one assumption now — probe the decisive signal ("does GRUB appear when a blank VM
@@ -174,10 +227,9 @@ The design-lane steps below apply this rule too; they do not re-decide it.
 6. **One diverse-model review of the plan** (see below). Fold findings; revise; recommit via
    `/commit` (tagging and durability per the Step 0.5 rules). (If a review at this stage invalidates the spec, loop
    back to step 1 as with spike invalidation.)
-7. Present the recorded spec + plan (committed, or in memory per Step 0.5's durability rule). Pause
-   for the user's confirmation, then **execute and integrate**
-   (below). If the user declines or asks for changes, revise and re-present — never execute an
-   unconfirmed plan.
+7. Present the recorded spec + plan (committed, or in memory per Step 0.5's durability rule), then
+   **execute and integrate** (below) **in the same turn** — per **Design approval — present and
+   proceed** above.
 
 #### Diverse-model review
 
@@ -419,7 +471,9 @@ history never had to be.
      and freeze the *rebased* tip** as the oracle instead. Skip this and the tip `git diff --quiet` in
      point 4 would still pass — but only by *reverting* `dev`'s interim commits back out, a false
      GREEN that silently deletes work `dev` already has. If the rebase conflicts, resolve them against
-     each commit's frozen intent (never silently drop a hunk); if the post-rebase suite fails, **stop
+     each commit's frozen intent (never silently drop a hunk) — and if one cannot be resolved without
+     altering what a commit was meant to do, **stop and report**; never force a resolution that
+     changes the brick's intent. If the post-rebase suite fails, **stop
      and report — do not freeze a broken tip as the oracle.**
 2. **Re-plan a clean brick sequence.** Working from `dev..<feature-tip>`, narrate the total change as
    a ground-up sequence of bricks — **repartitioning the reviewed code, not re-inventing it**. This is
@@ -463,10 +517,11 @@ per-brick suite coverage this procedure does not run.
 
 #### Stop at the plan (`--plan-only`)
 
-When invoked with `--plan-only`, `/feature` **ends at the approved, durably recorded plan** (committed,
+When invoked with `--plan-only`, `/feature` **ends at the reviewed, durably recorded plan** (committed,
 or in memory per Step 0.5's durability rule). Do not invoke
 an execution skill — when `writing-plans` offers to set up execution, **decline it.** Tell the user
-the plan is approved, the feature branch is left in place, and execution is a separate step — e.g.
+the plan is reviewed and recorded, the feature branch is left in place, and execution is a separate
+step — e.g.
 `superpowers:executing-plans` or `superpowers:subagent-driven-development`.
 
 ### Rules
