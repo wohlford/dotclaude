@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.60.5 — 2026-07-28
+- docs(CLAUDE.md): index PIPESTATUS by position, not [0]
+
 ## v0.60.4 — 2026-07-28
 - fix(hooks): run every git_command suite when the tokenizer changes
 

@@ -173,7 +173,9 @@ it passes about four members, and a hazard with no measured instance does not be
 - **A pipeline's exit status is the LAST command's.** `some-check | tail -20` reports `tail`'s success
   however the check exited — so a run that "completed (exit code 0)" can have proven nothing, and a
   backgrounded one reads as a clean pass. Read the tool's own verdict/summary lines rather than the
-  rc, or don't pipe it (`set -o pipefail`, or `${PIPESTATUS[0]}`, when you must).
+  rc, or don't pipe it (`set -o pipefail`, or `${PIPESTATUS[i]}`, when you must) — and index that by
+  POSITION: `[0]` is the FIRST stage, so in `printf … | tool | tail` it reports the *printf*, and a
+  tool that exited 2 reads as 0. Measured, on a gate that had correctly blocked.
 - **A script, function, or `{ … }` wrapper exits with its last command's status too** — so a
   diagnostic `echo` appended after an assertion discards the verdict it was meant to report, and the
   check reports the *echo's* success. Capture `rc=$?` on the very next line, then `exit "$rc"`. The
