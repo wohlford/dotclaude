@@ -223,6 +223,13 @@ it passes about four members, and a hazard with no measured instance does not be
   twice in one session: a gate's hand-listed file set went stale and waved through a file nobody
   checked, and a "durable" test hand-copied the very key it existed to guard — so it would not have
   failed if that key were renamed.
+- **When you mutate a document programmatically, assert the SHAPE of the edit — not just that you
+  found the right spot.** A script that located an entry by its first line, then scanned forward for
+  a `→ [[link]]` sentinel to find its last, moved THREE entries and reattached a note to the wrong
+  one — the sentinel sits inline at the end of a prose line, so the scan ran past its target. Every
+  assertion still passed, because all of them constrained where the edit STARTED and none constrained
+  how far it reached. The catch needs nothing from the locator: require the edit to be *insert-only*
+  or a *pure reordering*, by comparing the multiset of non-blank lines before and after.
 - **A claim's grounding must be checkable from the artifact itself.** Evidence sitting where the
   reader cannot reach it — a private note, an unwritten instruction, "we settled this earlier" — is
   indistinguishable from no evidence, and doubles as a template for asserting anything. Seen: an

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.60.3 — 2026-07-28
+- docs(CLAUDE.md): assert the shape of a programmatic document edit
+
 ## v0.60.2 — 2026-07-28
 - docs(CLAUDE.md): distrust a green suite you wrote for your own fix
 
