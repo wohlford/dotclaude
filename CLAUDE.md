@@ -148,6 +148,13 @@ it passes about four members, and a hazard with no measured instance does not be
   a filter and the flag that makes it safe, split across two tasks; the interval shipped the
   over-blocking half and broke a real workflow while three suites stayed green. Ship them together, or
   say plainly that the interval is broken and why.
+- **A regression test that never reaches the defect passes for free — watch it FAIL before you trust
+  its PASS.** The fixture's environment is part of the subject: `mktemp -d` under a symlinked
+  `$TMPDIR` (`/tmp` → `/private/tmp`) yields a *logical* path that does not physically contain the
+  file, and a tool resolving paths can take a different branch there and never reach the bug. Seen: a
+  cwd-resolution fix whose test passed identically with and without it, until the sandbox was pinned
+  with `pwd -P`; nothing in the green output hinted at it, since a correct fix produces the same
+  green. RED→GREEN is not ceremony — the RED is the only evidence the fixture reaches what you fixed.
 
 #### The signal you read belongs to something else
 

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.58.8 — 2026-07-28
+- docs(CLAUDE.md): watch a regression test fail before trusting its pass
+
 ## v0.58.7 — 2026-07-28
 - fix(markdownlint): lint from the directory holding the config
 
