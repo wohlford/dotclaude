@@ -12,8 +12,9 @@ set -euo pipefail
 #
 # Dependency graph: scripts/lib/git_command.py is the shared tokenizer imported by BOTH
 # publication-push-guard.py (tested here) and recast-commit-gate.py (tested by
-# scripts/tests/test_recast_hooks.sh). Editing git_command.py therefore re-runs ALL THREE of its
-# dependents' suites: its own unit tests, the publication-push-guard suite, and the recast-hooks
+# scripts/tests/test_recast_hooks.sh). Editing git_command.py therefore re-runs every one of its
+# dependents' suites: its OWN unit suites (the whole scripts/tests/test_git_command*.py family,
+# discovered by glob — see the floor below), the publication-push-guard suite, and the recast-hooks
 # suite. test_recast_hooks.sh is the slow one (it boots sandbox repos) — that's intentional
 # shared-dep coverage for a rare edit, not a mistake to optimize away.
 #
@@ -90,6 +91,17 @@ run_pytest_suite() {
   fi
 }
 
+# The git_command unit suites are DISCOVERED by glob when they run (below), so a sibling suite
+# added later is covered the day it lands — naming them one at a time is exactly what left
+# test_git_command_properties.py unwired for a whole session after it was written. What a glob
+# cannot do is tell "never existed" apart from "deleted": it would simply match one fewer file and
+# report success. So this floor names the members whose ABSENCE must alarm, and the glob only ever
+# ADDS to it. Put a new sibling here too once its coverage is meant to be load-bearing.
+git_command_floor=(
+  scripts/tests/test_git_command.py
+  scripts/tests/test_git_command_properties.py
+)
+
 # Every suite this arm will run must exist BEFORE any of them runs — run_shell_suite and
 # run_pytest_suite each `return` silently on a missing file, so a deleted suite would otherwise
 # be counted as "passed". Collected per arm, since the two arms run different sets.
@@ -98,8 +110,9 @@ if [[ "$guard_only" -eq 1 ]]; then
   [[ -f "$root/scripts/tests/test_publication_push_guard.sh" ]] \
     || missing="${missing}  scripts/tests/test_publication_push_guard.sh"$'\n'
 elif [[ "$shared_dep" -eq 1 ]]; then
-  [[ -f "$root/scripts/tests/test_git_command.py" ]] \
-    || missing="${missing}  scripts/tests/test_git_command.py"$'\n'
+  for floor_suite in "${git_command_floor[@]}"; do
+    [[ -f "$root/$floor_suite" ]] || missing="${missing}  ${floor_suite}"$'\n'
+  done
   [[ -f "$root/scripts/tests/test_publication_push_guard.sh" ]] \
     || missing="${missing}  scripts/tests/test_publication_push_guard.sh"$'\n'
   [[ -f "$root/scripts/tests/test_recast_hooks.sh" ]] \
@@ -124,7 +137,14 @@ fi
 if [[ "$guard_only" -eq 1 ]]; then
   run_shell_suite "publication-push-guard suite" "scripts/tests/test_publication_push_guard.sh"
 elif [[ "$shared_dep" -eq 1 ]]; then
-  run_pytest_suite "git_command unit tests" "scripts/tests/test_git_command.py"
+  # Whatever scripts/tests/test_git_command*.py exists runs — no hand-written list to go stale.
+  # Reaching here means the floor above found every required member present, so any extra match is
+  # a newer sibling that should run too. The label is the basename, so the summary line names the
+  # files that actually ran instead of a prose stand-in that cannot go out of date visibly.
+  for suite in "$root"/scripts/tests/test_git_command*.py; do
+    [[ -f "$suite" ]] || continue   # no match at all: bash leaves the pattern itself behind
+    run_pytest_suite "${suite##*/}" "${suite#"$root"/}"
+  done
   run_shell_suite "publication-push-guard suite" "scripts/tests/test_publication_push_guard.sh"
   run_shell_suite "recast-hooks suite" "scripts/tests/test_recast_hooks.sh"
 fi
