@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.59.0 — 2026-07-28
+- feat(publish-preflight): script the publish start-invariant
+
 ## v0.58.9 — 2026-07-28
 - docs(CLAUDE.md): distrust a probe's verdict your environment decided
 
