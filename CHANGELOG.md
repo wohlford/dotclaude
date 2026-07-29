@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.58.6 — 2026-07-28
+- docs(CLAUDE.md): re-measure a deferral before building its fix
+
 ## v0.58.5 — 2026-07-28
 - fix(sync-docs): reject a directive the handler cannot honor
 

@@ -173,6 +173,12 @@ it passes about four members, and a hazard with no measured instance does not be
   repair*, and your reading of a *failure*, are not. Seen: an exec-bit check reporting "has a shebang
   but committed 100644 — chmod +x" for a module that is only ever imported, where the correct fix was
   the opposite — delete the shebang; obeying the message would have made a library executable.
+- **A deferred item's prescribed FIX is a past self's hypothesis; only its defect is a finding.**
+  Re-measure before building what an earlier session queued. Seen: an entry read "implement
+  `filter=` in the other five handlers" — measuring first showed the gap was never `filter`-specific:
+  nothing validated *any* directive against its handler, so a *documented* one was ignored by six of
+  seven. One declared allowlist closed every case plus future typos; building the entry as written
+  would have left the larger hole open and added five more places to forget.
 
 #### Building a check that holds
 
