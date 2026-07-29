@@ -228,6 +228,11 @@ it passes about four members, and a hazard with no measured instance does not be
   key were renamed. The converse bites too: a glob replacing such a list covers whatever you forget
   to ADD, and silently stops covering whatever anyone REMOVES — it matches one fewer file and
   reports success. Name the members whose absence must alarm; let the glob only ever add to them.
+  And equal **COUNTS are not equal sets** — two collections can match in size while differing in
+  both directions at once. Measured: a runtime config and the commit it was restored from each
+  held 24 hook entries, which a tally reads as agreement, while the runtime carried a
+  machine-local extra *and* was missing a gate the commit added. Compare the one-directional
+  difference you actually care about, never the tally.
 - **When you mutate a document programmatically, assert the SHAPE of the edit — not just that you
   found the right spot.** A script that located an entry by its first line, then scanned forward for
   a `→ [[link]]` sentinel to find its last, moved THREE entries and reattached a note to the wrong

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.61.1 — 2026-07-29
+- docs(CLAUDE.md): equal counts are not equal sets
+
 ## v0.61.0 — 2026-07-28
 - feat(debrief): make backlog.py the only writer to BACKLOG.md
 
