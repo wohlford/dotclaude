@@ -152,6 +152,264 @@ def _skip_comment(text: str, i: int) -> int:
     return i
 
 
+# Characters that end an unquoted heredoc delimiter word.
+_HEREDOC_DELIM_END = " \t\n;&|<>()"
+
+
+def _first_unmatched_quote(text: str) -> int | None:
+    """Index of the quote character that is still open at the end of `text`, or None if balanced.
+
+    Backslash is modelled as escaping, matching what the later passes (and shlex) do — this
+    function exists to predict THEIR reading of the text, not the shell's reading of a heredoc.
+    """
+    i, n = 0, len(text)
+    quote: str | None = None
+    opener: int | None = None
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and quote != "'" and i + 1 < n:
+            i += 2
+            continue
+        if quote is not None:
+            if ch == quote:
+                quote = None
+                opener = None
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            opener = i
+        i += 1
+    return opener
+
+
+def _neutralize_unmatched_quotes(body: str) -> str:
+    """Backslash-escape only the quote characters that would leave `body` unbalanced.
+
+    Escaping every quote in the body is the obvious version and it is a measured REGRESSION: it
+    rewrites bodies that already parse correctly, so `bash <<EOF` carrying `"git" push origin dev`
+    stopped being seen at all (the token became `"git"`, which `is_git` does not match) — a catch
+    that worked before the heredoc pass existed. Touching only unmatched quotes keeps every body
+    that parses today byte-identical, so the only behaviour that can change is the behaviour that
+    was already broken.
+
+    Deleting the offending quote instead of escaping it is the other tempting shortcut, and it is
+    a fail-open: `echo "#" ; git push origin dev` would become `echo # ; git push …`, whose `#`
+    then starts a comment that swallows the push.
+
+    Terminates because each pass escapes one quote character and re-scans; the loop is bounded by
+    the number of quote characters present.
+    """
+    text = body
+    for _ in range(text.count("'") + text.count('"') + 1):
+        idx = _first_unmatched_quote(text)
+        if idx is None:
+            break
+        text = text[:idx] + "\\" + text[idx:]
+    return text
+
+
+def _read_heredoc_delimiter(text: str, i: int) -> tuple[str | None, int]:
+    """Read the delimiter word of a heredoc operator at `i`.
+
+    The delimiter may be quoted (`<<'EOF'`, `<<"EOF"`) or escaped (`<<\\EOF`) — which in a real
+    shell decides whether the BODY is expanded, but never changes where the body ENDS, which is all
+    this pass needs. The quotes are part of the operator, not of the delimiter it names, so they are
+    stripped here to get the terminator text to compare lines against.
+
+    Args:
+        text: The full command string.
+        i: Index of the first character of the delimiter word.
+
+    Returns:
+        The delimiter text and the index just past it, or ``(None, i)`` when no delimiter can be
+        read (an unterminated quote, or nothing there at all) — in which case the caller treats the
+        `<<` as ordinary text rather than guessing.
+    """
+    n = len(text)
+    start = i
+    parts: list[str] = []
+    while i < n:
+        ch = text[i]
+        if ch in _HEREDOC_DELIM_END:
+            break
+        if ch in "'\"":
+            close = text.find(ch, i + 1)
+            if close == -1:
+                return None, start
+            parts.append(text[i + 1 : close])
+            i = close + 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            parts.append(text[i + 1])
+            i += 2
+            continue
+        parts.append(ch)
+        i += 1
+    delim = "".join(parts)
+    return (delim, i) if delim else (None, start)
+
+
+def _consume_heredoc_body(
+    text: str, i: int, delim: str, strip_tabs: bool, out: list[str]
+) -> int:
+    """Copy one heredoc body to `out` with its unmatched quotes neutralised, and return the index
+    just past its terminator line.
+
+    The terminator line is operator text rather than body, so it is copied verbatim — neutralising
+    it could stop a later run from recognising it and swallow the rest of the command.
+
+    An unterminated body (no line ever equals `delim`) consumes the remainder. That tolerates
+    quotes in text the shell would also treat as body, and keeps the text visible; it never hides
+    a command.
+    """
+    n = len(text)
+    body_start = i
+    term_start: int | None = None
+    term_end = n
+    j = i
+    while j < n:
+        eol = text.find("\n", j)
+        line_end = n if eol == -1 else eol
+        line = text[j:line_end]
+        if (line.lstrip("\t") if strip_tabs else line) == delim:
+            term_start = j
+            term_end = n if eol == -1 else eol + 1
+            break
+        if eol == -1:
+            break
+        j = eol + 1
+    body_end = n if term_start is None else term_start
+    out.append(_neutralize_unmatched_quotes(text[body_start:body_end]))
+    if term_start is None:
+        return n
+    # The terminator is operator text, not body — copy it verbatim.
+    out.append(text[term_start:term_end])
+    return term_end
+
+
+def mask_heredoc_quotes(command: str) -> str:
+    """Escape the UNMATCHED quote characters inside each heredoc body, leaving all else alone.
+
+    **A heredoc body is literal text, not a quoting context.** A real shell performs no quote
+    removal on heredoc content, so `'` and `"` in a body are ordinary characters. Modelling them as
+    quoting operators drifts this module's quote state, and the drift is not contained: the body's
+    lone apostrophe made an enclosing `$( … )` look unterminated, so `split_command_contexts` raised
+    and every consumer gate FAILED CLOSED on an innocent command. Measured 2026-07-28 against the
+    heredoc commit form `/commit`'s own SKILL.md prescribes — the plain form passed and an
+    apostrophe-free heredoc passed, so only the combination failed and nothing had ever run it.
+
+    The body is escaped rather than removed **on purpose**. A heredoc body is still ordinary command
+    text to the walk that follows — `bash <<EOF … EOF` really does execute what it carries, and that
+    is caught today — so a pass that made bodies inert would trade a loud false block for a silent
+    bypass. Escaping fixes the parity while leaving every word exactly where it was.
+
+    Only UNMATCHED quotes are touched (see `_neutralize_unmatched_quotes`), which is what keeps this
+    pass from having a blast radius: a body whose quotes already balance comes out byte-identical,
+    so no command that parses today can start parsing differently. Escaping every quote instead was
+    measured to lose a real catch.
+
+    Runs FIRST, ahead of `strip_comments`: a body's quotes must already be inert before any later
+    pass tracks quote state, and comment stripping is itself one of those passes.
+
+    `<<<` is a herestring, not a heredoc, and is deliberately not matched — its operand is ordinary
+    quoted text that the existing scanners already handle.
+
+    Args:
+        command: The raw shell-command string.
+
+    Returns:
+        The command with quote characters inside heredoc bodies backslash-escaped.
+    """
+    out: list[str] = []
+    # (delimiter, strip leading tabs), in the order the operators appeared on the line.
+    pending: list[tuple[str, bool]] = []
+    # Quote state saved at each open command substitution. A `$( … )` body has its OWN quote
+    # context — the same fact `split_command_contexts` relies on — so without this stack the `"` of
+    # `git commit -m "$(cat <<'EOF' … )"` keeps this pass in double-quote mode and it never sees the
+    # heredoc operator at all. That is the reported form, so the stack is not an edge case.
+    contexts: list[str | None] = []
+    i, n = 0, len(command)
+    quote: str | None = None
+    at_word_start = True
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and quote != "'" and i + 1 < n:
+            out.append(command[i : i + 2])
+            i += 2
+            at_word_start = False
+            continue
+        if quote != "'" and command.startswith("$(", i):
+            contexts.append(quote)
+            quote = None
+            out.append("$(")
+            i += 2
+            at_word_start = True
+            continue
+        if quote is None and ch in "<>" and command.startswith("(", i + 1):
+            contexts.append(quote)
+            out.append(command[i : i + 2])
+            i += 2
+            at_word_start = True
+            continue
+        if quote is None and ch == ")" and contexts:
+            quote = contexts.pop()
+            out.append(ch)
+            i += 1
+            at_word_start = False
+            continue
+        if quote is not None:
+            if ch == quote:
+                quote = None
+            out.append(ch)
+            i += 1
+            at_word_start = False
+            continue
+        if ch in "'\"":
+            quote = ch
+            out.append(ch)
+            i += 1
+            at_word_start = False
+            continue
+        # A comment is copied through verbatim: `#` runs to end of line, and a `<<` inside one is
+        # not an operator. Skipping this would let commented-out text open a phantom heredoc.
+        if ch == "#" and at_word_start:
+            end = _skip_comment(command, i)
+            out.append(command[i:end])
+            i = end
+            continue
+        if command.startswith("<<", i) and not command.startswith("<<<", i):
+            j = i + 2
+            strip_tabs = False
+            if j < n and command[j] == "-":
+                strip_tabs = True
+                j += 1
+            k = j
+            while k < n and command[k] in " \t":
+                k += 1
+            delim, past = _read_heredoc_delimiter(command, k)
+            if delim is not None:
+                out.append(command[i:past])
+                pending.append((delim, strip_tabs))
+                i = past
+                at_word_start = False
+                continue
+        if ch == "\n" and pending:
+            # Bodies start on the line AFTER the operators, in the order the operators appeared —
+            # `cat <<A <<B` reads A's body first, then B's.
+            out.append(ch)
+            i += 1
+            for delim, strip_tabs in pending:
+                i = _consume_heredoc_body(command, i, delim, strip_tabs, out)
+            pending = []
+            at_word_start = True
+            continue
+        out.append(ch)
+        at_word_start = ch in " \t\n;&|("
+        i += 1
+    return "".join(out)
+
+
 def fold_continuations(command: str) -> str:
     """Remove backslash-newline continuations, as the shell does before anything else.
 
@@ -563,7 +821,9 @@ def _prepare(text: str, depth: int) -> tuple[str, list[CommandContext]]:
     Raises:
         ValueError: On unbalanced quotes, an unterminated context, or a reserved marker in input.
     """
-    return split_command_contexts(fold_continuations(strip_comments(text)), depth)
+    return split_command_contexts(
+        fold_continuations(strip_comments(mask_heredoc_quotes(text))), depth
+    )
 
 
 def _walk_context(

@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016
 set -uo pipefail
+# SC2016 ("expressions don't expand in single quotes") is inverted for this file: every push_run
+# argument is literal shell text passed as DATA to the guard under test, so `$( )`, backticks and
+# `${}` inside those single quotes ARE the subject -- expanding them would destroy the case being
+# asserted. Pre-existing throughout; audit.sh runs `shellcheck -S warning` and so never saw these
+# info-level notes, while the edit-time style hook has no severity filter and does.
 
 # Script: test_publication_push_guard.sh
 # Purpose: Regression tests for publication-push-guard.py — the fail-closed dev-block gate that
@@ -398,8 +404,38 @@ push_run "$REPO" 'cd '"$ELSEWHERE"' && popd && git push origin dev' 2 \
 push_run "$REPO" 'cd "$(echo '"$ELSEWHERE"')" && git push origin dev' 2 \
   'cd to a substitution target is unresolvable, so the push blocks'
 
+# ---------- heredoc bodies: an apostrophe must not fail this gate CLOSED ----------
+# Measured 2026-07-28: this gate refused `/commit`'s own documented step-7 form with "internal
+# error (ValueError) … failing closed" whenever the subject contained an apostrophe. The trigger was
+# the COMBINATION -- the plain form passed and an apostrophe-free heredoc passed -- which is why it
+# survived seven encounters. All four cells are asserted, not just the one that failed: a fix that
+# broke the three working forms would otherwise still look green.
+push_run "$REPO" 'git commit -m "the path thing"' 0 'heredoc 4-way: plain / no apostrophe'
+push_run "$REPO" 'git commit -m "the path'"'"'s thing"' 0 'heredoc 4-way: plain / apostrophe'
+push_run "$REPO" $'git commit -m "$(cat <<\'EOF\'\nthe path thing\nEOF\n)"' 0 \
+  'heredoc 4-way: heredoc / no apostrophe'
+push_run "$REPO" $'git commit -m "$(cat <<\'EOF\'\nthe path\'s thing\nEOF\n)"' 0 \
+  'heredoc 4-way: heredoc / apostrophe (the reported failure)'
+push_run "$REPO" $'cat <<\'EOF\' > /dev/null\nthe path\'s thing\nEOF\ngit status' 0 \
+  'bare heredoc with an apostrophe no longer false-blocks'
+push_run "$REPO" $'cat <<-\'EOF\' > /dev/null\n\tthe path\'s thing\n\tEOF\ngit status' 0 \
+  'heredoc <<- dash form with an apostrophe no longer false-blocks'
+
+# ---------- PRESERVE: the heredoc fix must not buy a fail-open ----------
+# A heredoc body really is executed when it is fed to a shell, and this gate catches that TODAY.
+# Each row below was measured to BLOCK before the heredoc change; if one goes green, the fix made
+# heredoc bodies inert and opened a silent bypass -- investigate, never relax the assertion.
+push_run "$REPO" $'bash <<EOF\ngit push origin dev\nEOF' 2 \
+  'PRESERVE: a push inside an unquoted heredoc body still blocks'
+push_run "$REPO" $'bash <<\'EOF\'\ngit push origin dev\nEOF' 2 \
+  'PRESERVE: a push inside a quoted heredoc body still blocks'
+push_run "$REPO" $'bash <<EOF\necho "#" ; git push origin dev\nEOF' 2 \
+  'PRESERVE: a quoted # in a body does not comment out the push that follows'
+
 # ---------- limits ----------
 push_run "$REPO" 'x="$(git push origin dev' 2 'unterminated context blocks'
+push_run "$REPO" "git push origin main 'oops" 2 \
+  'a genuinely unbalanced quote (no heredoc) still blocks'
 
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

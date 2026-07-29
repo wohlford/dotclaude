@@ -627,3 +627,128 @@ def test_iter_git_invocations_sees_substitution_nested_push():
     # "wrapper" here means the metadata-free convenience function, NOT shell-wrapper detection.
     subs = [sub for _c, sub, _s in git_command.iter_git_invocations('x="$(git push)"')]
     assert "push" in subs
+
+
+# ---------- heredoc bodies: literal text, not a quoting context ----------
+# In a real shell a heredoc body never undergoes quote removal -- `'` and `"` inside one are
+# ordinary characters. Modelling them as quoting operators drifts the scanner's quote state, so a
+# body containing an apostrophe made the enclosing `$( ... )` look unterminated and every consumer
+# gate failed CLOSED on an innocent command. Measured 2026-07-28 against the heredoc commit form
+# `/commit`'s own SKILL.md prescribes.
+#
+# The fix must not buy that back with a fail-open. A heredoc body is still ordinary command text to
+# this walk -- `bash <<EOF ... EOF` really does execute what it carries -- so the body must stay
+# VISIBLE. The PRESERVE assertions below are as load-bearing as the fix assertions above them, and
+# each was measured to hold BEFORE the fix; if one goes red, the fix bought a bypass.
+
+HEREDOC_APOS = "git commit -m \"$(cat <<'EOF'\nthe path's thing\nEOF\n)\""
+HEREDOC_PLAIN = "git commit -m \"$(cat <<'EOF'\nthe path thing\nEOF\n)\""
+
+
+def _subs(command):
+    return [
+        sub
+        for _d, _c, sub, _s in git_command.iter_git_invocations_with_cwd(
+            command, "/repo"
+        )
+    ]
+
+
+def test_heredoc_four_way_only_the_combination_was_broken():
+    """All four cells, not just the failing one -- otherwise the fix could pass by breaking the
+    three forms that already worked."""
+    cells = {
+        "plain/noapos": 'git commit -m "the path thing"',
+        "plain/apos": 'git commit -m "the path\'s thing"',
+        "heredoc/noapos": HEREDOC_PLAIN,
+        "heredoc/apos": HEREDOC_APOS,
+    }
+    for label, command in cells.items():
+        assert "commit" in _subs(command), label
+
+
+def test_heredoc_apostrophe_does_not_break_the_enclosing_substitution():
+    assert _subs(HEREDOC_APOS).count("commit") == 1
+
+
+def test_bare_heredoc_with_apostrophe_does_not_hide_a_later_invocation():
+    command = "cat <<'EOF' > /tmp/x\nthe path's thing\nEOF\ngit fetch origin main"
+    assert _subs(command) == ["fetch"]
+
+
+def test_heredoc_dash_and_unquoted_delimiter_forms_also_parse():
+    for command in (
+        "cat <<-'EOF'\n\tthe path's thing\n\tEOF\ngit fetch origin main",
+        "cat <<EOF\nthe path's thing\nEOF\ngit fetch origin main",
+    ):
+        assert _subs(command) == ["fetch"], command
+
+
+def test_heredoc_body_is_still_scanned_for_real_invocations():
+    """PRESERVE: a body fed to a shell really is executed. Caught today; a fix that makes heredoc
+    bodies inert would turn this into a silent bypass."""
+    for command in (
+        "bash <<EOF\ngit push origin dev\nEOF",
+        "bash <<'EOF'\ngit push origin dev\nEOF",
+    ):
+        assert "push" in _subs(command), command
+
+
+def test_heredoc_body_quoted_hash_still_shields_a_following_invocation():
+    """PRESERVE: neutralising body quotes by DELETING them lets `#` start a comment that swallows
+    the rest of the line -- a fail-open. Caught today; must stay caught."""
+    command = 'bash <<EOF\necho "#" ; git push origin dev\nEOF'
+    assert "push" in _subs(command)
+
+
+def test_genuinely_unbalanced_quote_outside_a_heredoc_still_raises():
+    """PRESERVE: the fix must not become a blanket tolerance for unbalanced quotes."""
+    with pytest.raises(ValueError):
+        git_command.iter_git_invocations_with_cwd(
+            "git fetch origin main 'oops", "/repo"
+        )
+
+
+def test_heredoc_body_with_a_quoted_git_token_is_still_seen():
+    """Regression, found by probing rather than by the suite: the first version of the heredoc
+    pass escaped EVERY body quote, so `"git"` tokenized as `"git"` and `is_git` stopped matching
+    it -- a catch that worked before the pass existed. Only unmatched quotes may be touched."""
+    command = 'bash <<EOF\n"git" push origin dev\nEOF'
+    assert "push" in _subs(command)
+
+
+def test_balanced_heredoc_body_is_left_byte_identical():
+    """The blast-radius guarantee, asserted directly on the pass rather than inferred from the
+    walk: a body whose quotes already balance must come out unchanged, so no command that parses
+    today can begin parsing differently."""
+    for command in (
+        'bash <<EOF\necho "#" ; git push origin dev\nEOF',
+        'bash <<EOF\n"git" push origin dev\nEOF',
+        "cat <<'EOF'\nplain body\nEOF",
+        "git status",
+    ):
+        assert git_command.mask_heredoc_quotes(command) == command, command
+
+
+def test_mask_heredoc_quotes_only_ever_inserts_backslashes():
+    """Text-preservation: the pass may add escapes and nothing else. Dropping a character here
+    would silently remove a command from the walk."""
+    for command in (
+        "cat <<'EOF'\nit's\nEOF",
+        "cat <<A <<B\na's\nA\nb's\nB",
+        "cat <<'EOF'\nunterminated it's",
+        'sh <<< "it\'s a herestring"',
+    ):
+        masked = git_command.mask_heredoc_quotes(command)
+        assert masked.replace("\\", "") == command.replace("\\", ""), command
+
+
+def test_mask_heredoc_quotes_is_idempotent():
+    """`_prepare` re-runs the pass on every extracted context, so a heredoc inside `$( … )` is
+    masked twice; growth across runs would corrupt the body."""
+    for command in (
+        "cat <<'EOF'\nit's\nEOF",
+        "git commit -m \"$(cat <<'EOF'\nit's\nEOF\n)\"",
+    ):
+        once = git_command.mask_heredoc_quotes(command)
+        assert git_command.mask_heredoc_quotes(once) == once, command

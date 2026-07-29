@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.60.1 — 2026-07-28
+- fix(git_command): stop a heredoc body drifting the quote state
+
 ## v0.60.0 — 2026-07-28
 - feat(propagate): wire the preflight into the publish start-invariant
 
