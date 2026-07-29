@@ -48,6 +48,10 @@ class Handler(Protocol):
     """Protocol for handlers: discover source files, then render the index body."""
 
     name: str
+    # Directives this handler actually reads. Anything else in a marker is
+    # rejected before discover() rather than silently ignored, so a handler
+    # that grows a directive must declare it here to accept it.
+    supported: frozenset[str]
 
     def discover(
         self,
@@ -240,6 +244,7 @@ class SkillsHandler:
     """Index skills/*/SKILL.md files as a Command/Purpose table."""
 
     name = "skills"
+    supported = frozenset({"cols", "extract", "filter", "sort"})
 
     def discover(
         self,
@@ -331,6 +336,7 @@ class AgentsHandler:
     """Index agents/*.md definition files as an Agent/Purpose table."""
 
     name = "agents"
+    supported = frozenset({"cols", "extract", "filter", "sort"})
 
     def discover(
         self,
@@ -419,6 +425,7 @@ class PluginsHandler:
     """Index enabled plugins from settings.json's enabledPlugins map."""
 
     name = "plugins"
+    supported = frozenset({"cols", "sort"})
 
     def discover(
         self,
@@ -496,6 +503,7 @@ class HooksHandler:
     """Index hook entries from settings.json, pulling each script's Purpose header."""
 
     name = "hooks"
+    supported = frozenset({"cols"})
 
     def discover(
         self,
@@ -610,6 +618,7 @@ class ScriptsHandler:
     """Index scripts/*.sh and scripts/*.py as a Script/Purpose table."""
 
     name = "scripts"
+    supported = frozenset({"cols", "extract", "sort"})
 
     def discover(
         self,
@@ -685,6 +694,9 @@ class IndexHandler:
     """Index a directory's children (files and/or dirs) as an Entry/Summary table."""
 
     name = "index"
+    supported = frozenset(
+        {"extensions", "kind", "limit", "pattern", "sort", "summary-from"}
+    )
 
     def discover(
         self,
@@ -836,6 +848,7 @@ class CustomHandler:
     """
 
     name = "custom"
+    supported = frozenset({"cols", "extract", "sort", "source"})
 
     def discover(
         self,

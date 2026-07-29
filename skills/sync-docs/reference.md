@@ -39,18 +39,32 @@ Close markers carry no directives. Mismatched handler name in close marker → p
 
 ## Common directives
 
-| Directive | Meaning | Example |
-| :--- | :--- | :--- |
-| `filter` | Subset source files by metadata field (**`skills` and `agents` handlers only** — see below) | `filter=category:extraction` |
-| `cols` | Column list with role annotations | `cols=Agent:key,"Used by":manual,Purpose:auto` |
-| `sort` | Sort order | `sort=date,desc` |
-| `limit` | Max entries shown | `limit=30` |
-| `mode` | `sync` (default) or `lint` (drift-report only) | `mode=lint` |
-| `lint` | Granularity when `mode=lint`: `rows` (default), `content`, `both` | `lint=rows` |
-| `summary-from` | Where to pull a one-line summary per entry | `summary-from=README.md` |
-| `extract` | Override default extractor chain | `extract=heading-meta` |
-| `extensions` | For `index` handler, file extensions to include | `extensions=md,txt` |
-| `pattern` | Regex over basename for filtering entries | `pattern="^\d{4}-\d{2}-\d{2}"` |
+**A directive is only legal on a handler that implements it.** Each handler declares its supported
+set (`Handler.supported`); anything else in a marker is a **hard error naming the offending
+directive and listing what that handler does support** — exit 2, nothing rewritten. A directive
+nothing honors must never pass silently, so there is no "accepted but ignored" state to fall into.
+`mode` and `lint` are consumed by the generic layer and are therefore legal everywhere.
+
+The "Supported by" column names handlers explicitly rather than saying "all except X", because a
+test parses these cells and compares them to the declared sets — a complement phrase would read as
+its own opposite to that parser and would verify nothing. Two contracts keep this table honest:
+declaration ↔ implementation (each handler's real directive reads, derived from its source), and
+this table ↔ declaration. Neither side is a hand-checked copy.
+
+| Directive | Meaning | Supported by | Example |
+| :--- | :--- | :--- | :--- |
+| `cols` | Column list with role annotations | `skills`, `agents`, `plugins`, `hooks`, `scripts`, `custom` | `cols=Agent:key,"Used by":manual,Purpose:auto` |
+| `sort` | Sort order | `skills`, `agents`, `plugins`, `scripts`, `index`, `custom` | `sort=date,desc` |
+| `extract` | Override default extractor chain | `skills`, `agents`, `scripts`, `custom` | `extract=heading-meta` |
+| `filter` | Subset source files by metadata field (see below) | `skills`, `agents` | `filter=category:extraction` |
+| `source` | Glob of files to discover, relative to repo root | `custom` | `source=docs/posts/*.md` |
+| `kind` | Whether to index `files`, `dirs`, or both | `index` | `kind=dirs` |
+| `limit` | Max entries shown | `index` | `limit=30` |
+| `summary-from` | Where to pull a one-line summary per entry | `index` | `summary-from=README.md` |
+| `extensions` | File extensions to include | `index` | `extensions=md,txt` |
+| `pattern` | Regex over basename for filtering entries | `index` | `pattern="^\d{4}-\d{2}-\d{2}"` |
+| `mode` | `sync` (default) or `lint` (drift-report only) | every handler | `mode=lint` |
+| `lint` | Granularity when `mode=lint`: `rows` (default), `content`, `both` | every handler | `lint=rows` |
 
 ## Built-in handlers
 
@@ -68,7 +82,7 @@ The `index` handler accepts: `kind=dirs|files|all` (default `all`), `extensions=
 
 ### `filter` — implemented by `skills` and `agents` only
 
-Only the `skills` and `agents` handlers honor `filter=field:value`. `custom`, `scripts`, `hooks`, `plugins`, and `index` silently ignore the directive if present — the table above lists `filter` as a common directive, but it is only common in name; `filter` is not implemented for those other five handlers.
+Only the `skills` and `agents` handlers implement `filter=field:value`. On `custom`, `scripts`, `hooks`, `plugins`, and `index` it is now a **hard error** naming the directive and listing what that handler does support — those five used to accept and silently discard it, which is the fail-open this rule exists to close. The remainder of this section describes `filter=`'s behavior on the two handlers that implement it.
 
 Matching rule: a boolean frontmatter value (`true`/`false`) compares case-insensitively against the filter's value, since frontmatter `true` extracts as Python `True`, not the string `"true"`. Every other value is compared as `str(value)` and is **case-sensitive** — `filter=category:extraction` does not match a field valued `Extraction`. Surrounding whitespace in the filter's value is ignored on both paths. A field the extractor did not yield at all never matches.
 

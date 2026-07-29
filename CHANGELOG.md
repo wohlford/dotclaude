@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.58.5 — 2026-07-28
+- fix(sync-docs): reject a directive the handler cannot honor
+
 ## v0.58.4 — 2026-07-28
 - docs(CLAUDE.md): add the stale-tooling hazard and a measured instance
 

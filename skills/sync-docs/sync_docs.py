@@ -179,6 +179,13 @@ def _detect_lint_drift(
     return "; ".join(parts) if parts else "rows differ"
 
 
+# Directives consumed by this generic layer rather than by any handler, so they
+# are legal on every block. Every other directive must be declared by the
+# handler that receives it (see Handler.supported) or it is an error: a
+# directive the author wrote and nothing honors must never pass silently.
+GENERIC_DIRECTIVES = frozenset({"mode", "lint"})
+
+
 def process_file(
     path: Path,
     repo_root: Path,
@@ -232,6 +239,24 @@ def process_file(
                     )
                 )
                 continue
+        # Reject a directive this handler cannot honor. Checked against the
+        # marker's OWN directives (not the config-injected ones) because this
+        # is about what the author wrote and expects to take effect. Allowlist,
+        # not blocklist: anything the handler does not declare is an error.
+        supported = frozenset(getattr(handler, "supported", frozenset()))
+        unsupported = set(block.directives) - supported - GENERIC_DIRECTIVES
+        if unsupported:
+            allowed = ", ".join(sorted(supported | GENERIC_DIRECTIVES))
+            doc.errors.append(
+                markers.ParseError(
+                    f"sync:{block.handler} does not implement "
+                    f"{', '.join(sorted(unsupported))}= — it would be silently "
+                    f"ignored; supported here: {allowed}",
+                    block.open_line,
+                )
+            )
+            continue
+
         try:
             sources = handler.discover(repo_root, path.parent, directives)
             new_body = handler.render(sources, directives, block.body_lines)
