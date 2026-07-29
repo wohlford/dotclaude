@@ -133,8 +133,14 @@ it passes about four members, and a hazard with no measured instance does not be
 
 #### It ran, but not on what you think
 
-- **Before believing a FAIL, confirm the probe reached the subject.** A gate that "did not fire" had
-  been handed a shell variable it could not resolve, and blocked instantly on a literal path.
+- **Before believing a probe's verdict — FAIL *or* PASS — confirm it reached the subject, and that
+  your ENVIRONMENT did not answer for it.** An unresolvable shell variable produces both errors, since
+  a tool sees the command text *unexpanded*: one gate blocked on the literal path (a FAIL about
+  nothing), another allowed because the lookup keyed on it came back empty (a PASS about nothing). A
+  shell with no TTY does it too — a card-backed key cannot prompt for its PIN, so the agent REFUSES,
+  byte-identical to a rejected credential; "auth is down, go fix the card" was reported for a card
+  that was present and unlocked. All measured. The clean run is the dangerous one — nobody
+  investigates it.
 - **A checker that resolves its helpers relative to itself grades your branch with the OLD tools.**
   So a change *to* the tooling is judged by the copy it replaces — the verdict is **true**, just
   about a different question than you asked, and it reads GREEN whenever the installed copy is the
@@ -186,6 +192,13 @@ it passes about four members, and a hazard with no measured instance does not be
   nothing validated *any* directive against its handler, so a *documented* one was ignored by six of
   seven. One declared allowlist closed every case plus future typos; building the entry as written
   would have left the larger hole open and added five more places to forget.
+- **A gate that fails CLOSED on an INTERNAL ERROR has not judged your command — it never evaluated
+  it.** The refusal reads exactly like a policy block, so the natural response, reach for the
+  override, aims at a gate that was not objecting to anything. Seen: a commit refused with *"internal
+  error (ValueError) while evaluating it; failing closed"*, triggered by an apostrophe inside the
+  heredoc form the repo's own commit skill prescribes — the plain form passed, an apostrophe-free
+  heredoc passed, so only the combination failed and nothing had ever run it. Ask whether the tool
+  reached a verdict before believing the verdict.
 
 #### Building a check that holds
 
