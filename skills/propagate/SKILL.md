@@ -243,9 +243,37 @@ brick. Brick **boundaries** are judgment — the same brick-boundary discipline 
 skill and its regenerated `sync-docs` index entry in the same brick; a shebang file and its exec bit
 in the same brick) — but brick **application**, once the boundary is chosen, is mechanical.
 
-1. **Start-invariant + crash recovery.** Before anything else, **fetch** and assert **local `main` ==
-   `origin/main`** — the fetch is mandatory, since comparing against a stale cached `origin/main`
-   would let a half-finished publish pass unnoticed:
+1. **Start-invariant + crash recovery.** Before anything else, run the scripted preflight — it
+   encodes this step's assertions, and step 2's ancestry check, once instead of re-deriving their
+   ordering by hand on every publish:
+
+   ```bash
+   ./scripts/publish-preflight.sh
+   ```
+
+   **Run the copy belonging to the repo being published, and say which copy gave the verdict.** A
+   publish that changes the preflight must be judged by the version it is publishing, never by the
+   installed copy it is about to replace. Prefer `<repo>/scripts/publish-preflight.sh`; failing that,
+   `~/.claude/scripts/publish-preflight.sh --scope <repo>`. An adopted repo carrying neither still
+   publishes — assert by hand from the specification below, which is what the script automates.
+
+   **Proceed only on `RESULT: PASS rc=0`**, the script's last line of stdout. `FAIL`, `ERROR`,
+   `INCOMPLETE`, and an **absent** line are each a failure to prove the invariant — an allowlist, so
+   any value not named here is not-clean. **The absent line is the one to watch:** it means the run
+   died having established nothing about the remote, and a killed run reads as quiet to every cheap
+   instrument. Never infer the verdict from missing `FAIL` lines or from the harness's account of the
+   exit code. A `SKIP` never blocks — `auth` skips when no terminal can take a card PIN prompt, which
+   is a statement about the shell, not about the credentials.
+
+   **The script verifies; every recovery below stays yours to run.** On a failure it prints the
+   prescribed commands and deliberately executes none of them — recoveries delete tags, reset
+   branches, and move the watermark, exactly the mutating class this path keeps foreground and
+   human-checkpointed. It also refuses a dirty working tree and an empty `watermark..dev` range;
+   both block this path further down, and failing here is cheaper than failing mid-apply.
+
+   The rest of this step is what the preflight asserts — and the manual fallback when it is absent.
+   **Fetch** and assert **local `main` == `origin/main`** — the fetch is mandatory, since comparing
+   against a stale cached `origin/main` would let a half-finished publish pass unnoticed:
 
    ```bash
    git fetch origin main
@@ -297,6 +325,10 @@ in the same brick) — but brick **application**, once the boundary is chosen, i
    ```bash
    git merge-base --is-ancestor "$watermark" dev
    ```
+
+   Step 1's preflight already asserted this as its `watermark-ancestor` check, so a `RESULT: PASS`
+   there covers it. Re-run it by hand only when the preflight was unavailable — or when `dev` moved
+   after it ran, which a long foreground re-derivation makes possible.
 
    **Fold** a fix into the brick it fixes **when that brick is also unpublished** (after the
    watermark); a fix targeting **already-published** work becomes **its own new brick** instead —
