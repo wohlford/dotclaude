@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.61.2 — 2026-07-29
+- fix(publication-push-guard): log what an internal error was evaluating
+
 ## v0.61.1 — 2026-07-29
 - docs(CLAUDE.md): equal counts are not equal sets
 

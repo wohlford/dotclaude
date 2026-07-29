@@ -73,19 +73,41 @@ Exit codes:
   2 — block: EITHER an adopted repo's push targets `dev` (directly, via a tag, or ambiguously) OR
       the repo the push targets could not be determined at all (root-unknown blocks regardless of
       marker, adopted or not) — stderr names this guard so a runbook can grep for it specifically.
+
+Internal-error diagnostics. A block from the INTERNAL-error branch is categorically different from
+the two above: it is a BUG in this guard, not a judgement about the command, and it is indisputably
+reachable — it fired twice on 2026-07-29 against ordinary non-push commands. Because that branch
+used to report only the exception's class name, each occurrence was undiagnosable by construction
+(six reproduction attempts came back clean for want of the input). It now appends the offending
+command verbatim, plus cwd, size, sha256 and traceback, to `~/.claude/logs/` — override with
+$PUBLICATION_PUSH_GUARD_LOG, which every test that drives this branch MUST set so suite runs do not
+bury a rare genuine fault under synthetic records. Recording can never change the verdict: it is
+contractually non-raising, and a failure to record is reported on stderr rather than swallowed.
 """
 
 from __future__ import annotations
 
+import datetime
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 from types import ModuleType
 
 PREFIX = "publication-push-guard:"
+
+# Where a fail-closed INTERNAL error records what it was evaluating. Outside every repo on purpose:
+# a path under the guard's own directory would drop an untracked file into the repo being guarded,
+# where it would show up in `git status` and in audit sweeps. `PUBLICATION_PUSH_GUARD_LOG`
+# overrides it (the suite relies on that to avoid writing to the real one).
+LOG_ENV_VAR = "PUBLICATION_PUSH_GUARD_LOG"
+DEFAULT_LOG_PATH = (
+    Path.home() / ".claude" / "logs" / "publication-push-guard-errors.log"
+)
 
 # Cheap pre-filter: a standalone "git" word anywhere in the command. Deliberately broad — it
 # only decides whether the more expensive,
@@ -613,6 +635,49 @@ def _find_block_reason(command: str, cwd: str) -> str | None:
     return None
 
 
+def _record_internal_error(command: str, cwd: str, exc: BaseException) -> str | None:
+    """Append a diagnostic for a fail-closed INTERNAL error. Returns the log path, or None.
+
+    The internal-error branch in `main` is the one refusal this guard cannot explain from its own
+    output: it names the exception class and nothing else. Measured twice on 2026-07-29, it refused
+    two legitimate non-push commands, and six reproduction attempts all came back clean — the
+    failure path had discarded its only evidence, making a recurring fault undiagnosable by
+    construction.
+
+    Recording the command VERBATIM is the entire point. A length+digest fingerprint cannot be read
+    back into a reproduction, and reproduction is precisely the step that was blocked; the digest is
+    kept alongside only so two occurrences can be compared at a glance. This adds no new class of
+    exposure — the session transcript under ~/.claude/projects/ already stores every Bash command
+    verbatim on the same disk — but the file is still opened 0600 rather than inheriting the umask.
+
+    NEVER raises, for any input or filesystem state. This runs inside a fail-closed security gate's
+    except branch, so a diagnostic that could throw would hand that gate a brand-new failure mode in
+    exchange for nothing. Every failure to record degrades to None and is reported to stderr.
+    """
+    try:
+        override = os.environ.get(LOG_ENV_VAR)
+        path = Path(override) if override else DEFAULT_LOG_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        raw = command.encode("utf-8", "replace")
+        stamp = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+        record = (
+            f"===== {stamp} {exc.__class__.__name__} =====\n"
+            f"cwd: {cwd}\n"
+            f"bytes: {len(raw)}  sha256: {hashlib.sha256(raw).hexdigest()}\n"
+            f"--- command (verbatim) ---\n{command}\n"
+            f"--- traceback ---\n"
+            + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        )
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, record.encode("utf-8", "replace"))
+        finally:
+            os.close(fd)
+        return str(path)
+    except Exception:  # noqa: BLE001 - a diagnostic must never add a failure mode to the gate
+        return None
+
+
 def main() -> int:
     """Hook entry point: 2 blocks the push, 0 allows it."""
     try:
@@ -640,11 +705,27 @@ def main() -> int:
     try:
         reason = _find_block_reason(command, cwd)
     except Exception as exc:  # noqa: BLE001 - deliberate: any crash here must fail CLOSED
+        # Record BEFORE printing: the verdict must not depend on the diagnostic succeeding, and the
+        # operator needs the path in the same breath as the refusal. `_record_internal_error` is
+        # contractually non-raising, so nothing here can convert a block into a crash.
+        log_path = _record_internal_error(command, cwd, exc)
         print(
             f"{PREFIX} refusing to allow a git command after an internal error "
             f"({exc.__class__.__name__}) while evaluating it; failing closed.",
             file=sys.stderr,
         )
+        if log_path is not None:
+            print(
+                f"{PREFIX} the offending command and its traceback were recorded at {log_path} "
+                f"— this refusal is a BUG in the guard, not a policy decision about your command.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"{PREFIX} could not record a diagnostic; set {LOG_ENV_VAR} to a writable path "
+                f"to capture the next occurrence.",
+                file=sys.stderr,
+            )
         return 2
 
     if reason is not None:

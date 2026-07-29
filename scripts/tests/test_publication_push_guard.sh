@@ -22,6 +22,15 @@ guard="$repo_root/scripts/publication-push-guard.py"
 sandbox="$(mktemp -d)"
 trap 'rm -rf "$sandbox"' EXIT
 
+# Redirect the guard's internal-error diagnostic into the sandbox for EVERY row in this file, not
+# just the rows that exercise it deliberately. Several long-standing cases below feed deliberately
+# unbalanced quotes ('unterminated context blocks', 'a genuinely unbalanced quote') -- those raise a
+# real ValueError inside the guard and so land on its internal-error branch. Without this export
+# they append to the OPERATOR's real log at ~/.claude/logs/, and because an edit-time hook runs this
+# suite on every edit to the guard, the one file meant to capture a rare genuine fault fills up with
+# synthetic test records instead. Measured: 12 such records, from 4 suite runs, before this line.
+export PUBLICATION_PUSH_GUARD_LOG="$sandbox/guard-internal-errors.log"
+
 pass=0
 fail=0
 
@@ -73,6 +82,88 @@ build_elsewhere() {
   gi "$ELSEWHERE" add -A >/dev/null 2>&1
   gi "$ELSEWHERE" commit -q -m init >/dev/null 2>&1
 }
+
+# ---------- internal-error diagnostics ----------
+# Force a REAL exception out of the guard's LAZY `git_command` import by giving a sandbox copy of
+# the guard a sibling lib/ whose git_command raises at import time. That drives the guard's own
+# fail-closed except branch with a genuine exception rather than a monkeypatch, so these rows
+# exercise the shipped code path. (The guard does `sys.path.insert(0, <its own dir>/lib)`, so the
+# sandbox's lib wins -- PYTHONPATH could not shadow it.)
+#
+# WHY THESE EXIST: measured twice on 2026-07-29, the guard refused two legitimate non-push commands
+# with "internal error (ValueError) ... failing closed" and recorded NOTHING about what it was
+# evaluating. Six reproduction hypotheses all came back clean, because the failure path discards its
+# only evidence. The trigger is still unknown -- that is precisely what these rows are for.
+forced_error_guard() { # label -> sets FE_DIR, FE_GUARD, FE_LOG
+  FE_DIR="$(mktemp -d)"
+  mkdir -p "$FE_DIR/lib"
+  cp "$guard" "$FE_DIR/"
+  printf 'raise ValueError("forced %s")\n' "$1" >"$FE_DIR/lib/git_command.py"
+  FE_GUARD="$FE_DIR/publication-push-guard.py"
+  FE_LOG="$FE_DIR/errors.log"
+}
+
+assert_contains() { # haystack needle label
+  if printf '%s' "$1" | grep -qF -- "$2"; then
+    printf 'PASS  %s\n' "$3"
+    pass=$((pass + 1))
+  else
+    printf 'FAIL  %s (missing: %s)\n' "$3" "$2"
+    fail=$((fail + 1))
+  fi
+}
+
+# The command carries a distinctive marker so we can prove the RECORD is of THIS command and not
+# some generic string the guard would have emitted regardless.
+FE_CMD='git status --short # marker-Xy7Qz-unique'
+
+forced_error_guard 'stderr case'
+fe_err="$(push_json "$FE_CMD" "$PWD" \
+  | PUBLICATION_PUSH_GUARD_LOG="$FE_LOG" python3 "$FE_GUARD" 2>&1 >/dev/null)"
+fe_rc=0
+push_json "$FE_CMD" "$PWD" \
+  | PUBLICATION_PUSH_GUARD_LOG="$FE_LOG" python3 "$FE_GUARD" >/dev/null 2>&1 || fe_rc=$?
+
+# PRESERVE: adding diagnostics must not change the verdict. This gate is fail-closed by design.
+assert_eq "$fe_rc" 2 'internal error still fails CLOSED with diagnostics enabled'
+# The primary refusal line must survive verbatim -- a runbook greps for it.
+assert_contains "$fe_err" 'internal error (ValueError)' 'internal error still names the exception type'
+# NEW: stderr must point at the recorded diagnostic, or the operator has nowhere to look.
+assert_contains "$fe_err" "$FE_LOG" 'stderr names the diagnostic log path'
+
+# NEW: the log must record the COMMAND ITSELF -- the whole point. A hash alone cannot be read back
+# into a reproduction, and reproduction is the blocked step.
+fe_log_body="$(cat "$FE_LOG" 2>/dev/null || printf '(no log written)')"
+assert_contains "$fe_log_body" 'marker-Xy7Qz-unique' 'log records the offending command verbatim'
+assert_contains "$fe_log_body" 'ValueError' 'log records the exception type'
+assert_contains "$fe_log_body" 'Traceback' 'log records a traceback for the raising frame'
+rm -rf "$FE_DIR"
+
+# PRESERVE (property): a fail-closed gate must not acquire a NEW way to fail. If the diagnostic
+# write itself throws, the verdict must be unchanged and the primary refusal must still print.
+# Logging is strictly additive.
+#
+# The path must be GENUINELY unwritable, which is fussier than it looks: the recorder calls
+# `mkdir(parents=True)`, so a merely ABSENT directory is created on the spot and the write succeeds.
+# A first draft used "$FE_DIR/nonexistent-dir/nope/errors.log" and passed both before AND after the
+# fix, and survived a mutation that deleted the non-raising contract outright -- it asserted
+# nothing. Rooting the path at a regular FILE is what makes mkdir fail (NotADirectoryError), and
+# that mutation was then caught. Do not "simplify" this back to a missing directory.
+forced_error_guard 'unwritable log case'
+printf 'not a directory\n' >"$FE_DIR/blocker"
+FE_BAD_LOG="$FE_DIR/blocker/errors.log"
+fe_rc2=0
+fe_err2="$(push_json "$FE_CMD" "$PWD" \
+  | PUBLICATION_PUSH_GUARD_LOG="$FE_BAD_LOG" python3 "$FE_GUARD" 2>&1 >/dev/null)" || true
+push_json "$FE_CMD" "$PWD" \
+  | PUBLICATION_PUSH_GUARD_LOG="$FE_BAD_LOG" python3 "$FE_GUARD" >/dev/null 2>&1 || fe_rc2=$?
+assert_eq "$fe_rc2" 2 'unwritable diagnostic log still fails CLOSED'
+assert_contains "$fe_err2" 'internal error (ValueError)' \
+  'unwritable diagnostic log still prints the primary refusal'
+# And it must SAY it could not record, rather than naming a path that holds nothing.
+assert_contains "$fe_err2" 'could not record a diagnostic' \
+  'unwritable diagnostic log is reported as unrecorded, not silently claimed'
+rm -rf "$FE_DIR"
 
 # ================= BLOCKED: adopted repo, dev-spanning plain refspecs =================
 build_repo 1
