@@ -90,6 +90,7 @@ Wondering how the pieces fit — what takes effect where, and what owns what? Se
 | PostToolUse | `Edit\|Write`                        | `audit-test.sh`                  | PostToolUse hook — run the audit engine test suite when the engine or its suite changes                                        |
 | PostToolUse | `Edit\|Write`                        | `commit-subject-test.sh`         | PostToolUse hook — run the commit-subject suites, and py39-compat on any scripts/*.py edit                                     |
 | PostToolUse | `Edit\|Write`                        | `publication-push-guard-test.sh` | PostToolUse hook — run the publication-push-guard suite when the guard, its suite, or the shared git_command tokenizer changes |
+| PostToolUse | `Edit\|Write`                        | `debrief-backlog-test.sh`        | PostToolUse hook — run the debrief backlog-helper suite when its Python changes                                                |
 <!-- /sync:hooks -->
 
 ### Plugins

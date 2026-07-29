@@ -119,6 +119,10 @@
             "type": "command",
             "command": "$HOME/.claude/scripts/publication-push-guard-test.sh",
             "timeout": 600
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/debrief-backlog-test.sh"
           }
         ]
       }

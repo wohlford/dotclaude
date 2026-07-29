@@ -51,6 +51,10 @@ those remain manual steps for the user.
      (`promoted <YYYY-MM-DD>`) so a later debrief can see it was already called up and flag the
      stall in its hand-off, rather than re-reading it as freshly deferred.
 
+   **Make every one of those write-backs with `backlog.py`, never a hand-written script** — see
+   **Editing BACKLOG.md** below. Five sessions in a row hand-rolled one, and one of them corrupted
+   the file.
+
    Never implement a promoted item here; name it in the step-7 hand-off as the next session's
    first job.
 
@@ -121,7 +125,9 @@ those remain manual steps for the user.
         ```
 
         Record why the work *matters*, not why the debrief didn't build it — that reason is
-        always the same and carries no signal.
+        always the same and carries no signal. Append it with `backlog.py … add` (see **Editing
+        BACKLOG.md**), which places it under `## Open` and refuses a head that would not be
+        uniquely addressable by a later step 0.
 
    4. **Return to the base branch, always** (the branch checked out before `/feature --plan-only`
       created the feature branch). `/feature --plan-only` creates a feature branch and
@@ -155,6 +161,34 @@ those remain manual steps for the user.
    2. Exit Claude.
    3. Restart Claude to reload configuration.
 
+### Editing BACKLOG.md
+
+**Every write to `BACKLOG.md` goes through `~/.claude/skills/debrief/backlog.py`.** Do not hand-roll
+a script for it, and do not edit the file with Edit/Write — the helper is the only writer that
+checks its own work, and the four commands cover every place this routine mutates the file:
+
+```bash
+B=<the session memory directory>/BACKLOG.md
+# step 5 — file a new deferral (whole entry on stdin: a `- [ ] ` head plus indented body)
+~/.claude/skills/debrief/backlog.py --path "$B" add < entry.md
+# step 0 — record evidence on an entry, whatever its disposition
+~/.claude/skills/debrief/backlog.py --path "$B" append 'a substring of one head' < note.md
+# step 0 — promote (stamp in place; re-stamping replaces rather than accumulates)
+~/.claude/skills/debrief/backlog.py --path "$B" promote 'a substring of one head' \
+  --date 2026-01-31 --reason 'WHY IT WAS CALLED UP'
+# step 0 — drop (tick, append the note, move under `## Closed`)
+~/.claude/skills/debrief/backlog.py --path "$B" close 'a substring of one head' < note.md
+```
+
+A **keep** writes nothing at all. The needle must match exactly one *open* entry's head line;
+matching none or several exits 1 rather than guessing. Each command reports the resulting
+open/closed counts, and refuses — leaving the file byte-identical — if the edit's actual effect
+differs from what the operation declared, if a note lands outside the entry it was addressed to, or
+if the result would strand an entry on the wrong side of `## Closed`.
+
+Reach for the Python API (`from backlog import Backlog`) only when several edits must land as one
+transaction; `save()` is the sole writer either way, so the checks cannot be skipped.
+
 ### Arguments
 
 The user may optionally name a specific automation to design (e.g. `/debrief, and design the
@@ -184,6 +218,9 @@ design nor any other argument — it runs the routine to completion and skips st
 - **The backlog is private and repo-external.** `BACKLOG.md` and the per-deferral memory files
   live in the session's memory directory — never in a repo, which keeps them out of public
   history and off the propagate path. Only repo files need committing in step 6.
+- **`backlog.py` is the only writer to `BACKLOG.md`** (see **Editing BACKLOG.md**) — never a
+  hand-written script, never Edit/Write. The file is outside every repo, so a corrupting edit has
+  no history to recover from; the helper's postconditions are what stand in for that.
 - In step 3, follow the memory protocol: one fact per file with frontmatter and a
   `MEMORY.md` pointer line; update an existing memory file rather than duplicating it.
 - In step 5, `/feature` owns its own artifact convention (spec/plan under `specs/`/`plans/`) and

@@ -57,6 +57,7 @@ write_stub_suite() {
 # depend on, so its unit suite is exactly the self-concealing deletion this change targets.
 CASES="
 audit|audit-test.sh|skills/audit/audit.sh|scripts/tests/test_audit.sh
+debrief-backlog|debrief-backlog-test.sh|skills/debrief/backlog.py|skills/debrief/tests/test_stub.py
 exec-bit|exec-bit-guard-test.sh|scripts/exec-bit-guard.sh|scripts/tests/test_exec_bit_guard.sh
 guard-secrets|guard-secrets-test.sh|scripts/guard-secrets.sh|scripts/tests/test_guard_secrets.sh
 markdownlint|markdownlint-check-test.sh|scripts/markdownlint-check.sh|scripts/tests/test_markdownlint_check.sh
