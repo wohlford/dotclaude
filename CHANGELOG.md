@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.60.6 — 2026-07-28
+- docs(CLAUDE.md): pair a derived input with a declared floor
+
 ## v0.60.5 — 2026-07-28
 - docs(CLAUDE.md): index PIPESTATUS by position, not [0]
 

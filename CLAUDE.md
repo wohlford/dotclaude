@@ -221,10 +221,13 @@ it passes about four members, and a hazard with no measured instance does not be
   move, needing nothing from the tool — ask **"what can I observe without this thing's cooperation?"**
   before "how do I word this better?". All three failures defaulted to *proceed*.
 - **Clear by allowlist, since a blocklist admits every value you forgot.**
-- **Derive an input from what you already asserted rather than checking a hand-made copy.** Seen
-  twice in one session: a gate's hand-listed file set went stale and waved through a file nobody
-  checked, and a "durable" test hand-copied the very key it existed to guard — so it would not have
-  failed if that key were renamed.
+- **Derive an input from what you already asserted rather than checking a hand-made copy — but pair
+  the derivation with a declared FLOOR, since discovery cannot detect ABSENCE.** Seen twice in one
+  session: a gate's hand-listed file set went stale and waved through a file nobody checked, and a
+  "durable" test hand-copied the very key it existed to guard — so it would not have failed if that
+  key were renamed. The converse bites too: a glob replacing such a list covers whatever you forget
+  to ADD, and silently stops covering whatever anyone REMOVES — it matches one fewer file and
+  reports success. Name the members whose absence must alarm; let the glob only ever add to them.
 - **When you mutate a document programmatically, assert the SHAPE of the edit — not just that you
   found the right spot.** A script that located an entry by its first line, then scanned forward for
   a `→ [[link]]` sentinel to find its last, moved THREE entries and reattached a note to the wrong
