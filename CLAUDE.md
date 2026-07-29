@@ -199,6 +199,15 @@ it passes about four members, and a hazard with no measured instance does not be
   heredoc form the repo's own commit skill prescribes — the plain form passed, an apostrophe-free
   heredoc passed, so only the combination failed and nothing had ever run it. Ask whether the tool
   reached a verdict before believing the verdict.
+- **A suite you wrote for your own fix confirms what you thought of — not that the fix is safe.**
+  Ten assertions written for one change, three of them PRESERVE rows verified green *before* it, all
+  passed while that fix silently removed a live catch from a fail-closed gate; the regression sat in
+  the one shape nobody had listed, and the author is the last person able to list it. What found it
+  was a PROPERTY quantified over inputs nobody chose — *may only insert escapes*, *is idempotent*,
+  *4000 random inputs*, *the blocked thing stays blocked*. The repair was to shrink the change until
+  the property held: touch only what is already broken, so everything that works today comes out
+  byte-identical. **When a change's safety is a claim about ALL inputs, assert the claim, not a
+  handful of witnesses to it.**
 
 #### Building a check that holds
 
