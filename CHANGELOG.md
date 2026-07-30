@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.64.1 — 2026-07-29
+- docs(publish-preflight): restate what stays foreground and unscripted
+
 ## v0.64.0 — 2026-07-29
 - feat(propagate): route the publish path through the brick engine
 

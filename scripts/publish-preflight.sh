@@ -5,10 +5,12 @@ set -uo pipefail
 # Purpose: Verify /propagate's publish start-invariant before any brick is applied, tagged, or pushed
 # Usage: publish-preflight.sh [--scope <path>]
 #
-# Scope: this script verifies. Steps 2-7 of the publish path (re-derivation, cherry-pick, tag,
-# push, watermark advance) stay foreground and human-checkpointed — scripting them would raise
-# blast radius and remove the per-brick checkpoint. Where a failure has a prescribed recovery,
-# this prints the commands for the operator to run; it never runs them.
+# Scope: this script verifies; it applies nothing. Brick application is `publish-brick.sh`'s job —
+# ONE brick per invocation, so the per-brick checkpoint that made this path reviewable survives
+# while the verdict-reading a human does wrong under repetition became mechanical. What stays
+# foreground and unscripted is the irreversible tail: step 6's push and step 7's watermark advance.
+# Where a failure has a prescribed recovery, this prints the commands for the operator to run; it
+# never runs them.
 #
 # It performs exactly ONE state-changing operation, and only because the invariant is unprovable
 # without it: the mandated `git fetch`, which updates remote-tracking refs. It never writes a
