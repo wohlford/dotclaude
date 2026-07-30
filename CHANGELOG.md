@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.62.0 — 2026-07-29
+- feat(changelog-entry): add the insert-only brick-entry helper
+
 ## v0.61.2 — 2026-07-29
 - fix(publication-push-guard): log what an internal error was evaluating
 
