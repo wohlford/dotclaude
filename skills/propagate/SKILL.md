@@ -236,12 +236,20 @@ opposite of the intent: the content stays published and a new brick lands on top
 is a separate, deliberate operation, out of scope here — and even a rewrite only makes content
 not-current, never unpublished.
 
-Two ancestry-independent apply primitives do the mechanical work: `git cherry-pick <dev-commit>` for
-a 1:1 (unfolded) brick, and `git diff <base> <target> | git apply --index` for a folded/synthesized
-brick. Brick **boundaries** are judgment — the same brick-boundary discipline the
-"Adopted-repo finish: re-derive onto `dev`" subsection of `skills/feature/SKILL.md` documents (a
-skill and its regenerated `sync-docs` index entry in the same brick; a shebang file and its exec bit
-in the same brick) — but brick **application**, once the boundary is chosen, is mechanical.
+**One ancestry-independent primitive does the mechanical work — materialisation — and
+`scripts/publish-brick.sh` is it.** A brick's file set is the UNION of its constituents' paths and
+its content is the ENDPOINT commit's, the endpoint being the last constituent; so the brick is
+exactly `git checkout <endpoint> -- <files>`. That handles a **non-contiguous fold** with no scratch
+branch and no patch application, and it cannot half-apply the way a conflicting `cherry-pick` or
+`git apply` can. Its one precondition — no constituent may DELETE or RENAME a path, neither of which
+a checkout can express — the script asserts before writing anything.
+
+Brick **boundaries** are judgment — the same brick-boundary discipline the "Adopted-repo finish:
+re-derive onto `dev`" subsection of `skills/feature/SKILL.md` documents (a skill and its regenerated
+`sync-docs` index entry in the same brick; a shebang file and its exec bit in the same brick) — but
+brick **application**, once the boundary is chosen, is mechanical. **Do not re-derive it by hand:**
+two consecutive publishes wrote throwaway scripts for exactly this and threw them away with the
+session, which is why the tooling below is in the repo.
 
 1. **Start-invariant + crash recovery.** Before anything else, run the scripted preflight — it
    encodes this step's assertions, and step 2's ancestry check, once instead of re-deriving their
@@ -332,41 +340,82 @@ in the same brick) — but brick **application**, once the boundary is chosen, i
 
    **Fold** a fix into the brick it fixes **when that brick is also unpublished** (after the
    watermark); a fix targeting **already-published** work becomes **its own new brick** instead —
-   published `main` is immutable and is never rewritten to absorb a later fix. The *published?*
-   verdict is **mechanical**: `git merge-base --is-ancestor <fixed-commit> <watermark>` (true ⇒
-   published ⇒ new brick). Only identifying *which* commit a fix targets, and where the resulting
-   brick boundaries fall, is judgment.
+   published `main` is immutable and is never rewritten to absorb a later fix.
 
-3. **Apply each brick onto `main`'s tip**, foreground, signed:
-   - A **1:1 brick** (equals exactly one `dev` commit) applies mechanically:
-     `git cherry-pick <dev-commit>`.
-   - A **folded/synthesized brick**'s endpoint tree never existed on `dev`, so it cannot be
-     cherry-picked directly. Construct it first on a scratch branch based at the watermark (the same
-     foreground re-narration the `dev` re-derivation uses) — folded application is judgment-driven up
-     to that point, not purely mechanical — then apply the constructed result onto `main` with
-     `git diff <staged-base> <staged-target> | git apply --index`.
-   - On a `cherry-pick`/`apply` **conflict** (a mid-batch base no longer matches after folding or
-     reordering), resolve it in the foreground toward the known `dev` target, or **abort — never
-     leave `main` in a partial, half-applied state.**
-   - Then **prove the brick: run `/audit` on `main` at that commit** — the same rigor the `dev`
-     re-derivation applies. **A brick is proven only by `RESULT: PASS rc=0`**, `audit.sh`'s last
-     line of stdout; `FAIL`, `ERROR`, `INCOMPLETE`, and an **absent** line are each a failure to
-     prove. **An absent line is the one to watch**, since a killed sweep prints a prefix of
-     `PASS` lines and no summary, so every cheap instrument reads it as clean. Never infer the
-     verdict from the absence of `FAIL` lines or from the harness's account of the exit code — a
-     wrong read here is not contained to this brick, it compounds into every brick built on top of
-     it. **On anything but `PASS rc=0`, stop: do not tag or CHANGELOG this brick (step 4) and do not
-     apply the next one.** Fix the offending commit and re-run `/audit`; on `ERROR`, correct the
-     invocation rather than re-running it unchanged. Brick
-     **boundaries must keep `/audit`'s holistic checks intact**: never
-     split across two bricks anything `/audit` validates as a pair — a skill and its regenerated
-     `sync-docs` index entry stay in the same brick; a shebang file and the commit that sets its exec
-     bit stay in the same brick. This is exactly the feature-finish brick-boundary rule, reused here
-     rather than re-derived.
+   **Get the first draft of that mechanically**, then review it:
 
-4. **Tag + CHANGELOG per brick.** Each appended `main` brick gets a fresh `vX.Y.Z` tag and a
-   mirroring `CHANGELOG.md` entry, created here, per `/commit`'s conventions. Versioning is
-   **main-only** — `dev`-side commits stay untagged throughout, unaffected by this step.
+   ```bash
+   ./scripts/publish-fold-plan.py            # still on dev here, so the repo's own copy is fine
+   ```
+
+   It classifies every commit in `watermark..dev` by the lines the commit **removes** — removes
+   nothing ⇒ its own brick (a `+N/-0` short-circuit needing no `merge-base` call at all, so it runs
+   first every time); removes a line still present in the published tree ⇒ its own brick; removes
+   only lines added in-range ⇒ folds into the latest commit that added them. It prints the evidence
+   for each call and a proposed `publish-brick.sh` invocation per brick, versions included.
+
+   Two things it deliberately does **not** do. It never resolves an ambiguity: where the evidence
+   does not settle a commit it reports `UNDECIDED` and leaves it standing alone, because a wrong
+   fold converges to the identical tree and is precisely what step 5 cannot catch, while a missed
+   fold only costs tidiness. And it does not know the **holistic pairings** — a skill and its
+   regenerated `sync-docs` index entry belong in one brick, as do a shebang file and the commit
+   setting its exec bit — so merging two proposed bricks for that reason is your call, not its.
+   The plan is a proposal; the boundaries remain judgment.
+
+3. **Apply, prove and tag each brick onto `main`'s tip** — check out `main`, then run the engine
+   once per brick, in the order the plan gives:
+
+   ```bash
+   ~/.claude/scripts/publish-brick.sh --scope <repo> <version> <endpoint> '<subject>' [constituent...]
+   ```
+
+   **Invoke the INSTALLED copy, not `<repo>/scripts/`** — unlike step 1's preflight, which must be
+   the branch's own. This step checks the repo out to `main`, where the engine may not exist yet
+   (the brick adding it has not landed) or may be an older revision than the one being published.
+   The installed copy tracks `dev`, so it is both present and current throughout; `--scope` is what
+   makes the repo data rather than context. An adopted repo with no installed engine applies its
+   bricks by hand from the mechanics below.
+
+   **One brick per invocation, and you drive the loop.** That is the point: the per-brick
+   checkpoint that makes this path reviewable survives, while the parts a human reads wrong under
+   repetition are read mechanically every time. Per brick the engine materialises the file set,
+   asserts **both** shapes (the brick's files match the endpoint byte for byte, **and** nothing
+   outside the file set moved — the second is the half that catches a materialisation reaching too
+   far), inserts the CHANGELOG entry with an insert-only assertion, commits, runs the audit,
+   verifies the tag exists after minting it, and stops on the first thing that does not hold.
+   Read its terminal `RESULT: PASS rc=0 brick=<version>` line before running the next one.
+
+   **What it deliberately leaves to you.** Nothing it does is irreversible — it never pushes and
+   never moves the watermark. When it fails *after* the commit lands it prints the recovery
+   (`git reset --hard HEAD~1`, delete the tag) and runs none of it; when it fails *before*, it
+   restores exactly the paths it wrote so the next attempt still meets its clean-tree precondition.
+
+   **Which copy of what**, since the two resolve differently on purpose: the **audit** comes from
+   the scope (`<scope>/skills/audit/audit.sh`), because it judges the tree being built and must be
+   that tree's own copy rather than the installed one it may be replacing; the engine's **helper
+   library** resolves relative to the engine, because a construction tool must not vanish mid-build
+   when the working tree is checked out to a commit predating it. Both paths are printed.
+
+   **A brick is proven only by `RESULT: PASS rc=0`**, `audit.sh`'s last line of stdout; `FAIL`,
+   `ERROR`, `INCOMPLETE`, an unanticipated status, and an **absent** line are each a failure to
+   prove — an allowlist. **The absent one is to watch**, since a killed sweep prints a prefix of
+   `PASS` lines and no summary, so every cheap instrument reads it as clean. The engine enforces
+   this, records the audit's exit status *inside* the artifact it writes, and additionally fails
+   closed when the verdict and the exit status disagree. Never infer the verdict from the absence
+   of `FAIL` lines or from the harness's account of the exit code — a wrong read here is not
+   contained to this brick, it compounds into every brick built on top of it. On anything but a
+   pass, fix the offending commit and re-run; on `ERROR`, correct the invocation rather than
+   re-running it unchanged.
+
+   Brick **boundaries must keep `/audit`'s holistic checks intact**: never split across two bricks
+   anything `/audit` validates as a pair — a skill and its regenerated `sync-docs` index entry stay
+   in the same brick; a shebang file and the commit that sets its exec bit stay in the same brick.
+   This is exactly the feature-finish brick-boundary rule, reused here rather than re-derived, and
+   it is the pairing the fold plan cannot see for you.
+
+4. **Tag + CHANGELOG per brick** — step 3's engine does both, inside the brick commit, per
+   `/commit`'s conventions. Versioning is **main-only**: `dev`-side commits stay untagged
+   throughout, unaffected by this step.
 
 5. **Convergence check (non-vacuous, CHANGELOG-aware).** After appending all bricks, assert:
 
@@ -383,7 +432,25 @@ in the same brick) — but brick **application**, once the boundary is chosen, i
    settles both. **That run counts as held only on `RESULT: PASS rc=0`.** `--tests` is the longest
    sweep there is, which makes it the most likely of all to be cut short by a timeout — and a
    cut-short run is exactly the one that reads clean to every cheap instrument. Require the verdict
-   line to be *present* and to say `PASS rc=0`. **This is the last check before step 6 makes the
+   line to be *present* and to say `PASS rc=0`.
+
+   **Measured: this run exceeds a single foreground timeout** (~10 minutes here, against ~21s for
+   the per-brick static sweep). So **background it, and record its exit status INSIDE the artifact
+   you will read back** — never wrap it in a foreground wait loop, which is itself killable and
+   whose own death then looks exactly like the sweep's:
+
+   ```bash
+   tip="$(mktemp -d)/tip-audit.txt"
+   { ./skills/audit/audit.sh --tests --scope "$PWD" 2>&1; printf 'AUDIT_EXIT_STATUS=%d\n' "$?"; } \
+     > "$tip" &
+   printf 'reading back: %s\n' "$tip"
+   ```
+
+   The recorded status is what makes an **absent** verdict legible as a death rather than as quiet
+   success; without it, a killed run and a clean one are the same silence. The artifact goes to a
+   temp directory rather than the repo **for a mechanical reason, not tidiness**: an untracked file
+   at the repo root fails the next brick's clean-tree precondition. **This is the last check
+   before step 6 makes the
    work public and irreversible, so nothing here is advisory:** on `FAIL` or `ERROR`, stop and
    report — do not push — fixing the offending commit for a `FAIL` and the invocation for an
    `ERROR`; on `INCOMPLETE` or a missing line, re-run to completion and read the new verdict, never
