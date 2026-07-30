@@ -639,5 +639,294 @@ case "$rM8_last" in
     printf '  --- RESULT line was ---\n%s\n  -----------------------\n' "$rM8_last" ;;
 esac
 
+# ============================================================================
+# rN. hermetic — a --tests run must leave the working tree exactly as it found it
+#
+# The measured instance (2026-07-29): a documented command wrote its artifact to the repo
+# root, where it fails the NEXT publish brick's clean-tree precondition — the publish path
+# blocking itself on a file its own documentation told the operator to create. Nothing
+# surfaced it. Every other check here reads `git ls-files`, so a file a suite DROPS is
+# structurally invisible to all of them, and the suite itself still exits 0.
+#
+# The check compares BEFORE against AFTER rather than asserting a clean tree, so a repo
+# that was already dirty does not trip it (rN5) — only what the run itself changed counts.
+# ============================================================================
+
+# --- rN1: a suite that writes nothing -> PASS, and no line at all without --tests ---
+rN1="$tmp/rN1_clean"
+mkrepo "$rN1"
+mkdir -p "$rN1/scripts/tests"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$rN1/scripts/tests/test_quiet.sh"
+chmod +x "$rN1/scripts/tests/test_quiet.sh"
+commit_all "$rN1" seed
+
+run_engine "$rN1" --tests
+assert_has 'PASS tests' 'rN1: clean suite -> PASS tests'
+assert_has 'PASS hermetic' 'rN1: a suite that writes nothing -> PASS hermetic'
+
+run_engine "$rN1"
+assert_not_has 'PASS hermetic' 'rN1: without --tests, no PASS hermetic line'
+assert_not_has 'FAIL hermetic' 'rN1: without --tests, no FAIL hermetic line'
+assert_not_has 'SKIP hermetic' 'rN1: without --tests, no SKIP hermetic line'
+
+# --- rN2: the defect — an untracked artifact dropped in the repo root ---
+rN2="$tmp/rN2_drops"
+mkrepo "$rN2"
+mkdir -p "$rN2/scripts/tests"
+# SC2016: the `$(dirname "$0")` must reach the generated fixture UNEXPANDED — it resolves
+# when that script runs, inside its own repo. Expanding it here would point every fixture
+# at this suite's directory instead.
+# shellcheck disable=SC2016
+printf '#!/usr/bin/env bash\nprintf "x\\n" > "$(dirname "$0")/../../tip-audit.txt"\nexit 0\n' \
+  > "$rN2/scripts/tests/test_drops.sh"
+chmod +x "$rN2/scripts/tests/test_drops.sh"
+commit_all "$rN2" seed
+
+run_engine "$rN2" --tests
+assert_has 'PASS tests' 'rN2: the polluting suite still EXITS 0 — the tests check alone cannot catch it'
+assert_has 'FAIL hermetic' 'rN2: an untracked artifact left behind -> FAIL hermetic'
+assert_has 'tip-audit.txt' 'rN2: the FAIL names the offending path'
+assert_rc 1 'rN2: a hermetic FAIL alone drives the whole sweep to exit 1'
+
+# --- rN3: a suite that MODIFIES a tracked file ---
+rN3="$tmp/rN3_mutates"
+mkrepo "$rN3"
+mkdir -p "$rN3/scripts/tests"
+printf 'original\n' > "$rN3/tracked.txt"
+# shellcheck disable=SC2016  # literal in the generated fixture — see rN2
+printf '#!/usr/bin/env bash\nprintf "clobbered\\n" > "$(dirname "$0")/../../tracked.txt"\nexit 0\n' \
+  > "$rN3/scripts/tests/test_mutates.sh"
+chmod +x "$rN3/scripts/tests/test_mutates.sh"
+commit_all "$rN3" seed
+
+run_engine "$rN3" --tests
+assert_has 'FAIL hermetic' 'rN3: a suite that modifies a tracked file -> FAIL hermetic'
+assert_has 'tracked.txt' 'rN3: the FAIL names the modified path'
+
+# --- rN4: an IGNORED path is deliberately out of scope ---
+# This mirrors the instrument the publish path's clean-tree precondition actually uses
+# (`git status --porcelain`), which is what the check exists to keep satisfiable. Build
+# noise a suite legitimately produces — `__pycache__/`, `.pytest_cache/` — lives there.
+rN4="$tmp/rN4_ignored"
+mkrepo "$rN4"
+mkdir -p "$rN4/scripts/tests"
+printf '/build/\n' > "$rN4/.gitignore"
+# shellcheck disable=SC2016  # literal in the generated fixture — see rN2
+printf '#!/usr/bin/env bash\nd="$(dirname "$0")/../../build"\nmkdir -p "$d"\nprintf "x\\n" > "$d/o"\nexit 0\n' \
+  > "$rN4/scripts/tests/test_ignored.sh"
+chmod +x "$rN4/scripts/tests/test_ignored.sh"
+commit_all "$rN4" seed
+
+run_engine "$rN4" --tests
+assert_has 'PASS hermetic' 'rN4: a write to an ignored path -> PASS hermetic (deliberate scope)'
+
+# --- rN5: a tree that was ALREADY dirty does not trip it ---
+rN5="$tmp/rN5_predirty"
+mkrepo "$rN5"
+mkdir -p "$rN5/scripts/tests"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$rN5/scripts/tests/test_quiet.sh"
+chmod +x "$rN5/scripts/tests/test_quiet.sh"
+commit_all "$rN5" seed
+printf 'left by the operator\n' > "$rN5/stray.txt"
+
+run_engine "$rN5" --tests
+assert_has 'PASS hermetic' 'rN5: a pre-existing untracked file was not left by the run -> PASS'
+
+# --- rN6: a suite that DELETES a pre-existing untracked file is also a failure ---
+# The difference must be read in both directions; a one-way check would call this clean.
+rN6="$tmp/rN6_deletes"
+mkrepo "$rN6"
+mkdir -p "$rN6/scripts/tests"
+# shellcheck disable=SC2016  # literal in the generated fixture — see rN2
+printf '#!/usr/bin/env bash\nrm -f "$(dirname "$0")/../../stray.txt"\nexit 0\n' \
+  > "$rN6/scripts/tests/test_deletes.sh"
+chmod +x "$rN6/scripts/tests/test_deletes.sh"
+commit_all "$rN6" seed
+printf 'left by the operator\n' > "$rN6/stray.txt"
+
+run_engine "$rN6" --tests
+assert_has 'FAIL hermetic' 'rN6: a suite that deletes an untracked file -> FAIL hermetic'
+assert_has 'stray.txt' 'rN6: the FAIL names the vanished path'
+
+# --- rN7: an UNREADABLE tree must fail closed, never compare equal ---
+# The failure mode this pins is symmetric emptiness: if a failed snapshot yielded "" at both
+# ends, the two would compare equal and the check would report PASS having measured nothing.
+# The suite destroys the repo out from under the after-snapshot to force exactly that.
+rN7="$tmp/rN7_unreadable"
+mkrepo "$rN7"
+mkdir -p "$rN7/scripts/tests"
+# shellcheck disable=SC2016  # literal in the generated fixture — see rN2
+printf '#!/usr/bin/env bash\nrm -rf "$(dirname "$0")/../../.git"\nexit 0\n' \
+  > "$rN7/scripts/tests/test_nukes.sh"
+chmod +x "$rN7/scripts/tests/test_nukes.sh"
+commit_all "$rN7" seed
+
+run_engine "$rN7" --tests
+assert_has 'FAIL hermetic' 'rN7: an unreadable working tree -> FAIL hermetic, never PASS'
+assert_has 'AFTER' 'rN7: the FAIL says which snapshot could not be read'
+assert_rc 1 'rN7: an unreadable tree drives the sweep to exit 1'
+
+# --- rN8: a failed BEFORE snapshot must fail closed, even when AFTER reads clean ---
+# Unit-level, because this cannot be provoked end-to-end: audit.sh has already validated the
+# scope as a git repo by the time the snapshot is taken. It is nonetheless the MOST dangerous
+# shape, and mutation testing is what exposed it — deleting the before-guard left every
+# end-to-end assertion green. In a CLEAN repo a failed read yields "" at both ends, the two
+# compare equal, and a check without the guard reports PASS having measured nothing at all.
+rN8="$tmp/rN8_clean"
+mkrepo "$rN8"
+printf 'seed\n' > "$rN8/f.txt"
+commit_all "$rN8" seed
+
+rN8_out="$(bash -c 'source "$1"
+pass_count=0; fail_count=0; skip_count=0
+check_hermetic "$2" "" 1' _ "$engine" "$rN8" 2>&1)"
+case "$rN8_out" in
+  *'FAIL hermetic'*BEFORE*)
+    pass_line 'rN8: a failed BEFORE snapshot fails closed, never compares equal' ;;
+  *)
+    fail_line 'rN8: a failed BEFORE snapshot fails closed, never compares equal'
+    printf '  --- output ---\n%s\n  --------------\n' "$rN8_out" ;;
+esac
+
+# ============================================================================
+# rO. hermetic-outside — what a suite run leaves BEYOND the scope
+#
+# Measured instance (2026-07-29): a hook's diagnostic log defaulted to `~/.claude/logs/` and
+# suite rows reached that branch, so 12 synthetic records accumulated in the operator's REAL
+# log across four runs. `AUDIT_HERMETIC_ROOT` points the watch at a fixture root here; the
+# denominator assertion (rO5) is what stops that override from making the check vacuous.
+# ============================================================================
+mk_fake_root() { # dir -> a watched dir with an existing file, plus a churn dir
+  mkdir -p "$1/logs" "$1/skills" "$1/projects"
+  printf 'pre-existing\n' > "$1/logs/existing.log"
+  printf 'x\n' > "$1/skills/s.md"
+  printf 'p\n' > "$1/projects/session.txt"
+}
+
+mk_outside_repo() { # dir body -> a repo whose one suite runs `body`
+  mkrepo "$1"
+  mkdir -p "$1/scripts/tests"
+  printf '#!/usr/bin/env bash\n%s\nexit 0\n' "$2" > "$1/scripts/tests/test_o.sh"
+  chmod +x "$1/scripts/tests/test_o.sh"
+  commit_all "$1" seed
+}
+
+run_outside() { # scope root [extra-args...] -> sets OUT/RC
+  local scope="$1" root="$2"
+  shift 2
+  OUT="$(AUDIT_HERMETIC_ROOT="$root" "$engine" --scope "$scope" "$@" 2>&1)"
+  RC=$?
+}
+
+rO_root="$tmp/rO_root"
+mk_fake_root "$rO_root"
+
+# --- rO1: a suite that writes nothing outside -> PASS; and no line at all without --tests ---
+rO1="$tmp/rO1_quiet"
+mk_outside_repo "$rO1" ':'
+run_outside "$rO1" "$rO_root" --tests
+assert_has 'PASS hermetic-outside' 'rO1: a suite that writes nothing outside -> PASS'
+run_outside "$rO1" "$rO_root"
+assert_not_has 'hermetic-outside' 'rO1: without --tests, no hermetic-outside line at all'
+
+# --- rO2: CREATES a file under a watched directory ---
+rO2="$tmp/rO2_creates"
+mk_outside_repo "$rO2" "printf 'new\\n' > '$rO_root/logs/created.log'"
+run_outside "$rO2" "$rO_root" --tests
+assert_has 'FAIL hermetic-outside' 'rO2: a file created under a watched dir -> FAIL'
+assert_has 'created.log' 'rO2: the FAIL names the created path'
+assert_rc 1 'rO2: writing outside the scope drives the sweep to exit 1'
+rm -f "$rO_root/logs/created.log"
+
+# --- rO3: APPENDS to a file that already existed — the measured shape ---
+# The path set is UNCHANGED here, so `appeared`/`vanished` are both empty and only the
+# timestamp marker can see it. Asserting `appeared:` is ABSENT is what pins that: without the
+# marker this row would report a clean PASS, which is exactly how the real instance survived.
+rO3="$tmp/rO3_appends"
+mk_outside_repo "$rO3" "printf 'more\\n' >> '$rO_root/logs/existing.log'"
+run_outside "$rO3" "$rO_root" --tests
+assert_has 'FAIL hermetic-outside' 'rO3: an APPEND to an existing watched file -> FAIL'
+assert_has 'modified:' 'rO3: the append is reported under modified:'
+assert_not_has 'appeared:' 'rO3: the path set did NOT change — only the marker sees this'
+
+# --- rO4: a write under a CHURN directory is exempt ---
+rO4="$tmp/rO4_churn"
+mk_outside_repo "$rO4" "printf 'z\\n' >> '$rO_root/projects/session.txt'"
+run_outside "$rO4" "$rO_root" --tests
+assert_has 'PASS hermetic-outside' 'rO4: a write under a churn-exempt dir -> PASS'
+
+# --- rO5: an EMPTY root must fail on the denominator, never pass ---
+# `find ~/.claude -type f` returns ZERO because the root is a symlink — measured, and it reads
+# exactly like "nothing changed". Zero watched files can never be a clean bill of health.
+rO5_root="$tmp/rO5_empty"
+mkdir -p "$rO5_root"
+rO5="$tmp/rO5_repo"
+mk_outside_repo "$rO5" ':'
+run_outside "$rO5" "$rO5_root" --tests
+assert_has 'FAIL hermetic-outside' 'rO5: zero watched files -> FAIL, never PASS'
+assert_has 'measured nothing' 'rO5: the FAIL says the probe measured nothing'
+
+# --- rO6: a root inside the scope is the inward check's job ---
+rO6="$tmp/rO6_inside"
+mk_outside_repo "$rO6" ':'
+mkdir -p "$rO6/inner"
+printf 'a\n' > "$rO6/inner/a.txt"
+run_outside "$rO6" "$rO6/inner" --tests
+assert_has 'SKIP hermetic-outside' 'rO6: a config root inside the scope -> SKIP'
+
+# --- rO7: moving a protected path onto the churn list is itself a failure ---
+# Unit-level, because it is a source edit rather than a runtime state. This is the edit a
+# later session makes to silence a genuine finding; without this row it reads as a clean PASS
+# over a quietly smaller watch set.
+rO7_marker="$tmp/rO7.marker"
+: > "$rO7_marker"
+rO7_out="$(bash -c 'source "$1"
+HERMETIC_CHURN="logs"
+pass_count=0; fail_count=0; skip_count=0
+check_hermetic_outside "/no/such/scope" "$2" "seed" 0 "$3"' _ "$engine" "$rO_root" "$rO7_marker" 2>&1)"
+case "$rO7_out" in
+  *'FAIL hermetic-outside'*'churn exemption list'*)
+    pass_line 'rO7: a protected path moved onto the churn list -> FAIL' ;;
+  *)
+    fail_line 'rO7: a protected path moved onto the churn list -> FAIL'
+    printf '  --- output ---\n%s\n  --------------\n' "$rO7_out" ;;
+esac
+
+# --- rO8: a SYMLINKED entry must still be watched ---
+# This is the live shape, not a hypothetical: `~/.claude/skills` is a symlink into another
+# repo. Without `-L`, `find` returns the link itself and no `-type f` match, so the entry
+# contributes ZERO files and a write inside it reads as a clean PASS — the same zero-denominator
+# failure that made `find ~/.claude -type f` return 0. The append below is invisible without it.
+rO8_root="$tmp/rO8_root"
+rO8_target="$tmp/rO8_target"
+mkdir -p "$rO8_root/logs" "$rO8_target"
+printf 'seed\n' > "$rO8_root/logs/keep.log"
+printf 'linked\n' > "$rO8_target/linked.md"
+ln -s "$rO8_target" "$rO8_root/skills"
+
+rO8="$tmp/rO8_repo"
+mk_outside_repo "$rO8" "printf 'more\\n' >> '$rO8_root/skills/linked.md'"
+run_outside "$rO8" "$rO8_root" --tests
+assert_has 'FAIL hermetic-outside' 'rO8: a write through a SYMLINKED watched entry -> FAIL'
+assert_has 'linked.md' 'rO8: the FAIL names the path behind the symlink'
+
+# --- rO9: an unset HOME must not take the whole sweep down ---
+# Under `set -u` an unbound variable does not merely fail the function — it KILLS the shell
+# (measured: rc 127, "HOME: unbound variable"). So an unguarded `$HOME` in the root default
+# aborts the entire sweep mid-run rather than skipping one check. It aborts fail-closed, via
+# `RESULT: INCOMPLETE`, but a missing env var is not a reason to stop auditing.
+# shellcheck disable=SC2016  # `$1`/`$?` belong to the INNER shell, not this one
+rO9_out="$(env -u HOME AUDIT_HERMETIC_ROOT= CLAUDE_CONFIG_DIR= \
+  bash -c 'set -uo pipefail
+source "$1"
+hermetic_config_root
+printf "survived rc=%d\n" "$?"' _ "$engine" 2>&1)"
+case "$rO9_out" in
+  *'survived rc=1'*) pass_line 'rO9: an unset HOME yields no root rather than killing the sweep' ;;
+  *)
+    fail_line 'rO9: an unset HOME yields no root rather than killing the sweep'
+    printf '  --- output ---\n%s\n  --------------\n' "$rO9_out" ;;
+esac
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

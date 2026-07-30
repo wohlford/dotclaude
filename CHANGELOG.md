@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.65.0 — 2026-07-29
+- feat(audit): check what a --tests run leaves behind, inside and out
+
 ## v0.64.2 — 2026-07-29
 - docs(CLAUDE.md): split the hazards into a group for checks that write
 

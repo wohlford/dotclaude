@@ -9,7 +9,8 @@ set -uo pipefail
 # blank lines ignored) excludes matching paths from the five text-content checks
 # (format-trailing-ws, format-crlf, format-final-newline, format-tabs, md-links) only — it
 # can never silence a code/config check (shellcheck, ruff, markdownlint, exec-bit, json,
-# toml, sync-docs, tests). No file present, or a present-but-empty file, sweeps unchanged.
+# toml, sync-docs, tests, hermetic, hermetic-outside). No file present, or a present-but-empty
+# file, sweeps unchanged.
 #
 # Exit codes:
 #   0 — sweep completed, zero FAILs
@@ -112,6 +113,109 @@ print_offenders() { # detail-block (newline-separated, unindented) -> indent 2sp
   else
     printf '%s\n' "$detail" | sed 's/^/  /'
   fi
+}
+
+# Lines of $1 that do not appear in $2 — the ONE-DIRECTIONAL difference. Never compare the
+# two sets by SIZE: they can hold an equal number of lines while differing in both
+# directions at once, which a tally reads as agreement. The separator cannot collide with
+# porcelain output, every line of which begins with a two-character status field.
+lines_only_in_first() { # first second
+  printf '%s\n@@AUDIT-HERMETIC-SPLIT@@\n%s\n' "$1" "$2" | awk '
+    $0 == "@@AUDIT-HERMETIC-SPLIT@@" { second = 1; next }
+    !second { held[++n] = $0; next }
+    { seen[$0] = 1 }
+    END {
+      for (i = 1; i <= n; i++)
+        if (held[i] != "" && !(held[i] in seen)) print held[i]
+    }
+  '
+}
+
+# ---------- hermetic-outside helpers ----------
+#
+# Top-level names under the Claude config root that the harness itself rewrites while any
+# suite runs. This is NOT the list of what is watched — it is the list of what is EXEMPT;
+# everything else is watched, so a directory nobody anticipated is covered by default.
+# Measured: 542 files change under the root in a two-hour window, concentrated here, and
+# everything outside this set separates cleanly.
+HERMETIC_CHURN='projects
+file-history
+plugins
+tasks
+sessions
+shell-snapshots
+paste-cache
+backups
+cache
+debug
+downloads
+chrome
+daemon
+daemon.log
+jobs
+session-env
+statsig
+telemetry
+todos
+history.jsonl
+stats-cache.json
+mcp-needs-auth-cache.json
+settings.local.json
+.last-cleanup
+.ruff_cache
+.DS_Store'
+
+# Paths that must never leave the watched set. Discovery cannot detect ABSENCE: widening the
+# churn list above would silently stop watching whatever was added to it while still printing
+# a clean PASS over the smaller set. `logs` heads the list because it is where the measured
+# pollution actually landed — the exact path a later edit is tempted to exempt once this
+# check starts reporting it.
+HERMETIC_FLOOR='logs
+skills
+scripts
+agents
+settings.json
+CLAUDE.md'
+
+hermetic_is_churn() { # name -> 0 when exempt
+  # grep -Fxq, never a `case` glob: a name holding `*` or `[` would match as a PATTERN.
+  printf '%s\n' "$HERMETIC_CHURN" | grep -Fxq "$1"
+}
+
+hermetic_config_root() { # -> physical config root, or nonzero if there isn't one
+  # `${HOME:-}`, not `$HOME`: under `set -u` an unbound variable does not fail this function,
+  # it KILLS the shell (measured: rc 127). An unset HOME would abort the whole sweep instead
+  # of skipping one check. Empty then yields `/.claude`, which is not a directory, so the
+  # missing-root path below is reached normally.
+  local raw="${AUDIT_HERMETIC_ROOT:-${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}}"
+  [[ -d "$raw" ]] || return 1
+  # `cd -P` resolves the symlink before anything walks it. The measured trap: the root IS a
+  # symlink, so `find ~/.claude -type f` returns ZERO files — which reads exactly like
+  # "nothing changed" rather than like a probe that never traversed anything.
+  (cd -P "$raw" 2>/dev/null && pwd) || return 1
+}
+
+hermetic_watch_roots() { # root -> one absolute path per watched top-level entry
+  local root="$1" e
+  while IFS= read -r e; do
+    [[ -z "$e" ]] && continue
+    hermetic_is_churn "$e" && continue
+    printf '%s\n' "$root/$e"
+  done <<EOF
+$(ls -1A "$root" 2>/dev/null)
+EOF
+}
+
+hermetic_outside_files() { # watch-roots [extra find predicates...] -> absolute file paths
+  local roots="$1" p
+  shift
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    # -L on every walk: the root and its entries may each be symlinks (see the trap above).
+    find -L "$p" -type f "$@" 2>/dev/null
+  done <<EOF
+$roots
+EOF
 }
 
 # ---------- .auditignore helpers ----------
@@ -458,10 +562,158 @@ check_tests() {
   fi
 }
 
+# A `--tests` run is the only part of this sweep that EXECUTES repo code, so it is the only
+# part that can write anything. This compares the working tree either side of that execution.
+#
+# Scope is `git status --porcelain -uall`: tracked modifications plus untracked files, but
+# NOT ignored ones. Deliberate on both ends — it is the same instrument the publish path's
+# clean-tree precondition uses, so a PASS here means the next brick can still apply; and it
+# leaves a suite free to emit the build noise that is already ignored (`__pycache__/`,
+# `.pytest_cache/`) without a false alarm.
+#
+# It COMPARES rather than asserting a clean tree: a tree the operator had already dirtied is
+# not the run's doing, and only what the run itself changed is a finding.
+#
+# Measured instance (2026-07-29): a documented command wrote its artifact to the repo root,
+# where it fails the NEXT publish brick's clean-tree precondition — the publish path blocking
+# itself on a file its own documentation told the operator to create. Every other check here
+# reads `git ls-files`, so a file a suite DROPS is structurally invisible to all of them, and
+# the suite still exits 0.
+#
+# This covers the INSIDE-the-repo half only. A suite that writes OUTSIDE the scope — measured:
+# 12 synthetic records in the operator's real `~/.claude/logs/` — is invisible here and needs
+# the separate, allowlist-based check that half requires.
+check_hermetic() { # scope before-snapshot before-status
+  local scope="$1" before="$2" before_status="$3" after rc appeared vanished
+
+  # A snapshot that FAILED must never compare equal to anything. Both ends are guarded
+  # because a symmetric failure — empty before, empty after — is exactly the shape that
+  # reads as a clean pass while having measured nothing at all.
+  if [[ "$before_status" -ne 0 ]]; then
+    verdict_fail hermetic 'could not read the working tree BEFORE the suite ran'
+    return
+  fi
+  after="$(git -C "$scope" status --porcelain -uall 2>&1)"; rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    verdict_fail hermetic 'could not read the working tree AFTER the suite ran'
+    print_offenders "$after"
+    return
+  fi
+
+  if [[ "$before" == "$after" ]]; then
+    verdict_pass hermetic
+    return
+  fi
+
+  verdict_fail hermetic 'the suite changed the working tree'
+  appeared="$(lines_only_in_first "$after" "$before")"
+  vanished="$(lines_only_in_first "$before" "$after")"
+  if [[ -n "$appeared" ]]; then
+    print_offenders "appeared:"$'\n'"$appeared"
+  fi
+  if [[ -n "$vanished" ]]; then
+    print_offenders "vanished:"$'\n'"$vanished"
+  fi
+}
+
+# The other half of hermeticity: what a suite run leaves BEYOND the scope.
+#
+# Measured instance (2026-07-29): a diagnostic log added to a hook defaulted to
+# `~/.claude/logs/`, and long-standing suite rows feed input reaching exactly that branch — so
+# 12 synthetic records accumulated in the OPERATOR'S REAL log across four suite runs, while an
+# edit-time hook re-ran that suite on every edit to the hook. Nothing surfaced it: this sweep
+# reads `git ls-files` inside the scope, so damage outside it is invisible here by
+# construction. Nor is it merely noise — the config root is itself inside a git repo, so the
+# pollution lands in committable territory. The repair was an env override "every test that
+# drives this branch MUST set", which is an advisory with no instrument; this is the instrument.
+#
+# LIMITATION, stated because it bounds what a FAIL means: this attributes to the suite
+# anything that changed under the root during the window. Run non-interactively that is exact;
+# run alongside a live session that also writes there, a FAIL may name the session's work.
+# It is never the other way round — nothing here can turn a real write into a PASS.
+check_hermetic_outside() { # scope root before-files before-status marker
+  local scope="$1" root="$2" before="$3" before_status="$4" marker="$5"
+  local roots after n_before n_after appeared vanished modified floor_bad f scope_phys
+
+  if [[ -z "$root" ]]; then
+    verdict_skip hermetic-outside 'no Claude config root to watch'
+    return
+  fi
+  # Both sides must be PHYSICAL. main() resolves the scope with a plain `pwd` (logical), while
+  # the root is resolved with `cd -P` — so under a symlinked TMPDIR the scope reads `/tmp/…`
+  # and the root `/private/tmp/…`, and the containment test below could never match. Measured:
+  # this silently skipped the SKIP on every macOS default, and only a fixture built under
+  # `mktemp -d` exposed it.
+  scope_phys="$(cd -P "$scope" 2>/dev/null && pwd)" || scope_phys="$scope"
+  if [[ "$root" == "$scope_phys" || "$root" == "$scope_phys"/* ]]; then
+    verdict_skip hermetic-outside 'config root lies inside the scope — hermetic covers it'
+    return
+  fi
+  if [[ -z "$marker" ]]; then
+    verdict_skip hermetic-outside 'could not create a timestamp marker; modifications unprovable'
+    return
+  fi
+  if [[ "$before_status" -ne 0 ]]; then
+    verdict_fail hermetic-outside 'could not snapshot the config root BEFORE the suite ran'
+    return
+  fi
+
+  # A floor member that drifted onto the churn list means the watch quietly shrank. Checked
+  # every run rather than once at authoring time: that edit is exactly how a future session
+  # silences a genuine finding, and it would otherwise still read as a clean PASS.
+  floor_bad=""
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    hermetic_is_churn "$f" && floor_bad="${floor_bad}${f}"$'\n'
+  done <<EOF
+$HERMETIC_FLOOR
+EOF
+  if [[ -n "$floor_bad" ]]; then
+    verdict_fail hermetic-outside 'a protected path was moved onto the churn exemption list'
+    print_offenders "$floor_bad"
+    return
+  fi
+
+  roots="$(hermetic_watch_roots "$root")"
+  after="$(hermetic_outside_files "$roots" | LC_ALL=C sort)"
+
+  # The denominator. Zero watched files is never a clean bill of health — it is the signature
+  # of a probe that traversed nothing (see hermetic_config_root's symlink trap).
+  n_before="$(printf '%s\n' "$before" | grep -c . || true)"
+  n_after="$(printf '%s\n' "$after" | grep -c . || true)"
+  if [[ "$n_before" -eq 0 ]] || [[ "$n_after" -eq 0 ]]; then
+    verdict_fail hermetic-outside "watched 0 files under $root — the probe measured nothing"
+    return
+  fi
+
+  appeared="$(lines_only_in_first "$after" "$before")"
+  vanished="$(lines_only_in_first "$before" "$after")"
+  # An APPEND leaves the path set unchanged, and the measured instance WAS an append to a log
+  # that already existed — a path-set comparison alone would have called it clean.
+  modified="$(hermetic_outside_files "$roots" -newer "$marker" | LC_ALL=C sort)"
+
+  if [[ -z "$appeared" ]] && [[ -z "$vanished" ]] && [[ -z "$modified" ]]; then
+    verdict_pass hermetic-outside
+    return
+  fi
+  verdict_fail hermetic-outside "the suite wrote outside the scope, under $root"
+  if [[ -n "$appeared" ]]; then
+    print_offenders "appeared:"$'\n'"$appeared"
+  fi
+  if [[ -n "$vanished" ]]; then
+    print_offenders "vanished:"$'\n'"$vanished"
+  fi
+  if [[ -n "$modified" ]]; then
+    print_offenders "modified:"$'\n'"$modified"
+  fi
+}
+
 # ---------- main ----------
 
 main() {
   local scope="" run_tests=false auditignore="" ignore="" invalid_detail="" ignore_count=0 g
+  local hermetic_before="" hermetic_status=0
+  local hermetic_root="" hermetic_marker="" hermetic_out_before="" hermetic_out_status=1
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -536,7 +788,29 @@ EOF
   check_toml "$scope"
   check_sync_docs "$scope"
   if [[ "$run_tests" == true ]]; then
+    # Snapshot BEFORE the only checks that execute repo code, and hand both the snapshot
+    # and its status to check_hermetic — a failed read must not be able to compare equal.
+    hermetic_before="$(git -C "$scope" status --porcelain -uall 2>/dev/null)"
+    hermetic_status=$?
+
+    # Same, for the world outside the scope. The marker is what makes an APPEND visible; it
+    # lives in TMPDIR so this check is not itself a writer of anything it watches.
+    hermetic_root="$(hermetic_config_root)" || hermetic_root=""
+    if [[ -n "$hermetic_root" ]]; then
+      hermetic_marker="$(mktemp "${TMPDIR:-/tmp}/audit-hermetic.XXXXXX" 2>/dev/null)" \
+        || hermetic_marker=""
+      if [[ -n "$hermetic_marker" ]]; then
+        hermetic_out_before="$(hermetic_outside_files \
+          "$(hermetic_watch_roots "$hermetic_root")" | LC_ALL=C sort)"
+        hermetic_out_status=$?
+      fi
+    fi
+
     check_tests "$scope"
+    check_hermetic "$scope" "$hermetic_before" "$hermetic_status"
+    check_hermetic_outside "$scope" "$hermetic_root" "$hermetic_out_before" \
+      "$hermetic_out_status" "$hermetic_marker"
+    [[ -n "$hermetic_marker" ]] && rm -f "$hermetic_marker"
   fi
 
   printf '%d passed, %d failed, %d skipped\n' "$pass_count" "$fail_count" "$skip_count"

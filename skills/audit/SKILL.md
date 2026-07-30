@@ -61,11 +61,35 @@ The user may optionally provide:
    and do not attempt a fix unless asked. An `INCOMPLETE` or missing verdict is a reason
    to re-run deliberately, not to assume the sweep would have passed.
 
-The sweep runs 13 checks: `format-trailing-ws`, `format-crlf`, `format-final-newline`,
+The sweep runs 15 checks: `format-trailing-ws`, `format-crlf`, `format-final-newline`,
 `format-tabs` (formatting); `shellcheck`, `ruff` (linters); `markdownlint` (opt-in, see Rules);
 `md-links` (relative link/anchor validity); `exec-bit` (tracked shebang files must be
-executable); `json`, `toml` (config validity); `sync-docs` (index-table drift); and `tests`
-(shell suites + pytest, only with `--tests`).
+executable); `json`, `toml` (config validity); `sync-docs` (index-table drift); `tests`
+(shell suites + pytest); `hermetic` (the suite left the working tree as it found it); and
+`hermetic-outside` (the suite wrote nothing under the Claude config root). The last three run
+only with `--tests`.
+
+### Hermeticity — what a suite run leaves behind
+
+`--tests` is the only part of the sweep that executes repo code, so it is the only part that can
+write. Two checks bracket it, because a suite can pollute in two directions and each is invisible
+to the other's instrument:
+
+- **`hermetic`** compares `git status --porcelain -uall` either side of the run. It *compares*
+  rather than demanding a clean tree, so a tree you had already dirtied is not a finding — only
+  what the run itself changed. Ignored paths are deliberately out of scope: this mirrors the
+  instrument a publish path's clean-tree precondition uses, and leaves `__pycache__/` alone.
+- **`hermetic-outside`** watches the Claude config root (`$CLAUDE_CONFIG_DIR`, else `~/.claude`),
+  resolved physically and walked with `find -L` — the root is typically a symlink, and a probe that
+  fails to follow it reports zero files, which reads exactly like "nothing changed". Session-state
+  directories that legitimately churn are exempt by name; **everything else is watched by default**,
+  so a directory nobody anticipated is covered. A timestamp marker catches *appends*, which leave the
+  path set unchanged. It `SKIP`s when the root lies inside the scope (`hermetic` covers that) and
+  **`FAIL`s if it ever watches zero files** — a probe that measured nothing is never a clean result.
+
+`hermetic-outside` attributes to the suite anything that changed under the root during the window.
+Run non-interactively that is exact; run alongside a live session that also writes there, a `FAIL`
+may name that session's work. It never fails the other way: nothing turns a real write into a `PASS`.
 
 ### .auditignore
 
@@ -76,9 +100,9 @@ becomes a `:(exclude)` pathspec — this mirrors the repo's own `.markdownlint-c
 
 It scopes ONLY the five text-content checks: `format-trailing-ws`, `format-crlf`,
 `format-final-newline`, `format-tabs`, `md-links`. Code/config checks (`shellcheck`, `ruff`,
-`markdownlint`, `exec-bit`, `json`, `toml`, `sync-docs`, `tests`) are deliberately never scoped
-by it — a repo cannot hide a broken tracked `.json` or a non-executable shebang file from the
-audit.
+`markdownlint`, `exec-bit`, `json`, `toml`, `sync-docs`, `tests`, `hermetic`,
+`hermetic-outside`) are deliberately never scoped by it — a repo cannot hide a broken tracked
+`.json`, a non-executable shebang file, or an artifact its own suite dropped from the audit.
 
 An absent `.auditignore` is fully backward compatible — behavior is identical to before it
 existed. A present-but-empty file (or one containing only comments/blank lines) behaves exactly
@@ -134,8 +158,8 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   non-zero, so `&&` chains still short-circuit. Under `nohup`, SIGHUP is ignored before
   the script starts and so cannot be trapped at all: a HUP then has no effect whatever —
   the run continues to completion and emits a normal verdict.
-- **`checks=<pass>/<fail>/<skip>` counts emitted verdict lines, not the 13 named checks.**
-  Two things make the totals differ from 13: an invalid `.auditignore` pattern adds a
-  `FAIL auditignore` that is not one of the 13, and without `--tests` the `tests` check
-  emits no line at all — so a static sweep totals 12 and a full one 13. Compare counts
-  only across runs invoked with the same flags.
+- **`checks=<pass>/<fail>/<skip>` counts emitted verdict lines, not the 15 named checks.**
+  Two things make the totals differ from 15: an invalid `.auditignore` pattern adds a
+  `FAIL auditignore` that is not one of the 15, and without `--tests` none of `tests`,
+  `hermetic`, or `hermetic-outside` emits a line at all — so a static sweep totals 12 and a
+  full one 15. Compare counts only across runs invoked with the same flags.
