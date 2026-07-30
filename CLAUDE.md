@@ -163,6 +163,9 @@ tally of a thing sitting right underneath it is the file's own derived-vs-hand-m
   cwd-resolution fix whose test passed identically with and without it, until the sandbox was pinned
   with `pwd -P`; nothing in the green output hinted at it, since a correct fix produces the same
   green. RED→GREEN is not ceremony — the RED is the only evidence the fixture reaches what you fixed.
+  **Nor is it only a fixture concern — resolve both sides the same way before comparing two paths**:
+  a containment guard taking `pwd` on one side and `cd -P` on the other can never match, so it
+  silently never fires (measured, in shipped code).
 
 #### The signal you read belongs to something else
 
@@ -254,7 +257,9 @@ tally of a thing sitting right underneath it is the file's own derived-vs-hand-m
   both directions at once. Measured: a runtime config and the commit it was restored from each
   held 24 hook entries, which a tally reads as agreement, while the runtime carried a
   machine-local extra *and* was missing a gate the commit added. Compare the one-directional
-  difference you actually care about, never the tally.
+  difference you actually care about, never the tally. **Zero is that failure's limiting case** — a
+  discovery matching *nothing* reports success loudest of all; measured, a symlinked root made
+  `find` return 0 files, reading exactly like "nothing changed". Assert a non-zero denominator.
 - **A claim's grounding must be checkable from the artifact itself.** Evidence sitting where the
   reader cannot reach it — a private note, an unwritten instruction, "we settled this earlier" — is
   indistinguishable from no evidence, and doubles as a template for asserting anything. Seen: an
