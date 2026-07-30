@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.63.0 — 2026-07-29
+- feat(publish): add the per-brick engine and the fold planner
+
 ## v0.62.0 — 2026-07-29
 - feat(changelog-entry): add the insert-only brick-entry helper
 
