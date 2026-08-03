@@ -163,6 +163,9 @@ tally of a thing sitting right underneath it is the file's own derived-vs-hand-m
   cwd-resolution fix whose test passed identically with and without it, until the sandbox was pinned
   with `pwd -P`; nothing in the green output hinted at it, since a correct fix produces the same
   green. RED→GREEN is not ceremony — the RED is the only evidence the fixture reaches what you fixed.
+  **But a RED proves only that SOMETHING failed, not that your named subject did** — a row titled for
+  one guard fired off a *different* assertion that raised first, so deleting the guard it named left
+  the suite green (measured). Mutate what a row names; if the suite holds, the row is not testing it.
   **Nor is it only a fixture concern — resolve both sides the same way before comparing two paths**:
   a containment guard taking `pwd` on one side and `cd -P` on the other can never match, so it
   silently never fires (measured, in shipped code).
