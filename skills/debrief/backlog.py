@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """backlog — edit BACKLOG.md with the shape postcondition built in.
 
-`/debrief` step 0 rewrites entries (stamp a promotion, append evidence, close one out) and step 5
-appends new ones. Before this module, each session hand-wrote a script to do that. One of them
+`/debrief` step 0 rewrites entries (stamp a promotion, append evidence, close one out) while steps
+4 and 5 append new ones. Before this module, each session hand-wrote a script to do that. One of them
 corrupted the file: it found an entry by its first line, then scanned forward for a `→ [[link]]`
 sentinel to find its last — but that sentinel sits inline at the end of a prose line, so the scan
 ran past its target and moved three entries, reattaching a note to the wrong one. Every assertion
@@ -31,8 +31,8 @@ Usage:
   backlog.py --path PATH close    NEEDLE          < note.md
   backlog.py --path PATH promote  NEEDLE --date YYYY-MM-DD [--reason TEXT]
 
-Those four cover every place `/debrief` mutates the file: step 5's new deferral (`add`) and step
-0's three dispositions — keep leaves the entry alone, `promote` stamps it, `close` ticks and moves
+Those four cover every place `/debrief` mutates the file: the new entries steps 4 and 5 file
+(`add`) and step 0's three dispositions — keep leaves the entry alone, `promote` stamps it, `close` ticks and moves
 it, and `append` records evidence on any of them.
 
 NEEDLE is a substring that must match exactly one OPEN entry's head line; matching none or several

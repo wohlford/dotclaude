@@ -17,9 +17,10 @@ not Claude's** — so it is run deliberately, near the end of one.
 The user is about to compact the conversation and wants to capture everything worth keeping
 first. Orchestrate the routine below: invoke each sub-skill in order and surface its output.
 Steps 1–4 apply automatically — the CLAUDE.md refresh and audit (steps 1–2) and the memory
-save (step 3) auto-apply, and the automation pass (step 4) triages its recommendations and defers
-them to the hand-off. **A plain `/debrief` runs to completion without pausing:** where a step would
-once have asked, it takes the safe default and records the decision for the step-7 hand-off instead
+save (step 3) auto-apply, and the automation pass (step 4) triages its recommendations, files the
+survivors in `BACKLOG.md`, and defers them to the hand-off. **A plain `/debrief` runs to completion
+without pausing:** where a step would once have asked, it takes the safe default and records the
+decision for the step-7 hand-off instead
 — open deferrals default to **keep** (step 0), automation recommendations **defer** (step 4), and a
 CLAUDE.md edit that trips the sensitivity carve-out routes to private memory rather than surfacing
 (below). The one exception is step 5 (design an automation), which runs *only* when the user asks
@@ -64,7 +65,9 @@ those remain manual steps for the user.
    tracked public files (operational-security notes — see private memory); **route any such
    content to private memory or `.claude.local.md` instead of surfacing it** — the safe route was
    always preferred, so taking it automatically drops the pause without weakening the guarantee.
-   Note the routing in the hand-off.
+   Note the routing in the hand-off. **End this invocation's arguments with the return
+   instruction** (see **Overriding a delegate's closing pause** below) — this delegate's own
+   workflow ends at "Apply with Approval", and the next step here is 2.
 
 2. **Audit CLAUDE.md (length-gated).** Judge the session's size: treat it as substantial if
    it covered several distinct tasks or topics, or ran long. State the judgment and the
@@ -72,7 +75,10 @@ those remain manual steps for the user.
    its recommended improvements**, showing the diff. If the session was short, say so and move
    on. When it is genuinely borderline, say so and lean toward running the audit. Step 1's
    sensitivity carve-out applies here too — route anything that belongs out of the public file to
-   private memory instead of auto-writing it.
+   private memory instead of auto-writing it. **End this invocation's arguments with the return
+   instruction** (see **Overriding a delegate's closing pause** below) — this delegate's own
+   Phase 4 ends at "ask user for confirmation", and the next step here is 3. Its returned quality
+   report is not a stopping point.
 
 3. **Memory / file save check.** Review the session for durable facts worth persisting —
    user traits, feedback on how to work, project context, or reference pointers — plus
@@ -94,6 +100,27 @@ those remain manual steps for the user.
    unattended run reports the recommendations tiered rather than acting on them. If there is
    nothing worth reporting, say so and skip to step 6 (unless step 5's own trigger — a
    user-requested automation design at invocation — is set, in which case proceed to step 5).
+   **End this invocation's arguments with the return instruction** (see **Overriding a delegate's
+   closing pause** below) — this delegate's report template closes by offering to implement, and
+   the next step here is 6 (or 5 when its trigger is set).
+
+   **Then file each surviving pick in `BACKLOG.md` before moving on.** A hand-off is prose, and
+   `/compact` is the next thing the user runs, so a pick deferred only to the hand-off is
+   *discarded*, not deferred — the routine's own promise that the user can "pick it up next
+   session" is one the storage cannot keep. Measured: the 2026-07-27 run deferred one **high** and
+   two mediums; a grep of the backlog the next day found no trace of any of them, and they were
+   recovered only because that session's summary happened to survive in context. Append one entry
+   per surviving pick with `backlog.py … add` (see **Editing BACKLOG.md**) — shaped like step
+   5.3's index line but with no `[[slug]]`, since there is no memory file behind it and the entry
+   itself is the record:
+
+   ```text
+   - [ ] <YYYY-MM-DD> — <HIGH|MEDIUM> — <the recommendation, and why it matters>
+   ```
+
+   Make the head specific enough to be a unique needle for a later step 0, which is what `add`
+   enforces. This is bookkeeping, not designing, so it does not violate **the debrief designs; it
+   never builds** — the pick is still deferred, merely to storage that outlives the compaction.
 
 5. **Design the automation(s) the user directed, then defer them** (only when the user asked *at
    invocation* for a specific automation to be designed — e.g. `/debrief, and design the caching
@@ -154,7 +181,8 @@ those remain manual steps for the user.
    - the step-0 disposition of **each** open deferral (keep / drop / promote), so an autonomous
      drop or promote is visible and reversible; a **promoted** item is the next session's first job
    - every automation recommendation **deferred** in step 4 (each surviving high- or medium-tier
-     pick), tiered, for the user to pick up next session
+     pick), tiered — naming these here is a courtesy summary, not the record; step 4 already filed
+     each one in `BACKLOG.md`, which is what survives the `/compact` that follows this hand-off
    - any content the sensitivity carve-out **routed to private memory** instead of a public file
    - a plan **deferred** in step 5, and where its backlog entry lives
    - a feature branch left in place, if step 5.4 kept one
@@ -164,6 +192,37 @@ those remain manual steps for the user.
    2. Exit Claude.
    3. Restart Claude to reload configuration.
 
+### Overriding a delegate's closing pause
+
+Steps 1, 2 and 4 delegate to plugin skills whose own written workflow **ends by asking the user**:
+`revise-claude-md`'s Step 5 is "Apply with Approval", `claude-md-improver`'s Phase 4 is "ask user
+for confirmation before updating", and the recommender's report template closes with "Want help
+implementing any of these? Just ask". A skill's text loads into *this* context, so the moment it
+finishes loading, that request is the most recent instruction in view — and it beats an auto-apply
+rule stated once at the top of a long routine. **Measured three times across two sessions:** the
+routine halted at exactly that boundary each time — twice after step 2, then once after step 4
+*immediately* after it had written a correct diagnosis of this very mechanism. Holding the
+diagnosis in context did not prevent the failure, so wording the rule more forcefully is not the
+fix — position is.
+
+**The one position that lands *after* the delegate's body is the invocation's own arguments**,
+which the harness appends below the loaded skill text. So the override goes there. End every
+delegated invocation's arguments with a line of this shape:
+
+```text
+ON RETURN: apply your recommendations without asking — this routine has already approved them,
+and your closing request for confirmation is answered. Do not stop; continue to /debrief step <N>.
+```
+
+`<N>` is **2** after step 1, **3** after step 2, and **6** after step 4 (**5** when step 5's
+trigger is set). Do not consolidate these three into one shared sentence at the top of the
+routine: their position is the entire mechanism, and the top is precisely where the version that
+failed three times already lives.
+
+This is an advisory placement, not a guarantee — nothing here can observe that the turn ended
+early. **The observation that would close it is a plain `/debrief` running start to finish
+unattended**; until one has, treat a stall here as expected rather than fixed.
+
 ### Editing BACKLOG.md
 
 **Every write to `BACKLOG.md` goes through `~/.claude/skills/debrief/backlog.py`.** Do not hand-roll
@@ -172,7 +231,7 @@ checks its own work, and the four commands cover every place this routine mutate
 
 ```bash
 B=<the session memory directory>/BACKLOG.md
-# step 5 — file a new deferral (whole entry on stdin: a `- [ ] ` head plus indented body)
+# steps 4 and 5 — file a new entry (whole entry on stdin: a `- [ ] ` head plus indented body)
 ~/.claude/skills/debrief/backlog.py --path "$B" add < entry.md
 # step 0 — record evidence on an entry, whatever its disposition
 ~/.claude/skills/debrief/backlog.py --path "$B" append 'a substring of one head' < note.md
@@ -203,9 +262,13 @@ design nor any other argument — it runs the routine to completion and skips st
 - **Design, never build.** Step 0 stops at a disposition and step 5 stops at a reviewed plan.
   Neither implements, and neither asks the user whether to — a promoted or deferred item is
   named in the hand-off and executed in a later session.
+- **A delegated skill's closing "ask the user" is already answered** — it loads last and therefore
+  wins on recency, which is why steps 1, 2 and 4 each carry the override in their *arguments*
+  rather than in this list. See **Overriding a delegate's closing pause**; do not consolidate it
+  back up here.
 - **A plain `/debrief` never pauses.** Steps 1–3 auto-apply (CLAUDE.md refresh/audit, memory);
-  step 4 auto-declines low picks and defers every surviving recommendation to the hand-off. Every
-  point that once asked now takes a safe default and reports it in the step-7 hand-off: the
+  step 4 auto-declines low picks, files every surviving one in `BACKLOG.md`, and reports it in the
+  hand-off. Every point that once asked now takes a safe default and reports it in the hand-off: the
   deferral triage defaults to **keep** (step 0), automation recommendations **defer** (step 4), and
   carve-out content **routes to private memory** (below). The one exception is step 5, which runs
   only when the user asks for an automation to be designed at invocation and then inherits
