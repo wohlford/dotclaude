@@ -113,10 +113,14 @@ plan and base you are actually executing before trusting any line; reset it when
 
 ### Verification hazards — instruments that read as verified while proving nothing
 
-When a check reads clean, work through the groups below in order before trusting it. A group splits
-once it passes about four members, and a hazard with no measured instance does not belong here at
-all. (This line used to name a group *count*; it said "1–4" while there were five. A hand-kept
-tally of a thing sitting right underneath it is the file's own derived-vs-hand-made lesson, missed.)
+When a check reads clean, work through the groups below in order before trusting it. A hazard with
+no measured instance does not belong here at all, and **one bullet carries one mechanism** — plus
+that remedy's own failure mode, needed at the same moment; a *different* mechanism sharing only a
+topic word gets its own bullet. A group splits once it passes about four members, and **that cap is
+a SPLIT trigger, not a rejection**: an earned hazard arriving at a full group splits it, and is
+never welded onto an existing bullet as a clause. Measured — read as a rejection, the cap grew this
+section from 88 lines to 177 with every group count frozen, a clause being the only landing spot it
+left legal.
 
 #### Nothing ever ran — silence is not a pass
 
@@ -126,17 +130,24 @@ tally of a thing sitting right underneath it is the file's own derived-vs-hand-m
   Require the specific verdict line **and** the summary to be *present*; "no FAIL" is not "passed".
   Record the real exit status **inside** the artifact you will read, so its **absence** is itself the
   signal that the run died — the harness's announcement can't be trusted, for the reason below.
-- **A check that never fired never ran, either.** Editing outside your tooling's normal path skips its
-  hooks silently — they do not fail, they never run — and a hand-substitute is reliably narrower than
-  what it replaced. Name what you skipped and run it, or use the normal path. **And when the reason
-  you skip is *"that change class cannot reach it"*, that is a claim about the DEPENDENCY GRAPH — one
-  grep settles it, cheaper than the gate you were skipping.** Measured: a CLAUDE.md prose edit,
-  argued in two consecutive sessions to be unable to reach any suite — one grep then found a suite
-  that reads CLAUDE.md and asserts on the very marker region the edit sat beside.
 - **A check that is merely INSTALLED has never run — registration is not liveness.** Seen: a config
   restore put back a runtime file lacking the three hook registrations the incoming commit added — 21
   entries where the commit had 23 — while the obvious diff reported *clean*; the gate was then
   unprovable until a reload. Watch it fire once, against a target you can afford to have it miss.
+- **A comparison whose two sides are resolved differently can never match, so the guard silently
+  never fires.** Resolve both sides the same way before comparing two paths — measured, in shipped
+  code: a containment guard took `pwd` on one side and `cd -P` on the other, so no input could have
+  tripped it.
+
+#### You chose not to run it — the excuse is checkable
+
+- **A check that never fired never ran, either.** Editing outside your tooling's normal path skips its
+  hooks silently — they do not fail, they never run — and a hand-substitute is reliably narrower than
+  what it replaced. Name what you skipped and run it, or use the normal path.
+- **When the reason you skip is *"that change class cannot reach it"*, that is a claim about the
+  DEPENDENCY GRAPH — one grep settles it,** cheaper than the gate you were skipping. Measured: a
+  CLAUDE.md prose edit, argued in two consecutive sessions to be unable to reach any suite — one grep
+  then found a suite that reads CLAUDE.md and asserts on the very marker region the edit sat beside.
 - **A command you write into documentation is unverified until you run it.** An un-runnable one reads
   exactly like a working one, so prose review never catches it — only execution does. Seen: a flag
   rejecting the arity it was given (`git check-ignore -q a b` → `fatal: --quiet is only valid with a
@@ -176,9 +187,6 @@ tally of a thing sitting right underneath it is the file's own derived-vs-hand-m
   **But a RED proves only that SOMETHING failed, not that your named subject did** — a row titled for
   one guard fired off a *different* assertion that raised first, so deleting the guard it named left
   the suite green (measured). Mutate what a row names; if the suite holds, the row is not testing it.
-  **Nor is it only a fixture concern — resolve both sides the same way before comparing two paths**:
-  a containment guard taking `pwd` on one side and `cd -P` on the other can never match, so it
-  silently never fires (measured, in shipped code).
 
 #### The signal you read belongs to something else
 
