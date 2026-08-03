@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.66.2 — 2026-07-30
+- docs(CLAUDE.md): note that a reachability excuse is one grep away
+
 ## v0.66.1 — 2026-07-29
 - docs(mutate): surface the shared runner at the point of use
 

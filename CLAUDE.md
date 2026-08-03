@@ -128,7 +128,11 @@ tally of a thing sitting right underneath it is the file's own derived-vs-hand-m
   signal that the run died — the harness's announcement can't be trusted, for the reason below.
 - **A check that never fired never ran, either.** Editing outside your tooling's normal path skips its
   hooks silently — they do not fail, they never run — and a hand-substitute is reliably narrower than
-  what it replaced. Name what you skipped and run it, or use the normal path.
+  what it replaced. Name what you skipped and run it, or use the normal path. **And when the reason
+  you skip is *"that change class cannot reach it"*, that is a claim about the DEPENDENCY GRAPH — one
+  grep settles it, cheaper than the gate you were skipping.** Measured: a CLAUDE.md prose edit,
+  argued in two consecutive sessions to be unable to reach any suite — one grep then found a suite
+  that reads CLAUDE.md and asserts on the very marker region the edit sat beside.
 - **A check that is merely INSTALLED has never run — registration is not liveness.** Seen: a config
   restore put back a runtime file lacking the three hook registrations the incoming commit added — 21
   entries where the commit had 23 — while the obvious diff reported *clean*; the gate was then
