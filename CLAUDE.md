@@ -153,6 +153,12 @@ left legal.
   rejecting the arity it was given (`git check-ignore -q a b` → `fatal: --quiet is only valid with a
   single pathname`), and a snippet its own guard blocks. Run every documented command once **as
   written**; when one needs a hand workaround twice, the doc is the defect, not the workaround.
+- **"This tool covers that job" is a claim you have not run — one trial settles it.** An instrument
+  answers ONE question, and a job needing a different question is uncovered however alike the two
+  sound. Measured: a *losslessness* checker (did anything leave?) was twice named, in consecutive
+  turns, as what unblocked a *compression* pass — where content leaves by design. Run against the
+  real job at last, it returned FAIL with 130 words removed for 7 lines saved: an unreadable bag,
+  the very hand-accounting it was meant to replace. Named the enabler twice, never once run.
 
 #### It ran, but not on what you think
 
@@ -194,8 +200,8 @@ left legal.
   *alternation*, not a sequence: `grep -Fc "$(printf 'a\nb')"` counts lines matching **either**, so a
   multi-line check returns a plausible-but-wrong count and reads as verified. Use `python3 -c "..."`
   (`needle in open(f).read()`) or `grep -Pzo`.
-- **In wrapped text, use it even for a phrase you believe is one line** — if it happens to wrap, a
-  line-based grep returns 0 and absence is not evidence of absence.
+- **A phrase you believe is one line may have WRAPPED — then a line-based grep returns 0, and
+  absence is not evidence of absence.** Match against the file's whole text, not line by line.
 
 #### The signal you read belongs to something else
 
