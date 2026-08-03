@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.66.0 — 2026-07-31
+- feat(mutate): extract the shared mutation-campaign runner
+
 ## v0.65.3 — 2026-07-29
 - docs(CLAUDE.md): note that a RED can fire for the wrong reason
 
