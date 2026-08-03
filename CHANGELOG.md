@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.72.0 — 2026-08-02
+- feat(propagate): script the branching post-merge promote verification
+
 ## v0.71.2 — 2026-08-01
 - docs(CLAUDE.md): add the blanket-fixer and truncated-output hazards
 

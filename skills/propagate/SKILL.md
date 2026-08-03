@@ -167,6 +167,14 @@ test -f "$(git rev-parse --show-toplevel)/.publication.toml"
    marker, no expected value, behavior unchanged. (The **adopted** publish-only `--push` and
    `--cutover` arms never reach this step, so a publish is never blocked by drift it doesn't touch.)
 
+   **Capture the runtime `settings.json` digest BEFORE the merge.** It is `skip-worktree`, so its
+   content differs from the index by design and *no* post-merge command can recover it — the
+   verification below needs this value and refuses to run without it:
+
+   ```bash
+   before_sha="$(shasum -a 256 "$live/settings.json" | cut -d' ' -f1)"
+   ```
+
    Then fetch from `src` and `--ff-only` merge:
 
    ```bash
@@ -211,29 +219,40 @@ test -f "$(git rev-parse --show-toplevel)/.publication.toml"
      the blocker and the manual options (`git checkout -- <file>` is safe only when it already equals
      the incoming version).
 
-   **Then verify the promote left no dead gate — always, both arms.** Which check applies is decided
-   by one cheap question asked *before* the merge: was `settings.json` in the incoming range?
+   **Then verify the promote left no dead gate — always, both arms.** The postcondition BRANCHES on
+   whether `settings.json` was in the incoming range, and *choosing that branch by hand* is the step
+   this repo measured going wrong: the strict arm was four separate commands with no single verdict
+   line. `propagate-postcheck.sh` picks the branch itself, runs both arms' assertions, and emits one
+   verdict:
 
    ```bash
-   git -C "$live" diff --name-only HEAD FETCH_HEAD | grep -qx settings.json
+   ~/.claude/scripts/propagate-postcheck.sh --scope "$live" --before-sha "$before_sha" --ref FETCH_HEAD
    ```
 
-   - **Not in the range** (the common case — five consecutive promotes ran this way): the parking
-     dance never engaged, so the postcondition is the strict one — the runtime file must come out
-     **byte-identical**. Take `shasum -a 256 "$live/settings.json"` before and after and compare
-     them, and confirm `git -C "$live" stash list` is empty and `skip-worktree` is still set
-     (`git -C "$live" ls-files -v settings.json` begins with `S`).
-   - **In the range:** the restore just put back a file predating the incoming commit, which is
-     exactly how a registration goes missing. Run:
+   **Proceed only on `RESULT: PASS`** — its last stdout line. `FAIL`, `ERROR`, `INCOMPLETE` and an
+   **absent** line are each a failure to prove the invariant; it is an allowlist, so any value not
+   named here reads as not-clean. The absent line is the one to watch — it means the run died having
+   established nothing, which every cheap instrument reads as quiet.
 
-   ```bash
-   ~/.claude/scripts/settings-hooks-check.py --scope "$live" --ref FETCH_HEAD
-   ```
+   What it asserts, so a failure is readable without opening the script:
 
-   **Proceed only on `RESULT: PASS`** — its last stdout line, with `FAIL`, `ERROR` and an absent
-   line each a failure to prove the invariant. On `FAIL` it names every registration the commit
-   carries and the runtime lacks; add those to the runtime file by hand, keeping its
-   `model`/`enabledPlugins` values, and re-run until it passes.
+   - `merge-applied` — the fast-forward actually landed.
+   - `range` — whether `settings.json` was in the incoming range, derived from `ORIG_HEAD` (pass
+     `--before-head` to override). An undeterminable range fails **closed**: byte-identity is then
+     required, because wrong in that direction is loud and recoverable while wrong in the other is
+     silent.
+   - `settings-identical` — the runtime file is byte-identical to `--before-sha`. Asserted only when
+     `settings.json` was **not** in the range; **skipped** when it was, since the hand-add below
+     changes the file by design.
+   - `stash-empty` and `skip-worktree` — nothing left parked, and the flag still set. Both arms.
+   - `hooks-registered` — every committed registration is present in the runtime file, via
+     `settings-hooks-check.py` (resolved beside the postcheck, whose path it prints). **This runs on
+     both arms on purpose:** gating it on the range would let a mis-determined range hide a dropped
+     registration, which is the very failure the branch decision exists to prevent.
+
+   On a `hooks-registered` failure it names every registration the commit carries and the runtime
+   lacks; add those to the runtime file by hand, keeping its `model`/`enabledPlugins` values, and
+   re-run until it passes.
 
    **Do not substitute a count**, and do not read agreeing counts as agreement. Measured: a promote
    where runtime and commit both held 24 entries while differing in *both* directions at once — a

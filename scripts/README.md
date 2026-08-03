@@ -26,6 +26,7 @@ for how the index below stays in sync.
 | `md-links-check.py`              | PostToolUse hook — verify relative links and anchors in edited markdown resolve                                                |
 | `mutation-anchors-check-test.sh` | PostToolUse hook — run the mutation-anchors-check test suite when the checker changes                                          |
 | `mutation-anchors-check.py`      | Assert every mutation campaign's `old` anchor still resolves exactly once in its subject                                       |
+| `propagate-postcheck.sh`         | Verify /propagate's LOCAL promote landed correctly, choosing the postcondition branch                                          |
 | `prose-diff.py`                  | Verify a restructuring is lossless by diffing word or line multisets in both directions                                        |
 | `publication-push-guard-test.sh` | PostToolUse hook — run the publication-push-guard suite when the guard, its suite, or the shared git_command tokenizer changes |
 | `publication-push-guard.py`      | PreToolUse hook — fail-closed dev-block keeping `dev` private in a repo that adopted the dev/main publication model            |
