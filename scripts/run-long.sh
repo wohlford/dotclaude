@@ -5,6 +5,7 @@ set -uo pipefail
 # Purpose: Launch a long job in the background and record its real exit status inside the artifact
 # Usage: run-long.sh --out <path> [--label <text>] [--force] -- <command> [args...]
 #        run-long.sh --status <path>
+#        run-long.sh --wait <path> [--interval <seconds>]
 #
 # Why this exists. A check that outruns the tool timeout has to be backgrounded, and a
 # backgrounded run is where "no FAIL in the output" stops meaning "passed": a killed run prints a
@@ -24,6 +25,17 @@ set -uo pipefail
 #     prefix of PASS lines cannot fake.
 #   * `--status` turns that into one of three verdicts (DONE / RUNNING / DIED) so the caller never
 #     has to remember which grep distinguishes "still going" from "killed".
+#   * `--wait` blocks until a TERMINAL verdict. Callers hand-rolled that loop three times in the
+#     week this tool shipped, and the predicate is the easy thing to get wrong: it must break on
+#     DIED as well as DONE, or a killed job hangs the waiter forever. One implementation, here.
+#
+# It also stamps the SUBJECT. A long check grades the tree it was LAUNCHED against; by the time
+# the verdict is read that tree may be gone, and nothing in the output would say so — a stale PASS
+# is byte-identical to a current one. Measured twice in one session against a ~15-minute sweep
+# whose fast static checks finish in the first seconds. So the launch-time working state is
+# fingerprinted into the header and compared back at read time. It is a WARNING, never a failure:
+# reading a verdict and then continuing to edit is normal, and the warning's only job is to say
+# that this verdict does not cover the tree you have now.
 #
 # There is deliberately NO default for --out. A default output path makes every run of a tool a
 # writer of real state, which this repo has measured biting in both directions (synthetic records
@@ -32,11 +44,15 @@ set -uo pipefail
 
 readonly BEGIN_PREFIX='RUN_LONG_BEGIN'
 readonly STATUS_PREFIX='RUN_LONG_EXIT_STATUS='
+readonly SUBJECT_PREFIX='RUN_LONG_SUBJECT='
+readonly SUBJECT_ROOT_PREFIX='RUN_LONG_SUBJECT_ROOT='
+readonly DEFAULT_INTERVAL=15
 
 usage() {
   cat <<'EOF'
 Usage: run-long.sh --out <path> [--label <text>] [--force] -- <command> [args...]
        run-long.sh --status <path>
+       run-long.sh --wait <path> [--interval <seconds>]
        run-long.sh --help
 
 Launch mode:
@@ -54,6 +70,17 @@ Status mode:
   RESULT: DONE rc=<n>   exit 0 if n is 0, else 1
   RESULT: RUNNING       exit 3
   RESULT: DIED          exit 4 — killed before it recorded a status; NOT a pass
+
+Wait mode:
+  --wait <path>        block until the run reaches a TERMINAL state, then report
+  --interval <secs>    poll cadence, a positive whole number (default 15)
+
+  Exits with the status codes above MINUS RUNNING: 0, 1 or 4. It breaks on DIED as well as
+  on DONE — a hand-rolled `until [ $? -eq 0 ]` hangs forever on a job that was killed.
+
+Both read modes also report SUBJECT: whether the git working tree has MOVED since the run was
+launched, i.e. whether the verdict still describes the tree you have now. Best-effort (silent
+outside a git repo) and a WARNING only — it never changes the exit code.
 EOF
 }
 
@@ -68,6 +95,8 @@ label=""
 force=0
 status_path=""
 mode="launch"
+interval="$DEFAULT_INTERVAL"
+interval_set=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -95,6 +124,18 @@ while [[ $# -gt 0 ]]; do
       mode="status"
       shift 2
       ;;
+    --wait)
+      [[ $# -ge 2 ]] || die '--wait needs a path'
+      status_path="$2"
+      mode="wait"
+      shift 2
+      ;;
+    --interval)
+      [[ $# -ge 2 ]] || die '--interval needs a value'
+      interval="$2"
+      interval_set=1
+      shift 2
+      ;;
     --)
       shift
       break
@@ -105,28 +146,135 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ---------- status mode ----------
+if [[ "$interval_set" -eq 1 ]]; then
+  [[ "$mode" == "wait" ]] || die '--interval applies to --wait only'
+  [[ "$interval" =~ ^[1-9][0-9]*$ ]] ||
+    die "--interval needs a positive whole number of seconds: $interval"
+fi
 
-if [[ "$mode" == "status" ]]; then
+# ---------- the subject: which tree did this verdict actually grade? ----------
+
+# Fingerprint the git working state under $1. Best-effort by contract: prints nothing when the
+# subject is not a git tree, so a caller outside a repo gets no stamp rather than a usage error.
+#
+# `git rev-parse HEAD` alone would be WORSE than nothing. The tree under a long check is normally
+# dirty — uncommitted work is usually the entire reason for running it — so a HEAD-only stamp
+# reports "unchanged" across exactly the edits this exists to catch.
+subject_stamp() { # repo-root
+  local root="$1" hasher=""
+  git -C "$root" rev-parse --git-dir > /dev/null 2>&1 || return 0
+  if command -v shasum > /dev/null 2>&1; then
+    hasher="shasum"
+  elif command -v sha1sum > /dev/null 2>&1; then
+    hasher="sha1sum"
+  else
+    return 0
+  fi
+  {
+    git -C "$root" rev-parse HEAD
+    git -C "$root" diff HEAD --no-ext-diff
+    git -C "$root" status --porcelain
+  } 2> /dev/null | "$hasher" | awk '{print $1}'
+}
+
+# Every branch prints SOMETHING. Silence would be indistinguishable from "checked, and unchanged",
+# which is the false-clean this whole feature exists to remove — so "no subject was recorded" and
+# "the subject cannot be re-read" are stated out loud rather than left to an absent line.
+subject_report() { # artifact
+  local art="$1" recorded root now
+  recorded="$(sed -n "s/^${SUBJECT_PREFIX}//p" "$art" | head -1)"
+  root="$(sed -n "s/^${SUBJECT_ROOT_PREFIX}//p" "$art" | head -1)"
+
+  if [[ -z "$recorded" || "$recorded" == "none" ]]; then
+    printf 'SUBJECT: not recorded — the launch was outside a git repo, so drift cannot be judged\n'
+    return 0
+  fi
+
+  now=""
+  [[ -n "$root" && -d "$root" ]] && now="$(subject_stamp "$root")"
+
+  if [[ -z "$now" ]]; then
+    printf 'SUBJECT: UNREADABLE — cannot re-read %s, so this verdict cannot be tied to a tree\n' \
+      "${root:-?}"
+  elif [[ "$now" == "$recorded" ]]; then
+    printf 'SUBJECT: unchanged since launch (%s)\n' "${recorded:0:12}"
+  else
+    printf 'SUBJECT: MOVED since launch — this verdict does NOT cover your current tree\n'
+    printf '         launched %s, now %s, in %s\n' "${recorded:0:12}" "${now:0:12}" "$root"
+  fi
+}
+
+# ---------- read modes: --status and --wait ----------
+
+# classify() and report() are deliberately ONE implementation serving both modes. Which states are
+# TERMINAL is the single thing callers kept getting wrong when they hand-rolled this loop — an
+# `until [ $? -eq 0 ]` never exits on a job that died — so the predicate must not exist in two
+# places that can drift apart.
+CLASS=""
+JOB_RC=""
+JOB_PID=""
+
+classify() { # artifact -> sets CLASS to done | running | died
+  local art="$1"
+  CLASS=""
+  JOB_RC=""
+  JOB_PID=""
+
+  if grep -q "^${STATUS_PREFIX}" "$art"; then
+    JOB_RC="$(sed -n "s/^${STATUS_PREFIX}\\([0-9][0-9]*\\)\$/\\1/p" "$art" | tail -1)"
+    CLASS="done"
+    return 0
+  fi
+
+  JOB_PID="$(sed -n "s/^${BEGIN_PREFIX} pid=\\([0-9][0-9]*\\).*/\\1/p" "$art" | head -1)"
+  if [[ -n "$JOB_PID" ]] && kill -0 "$JOB_PID" 2>/dev/null; then
+    CLASS="running"
+  else
+    CLASS="died"
+  fi
+}
+
+report() { # artifact -> prints the verdict, returns its exit code
+  local art="$1"
+  case "$CLASS" in
+    done)
+      printf 'RESULT: DONE rc=%s artifact=%s\n' "${JOB_RC:-?}" "$art"
+      subject_report "$art"
+      [[ "$JOB_RC" == "0" ]] && return 0
+      return 1
+      ;;
+    running)
+      printf 'RESULT: RUNNING pid=%s artifact=%s\n' "$JOB_PID" "$art"
+      subject_report "$art"
+      return 3
+      ;;
+    *)
+      printf 'RESULT: DIED pid=%s artifact=%s\n' "${JOB_PID:-unknown}" "$art"
+      printf '        the job recorded no exit status, so it was killed before finishing.\n'
+      printf '        Whatever it printed is a PREFIX — absence of FAIL is not a pass.\n'
+      subject_report "$art"
+      return 4
+      ;;
+  esac
+}
+
+if [[ "$mode" == "status" || "$mode" == "wait" ]]; then
   [[ -f "$status_path" ]] || die "no such artifact: $status_path"
 
-  if grep -q "^${STATUS_PREFIX}" "$status_path"; then
-    rc="$(sed -n "s/^${STATUS_PREFIX}\\([0-9][0-9]*\\)\$/\\1/p" "$status_path" | tail -1)"
-    printf 'RESULT: DONE rc=%s artifact=%s\n' "${rc:-?}" "$status_path"
-    [[ "$rc" == "0" ]] && exit 0
-    exit 1
+  classify "$status_path"
+
+  # RUNNING is the ONLY non-terminal state. Looping on "not DONE" would hang forever on a job that
+  # was killed, which is the trap this flag exists to take away from the call site.
+  if [[ "$mode" == "wait" ]]; then
+    while [[ "$CLASS" == "running" ]]; do
+      sleep "$interval"
+      classify "$status_path"
+    done
   fi
 
-  pid="$(sed -n "s/^${BEGIN_PREFIX} pid=\\([0-9][0-9]*\\).*/\\1/p" "$status_path" | head -1)"
-  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-    printf 'RESULT: RUNNING pid=%s artifact=%s\n' "$pid" "$status_path"
-    exit 3
-  fi
-
-  printf 'RESULT: DIED pid=%s artifact=%s\n' "${pid:-unknown}" "$status_path"
-  printf '        the job recorded no exit status, so it was killed before finishing.\n'
-  printf '        Whatever it printed is a PREFIX — absence of FAIL is not a pass.\n'
-  exit 4
+  report "$status_path"
+  rc=$?
+  exit "$rc"
 fi
 
 # ---------- launch mode ----------
@@ -142,6 +290,17 @@ out_dir="$(dirname "$out")"
 mkdir -p "$out_dir" || die "cannot create directory: $out_dir"
 : > "$out" || die "cannot write artifact: $out"
 
+# Capture the subject BEFORE the job starts, so the stamp describes the tree the job is about to
+# grade. The root is recorded alongside the hash because --status may run from a different
+# directory entirely: both sides then resolve through `git -C "$root"`, and a comparison whose two
+# sides resolve differently could never match. Costs one git invocation at launch.
+subject_root="$(git rev-parse --show-toplevel 2>/dev/null)"
+subject_hash=""
+[[ -n "$subject_root" ]] && subject_hash="$(subject_stamp "$subject_root")"
+subject_block="$(printf '%s%s\n%s%s' \
+  "$SUBJECT_ROOT_PREFIX" "$subject_root" \
+  "$SUBJECT_PREFIX" "${subject_hash:-none}")"
+
 # The job writes its own header so the pid in the artifact is authoritative, and appends the
 # status trailer as its last act. Nothing else may write to the artifact, or the trailer stops
 # being the last line. Every value the child needs is passed as an ARGUMENT rather than spliced
@@ -152,9 +311,11 @@ nohup bash -c '
   tag=$2
   begin=$3
   trailer=$4
-  shift 4
+  subject=$5
+  shift 5
   {
     printf "%s pid=%d label=%s\n" "$begin" "$$" "$tag"
+    printf "%s\n" "$subject"
     printf "RUN_LONG_COMMAND:"
     for a in "$@"; do printf " %q" "$a"; done
     printf "\n----- output -----\n"
@@ -167,7 +328,7 @@ nohup bash -c '
   # last line, and the trailer has to stand alone to be greppable and to be `tail -1`.
   if [ -n "$(tail -c 1 "$art")" ]; then printf "\n" >> "$art"; fi
   printf "%s%d\n" "$trailer" "$rc" >> "$art"
-' _ "$out" "$label" "$BEGIN_PREFIX" "$STATUS_PREFIX" "$@" > /dev/null 2>&1 &
+' _ "$out" "$label" "$BEGIN_PREFIX" "$STATUS_PREFIX" "$subject_block" "$@" > /dev/null 2>&1 &
 pid=$!
 
 # Return only once the header is on disk, so a caller that immediately runs --status cannot race

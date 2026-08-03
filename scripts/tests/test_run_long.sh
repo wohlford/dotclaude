@@ -61,6 +61,17 @@ run() {
   RC=$?
 }
 
+# run_bounded SECS ARGS… — like run(), but a hang becomes a FAIL instead of a stuck suite.
+# The whole point of --wait is that it must exit on EVERY terminal state; the failure mode it
+# guards against is an infinite loop, and an unbounded assertion would hang right along with it
+# and report nothing at all. SIGALRM surfaces as rc 142, which fails any check_eq on a verdict.
+run_bounded() {
+  local secs="$1"
+  shift
+  OUT="$(perl -e 'my $s = shift; alarm $s; exec @ARGV or exit 127' "$secs" "$engine" "$@" 2>&1)"
+  RC=$?
+}
+
 # wait_done ARTIFACT [tries] — poll for the trailer rather than sleeping a fixed guess.
 wait_done() {
   local art="$1" tries="${2:-100}" i=0
@@ -243,6 +254,125 @@ if wait_done "$h"; then
 else
   fail_line 'p1: the run never completed (no trailer appeared)'
 fi
+
+# ---------------------------------------------------------------- --wait
+
+run --wait
+check_eq "$RC" 2 'w1: --wait with no path is a usage error'
+
+run --wait "$tmp/does-not-exist.log"
+check_eq "$RC" 2 'w2: --wait on a missing artifact is a usage error, not a verdict'
+
+run --help
+check_contains "$OUT" '--wait' 'w3: --help documents the wait mode'
+
+# An already-terminal artifact: --wait must return exactly what --status would, at once.
+wa="$(art wait_ok)"
+"$engine" --out "$wa" -- true >/dev/null 2>&1
+wait_done "$wa" || true
+run_bounded 20 --wait "$wa" --interval 1
+check_eq "$RC" 0 'w4: --wait exits 0 on an already-finished successful run'
+check_contains "$OUT" 'RESULT: DONE rc=0' 'w4b: --wait prints the same DONE verdict line as --status'
+
+wb="$(art wait_fail)"
+"$engine" --out "$wb" -- /bin/sh -c 'exit 3' >/dev/null 2>&1
+wait_done "$wb" || true
+run_bounded 20 --wait "$wb" --interval 1
+check_eq "$RC" 1 'w5: --wait exits 1 on an already-finished failed run'
+
+# The flag's reason to exist: block through RUNNING, come back with the terminal verdict.
+wblock="$(art wait_block)"
+"$engine" --out "$wblock" -- /bin/sh -c 'sleep 2; exit 0' >/dev/null 2>&1
+run --status "$wblock"
+check_eq "$RC" 3 'w6a: precondition — the job really is still RUNNING when --wait is called'
+run_bounded 30 --wait "$wblock" --interval 1
+check_eq "$RC" 0 'w6b: --wait blocks through RUNNING and returns the terminal verdict'
+# `pid=` is what separates a real verdict line from the usage synopsis, which contains the bare
+# strings `RESULT: RUNNING` and `RESULT: DIED` verbatim. Matching without it makes this row fail
+# on any usage dump and makes w7b below pass on one — measured, both, in the RED run.
+check_absent "$OUT" 'RESULT: RUNNING pid=' 'w6c: --wait never reports the non-terminal state it waited through'
+
+# THE row this flag exists for. The natural hand-rolled loop (`until [ $? -eq 0 ]`) hangs forever
+# on a job that died — "silence is not success" reproduced at the call site, inside the very tool
+# built to prevent it. Bounded, so a regression reads as a FAIL rather than as a hung suite.
+wd="$(art wait_died)"
+"$engine" --out "$wd" -- /bin/sh -c 'sleep 30' >/dev/null 2>&1
+wdpid="$(sed -n 's/^RUN_LONG_BEGIN pid=\([0-9]*\).*/\1/p' "$wd" | head -1)"
+if [[ -n "$wdpid" ]]; then
+  kill -9 "$wdpid" 2>/dev/null
+  i=0
+  while kill -0 "$wdpid" 2>/dev/null && [[ $i -lt 100 ]]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  run_bounded 20 --wait "$wd" --interval 1
+  check_eq "$RC" 4 'w7: --wait exits 4 on a DIED job rather than waiting for a status that never comes'
+  check_contains "$OUT" 'RESULT: DIED pid=' 'w7b: --wait prints the DIED verdict'
+else
+  fail_line 'w7-w7b: could not recover the pid from the artifact header'
+fi
+
+run --wait "$wa" --interval 0
+check_eq "$RC" 2 'w8: a non-positive --interval is a usage error'
+
+run --wait "$wa" --interval abc
+check_eq "$RC" 2 'w9: a non-numeric --interval is a usage error'
+
+run --status "$wa" --interval 5
+check_eq "$RC" 2 'w10: --interval outside wait mode is a usage error, not a silent no-op'
+
+# ---------------------------------------------------------------- subject stamp
+
+# A dedicated git sandbox. The stamp must cover UNCOMMITTED work, because uncommitted work is
+# exactly what a long check is normally grading — a HEAD-only stamp would call every one of the
+# edits this feature exists to catch "unchanged".
+repo="$tmp/subject-repo"
+mkdir -p "$repo"
+git -C "$repo" init -q >/dev/null 2>&1
+printf 'one\n' > "$repo/file.txt"
+git -C "$repo" add file.txt >/dev/null 2>&1
+git -C "$repo" -c user.email=t@example.invalid -c user.name=T -c commit.gpgsign=false \
+  commit -qm init >/dev/null 2>&1
+
+if git -C "$repo" rev-parse HEAD >/dev/null 2>&1; then
+  sa="$(art subj)"
+  (cd "$repo" && "$engine" --out "$sa" -- true) >/dev/null 2>&1
+  wait_done "$sa" || true
+
+  check_contains "$(cat "$sa")" 'RUN_LONG_SUBJECT=' \
+    't1: a launch inside a git repo stamps the subject into the header'
+
+  run --status "$sa"
+  check_contains "$OUT" 'SUBJECT: unchanged' 't2: an unmoved tree is reported as unchanged'
+  check_eq "$RC" 0 't2b: the unchanged report leaves the verdict exit code alone'
+
+  # Move the tree WITHOUT committing. This is the row that fails if the stamp is `rev-parse HEAD`.
+  printf 'two\n' >> "$repo/file.txt"
+  run --status "$sa"
+  check_contains "$OUT" 'SUBJECT: MOVED' 't3: an uncommitted edit since launch is reported as MOVED'
+  check_eq "$RC" 0 't4: MOVED is a WARNING — it must not change the verdict exit code'
+  check_contains "$OUT" 'RESULT: DONE rc=0' 't4b: the verdict line itself still prints alongside the warning'
+
+  git -C "$repo" checkout -- file.txt >/dev/null 2>&1
+  run --status "$sa"
+  check_contains "$OUT" 'SUBJECT: unchanged' 't5: reverting the edit restores the match'
+
+  printf 'x\n' > "$repo/untracked.txt"
+  run --status "$sa"
+  check_contains "$OUT" 'SUBJECT: MOVED' 't6: a new untracked file counts as a tree move'
+else
+  fail_line 't1-t6: could not build the git sandbox'
+fi
+
+# Outside a repo the stamp is best-effort: no usage error, no failure — and the artifact says so
+# POSITIVELY. Silence here would be indistinguishable from "checked, and unchanged".
+sb="$(art subj_none)"
+(cd "$tmp" && "$engine" --out "$sb" -- true) >/dev/null 2>&1
+wait_done "$sb" || true
+run --status "$sb"
+check_eq "$RC" 0 't7: a launch outside a git repo still succeeds'
+check_contains "$OUT" 'SUBJECT: not recorded' \
+  't8: the artifact states positively that no subject was captured'
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

@@ -49,18 +49,18 @@ MUTATIONS = [
     ),
     mutate.Mutation(
         "a DIED run reports success — the exact false-clean this tool exists to prevent",
-        "  printf '        Whatever it printed is a PREFIX — absence of FAIL is not a pass.\\n'\n  exit 4",
-        "  printf '        Whatever it printed is a PREFIX — absence of FAIL is not a pass.\\n'\n  exit 0",
+        '      subject_report "$art"\n      return 4',
+        '      subject_report "$art"\n      return 0',
     ),
     mutate.Mutation(
         "liveness is assumed rather than checked, so a killed run reads as RUNNING forever",
-        'if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then',
-        'if [[ -n "$pid" ]]; then',
+        'if [[ -n "$JOB_PID" ]] && kill -0 "$JOB_PID" 2>/dev/null; then',
+        'if [[ -n "$JOB_PID" ]]; then',
     ),
     mutate.Mutation(
         "--status stops distinguishing a failed run from a successful one",
-        '    [[ "$rc" == "0" ]] && exit 0\n    exit 1',
-        '    [[ "$rc" == "0" ]] && exit 0\n    exit 0',
+        '      [[ "$JOB_RC" == "0" ]] && return 0\n      return 1',
+        '      [[ "$JOB_RC" == "0" ]] && return 0\n      return 0',
     ),
     mutate.Mutation(
         "the trailing-newline guard is dropped — the trailer fuses onto the last output line",
@@ -98,6 +98,59 @@ MUTATIONS = [
         "--label stops being recorded",
         'printf "%s pid=%d label=%s\\n" "$begin" "$$" "$tag"',
         'printf "%s pid=%d\\n" "$begin" "$$"',
+    ),
+    # --- --wait: which states count as TERMINAL -----------------------------------------------
+    #
+    # The first row is the whole reason the flag exists. It is also the only row here that fails by
+    # HANGING rather than by returning a wrong answer, which is why the suite waits on --wait under
+    # an alarm: without that bound this mutation would hang the campaign instead of being caught.
+    mutate.Mutation(
+        "--wait loops on 'not DONE', so a job that was killed hangs the waiter forever",
+        'while [[ "$CLASS" == "running" ]]; do',
+        'while [[ "$CLASS" != "done" ]]; do',
+    ),
+    mutate.Mutation(
+        "the wait loop is dropped — --wait degenerates to --status and returns RUNNING",
+        'while [[ "$CLASS" == "running" ]]; do\n'
+        '      sleep "$interval"\n'
+        '      classify "$status_path"\n'
+        "    done",
+        ":",
+    ),
+    mutate.Mutation(
+        "--interval accepts any junk, so a bad cadence reaches the poll loop",
+        '[[ "$interval" =~ ^[1-9][0-9]*$ ]] ||\n'
+        '    die "--interval needs a positive whole number of seconds: $interval"',
+        ":",
+    ),
+    mutate.Mutation(
+        "--interval is silently swallowed outside --wait instead of naming the misconception",
+        '[[ "$mode" == "wait" ]] || die \'--interval applies to --wait only\'',
+        ":",
+    ),
+    # --- the subject stamp: which TREE did this verdict grade? --------------------------------
+    mutate.Mutation(
+        "the stamp drops uncommitted work, so every dirty-tree edit reads as unchanged",
+        '    git -C "$root" rev-parse HEAD\n'
+        '    git -C "$root" diff HEAD --no-ext-diff\n'
+        '    git -C "$root" status --porcelain',
+        '    git -C "$root" rev-parse HEAD',
+    ),
+    mutate.Mutation(
+        "a MOVED tree is announced as unchanged — a stale verdict reading as a current one",
+        "printf 'SUBJECT: MOVED since launch — this verdict does NOT cover your current tree\\n'",
+        "printf 'SUBJECT: unchanged since launch\\n'",
+    ),
+    mutate.Mutation(
+        "the 'no subject recorded' case goes SILENT, which reads exactly like 'checked, unchanged'",
+        "printf 'SUBJECT: not recorded — the launch was outside a git repo, "
+        "so drift cannot be judged\\n'",
+        ":",
+    ),
+    mutate.Mutation(
+        "the subject never reaches the header, so no verdict can be tied to a tree at all",
+        'printf "%s\\n" "$subject"',
+        ":",
     ),
 ]
 
