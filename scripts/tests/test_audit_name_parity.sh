@@ -480,7 +480,7 @@ check_case "GREEN: real audit.sh and SKILL.md agree" \
 # ---------------------------------------------------------------------------
 stale_count="$sandbox/stale-count-skill.md"
 mutate "$audit_skill" "$stale_count" \
-  'The sweep runs 15 checks:' 'The sweep runs 13 checks:'
+  'The sweep runs 16 checks:' 'The sweep runs 13 checks:'
 check_case "RED: stale 'runs 13 checks' is caught" \
   "$audit_sh" "$stale_count" 1 "skill-runs-count"
 
@@ -494,9 +494,10 @@ check_case "RED: stale 'runs 13 checks' is caught" \
 prefix_trap="$sandbox/prefix-trap-skill.md"
 # shellcheck disable=SC2016  # backticked names are literal SKILL.md text to match
 mutate "$audit_skill" "$prefix_trap" \
-  '; and
-`hermetic-outside` (the suite wrote nothing under the Claude config root). The last three run' \
-  '. The last three run'
+  '; and `hermetic-outside` (the suite wrote nothing under the Claude config root). The
+last three run' \
+  '. The
+last three run'
 check_case "RED: hermetic-outside dropped while hermetic remains" \
   "$audit_sh" "$prefix_trap" 1 "skill-name-list"
 
@@ -534,8 +535,10 @@ regated="$sandbox/regated-audit.sh"
 # shellcheck disable=SC2016  # "$scope"/"$run_tests" are literal audit.sh source
 mutate "$audit_sh" "$regated" \
   '  check_sync_docs "$scope"
+  check_mutation_anchors "$scope"
   if [[ "$run_tests" == true ]]; then' \
-  '  if [[ "$run_tests" == true ]]; then
+  '  check_mutation_anchors "$scope"
+  if [[ "$run_tests" == true ]]; then
     check_sync_docs "$scope"'
 check_case "RED: a check moved behind --tests changes only the static total" \
   "$regated" "$audit_skill" 1 \
@@ -553,8 +556,8 @@ reworded="$sandbox/reworded-skill.md"
 # checker an unmutated copy. The checker itself is immune (it flattens
 # whitespace before matching); it was the fixture that had to learn this.
 mutate "$audit_skill" "$reworded" \
-  'so a static sweep totals 12 and a
-  full one 15.' \
+  'so a static sweep totals 13 and a
+  full one 16.' \
   'so the totals depend on which flags you passed.'
 check_case "RED: a reworded claim is reported unfindable, not skipped" \
   "$audit_sh" "$reworded" 1 "skill-sweep-totals"

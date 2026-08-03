@@ -61,13 +61,14 @@ The user may optionally provide:
    and do not attempt a fix unless asked. An `INCOMPLETE` or missing verdict is a reason
    to re-run deliberately, not to assume the sweep would have passed.
 
-The sweep runs 15 checks: `format-trailing-ws`, `format-crlf`, `format-final-newline`,
+The sweep runs 16 checks: `format-trailing-ws`, `format-crlf`, `format-final-newline`,
 `format-tabs` (formatting); `shellcheck`, `ruff` (linters); `markdownlint` (opt-in, see Rules);
 `md-links` (relative link/anchor validity); `exec-bit` (tracked shebang files must be
-executable); `json`, `toml` (config validity); `sync-docs` (index-table drift); `tests`
-(shell suites + pytest); `hermetic` (the suite left the working tree as it found it); and
-`hermetic-outside` (the suite wrote nothing under the Claude config root). The last three run
-only with `--tests`.
+executable); `json`, `toml` (config validity); `sync-docs` (index-table drift);
+`mutation-anchors` (every mutation campaign's anchor still resolves exactly once in the file it
+mutates); `tests` (shell suites + pytest); `hermetic` (the suite left the working tree as it
+found it); and `hermetic-outside` (the suite wrote nothing under the Claude config root). The
+last three run only with `--tests`.
 
 ### Hermeticity — what a suite run leaves behind
 
@@ -100,8 +101,8 @@ becomes a `:(exclude)` pathspec — this mirrors the repo's own `.markdownlint-c
 
 It scopes ONLY the five text-content checks: `format-trailing-ws`, `format-crlf`,
 `format-final-newline`, `format-tabs`, `md-links`. Code/config checks (`shellcheck`, `ruff`,
-`markdownlint`, `exec-bit`, `json`, `toml`, `sync-docs`, `tests`, `hermetic`,
-`hermetic-outside`) are deliberately never scoped by it — a repo cannot hide a broken tracked
+`markdownlint`, `exec-bit`, `json`, `toml`, `sync-docs`, `mutation-anchors`, `tests`,
+`hermetic`, `hermetic-outside`) are deliberately never scoped by it — a repo cannot hide a broken tracked
 `.json`, a non-executable shebang file, or an artifact its own suite dropped from the audit.
 
 An absent `.auditignore` is fully backward compatible — behavior is identical to before it
@@ -158,8 +159,8 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   non-zero, so `&&` chains still short-circuit. Under `nohup`, SIGHUP is ignored before
   the script starts and so cannot be trapped at all: a HUP then has no effect whatever —
   the run continues to completion and emits a normal verdict.
-- **`checks=<pass>/<fail>/<skip>` counts emitted verdict lines, not the 15 named checks.**
-  Two things make the totals differ from 15: an invalid `.auditignore` pattern adds a
-  `FAIL auditignore` that is not one of the 15, and without `--tests` none of `tests`,
-  `hermetic`, or `hermetic-outside` emits a line at all — so a static sweep totals 12 and a
-  full one 15. Compare counts only across runs invoked with the same flags.
+- **`checks=<pass>/<fail>/<skip>` counts emitted verdict lines, not the 16 named checks.**
+  Two things make the totals differ from 16: an invalid `.auditignore` pattern adds a
+  `FAIL auditignore` that is not one of the 16, and without `--tests` none of `tests`,
+  `hermetic`, or `hermetic-outside` emits a line at all — so a static sweep totals 13 and a
+  full one 16. Compare counts only across runs invoked with the same flags.

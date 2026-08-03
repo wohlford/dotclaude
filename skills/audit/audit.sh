@@ -9,8 +9,8 @@ set -uo pipefail
 # blank lines ignored) excludes matching paths from the five text-content checks
 # (format-trailing-ws, format-crlf, format-final-newline, format-tabs, md-links) only — it
 # can never silence a code/config check (shellcheck, ruff, markdownlint, exec-bit, json,
-# toml, sync-docs, tests, hermetic, hermetic-outside). No file present, or a present-but-empty
-# file, sweeps unchanged.
+# toml, sync-docs, mutation-anchors, tests, hermetic, hermetic-outside). No file present, or a
+# present-but-empty file, sweeps unchanged.
 #
 # Exit codes:
 #   0 — sweep completed, zero FAILs
@@ -529,6 +529,51 @@ check_sync_docs() {
   fi
 }
 
+# A mutation campaign's `old` string is a reference into another file that nothing maintains,
+# so it goes stale silently: whoever refactors a subject is the last person to think of
+# re-pointing its campaign, and a campaign whose anchor no longer resolves ERRORs rather than
+# grading anything. The same check catches a mutant STRANDED in the tree by a killed campaign
+# (its own anchor is then absent), which is the more dangerous of the two — a verification tool
+# left inverted into a rubber stamp, showing nothing unusual in `git status`.
+#
+# Static, so it belongs in this half of the sweep: the checker reads campaigns with `ast` and
+# never imports them, which is what keeps it out of the hermetic window that only brackets
+# `--tests`.
+check_mutation_anchors() {
+  local scope="$1" runner campaigns f
+  runner="$script_dir/../../scripts/mutation-anchors-check.py"
+  if [[ ! -f "$runner" ]]; then
+    verdict_skip mutation-anchors 'runner not present'
+    return
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    verdict_skip mutation-anchors 'python3 not found'
+    return
+  fi
+  # The same rule the checker itself applies — a basename of `mutate_*.py`. Deriving it the
+  # same way on both sides is what keeps a scope with no campaigns a SKIP here rather than the
+  # checker's zero-campaign ERROR, which exists to catch a sweep over nothing.
+  campaigns=""
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    case "${f##*/}" in
+      mutate_*.py) campaigns="${campaigns}${f}"$'\n' ;;
+    esac
+  done <<< "$(git -C "$scope" ls-files 2>/dev/null)"
+  if [[ -z "$campaigns" ]]; then
+    verdict_skip mutation-anchors 'no mutation campaigns in scope'
+    return
+  fi
+  local out rc
+  out="$(python3 "$runner" --scope "$scope" 2>&1)"; rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    verdict_fail mutation-anchors 'a campaign anchor no longer resolves exactly once'
+    print_offenders "$out"
+  else
+    verdict_pass mutation-anchors
+  fi
+}
+
 check_tests() {
   local scope="$1" ran=false detail="" sh_list py_list t out rc
   sh_list="$(git -C "$scope" ls-files -- 'scripts/tests/test_*.sh' 2>/dev/null)"
@@ -787,6 +832,7 @@ EOF
   check_json "$scope"
   check_toml "$scope"
   check_sync_docs "$scope"
+  check_mutation_anchors "$scope"
   if [[ "$run_tests" == true ]]; then
     # Snapshot BEFORE the only checks that execute repo code, and hand both the snapshot
     # and its status to check_hermetic — a failed read must not be able to compare equal.

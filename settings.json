@@ -95,6 +95,10 @@
           },
           {
             "type": "command",
+            "command": "$HOME/.claude/scripts/mutation-anchors-check-test.sh"
+          },
+          {
+            "type": "command",
             "command": "$HOME/.claude/scripts/markdownlint-check.sh"
           },
           {
