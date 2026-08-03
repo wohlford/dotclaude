@@ -196,6 +196,7 @@ left legal.
   (`needle in open(f).read()`) or `grep -Pzo`.
 - **In wrapped text, use it even for a phrase you believe is one line** — if it happens to wrap, a
   line-based grep returns 0 and absence is not evidence of absence.
+
 #### The signal you read belongs to something else
 
 - **A pipeline's exit status is the LAST command's.** `some-check | tail -20` reports `tail`'s success

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.68.4 — 2026-07-30
+- fix(CLAUDE.md): restore the blank line above a split-out group heading
+
 ## v0.68.3 — 2026-07-30
 - docs(CLAUDE.md): sever the counts hazard from the derive-FLOOR bullet
 
