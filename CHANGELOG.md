@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.67.0 — 2026-07-30
+- feat(run-long): record a backgrounded job's exit status in its artifact
+
 ## v0.66.2 — 2026-07-30
 - docs(CLAUDE.md): note that a reachability excuse is one grep away
 

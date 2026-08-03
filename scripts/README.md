@@ -33,6 +33,7 @@ for how the index below stays in sync.
 | `recast-commit-gate.py`          | PreToolUse hook — run the recast suite before a commit that touches recast source                                              |
 | `recast-test.sh`                 | PostToolUse hook — run the matching recast test file when a recast source changes                                              |
 | `ruff-check.sh`                  | PostToolUse hook — run ruff lint+format check on edited Python in ruff projects                                                |
+| `run-long.sh`                    | Launch a long job in the background and record its real exit status inside the artifact                                        |
 | `shellcheck-check.sh`            | PostToolUse hook — run shellcheck on edited shell scripts                                                                      |
 | `style-check-test.sh`            | PostToolUse hook — run the style-check test suite when style-check changes                                                     |
 | `style-check.sh`                 | Global PostToolUse hook — validate file edits against STYLE.md                                                                 |
