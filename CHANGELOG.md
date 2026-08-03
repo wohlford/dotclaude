@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.68.0 — 2026-07-30
+- feat(prose-diff): verify a restructuring is lossless in both directions
+
 ## v0.67.1 — 2026-07-30
 - docs(debrief): correct the claim that the backlog is repo-external
 
