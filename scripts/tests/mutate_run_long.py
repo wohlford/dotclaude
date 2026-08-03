@@ -155,8 +155,21 @@ MUTATIONS = [
 ]
 
 
+# This campaign is SLOW by nature, and needs an explicit cap rather than the derived default.
+# `test_run_long.sh` proves its claims by polling — for the trailer, for the BEGIN header, for a
+# terminal verdict — and every one of those loops is bounded. So a mutation that breaks the
+# predicate a loop waits on does not hang the suite; it makes every single call pay its full
+# retry budget, and the cost compounds across the suite. Measured 2026-07-31: the mutation that
+# stops the status trailer being written takes **297s** and is genuinely CAUGHT (43 passed, 17
+# failed), against a 28s unmutated baseline. Two rows behave this way, so expect this campaign to
+# run for tens of minutes; launch it with `scripts/run-long.sh` and read the artifact.
+SUITE_TIMEOUT_SECONDS = 900
+
+
 def main() -> int:
-    report = mutate.run(SUBJECT, SUITE, MUTATIONS, cwd=str(REPO))
+    report = mutate.run(
+        SUBJECT, SUITE, MUTATIONS, cwd=str(REPO), timeout=SUITE_TIMEOUT_SECONDS
+    )
     print(report.text)
     return report.rc
 

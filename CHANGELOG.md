@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.70.2 — 2026-07-31
+- test(run-long): give the slow campaign an explicit suite timeout
+
 ## v0.70.1 — 2026-07-31
 - docs(CLAUDE.md): add the killed-teardown and ignored-argument hazards
 
