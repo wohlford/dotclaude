@@ -289,6 +289,9 @@ left legal.
   operator to create. What found them was the first file's existence being surprising, and running
   the second command as written. **Ask what a run LEAVES BEHIND, not only what it reports**, and give
   every artifact an explicit destination outside everything anyone else checks.
+
+#### The teardown you are counting on — narrower than you think, or never reached
+
 - **A RESTORE guarantee covers only what it snapshotted — a clean subject is not a clean tree.** A
   harness that mutates one file, restores it in a `finally`, and reports `restored: sha256
   unchanged` has verified exactly that one path; whatever its mutants wrote ELSEWHERE survives the
@@ -305,6 +308,15 @@ left legal.
   cover you when the subject is UNTRACKED** — no baseline to diff against, and `git status` shows a
   bare `??` identical to a healthy new file. Verify restoration STRUCTURALLY (every mutation's
   original text present, every replacement gone), never by reading the tree.
+- **A run that never ENDS reaches no teardown at all — and "still running" reads as normal for as
+  long as you allow.** A kill at least terminates, so `finally`, `trap` and the structural check
+  above eventually get their turn; a hang delivers no signal, returns no control, and leaves no
+  verdict, artifact or corpse to notice. Measured: a harness freshly hardened against SIGTERM still
+  stranded its subject 13+ minutes, because the hardening was a signal handler and no signal was
+  coming. Bound the operation itself. **Then expect that bound to be your next wrong number** — size
+  it from the worst LEGITIMATE run actually observed, never from plausibility (5x a measured
+  baseline misfired on a real case needing 10.6x), and make an overrun report INDETERMINATE rather
+  than a verdict, so too tight a bound costs attention rather than a score.
 
 #### Building a check that holds
 
