@@ -19,6 +19,16 @@ set -euo pipefail
 # also matches Keynote decks and *.pem matches public certs (rarely read as text).
 # Symlinks ARE resolved: a link is denied when its resolved target's basename is a secret.
 
+# HOOK CONTRACT: the target arrives as a JSON payload on stdin; argv is ignored. Refuse the two
+# invocations this cannot serve, because each otherwise reads as SUCCESS — with argv and stdin at
+# EOF it exits 0 having examined nothing, and with a terminal stdin it blocks forever.
+if [ "$#" -gt 0 ] || [ -t 0 ]; then
+  printf '%s\n' \
+    "$(basename "$0") is a Claude Code hook: it reads a JSON payload on stdin and ignores arguments." \
+    "Running it with filenames examines nothing. See scripts/HOOKS.md for the payload form." >&2
+  exit 2
+fi
+
 input=$(cat)
 if command -v jq >/dev/null 2>&1; then
   # `.path` covers content-returning file tools (Grep) that key the target as `path`, not

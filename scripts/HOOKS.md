@@ -19,14 +19,46 @@ so Claude corrects it. Nothing else blocks: any other nonzero exit is treated as
 a hook that dies on its own bug does not wedge the user. Design for that — the only path to `2` is a
 genuine violation.
 
+## Running one by hand
+
+A hook takes its target from the payload and **ignores `argv`**, so invoking it like a CLI examines
+nothing. Both of the ways that goes wrong read as success, which is why every hook here now refuses
+them outright with exit `2` rather than letting you believe the result:
+
+- **`hook some/file.py` with stdin at EOF** — `cat` returns nothing, no `file_path` is found, and the
+  hook exits `0`. Byte-identical to a clean pass. Measured: one hook was invoked this way three times
+  in a single session and reported "clean" each time, having read nothing.
+- **`hook` with stdin still attached to your terminal** — `cat` blocks forever. No verdict, no
+  artifact, nothing to notice.
+
+Pipe a payload instead. This is the form the harness sends, and it is the form to use in tests:
+
+```bash
+printf '{"tool_input":{"file_path":"%s"}}' "$PWD/scripts/md-links-check.py" \
+  | bash scripts/ruff-check.sh
+```
+
+`PreToolUse` gates read different fields — `tool_name`, `tool_input.command`, and `cwd` — so their
+payload is shaped accordingly:
+
+```bash
+printf '{"tool_name":"Bash","tool_input":{"command":"git status"},"cwd":"%s"}' "$PWD" \
+  | python3 scripts/push-guard.py
+```
+
 ## The shape
 
 Extract the edited path, then guard from cheapest to most expensive, exiting `0` the instant the hook
-doesn't apply:
+doesn't apply. The argv/TTY refusal above goes immediately before `input=$(cat)`:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
+
+if [ "$#" -gt 0 ] || [ -t 0 ]; then
+  printf '%s\n' "$(basename "$0") is a hook: it reads JSON on stdin and ignores arguments." >&2
+  exit 2
+fi
 
 input=$(cat)
 file_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')

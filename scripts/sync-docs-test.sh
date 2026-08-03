@@ -14,6 +14,16 @@ set -euo pipefail
 # and exit 0 fast for anything that is not a sync-docs Python file in a sync-docs repo.
 
 # ---------- Parse stdin JSON ----------
+# HOOK CONTRACT: the target arrives as a JSON payload on stdin; argv is ignored. Refuse the two
+# invocations this cannot serve, because each otherwise reads as SUCCESS — with argv and stdin at
+# EOF it exits 0 having examined nothing, and with a terminal stdin it blocks forever.
+if [ "$#" -gt 0 ] || [ -t 0 ]; then
+  printf '%s\n' \
+    "$(basename "$0") is a Claude Code hook: it reads a JSON payload on stdin and ignores arguments." \
+    "Running it with filenames examines nothing. See scripts/HOOKS.md for the payload form." >&2
+  exit 2
+fi
+
 input=$(cat)
 file_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty' 2>/dev/null) || file_path=""
 

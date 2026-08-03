@@ -277,6 +277,17 @@ def _offending_subject(command: str, cwd: str) -> tuple[str, cs.Policy] | None:
 
 def main() -> int:
     """Hook entry point: 2 blocks the commit, 0 allows it (fail open on anything unclear)."""
+    # HOOK CONTRACT: the target arrives as a JSON payload on stdin; argv is ignored. Refuse the
+    # two invocations this cannot serve, because each otherwise reads as SUCCESS — with argv and
+    # stdin at EOF it exits 0 having examined nothing, and with a terminal stdin it blocks
+    # forever. See scripts/HOOKS.md for the payload form.
+    if len(sys.argv) > 1 or sys.stdin.isatty():
+        sys.stderr.write(
+            "%s is a Claude Code hook: it reads a JSON payload on stdin and ignores\n"
+            "arguments. Running it with filenames examines nothing — see scripts/HOOKS.md.\n"
+            % "commit-subject-guard.py"
+        )
+        sys.exit(2)
     try:
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
