@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.67.1 — 2026-07-30
+- docs(debrief): correct the claim that the backlog is repo-external
+
 ## v0.67.0 — 2026-07-30
 - feat(run-long): record a backgrounded job's exit status in its artifact
 

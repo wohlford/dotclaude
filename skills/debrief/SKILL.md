@@ -108,8 +108,11 @@ those remain manual steps for the user.
    2. **Defer every plan; never implement one here.** Do not ask the user whether to implement —
       the answer is always "not in the debrief". Record the deferral (5.3) and move on.
    3. **Record the deferral in the private backlog.** Deferrals live in this session's memory
-      directory, outside every repo: private by construction, and durable through the
-      `git clean -fdx` that would wipe a gitignored `plans/`. Write both halves:
+      directory under `~/.claude/projects/` — untracked rather than repo-external, so they are
+      private by construction and survive the `git clean -fdx` that would wipe a gitignored
+      `plans/` **in the working repo**. Run that same command in `~/.claude` itself and it
+      deletes every deferral, the backlog, and every session transcript: `-x` takes ignored
+      paths, and nothing there is tracked, so no history can restore it. Write both halves:
       - **The design**, as its own memory file (`type: project`, one deferral per file)
         following the step-3 memory protocol. It **must be self-contained** — enough to
         re-derive the plan from scratch, including the rationale and any defect a review
@@ -215,12 +218,15 @@ design nor any other argument — it runs the routine to completion and skips st
 - After an auto-applied CLAUDE.md change (steps 1–2), show the diff so the result stays visible.
 - Never run `/compact`, exit, or restart Claude — stop at the hand-off and let the user do
   those.
-- **The backlog is private and repo-external.** `BACKLOG.md` and the per-deferral memory files
-  live in the session's memory directory — never in a repo, which keeps them out of public
-  history and off the propagate path. Only repo files need committing in step 6.
+- **The backlog is private, but UNTRACKED rather than repo-external.** `BACKLOG.md` and the
+  per-deferral memory files live in the session's memory directory under `~/.claude/projects/`,
+  physically inside a clone of the config repo — kept out of history by that clone's `/projects/`
+  gitignore rule, not by sitting outside a repo. It is off the propagate and publish path for a
+  sturdier reason: the repos those operate on have no `projects/` directory at all. Only repo
+  files need committing in step 6.
 - **`backlog.py` is the only writer to `BACKLOG.md`** (see **Editing BACKLOG.md**) — never a
-  hand-written script, never Edit/Write. The file is outside every repo, so a corrupting edit has
-  no history to recover from; the helper's postconditions are what stand in for that.
+  hand-written script, never Edit/Write. The file is untracked, so a corrupting edit has no
+  history to recover from; the helper's postconditions are what stand in for that.
 - In step 3, follow the memory protocol: one fact per file with frontmatter and a
   `MEMORY.md` pointer line; update an existing memory file rather than duplicating it.
 - In step 5, `/feature` owns its own artifact convention (spec/plan under `specs/`/`plans/`) and
