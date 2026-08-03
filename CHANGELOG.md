@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.69.1 — 2026-07-31
+- fix(markdownlint): enforce blanks above headings, not below
+
 ## v0.69.0 — 2026-07-31
 - feat(run-long): add --wait and stamp the tree each verdict graded
 

@@ -16,8 +16,16 @@
     "table-column-style": false,
     // 66 hits: house style runs lists directly under their intro line.
     "blanks-around-lists": false,
-    // 41 hits: the /commit CHANGELOG format puts the bullet directly under `## vX.Y.Z`.
-    "blanks-around-headings": false,
+    // Split by SIDE rather than switched off. The rule was previously disabled outright
+    // to accommodate the generated CHANGELOG format, and the collateral was real: a
+    // `####` heading shipped with no blank line above it, /audit reported PASS
+    // *correctly* because the rule was off, and it reached production before anyone
+    // caught it by eye. Every hit that motivated the disable is on the BELOW side — the
+    // same house style `blanks-around-lists` above already exempts, a list running
+    // directly under its heading (20 in this tree, 178 in `main`'s CHANGELOG.md). The
+    // ABOVE side has no such exemption and is the class that actually shipped a defect,
+    // so it stays on. `-1` disables one side; it is not a count.
+    "blanks-around-headings": { "lines_above": 1, "lines_below": -1 },
     // 5 hits: memory-style files legitimately open with frontmatter + text, no H1.
     "first-line-heading": false,
     // 2 hits: CLAUDE.md's adjacent policy blockquotes are intentionally separate quotes.
