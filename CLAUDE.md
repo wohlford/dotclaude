@@ -240,6 +240,14 @@ left legal.
   hook entries, which a tally reads as agreement, while the runtime carried a machine-local extra
   *and* was missing a gate the commit added. Compare the one-directional difference you actually
   care about, never the tally.
+- **A truncated output keeps the wrong half — suites print passes as they go, so the FAILURES sort
+  last and the cap eats exactly them.** Measured: a sweep reported `FAIL` naming one suite, then
+  printed 50 of that suite's `PASS` rows and `… more`, cutting off before the row that failed; the
+  failure never reproduced, so the diagnosis is now unrecoverable. Output caps are written for a
+  list of like-for-like offenders, where the first 50 are representative — but when the thing being
+  capped is another tool's whole stdout, those are the least informative lines it produced. Filter to
+  failure-shaped lines before capping, or write the full output to an artifact whose destination
+  sits outside everything else's clean-tree precondition.
 
 #### The verdict is right — what you conclude from it is the hazard
 
@@ -289,6 +297,14 @@ left legal.
   operator to create. What found them was the first file's existence being surprising, and running
   the second command as written. **Ask what a run LEAVES BEHIND, not only what it reports**, and give
   every artifact an explicit destination outside everything anyone else checks.
+- **A fixer pointed at `.` rewrites files your change never touched — scope it to what you edited.**
+  Measured: `ruff format .` reformatted a fenced Python example inside `STYLE.md`, a hand-laid block
+  with aligned trailing comments, in a file the session never opened and whose extension the tool
+  does not own. Nothing flagged it, because the result was *correctly* formatted — lint and every
+  suite passed, and only an unexpected path in `git status` gave it away. Two assumptions fail at
+  once: that the tool's scope is your change, and that its file types are the ones you associate with
+  it, since a formatter follows code fences into markdown. Name the paths you touched, and read an
+  unexpected path in `git status` as a finding rather than noise.
 
 #### The teardown you are counting on — narrower than you think, or never reached
 

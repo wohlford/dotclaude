@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.71.2 — 2026-08-01
+- docs(CLAUDE.md): add the blanket-fixer and truncated-output hazards
+
 ## v0.71.1 — 2026-08-01
 - fix(hooks): refuse argv and a terminal stdin instead of reading nothing
 
