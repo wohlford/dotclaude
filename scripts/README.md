@@ -35,6 +35,7 @@ for how the index below stays in sync.
 | `recast-test.sh`                 | PostToolUse hook — run the matching recast test file when a recast source changes                                              |
 | `ruff-check.sh`                  | PostToolUse hook — run ruff lint+format check on edited Python in ruff projects                                                |
 | `run-long.sh`                    | Launch a long job in the background and record its real exit status inside the artifact                                        |
+| `settings-hooks-check.py`        | Verify a promoted runtime settings.json kept every hook registration the commit added                                          |
 | `shellcheck-check.sh`            | PostToolUse hook — run shellcheck on edited shell scripts                                                                      |
 | `style-check-test.sh`            | PostToolUse hook — run the style-check test suite when style-check changes                                                     |
 | `style-check.sh`                 | Global PostToolUse hook — validate file edits against STYLE.md                                                                 |

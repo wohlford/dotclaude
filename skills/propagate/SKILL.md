@@ -211,6 +211,36 @@ test -f "$(git rev-parse --show-toplevel)/.publication.toml"
      the blocker and the manual options (`git checkout -- <file>` is safe only when it already equals
      the incoming version).
 
+   **Then verify the promote left no dead gate — always, both arms.** Which check applies is decided
+   by one cheap question asked *before* the merge: was `settings.json` in the incoming range?
+
+   ```bash
+   git -C "$live" diff --name-only HEAD FETCH_HEAD | grep -qx settings.json
+   ```
+
+   - **Not in the range** (the common case — five consecutive promotes ran this way): the parking
+     dance never engaged, so the postcondition is the strict one — the runtime file must come out
+     **byte-identical**. Take `shasum -a 256 "$live/settings.json"` before and after and compare
+     them, and confirm `git -C "$live" stash list` is empty and `skip-worktree` is still set
+     (`git -C "$live" ls-files -v settings.json` begins with `S`).
+   - **In the range:** the restore just put back a file predating the incoming commit, which is
+     exactly how a registration goes missing. Run:
+
+   ```bash
+   ~/.claude/scripts/settings-hooks-check.py --scope "$live" --ref FETCH_HEAD
+   ```
+
+   **Proceed only on `RESULT: PASS`** — its last stdout line, with `FAIL`, `ERROR` and an absent
+   line each a failure to prove the invariant. On `FAIL` it names every registration the commit
+   carries and the runtime lacks; add those to the runtime file by hand, keeping its
+   `model`/`enabledPlugins` values, and re-run until it passes.
+
+   **Do not substitute a count**, and do not read agreeing counts as agreement. Measured: a promote
+   where runtime and commit both held 24 entries while differing in *both* directions at once — a
+   machine-local extra present, a committed gate missing. The check is one-directional
+   (`committed − runtime`) for that reason, and it reports runtime-only extras without failing on
+   them, since this machine legitimately carries hooks the repo does not track.
+
 6. Remind the user to **restart Claude** so the promoted skills/agents/config reload. (Adopted
    repo, `--push` arm: nothing local was promoted by steps 4–5 — this reminder is moot until a
    later plain `/propagate` actually fast-forwards production; **the publish path (adopted
