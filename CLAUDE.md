@@ -248,6 +248,13 @@ tally of a thing sitting right underneath it is the file's own derived-vs-hand-m
   operator to create. What found them was the first file's existence being surprising, and running
   the second command as written. **Ask what a run LEAVES BEHIND, not only what it reports**, and give
   every artifact an explicit destination outside everything anyone else checks.
+- **A RESTORE guarantee covers only what it snapshotted — a clean subject is not a clean tree.** A
+  harness that mutates one file, restores it in a `finally`, and reports `restored: sha256
+  unchanged` has verified exactly that one path; whatever its mutants wrote ELSEWHERE survives the
+  run, and the reassuring line is what stops you looking. Measured: a mutant that introduced a
+  default output path left a stray artifact in the repo root, untracked and un-ignored, while the
+  campaign reported a clean restore and a perfect score. Deny the subject a writable cwd, or
+  snapshot the tree — and read every teardown, stash and rollback the same way.
 
 #### Building a check that holds
 
