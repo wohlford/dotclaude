@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.70.1 — 2026-07-31
+- docs(CLAUDE.md): add the killed-teardown and ignored-argument hazards
+
 ## v0.70.0 — 2026-07-31
 - feat(propagate): check a promote kept every committed hook registration
 

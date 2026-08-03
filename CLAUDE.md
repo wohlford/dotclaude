@@ -189,7 +189,7 @@ left legal.
   one guard fired off a *different* assertion that raised first, so deleting the guard it named left
   the suite green (measured). Mutate what a row names; if the suite holds, the row is not testing it.
 
-#### Right verdict, wrong version — the tool's or the subject's
+#### Right verdict, wrong question — stale tool, stale subject, or ignored parameters
 
 - **A checker that resolves its helpers relative to itself grades your branch with the OLD tools.**
   So a change *to* the tooling is judged by the copy it replaces — the verdict is **true**, just
@@ -205,6 +205,14 @@ left legal.
   edited minutes later. Freeze the tree for the run, or re-run afterwards and name the tree each
   verdict covers. **Re-running only the cheap subset is the trap** — that asserts the skipped checks
   could not have been reached, which is the dependency-graph excuse, and it owes the same grep.
+- **A tool that IGNORES an argument it cannot parse answers with its OWN defaults, and the run looks
+  normal.** Neither refusal nor crash: the wrong-shaped input is discarded unread and the tool falls
+  back to what it discovers for itself, so the verdict is **true** about a configuration you never
+  chose. Measured: a config supplied in the wrong schema was ignored, the tool's own discovered copy
+  decided the run, and it reported **0 findings against a true 20** — confident enough to be quoted
+  out loud before anyone questioned it. Note what does not catch this: the probe really did reach the
+  subject, so "did it run on the right thing" clears it. Echo back the parameters the tool reports
+  using, or check that the verdict MOVES when you deliberately change them.
 
 #### Your matcher matched text you did not mean
 
@@ -288,6 +296,15 @@ left legal.
   default output path left a stray artifact in the repo root, untracked and un-ignored, while the
   campaign reported a clean restore and a perfect score. Deny the subject a writable cwd, or
   snapshot the tree — and read every teardown, stash and rollback the same way.
+- **A teardown runs only on the path you tested — a KILLED run skips it and leaves the subject
+  broken.** `finally`, `trap` and `atexit` do not survive a default SIGTERM, so a harness stopped by
+  a timeout restores nothing. Measured: a mutation campaign killed at a 2-minute cap left its
+  subject — a checker — carrying a live mutant that made it report `PASS` on unreadable input, a
+  verification tool silently inverted into a rubber stamp. Its `restored: …` line was simply
+  ABSENT, which is what every killed run looks like, so nothing drew the eye. **And git cannot
+  cover you when the subject is UNTRACKED** — no baseline to diff against, and `git status` shows a
+  bare `??` identical to a healthy new file. Verify restoration STRUCTURALLY (every mutation's
+  original text present, every replacement gone), never by reading the tree.
 
 #### Building a check that holds
 
