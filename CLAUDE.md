@@ -189,7 +189,7 @@ left legal.
   one guard fired off a *different* assertion that raised first, so deleting the guard it named left
   the suite green (measured). Mutate what a row names; if the suite holds, the row is not testing it.
 
-#### Right verdict, wrong question — stale tool, stale subject, or ignored parameters
+#### Right verdict, wrong question — stale tool or tree, wrong population or parameters
 
 - **A checker that resolves its helpers relative to itself grades your branch with the OLD tools.**
   So a change *to* the tooling is judged by the copy it replaces — the verdict is **true**, just
@@ -213,6 +213,15 @@ left legal.
   out loud before anyone questioned it. Note what does not catch this: the probe really did reach the
   subject, so "did it run on the right thing" clears it. Echo back the parameters the tool reports
   using, or check that the verdict MOVES when you deliberately change them.
+- **An instrument that enumerates its subjects from VERSION CONTROL grades the COMMITTED
+  population, not the one in your working tree — so the newest work sits outside its scope at
+  exactly the moment nothing has ever checked it.** Measured: a checker discovering subjects with
+  `git ls-files` reported `PASS … campaigns=6` where seven existed, silently skipping the one
+  written minutes earlier; `git add` alone made it seven. Note what clears it and should not — the
+  denominator is non-zero, and a declared FLOOR cannot name a member that did not exist when the
+  floor was written, so both of the usual under-coverage remedies pass. Compare the enumerated
+  count against the working tree and name what the predicate excluded; **do not just switch to a
+  filesystem glob**, which then grades artifacts the commit will never contain.
 
 #### Your matcher matched text you did not mean
 

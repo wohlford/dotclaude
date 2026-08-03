@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.72.1 — 2026-08-03
+- docs(CLAUDE.md): add the version-control population hazard
+
 ## v0.72.0 — 2026-08-02
 - feat(propagate): script the branching post-merge promote verification
 
