@@ -188,7 +188,7 @@ left legal.
   one guard fired off a *different* assertion that raised first, so deleting the guard it named left
   the suite green (measured). Mutate what a row names; if the suite holds, the row is not testing it.
 
-#### The signal you read belongs to something else
+#### Your matcher matched text you did not mean
 
 - **Multi-line literal checks are a case for Python.** `grep -F` treats an embedded newline as
   *alternation*, not a sequence: `grep -Fc "$(printf 'a\nb')"` counts lines matching **either**, so a
@@ -196,6 +196,8 @@ left legal.
   (`needle in open(f).read()`) or `grep -Pzo`.
 - **In wrapped text, use it even for a phrase you believe is one line** — if it happens to wrap, a
   line-based grep returns 0 and absence is not evidence of absence.
+#### The signal you read belongs to something else
+
 - **A pipeline's exit status is the LAST command's.** `some-check | tail -20` reports `tail`'s success
   however the check exited — so a run that "completed (exit code 0)" can have proven nothing, and a
   backgrounded one reads as a clean pass. Read the tool's own verdict/summary lines rather than the
@@ -207,6 +209,11 @@ left legal.
   check reports the *echo's* success. Capture `rc=$?` on the very next line, then `exit "$rc"`. The
   harness will otherwise announce "completed (exit code 0)" for a run that was killed, for the reason
   above.
+- **Equal COUNTS are not equal sets** — two collections can match in size while differing in both
+  directions at once. Measured: a runtime config and the commit it was restored from each held 24
+  hook entries, which a tally reads as agreement, while the runtime carried a machine-local extra
+  *and* was missing a gate the commit added. Compare the one-directional difference you actually
+  care about, never the tally.
 
 #### The verdict is right — what you conclude from it is the hazard
 
@@ -281,13 +288,9 @@ left legal.
   key were renamed. The converse bites too: a glob replacing such a list covers whatever you forget
   to ADD, and silently stops covering whatever anyone REMOVES — it matches one fewer file and
   reports success. Name the members whose absence must alarm; let the glob only ever add to them.
-  And equal **COUNTS are not equal sets** — two collections can match in size while differing in
-  both directions at once. Measured: a runtime config and the commit it was restored from each
-  held 24 hook entries, which a tally reads as agreement, while the runtime carried a
-  machine-local extra *and* was missing a gate the commit added. Compare the one-directional
-  difference you actually care about, never the tally. **Zero is that failure's limiting case** — a
-  discovery matching *nothing* reports success loudest of all; measured, a symlinked root made
-  `find` return 0 files, reading exactly like "nothing changed". Assert a non-zero denominator.
+  **Zero is that converse's limiting case** — a discovery matching *nothing* reports success loudest
+  of all; measured, a symlinked root made `find` return 0 files, reading exactly like "nothing
+  changed". Assert a non-zero denominator.
 - **A claim's grounding must be checkable from the artifact itself.** Evidence sitting where the
   reader cannot reach it — a private note, an unwritten instruction, "we settled this earlier" — is
   indistinguishable from no evidence, and doubles as a template for asserting anything. Seen: an

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.68.3 — 2026-07-30
+- docs(CLAUDE.md): sever the counts hazard from the derive-FLOOR bullet
+
 ## v0.68.2 — 2026-07-30
 - docs(CLAUDE.md): make the hazard cap a split trigger, not a rejection
 
