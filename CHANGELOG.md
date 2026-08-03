@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.68.7 — 2026-07-31
+- docs(CLAUDE.md): add the stale-subject hazard, sever positional refs
+
 ## v0.68.6 — 2026-07-31
 - fix(debrief): stop stalling at delegate returns and losing deferrals
 

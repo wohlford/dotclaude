@@ -129,7 +129,8 @@ left legal.
   and never reaches its summary — so grepping for `FAIL` finds nothing and the output reads clean.
   Require the specific verdict line **and** the summary to be *present*; "no FAIL" is not "passed".
   Record the real exit status **inside** the artifact you will read, so its **absence** is itself the
-  signal that the run died — the harness's announcement can't be trusted, for the reason below.
+  signal that the run died — the harness's announcement can't be trusted, since it reports the
+  wrapper's exit status rather than the check's.
 - **A check that is merely INSTALLED has never run — registration is not liveness.** Seen: a config
   restore put back a runtime file lacking the three hook registrations the incoming commit added — 21
   entries where the commit had 23 — while the obvious diff reported *clean*; the gate was then
@@ -170,12 +171,6 @@ left legal.
   byte-identical to a rejected credential; "auth is down, go fix the card" was reported for a card
   that was present and unlocked. All measured. The clean run is the dangerous one — nobody
   investigates it.
-- **A checker that resolves its helpers relative to itself grades your branch with the OLD tools.**
-  So a change *to* the tooling is judged by the copy it replaces — the verdict is **true**, just
-  about a different question than you asked, and it reads GREEN whenever the installed copy is the
-  laxer one. Seen: one sweep gave `FAIL … drift` from the installed copy and `PASS rc=0` from the
-  branch's own, minutes apart, both correct. Run the change's own tools, and name which copy
-  produced the verdict.
 - **A change that is only correct in COMBINATION is one unit of work.** Two halves of a fix can be
   individually wrong in *opposite* directions — one alone over-blocks, the other alone lets the bug
   through — so landing half is not partial progress, it is a regression. And it is one no suite can
@@ -193,6 +188,23 @@ left legal.
   **But a RED proves only that SOMETHING failed, not that your named subject did** — a row titled for
   one guard fired off a *different* assertion that raised first, so deleting the guard it named left
   the suite green (measured). Mutate what a row names; if the suite holds, the row is not testing it.
+
+#### Right verdict, wrong version — the tool's or the subject's
+
+- **A checker that resolves its helpers relative to itself grades your branch with the OLD tools.**
+  So a change *to* the tooling is judged by the copy it replaces — the verdict is **true**, just
+  about a different question than you asked, and it reads GREEN whenever the installed copy is the
+  laxer one. Seen: one sweep gave `FAIL … drift` from the installed copy and `PASS rc=0` from the
+  branch's own, minutes apart, both correct. Run the change's own tools, and name which copy
+  produced the verdict.
+- **A long-running check grades the tree as of its LAUNCH, not as of when you read the verdict** —
+  the stale-helpers hazard's mirror, with the tool current and the *subject* stale. Every edit
+  made while it runs is unjudged, and nothing in the output says which tree it saw, so the PASS you
+  read at the end is byte-identical to one covering your final state. Measured twice in one session:
+  a ~15-minute sweep whose fast static checks finish in the first seconds, read as clean over files
+  edited minutes later. Freeze the tree for the run, or re-run afterwards and name the tree each
+  verdict covers. **Re-running only the cheap subset is the trap** — that asserts the skipped checks
+  could not have been reached, which is the dependency-graph excuse, and it owes the same grep.
 
 #### Your matcher matched text you did not mean
 
@@ -214,8 +226,7 @@ left legal.
 - **A script, function, or `{ … }` wrapper exits with its last command's status too** — so a
   diagnostic `echo` appended after an assertion discards the verdict it was meant to report, and the
   check reports the *echo's* success. Capture `rc=$?` on the very next line, then `exit "$rc"`. The
-  harness will otherwise announce "completed (exit code 0)" for a run that was killed, for the reason
-  above.
+  harness will otherwise announce "completed (exit code 0)" for a run that was killed.
 - **Equal COUNTS are not equal sets** — two collections can match in size while differing in both
   directions at once. Measured: a runtime config and the commit it was restored from each held 24
   hook entries, which a tally reads as agreement, while the runtime carried a machine-local extra
