@@ -39,3 +39,18 @@ for how the index below stays in sync.
 | `sync-docs-check.sh`             | PostToolUse hook — block edits that leave /sync-docs index tables drifted                                                      |
 | `sync-docs-test.sh`              | PostToolUse hook — run the sync-docs test suite when its Python changes                                                        |
 <!-- /sync:scripts -->
+
+## Libraries
+
+`lib/` holds importable modules rather than runnable hooks, so the index above — which globs
+`scripts/*.sh` and `scripts/*.py` — does not reach them. Each module's docstring carries its own
+rationale; that is deliberate, since a second copy here would be a hand-maintained list with
+nothing keeping it honest.
+
+One is worth naming, because you need it *before* you would think to look it up.
+**`lib/mutate.py`** is the shared mutation-campaign runner: import it and supply only the
+`(label, old, new)` list instead of hand-writing a harness. Ten were written and discarded before
+it existed, and every re-derivation silently lost a different safety property — most often the
+unmutated baseline, without which an already-red suite scores every mutation as caught and the
+campaign prints a flawless sweep. `tests/mutate_lib_mutate.py` is the runner's own campaign, run
+on demand rather than collected by pytest.

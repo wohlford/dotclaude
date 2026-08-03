@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.66.1 — 2026-07-29
+- docs(mutate): surface the shared runner at the point of use
+
 ## v0.66.0 — 2026-07-31
 - feat(mutate): extract the shared mutation-campaign runner
 
