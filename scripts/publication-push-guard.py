@@ -205,6 +205,26 @@ KNOWN_SAFE_SUBCOMMANDS = frozenset(
         "whatchanged",
         "help",
         "version",
+        # Added 2026-08-03. Each was measured MISSING while its neighbours were present, so
+        # `git -C "$live" show-ref` was refused where `git -C "$live" rev-parse` passed — an
+        # unexpanded `-C` makes the root unresolvable, and only the short-circuit above spares
+        # a subcommand from that. The refusal then blamed a push the command never made, which
+        # is what trains the operator to answer it with the override.
+        #
+        # Safe on BOTH counts required here, not one: (a) git ignores an alias that shadows a
+        # known git command — measured for builtins AND shipped scripts — so none can be a
+        # disguised push; and (b) none pushes to a git remote itself. Membership in
+        # `git --list-cmds=main` buys only (a); `svn` and `p4` are members too and DO publish.
+        "show-ref",
+        "count-objects",
+        "var",
+        "show-branch",
+        "cherry",
+        "merge-tree",
+        "pack-refs",
+        "rerere",
+        "stripspace",
+        "replace",
         "rev-parse",
         "rev-list",
         "symbolic-ref",

@@ -528,6 +528,83 @@ push_run "$REPO" 'x="$(git push origin dev' 2 'unterminated context blocks'
 push_run "$REPO" "git push origin main 'oops" 2 \
   'a genuinely unbalanced quote (no heredoc) still blocks'
 
+# ================= FAIL-OPEN: an options-only git invocation stole the `)` =====================
+# Measured 2026-08-03 against the SHIPPED guard: exit 0, i.e. ALLOWED. The option walk ran off the
+# end of `git --version`'s options and appended the following `)` as the subcommand, which stole it
+# from the paren branch; `subshell_cwds` never popped, the subshell's cd leaked, and the push was
+# judged against ELSEWHERE (non-adopted -> dormant) while bash runs it in the adopted repo.
+#
+# The suite already pinned this hazard class ('cd inside a subshell does not leak', above), but
+# every one of those rows puts a NON-git command in the subshell, so none could reach the theft.
+# One token's difference. Do not "simplify" these rows back to `true`.
+build_repo 1
+build_elsewhere
+push_run "$REPO" '(cd '"$ELSEWHERE"' && git --version) && git push origin dev' 2 \
+  'FAIL-OPEN CLOSED: options-only git in a subshell no longer leaks the cwd'
+push_run "$REPO" '(cd '"$ELSEWHERE"' && git --version)&&git push origin dev' 2 \
+  'FAIL-OPEN CLOSED: the `)&&` fused spelling too'
+# PRESERVE, the direction that ALLOWS if the fix had been written as `break`: everything after the
+# operator must still be scanned.
+push_run "$REPO" 'git --version && git push origin dev' 2 \
+  'PRESERVE: a push after an options-only invocation is still seen'
+# And the false block the same defect caused must be gone.
+push_run "$REPO" 'git --version | head' 0 \
+  'options-only git piped into another command is no longer refused'
+
+# ================= D1: an unexpanded -C must not refuse read-only commands ====================
+# A hook sees command text UNEXPANDED, so `-C "$live"` cannot be resolved and the root lookup
+# fails. Only membership in KNOWN_SAFE_SUBCOMMANDS spares a subcommand from that path, so
+# `show-ref` was refused where `rev-parse` passed -- with a message blaming a push the command
+# never made, which is what trains the operator to reach for ALLOW_PUSH=1.
+# shellcheck disable=SC2016  # the UNEXPANDED $live is the point
+push_run "$REPO" 'git -C "$live" show-ref' 0 'unexpanded -C + show-ref is allowed'
+# shellcheck disable=SC2016
+push_run "$REPO" 'git -C "$live" count-objects -v' 0 'unexpanded -C + count-objects is allowed'
+# shellcheck disable=SC2016
+push_run "$REPO" 'git -C "$live" show-branch' 0 'unexpanded -C + show-branch is allowed'
+# Positive controls: the allowlist must not have become a blanket pass for an unresolvable root.
+# shellcheck disable=SC2016
+push_run "$REPO" 'git -C "$live" push origin dev' 2 \
+  'PRESERVE: an unexpanded -C with a real push still blocks'
+# shellcheck disable=SC2016
+push_run "$REPO" 'git -C "$live" frobnicate' 2 \
+  'PRESERVE: an unexpanded -C with an unknown subcommand still blocks (may be an alias)'
+
+# ================= The allowlist itself: alias-shadow immunity, and the push-capable exclusions ==
+# What this proves and what it does NOT. git ignores an alias that shadows a known git command, so
+# membership in `git --list-cmds=main` means no entry can be a disguised push. It does NOT prove an
+# entry is safe: `svn` and `p4` are members too, and `git svn dcommit` / `git p4 submit` publish
+# history. The second assertion is therefore a BLOCKLIST with known limits, not a completeness
+# proof -- adding an entry still needs the per-command judgement "never pushes to a git remote".
+# (`send-email` is already allowlisted and mails commit content off-machine: the boundary is the
+# git remote, not publication in general.)
+#
+# The floor is what stops this reading as a pass when it proved nothing: an unavailable
+# `--list-cmds` or an implausibly short list FAILS rather than skipping. Note `--list-cmds` is
+# git >= 2.18, and entries like `switch`/`restore` (>=2.23) or `maintenance` (>=2.29) would
+# false-fail on an older git; acceptable, as these suites run on this machine.
+allowlist_rc=0
+allowlist_out="$(python3 - "$guard" <<'PYCHECK' 2>&1)" || allowlist_rc=$?
+import importlib.util, subprocess, sys
+spec = importlib.util.spec_from_file_location("g", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+safe = set(m.KNOWN_SAFE_SUBCOMMANDS)
+p = subprocess.run(["git", "--list-cmds=main"], capture_output=True, text=True)
+known = set(p.stdout.split())
+if p.returncode != 0 or len(known) < 100:
+    sys.exit("FLOOR: --list-cmds=main unusable (rc=%d, %d names) -- cannot verify" % (p.returncode, len(known)))
+if not safe:
+    sys.exit("FLOOR: the allowlist is empty -- a vacuous comparison passes against anything")
+strays = sorted(safe - known)
+if strays:
+    sys.exit("alias-shadowable (not a known git command): %s" % ", ".join(strays))
+pushers = sorted({"push", "send-pack", "http-push", "svn", "p4"} & safe)
+if pushers:
+    sys.exit("push-capable command is allowlisted: %s" % ", ".join(pushers))
+PYCHECK
+assert_eq "$allowlist_rc" 0 'every allowlist entry is a real git command, and none can push'
+[[ "$allowlist_rc" -eq 0 ]] || printf '  %s\n' "$allowlist_out"
+
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
