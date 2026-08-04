@@ -270,6 +270,14 @@ left legal.
   nothing validated *any* directive against its handler, so a *documented* one was ignored by six of
   seven. One declared allowlist closed every case plus future typos; building the entry as written
   would have left the larger hole open and added five more places to forget.
+- **A surviving mutant's obvious remedy — write a stronger assertion — is the wrong one when the
+  code it names cannot change any outcome.** Measured twice in one session, resolving oppositely.
+  In one, a branch's verdict was already forced by the check below it, so the survivor was really
+  reporting that the branch was INERT: a line reading as a safety property while unable to fail, and
+  the repair was to DELETE it. In the other the branch did decide something real but narrower than
+  it looked — only the diagnostic, and *it died* sends you somewhere different from *it disagreed* —
+  so the repair was to assert that. **Ask what the code could still decide before writing a test for
+  it**; a test written around inert code passes forever and pins nothing.
 
 #### It answered its own question, not the one you are relying on
 
@@ -309,6 +317,15 @@ left legal.
   assertion still passed, because all of them constrained where the edit STARTED and none constrained
   how far it reached. The catch needs nothing from the locator: require the edit to be *insert-only*
   or a *pure reordering*, by comparing the multiset of non-blank lines before and after.
+- **An edit also leaves behind the text AROUND it, and adjacency is what hides what it broke.**
+  Reword a phrase and any nearby sentence naming that phrase now points at nothing — while sitting
+  INSIDE the diff's own context lines, so it reads as already reviewed. Measured: renaming a remedy
+  left the next paragraph citing it by its old name, and every mechanical gate passed — lint, the
+  repo audit, a region suite, and a structural measurer whose counts were unchanged because nothing
+  was added or removed. Found by chance, one paragraph below the edit. The near-miss is the
+  instructive part: a rename earlier the same session DID get a reference grep, but for the renamed
+  HEADING and across OTHER files. **Grep for the words you REMOVED, inside the file you edited** —
+  the mirror of the check you thought to run is the one you will not think of.
 - **A DEFAULT output path makes every run of a tool a writer of real state.** Measured twice, in
   opposite directions, neither found by review. **Outward:** a diagnostic log defaulted to
   `~/.claude/logs/`, and long-standing suite rows reach exactly that branch, so **12 synthetic
