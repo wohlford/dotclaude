@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.75.7 — 2026-08-04
+- docs(CLAUDE.md): add the silent-delegate hazard and widen the brief one
+
 ## v0.75.6 — 2026-08-03
 - docs(CLAUDE.md): add the narrowing-drops-true-positives hazard
 

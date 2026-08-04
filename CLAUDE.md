@@ -139,6 +139,14 @@ left legal.
   never fires.** Resolve both sides the same way before comparing two paths — measured, in shipped
   code: a containment guard took `pwd` on one side and `cd -P` on the other, so no input could have
   tripped it.
+- **A delegate that returns no verdict has not reported — verify from the artifact it left, never
+  from its silence.** Measured: an implementer's entire final message was *"I'll stop polling now"*.
+  Its work was there and turned out correct, and the harness announced the task **completed** — so
+  nothing distinguished it from a finished report. Note what does NOT rescue you here: recording an
+  exit status inside the artifact, the usual remedy for a run that dies, needs an rc and an artifact
+  you control — and a delegate that completes normally gives you **neither**. The only remedy is to
+  re-derive the whole verification yourself, against the same baseline you would have demanded of
+  your own work. That it was correct is not a reason to have trusted it.
 
 #### You chose not to run it — the excuse is checkable
 
@@ -269,7 +277,11 @@ left legal.
   `filter=` in the other five handlers" — measuring first showed the gap was never `filter`-specific:
   nothing validated *any* directive against its handler, so a *documented* one was ignored by six of
   seven. One declared allowlist closed every case plus future typos; building the entry as written
-  would have left the larger hole open and added five more places to forget.
+  would have left the larger hole open and added five more places to forget. **The brief you write for
+  someone else is the same hypothesis** — measured: an instruction of mine to add one name to a
+  shared set would have RE-OPENED the hole the task existed to close, since that set was consulted at
+  more call sites than I had in mind. The implementer declined the literal wording. **Read a
+  delegate's push-back as evidence, not insubordination.**
 - **A surviving mutant's obvious remedy — write a stronger assertion — is the wrong one when the
   code it names cannot change any outcome.** Measured twice in one session, resolving oppositely.
   In one, a branch's verdict was already forced by the check below it, so the survivor was really
