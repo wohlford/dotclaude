@@ -278,6 +278,16 @@ left legal.
   it looked — only the diagnostic, and *it died* sends you somewhere different from *it disagreed* —
   so the repair was to assert that. **Ask what the code could still decide before writing a test for
   it**; a test written around inert code passes forever and pins nothing.
+- **The obvious repair for a false positive is to narrow the matcher — and narrowing silently drops
+  true positives too.** Measured twice in one session, in one parser, each time while fixing the
+  previous attempt. A gate over-blocked; the fix stopped a token being misread, which also removed
+  an *accidental* catch, and a command that had been correctly blocked became invisible. The
+  replacement then treated the same input as ambiguous and DROPPED it rather than recording it —
+  turning a second blocked case into an allowed one. Both fixes were right about the noise they
+  targeted, and both shipped green: a suite cannot see cases that stopped arriving, and the author
+  writes tests from the false positive, never from what quietly left. **Ask what stops being
+  MATCHED, not whether the noise stopped** — and prove it with a corpus of things that must STILL
+  match, run against the old build and the new one.
 
 #### It answered its own question, not the one you are relying on
 
