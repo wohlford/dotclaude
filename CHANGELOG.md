@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.72.2 — 2026-08-03
+- docs(CLAUDE.md): add the composition hazard and split its group
+
 ## v0.72.1 — 2026-08-03
 - docs(CLAUDE.md): add the version-control population hazard
 

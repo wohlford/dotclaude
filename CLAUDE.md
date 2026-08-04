@@ -189,7 +189,7 @@ left legal.
   one guard fired off a *different* assertion that raised first, so deleting the guard it named left
   the suite green (measured). Mutate what a row names; if the suite holds, the row is not testing it.
 
-#### Right verdict, wrong question — stale tool or tree, wrong population or parameters
+#### Right verdict, wrong inputs — stale tool or tree, wrong population or parameters
 
 - **A checker that resolves its helpers relative to itself grades your branch with the OLD tools.**
   So a change *to* the tooling is judged by the copy it replaces — the verdict is **true**, just
@@ -258,7 +258,7 @@ left legal.
   failure-shaped lines before capping, or write the full output to an artifact whose destination
   sits outside everything else's clean-tree precondition.
 
-#### The verdict is right — what you conclude from it is the hazard
+#### The fix it prescribes is not the defect it found
 
 - **A check's output is evidence, not instruction.** Its *verdict* is usually right; its *suggested
   repair*, and your reading of a *failure*, are not. Seen: an exec-bit check reporting "has a shebang
@@ -270,6 +270,9 @@ left legal.
   nothing validated *any* directive against its handler, so a *documented* one was ignored by six of
   seven. One declared allowlist closed every case plus future typos; building the entry as written
   would have left the larger hole open and added five more places to forget.
+
+#### It answered its own question, not the one you are relying on
+
 - **A gate that fails CLOSED on an INTERNAL ERROR has not judged your command — it never evaluated
   it.** The refusal reads exactly like a policy block, so the natural response, reach for the
   override, aims at a gate that was not objecting to anything. Seen: a commit refused with *"internal
@@ -286,6 +289,16 @@ left legal.
   the property held: touch only what is already broken, so everything that works today comes out
   byte-identical. **When a change's safety is a claim about ALL inputs, assert the claim, not a
   handful of witnesses to it.**
+- **A tool that answers one question per item has not answered how the items COMPOSE — and an
+  ordered plan asserts exactly that.** Measured: a planner judged all 27 changes correctly on its only
+  question (does this one merge into an earlier one?), then ordered the resulting units by each unit's
+  FIRST member, while the apply step takes a unit's content from its LAST. Merging thus moves content
+  forward but leaves position early — safe only when a unit's file set is disjoint from every unit it
+  jumps over, which nothing checked because it was never the question. Four of six proposed merges
+  were unsafe, one silently fatal: a final state short of the target, catchable only by the
+  end-of-run comparison, after every unit was built. **Do not fix it by REORDERING** — that is one
+  more composition claim nobody checked. Drop the merge; an unmerged unit costs tidiness, a
+  misordered one costs the run.
 
 #### The check itself writes — what it leaves behind is the hazard
 
