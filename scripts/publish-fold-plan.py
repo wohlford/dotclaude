@@ -26,15 +26,32 @@ the identical final tree. So the default direction is deliberately the safe one:
 evidence does not settle it, the commit stands alone. A missed fold costs tidiness; a wrong
 fold misrepresents which brick fixed what, permanently and in public.
 
+**Classifying each commit right does not make the PLAN right.** A brick sits at its FIRST
+member's position but materialises at its LAST, so a fold moves content forward while leaving
+position early — and a later brick sharing one of its paths then re-materialises that path at
+an EARLIER state. Every per-commit verdict can be correct while the plan they compose into
+ends a file at the wrong content. Measured on a 27-commit publish: the final tree would have
+been 10 lines short, catchable only by the publish path's own convergence check, i.e. after
+every brick was built and tagged. So the plan is now checked for convergence HERE, before any
+of that work: a fold is emitted only if no later brick overwrites it, and one that would be is
+DROPPED rather than reordered — reordering is one more composition claim nothing has checked,
+and standing a commit alone costs only tidiness.
+
 The `--audit`-style holistic pairings the publish path requires (a skill and its regenerated
 sync-docs index entry in one brick; a shebang file and its exec bit in one brick) are NOT
 modelled here — they are a reason to merge two proposed bricks by hand before running them.
+Nor is per-brick VALIDITY: convergence constrains the FINAL tree only, so a surviving fold can
+still leave an intermediate brick that fails its own `/audit` (a regenerated index naming a
+file that brick has not added yet). That failure is loud and stops the run at step 3; the one
+closed here is the silent one.
 
 Usage: publish-fold-plan.py [--scope <path>] [--watermark <ref>] [--published <ref>]
                             [--working <ref>]
 
-Exit codes: 0 a plan was produced, 1 nothing to plan (empty range), 2 usage/precondition error.
-Terminal verdict line: `RESULT: <STATUS> rc=<n> commits=<n> bricks=<n> folds=<n> undecided=<n>`.
+Exit codes: 0 a plan was produced and PROVEN convergent, 1 nothing to plan (empty range) or a
+residual divergence, 2 usage/precondition error.
+Terminal verdict line: `RESULT: <STATUS> rc=<n> commits=<n> bricks=<n> folds=<n>
+undecided=<n> dropped=<n> converges=yes`.
 """
 
 from __future__ import annotations
@@ -287,7 +304,83 @@ def assemble(results: list[dict]) -> list[dict]:
     return bricks
 
 
-def report(scope: str, args: argparse.Namespace, results: list[dict]) -> int:
+def commit_paths(scope: str, sha: str) -> set[str]:
+    """The paths one commit touches — a brick's file set is the union over its members."""
+    out = git(scope, "show", "--format=", "--name-only", "--no-renames", sha)
+    return {line for line in out.split("\n") if line.strip()}
+
+
+def blob(scope: str, ref: str, path: str) -> str | None:
+    """The blob sha of `path` at `ref`, or None when it is not there."""
+    proc = subprocess.run(
+        ["git", "-C", scope, "rev-parse", f"{ref}:{path}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def diverging_paths(scope: str, bricks: list[dict], working: str) -> set[str]:
+    """Paths the plan would NOT leave at the working tip's content.
+
+    This is the publish path's own convergence predicate, decided here instead of after
+    every brick has been built and tagged. Applying a brick writes its whole file set at its
+    ENDPOINT, so a path's final content is whatever the LAST brick touching it materialises
+    — which is not the last commit that touched it once a fold moves a brick's content
+    forward while leaving its position early.
+    """
+    writer: dict[str, str] = {}
+    for brick in bricks:
+        endpoint = brick["members"][-1]
+        for path in set().union(
+            *(commit_paths(scope, sha) for sha in brick["members"])
+        ):
+            writer[path] = endpoint
+    return {
+        path
+        for path, endpoint in writer.items()
+        if blob(scope, endpoint, path) != blob(scope, working, path)
+    }
+
+
+def prune_unsafe_folds(scope: str, results: list[dict], working: str) -> list[str]:
+    """Unfold every fold whose brick a later brick would overwrite. Returns what was dropped.
+
+    A fold is only ever a tidiness win, so the repair is to DROP it — never to reorder the
+    bricks, which would assert one more composition claim nothing has checked. Unfolding
+    strictly reduces the fold count, so this terminates; with no folds at all the bricks are
+    in commit order and the last brick touching a path is the last commit that touched it,
+    which converges by construction.
+    """
+    dropped: list[str] = []
+    while True:
+        bricks = assemble(results)
+        bad = diverging_paths(scope, bricks, working)
+        if not bad:
+            return dropped
+        culprit = next(
+            brick
+            for brick in reversed(bricks)
+            if len(brick["members"]) > 1
+            and bad
+            & set().union(*(commit_paths(scope, sha) for sha in brick["members"]))
+        )
+        for sha in culprit["members"][1:]:
+            item = next(entry for entry in results if entry["sha"] == sha)
+            item["target"] = None
+            item["verdict"] = "OWN BRICK"
+            item["detail"] = (
+                "would have folded, but a later brick re-materialises a shared path at an "
+                "earlier state — the fold is dropped so the plan converges"
+            )
+            item["evidence"] = [f"collides on: {path}" for path in sorted(bad)[:3]]
+            dropped.append(sha)
+
+
+def report(
+    scope: str, args: argparse.Namespace, results: list[dict], dropped: list[str]
+) -> int:
     """Print the plan and its verdict line. Returns the process exit code."""
     wm_short = git(scope, "rev-parse", "--short", args.watermark).strip()
     pub_short = git(scope, "rev-parse", "--short", args.published).strip()
@@ -330,9 +423,30 @@ def report(scope: str, args: argparse.Namespace, results: list[dict]) -> int:
             f"\n{undecided} commit(s) are UNDECIDED and stand alone by default — "
             "review them before running the plan."
         )
+    if dropped:
+        print(
+            f"\n{len(dropped)} fold(s) were DROPPED because a later brick would have "
+            "re-materialised a shared path at an earlier state:"
+        )
+        for sha in dropped:
+            print(f"  {sha[:7]} stands alone")
+
+    # Postcondition, not decoration: every fold above was accepted only because this held.
+    # It is the publish path's own convergence predicate, and the ONE question the per-commit
+    # verdicts never answer — each can be right while the order they compose into is wrong.
+    residual = diverging_paths(scope, bricks, args.working)
+    if residual:
+        print(
+            f"\nRESULT: FAIL rc=1 commits={len(results)} bricks={len(bricks)} "
+            f"folds={folds} undecided={undecided} diverging={len(residual)}"
+        )
+        for path in sorted(residual)[:5]:
+            print(f"  would not converge: {path}", file=sys.stderr)
+        return 1
+
     print(
         f"\nRESULT: PASS rc=0 commits={len(results)} bricks={len(bricks)} "
-        f"folds={folds} undecided={undecided}"
+        f"folds={folds} undecided={undecided} dropped={len(dropped)} converges=yes"
     )
     return 0
 
@@ -390,7 +504,13 @@ def main(argv: list[str]) -> int:
         print("RESULT: FAIL rc=1 commits=0 bricks=0 folds=0 undecided=0")
         return 1
 
-    return report(scope, args, results)
+    try:
+        dropped = prune_unsafe_folds(scope, results, args.working)
+    except PlanError as exc:
+        print(f"cannot plan: {exc}", file=sys.stderr)
+        return 2
+
+    return report(scope, args, results, dropped)
 
 
 if __name__ == "__main__":

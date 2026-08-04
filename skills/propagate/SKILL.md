@@ -403,13 +403,25 @@ session, which is why the tooling below is in the repo.
    only lines added in-range ⇒ folds into the latest commit that added them. It prints the evidence
    for each call and a proposed `publish-brick.sh` invocation per brick, versions included.
 
-   Two things it deliberately does **not** do. It never resolves an ambiguity: where the evidence
+   **It also proves the plan CONVERGES before offering it**, which is not the same question as
+   classifying each commit — a brick sits at its FIRST member's position but materialises at its
+   LAST, so a fold moves content forward while leaving position early, and a later brick sharing
+   one of its paths re-materialises that path at an EARLIER state. Measured: every one of 27
+   per-commit verdicts was right while the plan they composed into would have published a file 10
+   lines short of the tip. A fold that a later brick would overwrite is now **dropped** — never
+   reordered, which is one more composition claim nothing has checked — and the run ends
+   `converges=yes` or `RESULT: FAIL`. Read `dropped=<n>`: those commits stand alone deliberately.
+
+   Three things it deliberately does **not** do. It never resolves an ambiguity: where the evidence
    does not settle a commit it reports `UNDECIDED` and leaves it standing alone, because a wrong
    fold converges to the identical tree and is precisely what step 5 cannot catch, while a missed
-   fold only costs tidiness. And it does not know the **holistic pairings** — a skill and its
+   fold only costs tidiness. It does not know the **holistic pairings** — a skill and its
    regenerated `sync-docs` index entry belong in one brick, as do a shebang file and the commit
    setting its exec bit — so merging two proposed bricks for that reason is your call, not its.
-   The plan is a proposal; the boundaries remain judgment.
+   And convergence constrains only the **final** tree, so a surviving fold can still leave an
+   intermediate brick that fails its own `/audit` — that failure is loud and halts step 3, unlike
+   the silent one the convergence check closes. The plan is a proposal; the boundaries remain
+   judgment.
 
 3. **Apply, prove and tag each brick onto `main`'s tip** — check out `main`, then run the engine
    once per brick, in the order the plan gives:

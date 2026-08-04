@@ -99,6 +99,46 @@ def repo(tmp_path):
     return box
 
 
+@pytest.fixture
+def ordering(tmp_path):
+    """The measured fatal shape: a fold whose endpoint is overwritten by a LATER brick.
+
+    dev: w -> a(add L2) -> b(add L3) -> c(remove L2, so it folds into a); watermark at w.
+    All three touch one file, so the fold puts brick[a] at position 1 with endpoint `c` —
+    the dev tip's content — while brick[b], which runs AFTER it, re-materialises the same
+    file at `b`, an EARLIER state. The final tree then keeps L2, which the dev tip deleted.
+
+    Every per-commit verdict here is correct; only their composition is wrong.
+    """
+    d = tmp_path / "o"
+    d.mkdir()
+    git(d, "init", "-q", "-b", "dev", ".")
+    git(d, "config", "user.email", "test@test.invalid")
+    git(d, "config", "user.name", "test")
+    git(d, "config", "commit.gpgsign", "false")
+    (d / ".publication.toml").write_text('production = "dev"\n')
+    w = commit(d, "feat(doc): add doc", **{"doc.md": "L1\n"})
+    a = commit(d, "feat(doc): add L2", **{"doc.md": "L1\nL2\n"})
+    b = commit(d, "feat(doc): add L3", **{"doc.md": "L1\nL2\nL3\n"})
+    c = commit(d, "fix(doc): drop L2", **{"doc.md": "L1\nL3\n"})
+
+    git(d, "checkout", "-q", "--orphan", "main")
+    git(d, "rm", "-rq", "--cached", ".")
+    git(d, "clean", "-fdq")
+    git(d, "checkout", "-q", w, "--", ".")
+    (d / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## v0.1.0 — 2026-01-01\n- feat(doc): add doc\n"
+    )
+    git(d, "add", "-A")
+    git(d, "commit", "-qm", "feat(doc): add doc")
+    git(d, "tag", "-a", "v0.1.0", "-m", "feat(doc): add doc")
+    git(d, "update-ref", "refs/published/main", w)
+    git(d, "checkout", "-q", "dev")
+    box = Sandbox(d)
+    box.shas = {"w": w, "a": a, "b": b, "c": c}
+    return box
+
+
 def short(sha):
     return sha[:7]
 
@@ -214,6 +254,83 @@ def test_a_folded_brick_keeps_the_INTRODUCING_commit_subject(repo):
         ln for ln in out.splitlines() if "publish-brick.sh" in ln and "feat(b)" in ln
     )
     assert "'feat(b): add b'" in cmd
+
+
+# ---------- the plan must CONVERGE, not merely classify each commit right ----------
+
+
+def parse_plan(out):
+    """Return the emitted plan as [(endpoint, [constituent, ...])], in run order.
+
+    Reads the tool's own `publish-brick.sh` lines rather than any internal structure, so the
+    assertion is against what an operator would actually run.
+    """
+    plan = []
+    for line in out.splitlines():
+        if "publish-brick.sh" not in line:
+            continue
+        head, _, rest = line.strip().partition("'")
+        endpoint = head.split()[-1]
+        trailing = rest.partition("'")[2].split()
+        plan.append((endpoint, [*trailing, endpoint]))
+    return plan
+
+
+def simulate(repo, plan):
+    """Apply the plan the way publish-brick.sh does and return {path: final blob sha}.
+
+    Each brick writes the UNION of its constituents' paths, taking content from its ENDPOINT.
+    A later brick therefore overwrites an earlier one on any shared path — which is the whole
+    hazard, and is why this simulation is per-path rather than per-brick.
+    """
+    final = {}
+    for endpoint, members in plan:
+        paths = set()
+        for sha in members:
+            paths.update(
+                git(
+                    repo, "show", "--format=", "--name-only", "--no-renames", sha
+                ).split()
+            )
+        for path in paths:
+            final[path] = git(repo, "rev-parse", f"{endpoint}:{path}")
+    return final
+
+
+def dev_tip_blobs(repo, paths):
+    return {path: git(repo, "rev-parse", f"dev:{path}") for path in paths}
+
+
+def test_the_emitted_plan_materialises_the_dev_tip_on_every_path(ordering):
+    """The property the per-commit verdicts do NOT establish: that the plan COMPOSES.
+
+    Every classification can be individually correct while the emitted ORDER still ends a
+    path at the wrong content — a brick sits at its FIRST member's position but materialises
+    at its LAST. Convergence is what the publish path proves only after every brick is built
+    and tagged; here it is asserted against the plan itself, before any of that work.
+    """
+    proc = run(ordering)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    plan = parse_plan(proc.stdout)
+    final = simulate(ordering, plan)
+    assert final == dev_tip_blobs(ordering, final), (
+        "the plan does not converge to the dev tip:\n" + proc.stdout
+    )
+
+
+def test_a_fold_that_would_be_overwritten_by_a_later_brick_is_not_proposed(ordering):
+    """The specific shape behind the property: the unsafe fold must be DROPPED, not reordered.
+
+    Reordering is one more composition claim nobody has checked; standing the commit alone
+    costs only tidiness.
+    """
+    out = run(ordering).stdout
+    plan = parse_plan(out)
+    assert [members for _, members in plan] == [
+        [ordering.shas["a"][:7]],
+        [ordering.shas["b"][:7]],
+        [ordering.shas["c"][:7]],
+    ], out
 
 
 # ---------- suggested versions follow /commit's bump rules ----------

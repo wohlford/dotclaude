@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.72.3 — 2026-08-03
+- fix(publish): drop folds a later brick would overwrite
+
 ## v0.72.2 — 2026-08-03
 - docs(CLAUDE.md): add the composition hazard and split its group
 
