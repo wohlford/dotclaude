@@ -12,6 +12,7 @@ for how the index below stays in sync.
 | Script                           | Purpose                                                                                                                        |
 | :------------------------------- | :----------------------------------------------------------------------------------------------------------------------------- |
 | `audit-test.sh`                  | PostToolUse hook — run the audit engine test suite when the engine or its suite changes                                        |
+| `claude-md-structure.py`         | Measure CLAUDE.md's verification-hazards section — group sizes, member counts, lengths                                         |
 | `commit-subject-advisor.py`      | PostToolUse hook — advise an amend when a committed subject reaches the advisory limit                                         |
 | `commit-subject-guard.py`        | PreToolUse hook — refuse a commit whose subject is provably at or over the block limit                                         |
 | `commit-subject-test.sh`         | PostToolUse hook — run the commit-subject suites, and py39-compat on any scripts/*.py edit                                     |

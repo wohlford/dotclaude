@@ -61,7 +61,18 @@ those remain manual steps for the user.
 
 1. **Refresh CLAUDE.md from the session.** Invoke `claude-md-management:revise-claude-md`.
    **Auto-apply** its proposed CLAUDE.md edits, then show the resulting diff so the change
-   stays visible. **Sensitivity carve-out:** do not auto-write content the repo keeps out of
+   stays visible.
+
+   **Get the structure numbers from `scripts/claude-md-structure.py`, never by hand** — group
+   sizes, member counts, the longest member and the longest heading, which are what the admission
+   rules are stated in. Steps 1 and 2 both need them, and they were hand-derived in four
+   consecutive runs; **two of those hand-rolls returned different wrong answers**, neither visible
+   in its own output. One over-reported bullet length by letting a group's last member swallow the
+   `####` below it (12 against a true 10); the other over-reported group count by scanning past the
+   section into Package Management (13/35 against a true 10/33). Both read in the direction that
+   MANUFACTURES work — a healthy bullet "fixed", or healthy groups declared under-populated. Pass
+   `--file <repo>/CLAUDE.md`; it prints the sizes in the `3/4/3/4/…` form the cap is written in,
+   and it measures only — no exit code depends on whether a group is over the cap. **Sensitivity carve-out:** do not auto-write content the repo keeps out of
    tracked public files (operational-security notes — see private memory); **route any such
    content to private memory or `.claude.local.md` instead of surfacing it** — the safe route was
    always preferred, so taking it automatically drops the pause without weakening the guarantee.
