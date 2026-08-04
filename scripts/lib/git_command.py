@@ -917,15 +917,44 @@ def _walk_context(
         if is_git(tok) and starts_command(tokens, i):
             j = i + 1
             cdir = None
+            # Set when a value-taking option's value slot holds an operator-LOOKING token. That is
+            # genuinely ambiguous: `is_op` classifies by TEXT and shlex(posix=True) strips quotes,
+            # so a real `;` and a quoted `';'` (a directory literally named `;`) are the same
+            # token here. Bash treats them oppositely — one ends the command, one is a plain
+            # argument — and this walk cannot tell them apart without tokenize carrying shlex's
+            # punctuation state, which it does not.
+            #
+            # So do not DROP the invocation on that ambiguity. Dropping it was measured to turn
+            # `git -C ';' push origin dev` from blocked into ALLOWED, because the whole invocation
+            # (push included) then vanished from the walk. Fall back instead to recording the
+            # token as the subcommand — the pre-existing behaviour — which fails the consumers'
+            # literal-subcommand rule and blocks. Over-block on ambiguity; never disappear.
+            value_slot_op = False
             while j < n and tokens[j].startswith("-"):
                 opt = tokens[j]
-                if opt == "-C" and j + 1 < n:
+                # An option that takes a VALUE must never consume a control operator as that
+                # value. `git -c ; git push origin dev` made `-c` swallow the `;`, so the walk
+                # resumed at `git` and recorded ONE invocation with subcommand "git" and the push
+                # buried in its argument segment — `git` is not `push`, is not allowlisted, and
+                # `alias.git` does not exist, so the guard ALLOWED it. Measured exit 0.
+                #
+                # This is the same theft the operator branch below fixes one slot to the right,
+                # and the two must agree: hand the operator back to the loop rather than eating
+                # it. A real shell would fail on the missing value anyway, so nothing legitimate
+                # is lost.
+                takes_value = opt == "-C" or (
+                    opt in GLOBAL_VALUE_OPTS and "=" not in opt
+                )
+                if takes_value and j + 1 < n and is_op(tokens[j + 1]):
+                    value_slot_op = True
+                    j += 1
+                elif opt == "-C" and j + 1 < n:
                     cdir = tokens[j + 1]
                     j += 2
                 elif opt.startswith("-C") and len(opt) > 2:
                     cdir = opt[2:]
                     j += 1
-                elif opt in GLOBAL_VALUE_OPTS and "=" not in opt:
+                elif opt in GLOBAL_VALUE_OPTS and "=" not in opt and j + 1 < n:
                     j += 2
                 else:
                     j += 1
@@ -934,6 +963,39 @@ def _walk_context(
                 # before giving up, or a context hidden there is lost.
                 _descend(tokens[i:n], cwd_state)
                 break
+            if is_op(tokens[j]) and not value_slot_op:
+                # OPTIONS-ONLY invocation (`git --version | head`): the token in command position
+                # is the following control operator, not a subcommand. Recording it as one was a
+                # FAIL-OPEN, not just a nonsense verdict — it STEALS the token from the paren
+                # branch above, so `(cd /elsewhere && git --version) && git push origin dev` never
+                # popped `subshell_cwds`, the subshell's cd leaked, and the push was judged in
+                # `/elsewhere`. Measured against the shipped guard: that command was ALLOWED while
+                # the bare push blocked.
+                #
+                # Hand the operator BACK to the loop — `i = j`, never `i = j + 1`, which skips the
+                # paren handling and re-creates the very leak. And never `break` (the truncated
+                # branch above): everything after the operator would go unscanned, so
+                # `git --version && git push origin dev` — caught today — would newly slip through.
+                # Classify with `is_op`, which counts characters, because `punctuation_chars` fuses
+                # runs like `)&&`; a literal comparison passes its own test and leaks on the rest.
+                _descend(tokens[i:j], cwd_state)
+                i = j
+                continue
+            if is_git(tokens[j]):
+                # A bare `git` can never be a legitimate subcommand, so an option run ending on
+                # one means THIS invocation had no subcommand — and recording `git` as one buries
+                # the real invocation's subcommand in an argument segment nothing judges.
+                # Measured shape: `git -c ; git push origin dev` recorded ("git", ["push", …]).
+                #
+                # `and starts_command(tokens, j)` was here and is deliberately gone: it made the
+                # branch UNSATISFIABLE. Every token between `i` and `j` starts with `-` or is a
+                # consumed value, so `starts_command` always walks back to `tokens[i]` — the `git`
+                # token itself, which is neither an operator nor a wrapper — and returns False.
+                # The comment claimed a defence the code could not provide, which reads as
+                # coverage while pinning nothing.
+                _descend(tokens[i:j], cwd_state)
+                i = j
+                continue
             seg: list[str] = []
             k = j + 1
             while (

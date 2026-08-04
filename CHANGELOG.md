@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.75.3 — 2026-08-03
+- fix(git_command): stop a stolen operator leaking a subshell cwd
+
 ## v0.75.2 — 2026-08-03
 - fix(mutation-anchors): refuse to skip an untracked campaign
 

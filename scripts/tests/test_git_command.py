@@ -752,3 +752,112 @@ def test_mask_heredoc_quotes_is_idempotent():
     ):
         once = git_command.mask_heredoc_quotes(command)
         assert git_command.mask_heredoc_quotes(once) == once, command
+
+
+# ---------- an options-only invocation must not swallow the following operator ----------
+# `git --version | head` carries no subcommand: the option walk runs off the end of the options and
+# lands on the operator, which the walk then appended as the subcommand. That is not merely a
+# nonsense verdict -- it STEALS the token from the paren branch above, so a `)` never pops
+# `subshell_cwds`, the subshell's cd leaks, and the NEXT invocation is judged in the wrong
+# directory. Measured against the shipped guard 2026-08-03:
+#     (cd /elsewhere && git --version) && git push origin dev   -> ALLOWED (rc 0)
+#     (cd /elsewhere && true)          && git push origin dev   -> blocked (rc 2)
+# Bash runs that push in the OUTER, adopted repo; the guard judged it against a non-adopted one and
+# went dormant. The leak is why these rows exist; the tidy verdict is a side effect.
+#
+# `test_plain_subshell_cd_does_not_leak` above pins this exact hazard class and did NOT catch it,
+# because every one of its cases puts a non-git command (`ls`) inside the subshell. One token.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git --version | head",
+        "git --version && echo ok",
+        "git --version ; echo ok",
+        "( git --version ) | head",
+        "(git --version)&&echo ok",
+        "git -c core.pager=cat --version | head",
+    ],
+)
+def test_options_only_invocation_records_no_subcommand(command):
+    """No subcommand exists, so no invocation may be recorded -- and never the operator."""
+    assert _subs(command) == [], command
+
+
+def test_options_only_invocation_does_not_leak_a_subshell_cwd():
+    """THE SECURITY ROW. The `)` must reach the paren branch so the subshell's cd is popped."""
+    found = git_command.iter_git_invocations_with_cwd(
+        "(cd /elsewhere && git --version) && git push origin dev", "/repo"
+    )
+    push = next(r for r in found if r[2] == "push")
+    assert push[0] == "/repo", f"cwd leaked out of the subshell: {found!r}"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git --version && git push origin dev",
+        "git --version ; git push origin dev",
+        "(git --version)&&git push origin dev",
+        "git --version | head && git push origin dev",
+    ],
+)
+def test_a_real_push_after_an_options_only_invocation_is_still_seen(command):
+    """PRESERVE, and the direction that ALLOWS if the fix is written as `break`.
+
+    Stopping the walk at the operator satisfies the rows above while silently dropping every
+    invocation after it -- these commands are caught today and must stay caught.
+    """
+    assert "push" in _subs(command), command
+
+
+def test_context_hidden_in_an_options_only_run_is_still_descended():
+    """PRESERVE: the option run must still be descended -- a push can hide in `-c x=$( … )`.
+
+    A fix that skips the option run to avoid the operator would lose this, which the SPAN RULE
+    above exists to prevent.
+    """
+    assert "push" in _subs('git -c x="$(git push origin dev)" --version | head')
+
+
+# ---------- an option's VALUE slot must not steal a control operator either ----------
+# The same theft one slot to the LEFT, and a measured fail-open: `-c` consumed the next token
+# unconditionally, so `git -c ; git push origin dev` ate the `;`, the walk resumed at `git`, and
+# ONE invocation was recorded with subcommand "git" and the push buried in its argument segment.
+# `git` is not `push`, is not allowlisted, and `alias.git` does not exist -- the guard ALLOWED it.
+#
+# The compound form is the regression marker: it BLOCKED before the options-only fix above (the
+# bogus operator-as-subcommand invocation failed the guard's literal-subcommand rule, catching it
+# by accident) and ALLOWED after, until the value-slot guard landed. An accidental catch is not
+# coverage, and removing one is a regression even when the code that replaced it is better.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -c ; git push origin dev",
+        "git -C ; git push origin dev",
+        "git --namespace ; git push origin dev",
+        "git --version ; git -c ; git push origin dev",
+        "git -c && git push origin dev",
+        "git -c | git push origin dev",
+    ],
+)
+def test_an_option_value_slot_does_not_swallow_an_operator(command):
+    """The push must remain visible as its own invocation, not buried in an argument segment."""
+    assert "push" in _subs(command), command
+
+
+@pytest.mark.parametrize(
+    ("command", "want"),
+    [
+        ("git -c user.name=x commit -m msg", ["commit"]),
+        ("git -c user.name=x status", ["status"]),
+        ("git -C /some/path push origin dev", ["push"]),
+        ('git -c x="$(git push origin dev)" status', ["push", "status"]),
+    ],
+)
+def test_an_option_that_really_takes_a_value_still_consumes_it(command, want):
+    """PRESERVE: over-correcting here would mis-parse every ordinary `-c key=value` invocation."""
+    assert _subs(command) == want, command
