@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.75.5 — 2026-08-03
+- fix(publication-push-guard): describe what it actually judged
+
 ## v0.75.4 — 2026-08-03
 - fix(publication-push-guard): allow read-only commands it cannot judge
 

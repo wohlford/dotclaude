@@ -605,6 +605,100 @@ PYCHECK
 assert_eq "$allowlist_rc" 0 'every allowlist entry is a real git command, and none can push'
 [[ "$allowlist_rc" -eq 0 ]] || printf '  %s\n' "$allowlist_out"
 
+# ================= The refusal must describe what was actually judged =========================
+# Verdicts alone CANNOT catch a lying message -- every row here exits 2 either way, which is
+# exactly why these assert CONTENT. One f-string used to prefix every reason with "refusing to
+# push private 'dev'", including reasons that had found no push; that is what teaches an operator
+# to reach for an override on a command that pushes nothing.
+#
+# The partition is TWO-axis, not a rename. `--git-dir=... push origin dev` IS a push AND is
+# unjudgeable, so it must KEEP the alarming wording -- softening it would de-alarm a refusal doing
+# its designed job. Only the not-a-push half gets the new phrasing, and that phrasing says
+# "could not determine whether this pushes", never "no push here": `git $s origin dev` may well
+# be one.
+build_repo 1
+stderr_of() { { push_json "$2" "$1" | python3 "$guard" >/dev/null; } 2>&1; }
+
+m_push="$(stderr_of "$REPO" 'git push origin dev')"
+assert_contains "$m_push" "refusing to push private 'dev'" \
+  'a judged push keeps the alarming wording a runbook greps for'
+
+m_gitdir="$(stderr_of "$REPO" "git --git-dir=$REPO/.git push origin dev")"
+assert_contains "$m_gitdir" "refusing to push private 'dev'" \
+  'an UNJUDGEABLE push keeps the alarming wording too (two-axis, not a rename)'
+
+# shellcheck disable=SC2016  # the UNEXPANDED $live is the point
+m_unres="$(stderr_of "$REPO" 'git -C "$live" frobnicate')"
+assert_contains "$m_unres" 'could not judge' \
+  'an unjudgeable non-push says so instead of claiming a push'
+assert_contains "$m_unres" 'unexpanded shell variable' \
+  'it names the unexpanded -C target, which is the actual cause'
+assert_contains "$m_unres" 'Pass -C a literal path' 'it names the remedy'
+assert_contains "$m_unres" 'does not honour ALLOW_PUSH=1' \
+  'it says the override will not help, so nobody reaches for it'
+case "$m_unres" in
+  *"refusing to push private"*)
+    printf 'FAIL  an unjudgeable non-push must NOT claim a push\n'; fail=$((fail + 1)) ;;
+  *) printf 'PASS  an unjudgeable non-push must NOT claim a push\n'; pass=$((pass + 1)) ;;
+esac
+
+# shellcheck disable=SC2016
+m_nonlit="$(stderr_of "$REPO" 'git $s origin dev')"
+assert_contains "$m_nonlit" 'could not determine whether this pushes' \
+  'a non-literal subcommand is reported as UNKNOWN, never as absent'
+
+# Parse ambiguity is its own class: designed, not a fault, and must not be labelled a guard bug
+# nor written to the diagnostic log that exists to capture rare genuine faults.
+m_parse="$(stderr_of "$REPO" "git push origin main 'oops")"
+assert_contains "$m_parse" 'could not parse unambiguously' \
+  'designed parse ambiguity is reported as unreadable input'
+case "$m_parse" in
+  *"BUG in the guard"*)
+    printf 'FAIL  parse ambiguity must not be labelled a guard bug\n'; fail=$((fail + 1)) ;;
+  *) printf 'PASS  parse ambiguity must not be labelled a guard bug\n'; pass=$((pass + 1)) ;;
+esac
+
+# From a SURVIVING mutant: the suite asserted that an unexpanded -C with a real push still BLOCKS,
+# but nothing asserted it keeps the alarming wording -- so flipping `sub == "push"` to False at
+# that site changed nothing any row could see. Verdict rows cannot catch a de-alarmed message.
+# shellcheck disable=SC2016
+m_unres_push="$(stderr_of "$REPO" 'git -C "$live" push origin dev')"
+assert_contains "$m_unres_push" "refusing to push private 'dev'" \
+  'an unresolvable root with a REAL push keeps the alarming wording'
+
+# From the security review: the wording is a claim about the WHOLE command. This blocks on the
+# unjudgeable `frobnicate` first, but a literal push follows it -- saying "no push was identified"
+# there is the inverse mislabel the two-axis split exists to prevent.
+# shellcheck disable=SC2016
+m_mixed="$(stderr_of "$REPO" 'git -C "$live" frobnicate && git push origin dev')"
+assert_contains "$m_mixed" "refusing to push private 'dev'" \
+  'an unjudgeable invocation followed by a real push still reports a push'
+
+# ================= FAIL-OPEN: an option's VALUE slot stole a control operator ==================
+# Found by the security review. `-c` consumes the next token unconditionally, so `git -c ;` ate
+# the `;`, the walk resumed at `git` and recorded ONE invocation whose subcommand was "git" with
+# the push buried in its argument segment -- not `push`, not allowlisted, and `alias.git` does not
+# exist, so the guard ALLOWED it. Measured exit 0.
+#
+# The compound row is the REGRESSION marker: it BLOCKED before the options-only fix (the bogus
+# operator-as-subcommand invocation failed the literal-subcommand rule and blocked by accident)
+# and ALLOWED after, until this guard was added. An accidental catch is not coverage.
+build_repo 1
+push_run "$REPO" 'git -c ; git push origin dev' 2 \
+  'FAIL-OPEN CLOSED: -c must not consume a control operator as its value'
+push_run "$REPO" 'git --version ; git -c ; git push origin dev' 2 \
+  'FAIL-OPEN CLOSED: the compound form the options-only fix had un-caught'
+push_run "$REPO" 'git --namespace ; git push origin dev' 2 \
+  'FAIL-OPEN CLOSED: --namespace behaves the same way'
+push_run "$REPO" 'git -C ; git push origin dev' 2 \
+  'FAIL-OPEN CLOSED: -C too'
+# PRESERVE: an option that really does take a value must still consume it, or every ordinary
+# `-c key=value` invocation starts mis-parsing.
+push_run "$REPO" 'git -c user.name=x status' 0 \
+  'PRESERVE: -c still consumes a genuine value'
+push_run "$REPO" 'git -c x="$(git push origin dev)" status' 2 \
+  'PRESERVE: a push hidden in a genuine -c value is still seen'
+
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

@@ -97,8 +97,41 @@ import sys
 import traceback
 from pathlib import Path
 from types import ModuleType
+from typing import NamedTuple
 
 PREFIX = "publication-push-guard:"
+
+
+class Block(NamedTuple):
+    """A refusal, plus WHICH question produced it. Both values block — this is not a severity.
+
+    `is_push` is True only when a push was actually identified (a literal `push`, or an alias
+    chain that resolves to one). It is False when the guard could not judge the command at all:
+    an unresolvable root, an unknown cwd, a `--git-dir` override, a subcommand that is not a
+    literal name.
+
+    It exists because one message used to prefix every reason with "refusing to push private
+    'dev'", including reasons that had found no push. That is not cosmetic: a refusal phrased as
+    a push decision, on a command carrying no push, is exactly what teaches an operator to answer
+    it with an override — the reflex the push rules exist to prevent. The inverse matters just as
+    much, which is why this is a two-axis split and not a rename: `git --git-dir=$X/.git push
+    origin dev` IS a push and is unjudgeable, so it must keep the alarming wording.
+    """
+
+    reason: str
+    is_push: bool
+
+
+class AmbiguousCommand(ValueError):
+    """The WALK could not parse the command — designed ambiguity, not a fault in this guard.
+
+    Deliberately raised only around `iter_git_invocations_with_cwd`. A bare `except ValueError` in
+    `main` is too broad and was measured to regress: the suite forces a ValueError out of the lazy
+    `git_command` import to exercise the internal-error path, and a blanket catch swallowed it —
+    silencing the diagnostic log for a genuine fault. Narrowing to the walk is what separates
+    "your command is unreadable" from "this guard broke".
+    """
+
 
 # Where a fail-closed INTERNAL error records what it was evaluating. Outside every repo on purpose:
 # a path under the guard's own directory would drop an untracked file into the repo being guarded,
@@ -596,16 +629,38 @@ def _judge_invocation(
     seg: list[str],
     gitcmd: ModuleType,
     gitdir_override: bool,
-) -> str | None:
-    """Judge one git invocation. Returns a block reason, or None to allow it."""
+) -> Block | None:
+    """Judge one git invocation. Returns a Block, or None to allow it.
+
+    `Block.is_push` records WHICH question was answered — see the type. It is not a severity: both
+    values block. It exists so the refusal cannot claim a push it never found, and it is derived
+    from `sub`, which is in scope at every unjudgeable site.
+    """
     if gitdir_override:
-        return "the command carries --git-dir/--work-tree or a GIT_DIR= assignment — root unknown"
+        return Block(
+            "the command carries --git-dir/--work-tree or a GIT_DIR= assignment — root unknown",
+            sub == "push",
+        )
     if effective_dir is None:
-        return "the effective working directory could not be resolved (cd/pushd target unknown)"
+        return Block(
+            "the effective working directory could not be resolved (cd/pushd target unknown)",
+            sub == "push",
+        )
 
     root = _resolve_root(effective_dir)
     if root is None:
-        return "the repo root could not be resolved"
+        # Name the commonest cause when the evidence is right here in the token: a hook sees
+        # command text UNEXPANDED, so `-C "$live"` is four literal characters and can never
+        # resolve. Saying so turns an inscrutable refusal into a one-word fix.
+        looks_unexpanded = "$" in effective_dir
+        detail = (
+            f"the repo root could not be resolved from {effective_dir!r}, which is an "
+            "unexpanded shell variable — a hook sees command text before the shell expands it. "
+            "Pass -C a literal path"
+            if looks_unexpanded
+            else "the repo root could not be resolved"
+        )
+        return Block(detail, sub == "push")
     if not (Path(root) / ".publication.toml").is_file():
         return None  # not adopted — dormant
 
@@ -617,18 +672,23 @@ def _judge_invocation(
             return None  # chain resolves (possibly through multiple hops) to a known-safe built-in
         if kind == "push":
             # _chain_args is diagnostics only — see _resolve_alias_chain: never re-verified.
-            return (
+            return Block(
                 f"subcommand '{sub}' resolves (via an alias chain) to 'push' — alias-based "
-                "pushes are always blocked, never re-verified against the refspec allowlist"
+                "pushes are always blocked, never re-verified against the refspec allowlist",
+                True,
             )
-        return f"subcommand '{sub}' resolves to an unverifiable or unresolvable alias chain"
+        return Block(
+            f"subcommand '{sub}' resolves to an unverifiable or unresolvable alias chain",
+            False,
+        )
 
-    return _judge_push(root, seg)
+    reason = _judge_push(root, seg)
+    return None if reason is None else Block(reason, True)
 
 
-def _find_block_reason(command: str, cwd: str) -> str | None:
+def _find_block_reason(command: str, cwd: str) -> Block | None:
     """Lazily import git_command (an ImportError here is caught by the caller, and blocks), then
-    evaluate every git invocation in `command`. Returns the first block reason found, or None."""
+    evaluate every git invocation in `command`. Returns the first Block found, or None."""
     sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
     import git_command as gitcmd  # noqa: E402
 
@@ -643,15 +703,27 @@ def _find_block_reason(command: str, cwd: str) -> str | None:
     # Raises ValueError on tokenizing ambiguity, propagated uncaught to the caller's fail-closed
     # handler. Context-aware, so `cd`/`pushd`/`popd` and subshell isolation are resolved inside the
     # library where token position and invocation identity come from the same traversal.
-    for effective_dir, cdir, sub, seg in gitcmd.iter_git_invocations_with_cwd(
-        command, cwd
-    ):
+    # Scoped narrowly ON PURPOSE: only the WALK's ambiguity is designed. A ValueError from
+    # anywhere else in this function — the lazy import above, most of all — is a genuine fault and
+    # must keep reaching the internal-error handler, log and all.
+    try:
+        invocations = list(gitcmd.iter_git_invocations_with_cwd(command, cwd))
+    except ValueError as exc:
+        raise AmbiguousCommand(str(exc)) from exc
+
+    for effective_dir, cdir, sub, seg in invocations:
         if sub != "push" and sub in KNOWN_SAFE_SUBCOMMANDS:
             continue
         root_dir = _combine(effective_dir, cdir)
         reason = _judge_invocation(root_dir, sub, seg, gitcmd, gitdir_override)
         if reason is not None:
-            return reason
+            # The WORDING is a claim about the whole command, not about the invocation that
+            # happened to block first. `git -C "$live" frobnicate && git push origin dev` blocks
+            # on `frobnicate`, whose is_push is False — but the command carries a literal push,
+            # and "no push was identified" is then the exact inverse of the mislabel this split
+            # exists to prevent. The verdict does not move (both arms block); only the message.
+            carries_push = any(s == "push" for _d, _c, s, _g in invocations)
+            return reason._replace(is_push=reason.is_push or carries_push)
     return None
 
 
@@ -735,6 +807,20 @@ def main() -> int:
 
     try:
         reason = _find_block_reason(command, cwd)
+    except AmbiguousCommand as exc:
+        # DESIGNED ambiguity, not a fault. An unbalanced quote or unterminated context is input the
+        # module docstring already defines as unjudgeable, and the walk signals it with ValueError.
+        # It used to fall through to the handler below, which labels the refusal "a BUG in the
+        # guard" and appends to the diagnostic log — so ordinary malformed input buried the rare
+        # genuine fault that log exists to capture. (Measured previously: 12 synthetic records from
+        # 4 suite runs.) Same verdict, honest wording, and nothing written.
+        print(
+            f"{PREFIX} refusing a git command it could not parse unambiguously "
+            f"({exc}); failing closed. This is not a policy decision about a push — no push was "
+            f"identified, because the command could not be read. Fix the quoting and re-run.",
+            file=sys.stderr,
+        )
+        return 2
     except Exception as exc:  # noqa: BLE001 - deliberate: any crash here must fail CLOSED
         # Record BEFORE printing: the verdict must not depend on the diagnostic succeeding, and the
         # operator needs the path in the same breath as the refusal. `_record_internal_error` is
@@ -760,10 +846,26 @@ def main() -> int:
         return 2
 
     if reason is not None:
-        print(
-            f"{PREFIX} refusing to push private 'dev' (or an ambiguous target): {reason}",
-            file=sys.stderr,
-        )
+        if reason.is_push:
+            # A push WAS identified. Unchanged wording — a runbook greps for this line, and this
+            # is the case where alarm is correct.
+            print(
+                f"{PREFIX} refusing to push private 'dev' (or an ambiguous target): "
+                f"{reason.reason}",
+                file=sys.stderr,
+            )
+        else:
+            # No push was identified — but that is NOT the same as "there is no push here", and
+            # the wording must not say so. `git $s origin dev` may well be one; the guard simply
+            # could not read it. Claiming "no push detected" would invite exactly the dismissal
+            # this branch exists to prevent.
+            print(
+                f"{PREFIX} refusing a git command it could not judge: {reason.reason}. "
+                f"No push was identified — but the guard could not determine whether this "
+                f"pushes, so it fails closed. This gate does not honour ALLOW_PUSH=1; setting it "
+                f"will not help.",
+                file=sys.stderr,
+            )
         return 2
     return 0
 
