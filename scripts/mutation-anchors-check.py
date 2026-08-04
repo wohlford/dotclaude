@@ -50,13 +50,32 @@ names bound to those. Anything else is an ERROR, never a skipped row: a blocklis
 every expression shape nobody thought of, and a silently skipped row is exactly the vacuous pass
 this check exists to prevent.
 
+## Two populations, because discovery grades the COMMIT and the defect lives in the tree
+
+Campaigns are GRADED from `git ls-files`, so the verdict is about the repo rather than about
+whatever happens to be lying in a working tree. That alone reads as complete while skipping the
+newest campaign in the scope — measured: `PASS … campaigns=6` where seven existed, `git add`
+alone making it seven — and a campaign is untracked *precisely* when it is new, which is when its
+anchors have never once been verified. Neither usual under-coverage guard catches it: the
+denominator is non-zero, and a declared floor cannot name a member that did not exist when the
+floor was written.
+
+So a second predicate — untracked and unignored — reports what the first did not read, and every
+verdict carries `untracked=<n>` so a clean run states its coverage instead of implying it. An
+IGNORED campaign is a *declared* exclusion and stays invisible to both; that is the escape hatch
+for a genuine scratch campaign, and the reason this is not simply a filesystem glob, which would
+start failing runs over artifacts no commit will contain.
+
 ## Statuses are an allowlist
 
 `PASS` (every anchor resolves exactly once), `FAIL` (at least one does not), `ERROR` (no verdict
 could be reached — an unparseable campaign, an unresolvable anchor or subject, a missing subject
-file, a campaign declaring zero mutations, or zero campaigns discovered).
+file, a campaign declaring zero mutations, an untracked campaign this run did not read, or zero
+campaigns discovered).
 
-Zero campaigns is an ERROR rather than a vacuous PASS, and so is an empty `MUTATIONS` list. A
+An untracked campaign is ERROR rather than FAIL for the same reason an unparseable one is: the
+run reached no verdict *about it*, and FAIL would claim a finding about an anchor nobody looked
+at. Zero campaigns is an ERROR rather than a vacuous PASS, and so is an empty `MUTATIONS` list. A
 sweep over nothing reports success loudest of all; `find` returning zero files reads exactly like
 "nothing to fix". ERROR outranks FAIL — an unread campaign has not been judged, so a run holding
 both must not report the weaker, more reassuring verdict.
@@ -170,19 +189,19 @@ def _rows(node, env, campaign):
     return out
 
 
-def _campaigns(scope):
-    """Tracked `mutate_*.py` files, sorted so the report reads the same on every run.
+def _git_campaigns(scope, *args):
+    """Campaign paths from one `git ls-files` invocation, sorted for a stable report.
 
-    Tracked-only, deliberately: a scratch campaign in someone's working tree is not something an
-    audit of the repo should be able to fail on. `mutate.py` itself — the runner — does not match
-    the prefix, so it is never mistaken for a campaign.
+    `mutate.py` itself — the runner — does not match the prefix, so it is never mistaken for a
+    campaign. Both discovery predicates share this one filter, so they cannot drift apart and
+    disagree about what counts as a campaign.
     """
     proc = subprocess.run(
-        ["git", "-C", str(scope), "ls-files"], capture_output=True, text=True
+        ["git", "-C", str(scope), "ls-files", *args], capture_output=True, text=True
     )
     if proc.returncode != 0:
         raise Unresolvable(
-            "cannot list tracked files in %s — %s" % (scope, proc.stderr.strip())
+            "cannot list files in %s — %s" % (scope, proc.stderr.strip())
         )
     found = []
     for line in proc.stdout.splitlines():
@@ -190,6 +209,34 @@ def _campaigns(scope):
         if name.startswith(CAMPAIGN_PREFIX) and name.endswith(".py"):
             found.append(line)
     return sorted(found)
+
+
+def _campaigns(scope):
+    """The campaigns this run GRADES — tracked only, so the verdict is about the repo.
+
+    Grading the working tree instead would start failing runs over scratch files no commit will
+    ever contain. The gap that leaves is closed by `_untracked_campaigns` below, which reports
+    rather than grades.
+    """
+    return _git_campaigns(scope)
+
+
+def _untracked_campaigns(scope):
+    """Campaigns present in the tree that this run did not read — the coverage gap, named.
+
+    Discovery from version control grades the COMMITTED population, so a campaign written
+    minutes ago is outside the sweep at exactly the moment nothing has ever checked it — and a
+    campaign is untracked *precisely* when it is new, which is when an anchor is likeliest to be
+    wrong. Measured: a run reported `campaigns=6` where seven existed; `git add` alone made it
+    seven. Neither of the usual under-coverage guards fires here, since the denominator is
+    non-zero and a declared floor cannot name a member that did not exist when it was written.
+
+    `--exclude-standard` is what keeps this from becoming a filesystem glob. An IGNORED campaign
+    is a *declared* exclusion — the repo states the file is not part of itself — while an
+    untracked, unignored one is an undeclared omission, which is the whole defect. So ignoring a
+    scratch campaign is the supported escape hatch.
+    """
+    return _git_campaigns(scope, "--others", "--exclude-standard")
 
 
 def _inspect(scope, relative):
@@ -264,9 +311,10 @@ def main(argv=None):
 
     try:
         campaigns = _campaigns(scope)
+        untracked = _untracked_campaigns(scope)
     except Unresolvable as exc:
         sys.stdout.write("%s\n" % exc)
-        sys.stdout.write("RESULT: ERROR rc=2 campaigns=0 rows=0 bad=0\n")
+        sys.stdout.write("RESULT: ERROR rc=2 campaigns=0 rows=0 bad=0 untracked=0\n")
         return 2
 
     for relative in campaigns:
@@ -285,6 +333,18 @@ def main(argv=None):
             % (CAMPAIGN_PREFIX, scope)
         )
 
+    # An untracked campaign was not READ, so it has no verdict — the same category as a
+    # campaign that could not be parsed, and deliberately not FAIL, which would claim a finding
+    # about an anchor this run never looked at.
+    for relative in untracked:
+        errors.append(
+            "%s is UNTRACKED, so this run graded everything except it. Discovery is "
+            "`git ls-files`, which reads the committed population — and a campaign is "
+            "untracked precisely when it is new, i.e. when its anchors have never once been "
+            "verified. Run `git add %s`, or ignore it explicitly if it is scratch."
+            % (relative, relative)
+        )
+
     for relative in campaigns:
         sys.stdout.write("campaign: %s\n" % relative)
 
@@ -299,7 +359,7 @@ def main(argv=None):
         )
 
     if errors:
-        sys.stdout.write("\nCAMPAIGNS THAT COULD NOT BE READ (no verdict for these):\n")
+        sys.stdout.write("\nCAMPAIGNS THIS RUN DID NOT JUDGE (no verdict for these):\n")
         for message in errors:
             sys.stdout.write("  %s\n" % message)
 
@@ -311,9 +371,13 @@ def main(argv=None):
         status, rc = "FAIL", 1
     else:
         status, rc = "PASS", 0
+    # `untracked=` rides on every verdict, PASS included. Reporting it only when it is non-zero
+    # would leave a clean run making a coverage claim with nothing behind it — which is the state
+    # this field exists to end: the count was always printed, but a reader had no independent
+    # expectation to compare it against.
     sys.stdout.write(
-        "RESULT: %s rc=%d campaigns=%d rows=%d bad=%d\n"
-        % (status, rc, len(campaigns), rows_checked, len(findings))
+        "RESULT: %s rc=%d campaigns=%d rows=%d bad=%d untracked=%d\n"
+        % (status, rc, len(campaigns), rows_checked, len(findings), len(untracked))
     )
     return rc
 

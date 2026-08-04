@@ -928,5 +928,42 @@ case "$rO9_out" in
     printf '  --- output ---\n%s\n  --------------\n' "$rO9_out" ;;
 esac
 
+# ============================================================================
+# rMA. The mutation-anchors gate's POPULATION
+# ============================================================================
+# This gate enumerates campaigns itself, to decide whether to SKIP. It must use the union of the
+# checker's two predicates — tracked, plus untracked-and-unignored — because a tracked-only gate
+# skips the whole check in the one case the checker's untracked guard exists for: the first
+# campaign a repo ever gets, still unadded. The guard would then be unreachable at exactly the
+# moment nothing has ever verified that campaign, and the SKIP says nothing about what it did not
+# run. Measured before this suite existed: the gate and the checker disagreed about the
+# population, so half the fix was inert.
+mk_campaign_repo() { # dir -> a committed repo whose only campaign is written but NOT added
+  mkrepo "$1"
+  mkdir -p "$1/scripts/tests"
+  printf 'alpha\n' > "$1/subject.sh"
+  commit_all "$1" init
+  printf 'from pathlib import Path\nREPO = Path(__file__).resolve().parent.parent.parent\n' \
+    > "$1/scripts/tests/mutate_new.py"
+  printf 'SUBJECT = REPO / "subject.sh"\nMUTATIONS = [Mutation("row", "no-such-anchor", "X")]\n' \
+    >> "$1/scripts/tests/mutate_new.py"
+}
+
+rMA1="$tmp/rMA1_untracked_only"
+mk_campaign_repo "$rMA1"
+run_engine "$rMA1"
+assert_not_has 'SKIP mutation-anchors' 'rMA1: an untracked-only campaign is not skipped away'
+assert_has 'FAIL mutation-anchors' 'rMA1: the first campaign a repo gets is judged, not skipped'
+
+# The escape hatch, at this layer: an IGNORED campaign is a declared exclusion, so the gate is
+# back to its old behaviour and the check has nothing to judge. Without this row the fix above
+# would be indistinguishable from one that simply grades the whole filesystem.
+rMA2="$tmp/rMA2_ignored"
+mk_campaign_repo "$rMA2"
+printf 'scripts/tests/mutate_new.py\n' > "$rMA2/.gitignore"
+run_engine "$rMA2"
+assert_has 'SKIP mutation-anchors' 'rMA2: an IGNORED campaign is a declared exclusion -> SKIP'
+assert_not_has 'FAIL mutation-anchors' 'rMA2: an ignored campaign does not false-block'
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

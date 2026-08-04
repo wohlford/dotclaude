@@ -3,6 +3,10 @@ set -uo pipefail
 
 # Script: audit.sh
 # Purpose: Read-only mechanical compliance sweep over a target git repo's tracked files
+#   Two checks deliberately also see UNTRACKED, unignored files, each for a reason given at its
+#   own definition: `hermetic` (a run that writes to the tree is a finding wherever it lands)
+#   and `mutation-anchors` (a campaign is untracked precisely when it is new). Every other
+#   check is tracked-only, so an untracked violation stays invisible to the sweep.
 # Usage: audit.sh [--scope <path>] [--tests]
 #
 # A `.auditignore` at the scope root (opt-in, one glob pathspec per line, `#` comments and
@@ -553,13 +557,20 @@ check_mutation_anchors() {
   # The same rule the checker itself applies — a basename of `mutate_*.py`. Deriving it the
   # same way on both sides is what keeps a scope with no campaigns a SKIP here rather than the
   # checker's zero-campaign ERROR, which exists to catch a sweep over nothing.
+  #
+  # The population must be the UNION of the checker's two predicates — tracked (what it grades)
+  # plus untracked-and-unignored (what it refuses to leave unjudged) — which is exactly
+  # `--cached --others --exclude-standard`. A tracked-only gate here would skip the whole check
+  # in the one case its untracked guard exists for: the first campaign a repo ever gets, still
+  # unadded. The guard would then be unreachable at precisely the moment it matters, and this
+  # SKIP is silent about what it did not run.
   campaigns=""
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     case "${f##*/}" in
       mutate_*.py) campaigns="${campaigns}${f}"$'\n' ;;
     esac
-  done <<< "$(git -C "$scope" ls-files 2>/dev/null)"
+  done <<< "$(git -C "$scope" ls-files --cached --others --exclude-standard 2>/dev/null)"
   if [[ -z "$campaigns" ]]; then
     verdict_skip mutation-anchors 'no mutation campaigns in scope'
     return
@@ -567,7 +578,10 @@ check_mutation_anchors() {
   local out rc
   out="$(python3 "$runner" --scope "$scope" 2>&1)"; rc=$?
   if [[ "$rc" -ne 0 ]]; then
-    verdict_fail mutation-anchors 'a campaign anchor no longer resolves exactly once'
+    # rc 1 is a rotted or ambiguous anchor; rc 2 is a campaign that went unjudged — unreadable,
+    # or present in the tree but untracked. Naming only the first would prescribe the wrong
+    # repair for the second, so defer to the checker's own output, which says which it found.
+    verdict_fail mutation-anchors 'a campaign anchor no longer resolves, or a campaign went unjudged'
     print_offenders "$out"
   else
     verdict_pass mutation-anchors

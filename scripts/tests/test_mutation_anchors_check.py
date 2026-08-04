@@ -180,12 +180,74 @@ def test_empty_mutations_list_is_error(sandbox):
     assert verdict(out).startswith("RESULT: ERROR rc=2")
 
 
-def test_untracked_campaign_is_not_discovered(sandbox):
-    """Discovery is tracked-only, so a scratch campaign cannot fail an audit."""
+# --- the untracked-campaign guard -------------------------------------------------------------
+#
+# Discovery is `git ls-files`, which grades the COMMITTED population. A campaign is untracked
+# precisely when it is brand new — i.e. when its anchors have never once been verified — so the
+# window this closes is narrow and is exactly the wrong moment to be blind. Measured: a run
+# reported `campaigns=6` where seven existed, and `git add` alone made it seven.
+#
+# The verdict is ERROR rather than FAIL because the run reached no verdict ABOUT that campaign;
+# it is the same category as zero-campaigns-discovered, not a finding about an anchor.
+
+
+def test_untracked_campaign_beside_a_tracked_one_is_error(sandbox):
+    """The measured shape: a healthy tracked campaign makes every other guard pass.
+
+    This is the row the old suite lacked. Its predecessor put a lone untracked campaign in the
+    sandbox, so the ERROR it asserted came from the zero-campaign guard — it would have read
+    green with no untracked handling at all. Here the tracked campaign satisfies that guard and
+    resolves cleanly, so ERROR can only come from the untracked one.
+    """
+    sandbox.campaign("mutate_tracked.py", [('"row"', '"alpha"', '"ALPHA"')])
+    sandbox.campaign("mutate_scratch.py", [('"row"', '"bravo"', '"X"')], track=False)
+    rc, out = run("--scope", str(sandbox))
+    assert rc == 2, out
+    assert "mutate_scratch.py" in out, "the untracked campaign was not named"
+    assert verdict(out).startswith("RESULT: ERROR rc=2")
+    assert "untracked=1" in verdict(out), verdict(out)
+
+
+def test_untracked_campaign_alone_is_error_naming_it(sandbox):
+    """The lone-untracked case still ERRORs — but now it says which campaign it never read.
+
+    Both guards fire here (zero tracked campaigns AND one untracked), which is why the rc alone
+    proves nothing; the name is the part that distinguishes this from its predecessor.
+    """
     sandbox.campaign("mutate_x.py", [('"row"', '"nope"', '"X"')], track=False)
     rc, out = run("--scope", str(sandbox))
-    assert rc == 2, out  # zero campaigns discovered
+    assert rc == 2, out
+    assert "mutate_x.py" in out, "the untracked campaign was not named"
     assert verdict(out).startswith("RESULT: ERROR rc=2")
+
+
+def test_ignored_campaign_is_a_declared_exclusion_and_passes(sandbox):
+    """An IGNORED campaign is the escape hatch, and the reason the guard is not just a glob.
+
+    Untracked-and-unignored is an UNDECLARED omission — nobody said this file was out of scope,
+    it simply has not been added yet. An ignored one is declared: the repo states it is not part
+    of itself. Grading it would be the filesystem-glob mistake, which starts failing runs over
+    artifacts the commit will never contain.
+    """
+    sandbox.campaign("mutate_tracked.py", [('"row"', '"alpha"', '"ALPHA"')])
+    sandbox.campaign("mutate_scratch.py", [('"row"', '"nope"', '"X"')], track=False)
+    (sandbox / ".gitignore").write_text("scripts/tests/mutate_scratch.py\n")
+    rc, out = run("--scope", str(sandbox))
+    assert rc == 0, out
+    assert verdict(out).startswith("RESULT: PASS rc=0")
+    assert "untracked=0" in verdict(out), verdict(out)
+
+
+def test_healthy_repo_verdict_reports_zero_untracked(sandbox):
+    """The count is in the verdict on the PASS path too — an expectation to compare against.
+
+    Reporting it only on the failing path would leave a clean run making a coverage claim with
+    nothing behind it, which is the state this whole guard exists to end.
+    """
+    sandbox.campaign("mutate_x.py", [('"row"', '"alpha"', '"ALPHA"')])
+    rc, out = run("--scope", str(sandbox))
+    assert rc == 0, out
+    assert "untracked=0" in verdict(out), verdict(out)
 
 
 # --- unresolvable input is ERROR, never a silent skip ----------------------------------------

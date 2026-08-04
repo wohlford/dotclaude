@@ -88,13 +88,26 @@ MUTATIONS = [
         '        if part in ("", ".", "..") or Path(part).is_absolute():',
         "        if False:",
     ),
-    # ---- discovery: the population the check claims to cover
+    # ---- discovery: the population the check GRADES, and the one it merely reports
     mutate.Mutation(
-        "discovery stops being tracked-only, so a scratch campaign can fail an audit",
-        '["git", "-C", str(scope), "ls-files"], capture_output=True, text=True',
-        '["git", "-C", str(scope), "ls-files", "--others", "--cached"],\n'
-        "        capture_output=True,\n"
-        "        text=True,",
+        "the graded population widens past the commit, so an IGNORED campaign is graded",
+        "    return _git_campaigns(scope)",
+        '    return _git_campaigns(scope, "--others", "--cached")',
+    ),
+    mutate.Mutation(
+        "untracked discovery loses --exclude-standard, so an ignored campaign false-blocks",
+        '    return _git_campaigns(scope, "--others", "--exclude-standard")',
+        '    return _git_campaigns(scope, "--others")',
+    ),
+    mutate.Mutation(
+        "the untracked guard goes inert — campaigns are found and then never reported",
+        "    for relative in untracked:",
+        "    for relative in []:",
+    ),
+    mutate.Mutation(
+        "the verdict under-reports coverage, claiming nothing was skipped when something was",
+        "% (status, rc, len(campaigns), rows_checked, len(findings), len(untracked))",
+        "% (status, rc, len(campaigns), rows_checked, len(findings), 0)",
     ),
     mutate.Mutation(
         "the campaign-name rule widens to every .py file, sweeping the runner itself",
