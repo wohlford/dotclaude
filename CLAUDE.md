@@ -348,7 +348,7 @@ left legal.
   each anchor's occurrence COUNT — never by reading the tree, and never by mere PRESENCE, which
   fails both ways: measured, a replacement occurring elsewhere too read as a live mutant.
 - **A run that never ENDS reaches no teardown at all — and "still running" reads as normal for as
-  long as you allow.** A kill at least terminates, so `finally`, `trap` and the structural check
+  long as you allow.** A kill at least terminates, so `finally`, `trap` and the restoration check
   above eventually get their turn; a hang delivers no signal, returns no control, and leaves no
   verdict, artifact or corpse to notice. Measured: a harness freshly hardened against SIGTERM still
   stranded its subject 13+ minutes, because the hardening was a signal handler and no signal was

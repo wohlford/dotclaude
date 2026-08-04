@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.74.1 — 2026-08-03
+- fix(CLAUDE.md): repair the cross-reference the restore edit broke
+
 ## v0.74.0 — 2026-08-03
 - feat(publish): drive the brick loop from a reviewed plan file
 
