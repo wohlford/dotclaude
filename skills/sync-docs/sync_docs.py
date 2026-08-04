@@ -9,13 +9,23 @@ Usage:
 Exit codes:
   0  success / no drift
   1  drift detected (--check) or operational failure
-  2  parser or handler errors
+  2  parser or handler errors, or a refusal to run at all (see below)
+
+`sync` and `sync --check` REFUSE with rc 2 when the scope contains its own copy of sync-docs that
+differs from the copy running. Rendering a repo's regions with a different copy of this tool
+rewrites them silently — a directive the runner does not implement yields a plausible table rather
+than an error — so it is guarded here rather than by an advisory line. The refusal names the
+scope's copy and the command to re-run. It cannot fire for the edit-time hook, which already
+invokes `$root/skills/sync-docs/sync_docs.py`; the case it closes is a globally-installed copy
+pointed at a repo carrying a newer one. `init` and `add` are NOT guarded — they scaffold markers
+rather than render content from handlers.
 """
 
 from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import os
 import re
 import subprocess
@@ -292,9 +302,64 @@ def process_file(
     )
 
 
+def _package_digest(pkg_dir: Path) -> str:
+    """Hash every `.py` in a sync-docs package directory, by name and content.
+
+    The PACKAGE, not the entry point. `filter=` is implemented in `handlers.py` and appears
+    nowhere in this file, so the exact historical hazard — a runner that did not understand a
+    directive the target's region declares — is invisible to a digest of the script alone.
+    """
+    parts = []
+    for path in sorted(pkg_dir.glob("*.py")):
+        parts.append(path.name.encode())
+        parts.append(hashlib.sha256(path.read_bytes()).digest())
+    return hashlib.sha256(b"".join(parts)).hexdigest()
+
+
+def refuse_if_scope_carries_a_different_copy(repo_root: Path) -> str | None:
+    """Return an error message when the scope's own sync-docs differs from the running one.
+
+    A globally-installed writer pointed at a repo that contains a *different* copy of itself
+    renders that repo's regions with the wrong renderer. Measured 2026-07-27: production's copy,
+    which did not implement `filter=`, would have silently rewritten `CLAUDE.md`'s filtered
+    region. It is the SILENT direction that earns a tool-level guard — the output is a
+    plausible-looking table, so there is no symptom for a human or a prompt to catch.
+
+    Refuses rather than warns, and refuses on `--check` too: a stale runner reports drift that is
+    not there, and that verdict is consumed by a hook where nobody is reading it.
+    """
+    running = Path(__file__).resolve().parent
+    scope_pkg = (repo_root / "skills" / "sync-docs").resolve()
+    if not scope_pkg.is_dir():
+        # An ordinary consumer repo carries no copy of its own; nothing to be stale against.
+        return None
+    # Equal digests cover BOTH benign cases: a repo running its own copy (same directory, so
+    # trivially equal — the normal case and the fix this message prescribes) and two directories
+    # that happen to hold the same code. An explicit `scope_pkg == running` short-circuit was
+    # tried and removed: a mutation campaign showed it could be deleted with every test still
+    # green, because it is strictly subsumed here. A branch that cannot change an outcome is a
+    # branch that reads as a safety property without being one.
+    if _package_digest(scope_pkg) == _package_digest(running):
+        return None
+    return (
+        f"refusing to run: {repo_root} contains its own sync-docs, and it DIFFERS from the "
+        f"copy now running.\n"
+        f"  running: {running}\n"
+        f"  scope:   {scope_pkg}\n"
+        f"Rendering with the wrong copy rewrites regions silently — a directive this runner "
+        f"does not implement produces a plausible table, not an error.\n"
+        f"Run the scope's own copy instead:\n"
+        f"  python3 {scope_pkg / 'sync_docs.py'} --scope {repo_root} sync"
+    )
+
+
 def cmd_sync(args: argparse.Namespace) -> int:
     """Regenerate (or with --check, diff) every marker block in the repo's markdown."""
     repo_root = discover_repo_root(args.scope)
+    stale = refuse_if_scope_carries_a_different_copy(repo_root)
+    if stale:
+        print(stale, file=sys.stderr)
+        return 2
     config = load_project_config(repo_root)
     handlers.set_project_config(config)
     md_files = find_markdown_files(repo_root)
