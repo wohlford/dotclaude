@@ -437,9 +437,27 @@ session, which is why the tooling below is in the repo.
    makes the repo data rather than context. An adopted repo with no installed engine applies its
    bricks by hand from the mechanics below.
 
-   **One brick per invocation, and you drive the loop.** That is the point: the per-brick
-   checkpoint that makes this path reviewable survives, while the parts a human reads wrong under
-   repetition are read mechanically every time. Per brick the engine materialises the file set,
+   **One brick per invocation — and `scripts/publish-drive.py` drives the loop.** Review moved to
+   where it demonstrably earns its keep: the PLAN, not the loop. Measured on the 25-brick publish —
+   the human half of the loop caught nothing (all 25 bricks passed their own audits), while the one
+   threatening defect was invisible per-brick and detectable only at convergence, which step 2's
+   planner now proves before offering a plan. Meanwhile the loop was hand-rolled and discarded
+   three times, each re-derivation dropping a different safety property.
+
+   ```bash
+   ~/.claude/scripts/publish-drive.py --plan <plan-file> --scope <repo> --artifact-dir <outside-repo>
+   ```
+
+   **The INSTALLED copy, for the same reason as the engine** — the repo is checked out to `main`
+   while this runs. Feed it step 2's plan **as a file, edited as you see fit**: it never generates
+   one, so the fold judgments and the holistic pairings stay yours. `--dry-run` echoes the parsed
+   bricks and invokes nothing (it does not require a clean tree, since it applies nothing);
+   `--from <version>` resumes after a fixed failure and says how many it skipped. It halts on the
+   first brick not proven by an exact `RESULT: PASS rc=0 brick=<version>`, writes full per-brick
+   output to the artifact dir with `DRIVER_EXIT_STATUS` inside it, and — like the engine — never
+   pushes and never moves the watermark. A hang reports **INDETERMINATE**, not a verdict.
+
+   Per brick the engine materialises the file set,
    asserts **both** shapes (the brick's files match the endpoint byte for byte, **and** nothing
    outside the file set moved — the second is the half that catches a materialisation reaching too
    far), inserts the CHANGELOG entry with an insert-only assertion, commits, runs the audit,
