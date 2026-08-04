@@ -251,6 +251,17 @@ def _verdict(
     )
 
 
+def _stream(line: str) -> None:
+    """Write one progress line to stdout and FLUSH it.
+
+    The flush is the entire point, not hygiene. A campaign runs for tens of minutes and is
+    invoked with its stdout redirected to a file, where Python block-buffers — so without the
+    flush every line would still arrive only at exit, reproducing the defect this exists to
+    close while *looking*, in the source, like it had been fixed.
+    """
+    print(line, flush=True)
+
+
 def _report(
     status: str,
     rc: int,
@@ -284,6 +295,7 @@ def run(
     report_path=None,
     fail_pattern: str = DEFAULT_FAIL_PATTERN,
     timeout=None,
+    progress=_stream,
 ) -> Report:
     """Run every mutation against `command`, restore the subject, and report.
 
@@ -298,14 +310,25 @@ def run(
         timeout: seconds to allow one suite run. Omit it and the limit is DERIVED from the
             baseline's measured duration (`derive_timeout`), which is what lets one default
             serve both a 6s suite and a 17s one.
+        progress: called with one line per resolved mutation, AS IT RESOLVES. Defaults to a
+            flushing write to stdout; pass `None` to silence it. This is deliberately
+            default-ON: opting in would leave every campaign that forgot to, and every one
+            written later, carrying the defect. It streams to stdout rather than a file, so
+            it does not introduce an output DESTINATION — see the note on `report_path`.
 
     Returns:
-        A `Report`. Its `verdict` is always the last line of its `text`.
+        A `Report`. Its `verdict` is always the last line of its `text`. The streamed lines
+        are progress only; `text` is unchanged by them and stays the authoritative record.
     """
+    emit = progress if progress is not None else lambda _line: None
     subject = Path(subject)
     mutations = list(mutations)
     total = len(mutations)
     lines = [f"subject: {subject}", f"command: {' '.join(str(c) for c in command)}"]
+    # Emitted before any work starts, so the artifact is non-empty from the first moment. An
+    # empty file is what a stall looks like, and that ambiguity is the whole defect.
+    for line in lines:
+        emit(line)
 
     backup = backup_path(subject)
     if backup.exists():
@@ -437,8 +460,9 @@ def run(
             f"BASELINE green  rc={baseline.returncode}  {baseline.elapsed:.1f}s "
             f"(per-mutant timeout {limit:.0f}s)"
         )
+        emit(f"[0/{total}] {lines[-1]}")
 
-        for m in mutations:
+        for n, m in enumerate(mutations, 1):
             count = original.count(m.old)
             if count != 1:
                 # NOT a skip. An unapplied mutation establishes nothing, and counting it as
@@ -451,6 +475,7 @@ def run(
                     )
                 )
                 survived += 1
+                emit(f"[{n}/{total}] {SURVIVED:9s} {m.label}  (not applied)")
                 continue
 
             subject.write_text(original.replace(m.old, m.new, 1))
@@ -478,6 +503,10 @@ def run(
                     Outcome(m.label, SURVIVED, "the suite asserts nothing about this")
                 )
                 survived += 1
+            # Per-mutation elapsed, not just the outcome: a 297s outlier in a 14-row campaign
+            # took three investigations to find, and one timed line would have shown it first.
+            took = run.elapsed if run is not None else limit
+            emit(f"[{n}/{total}] {outcomes[-1].status:9s} {m.label}  {took:.1f}s")
     finally:
         subject.write_text(original)
         # The invariant this buys: a backup on disk means the subject MAY STILL BE MUTATED.

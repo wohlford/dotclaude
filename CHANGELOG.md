@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.72.4 — 2026-08-03
+- fix(mutate): stream each mutation as it resolves instead of buffering
+
 ## v0.72.3 — 2026-08-03
 - fix(publish): drop folds a later brick would overwrite
 

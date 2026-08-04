@@ -98,6 +98,94 @@ DROP_GUARD = mutate.Mutation("drop the guard", "GUARD = True", "GUARD = False")
 RAISE_LIMIT = mutate.Mutation("raise the limit", "LIMIT = 10", "LIMIT = 99")
 
 
+# ---------- P0: progress is observable DURING the run, not only after it ----------
+
+# A campaign runs for tens of minutes. Buffering every line until the end makes the artifact
+# byte-identical to a stall for the whole run, and that is not ergonomics: it produced a wrong
+# conclusion twice. A 14-row campaign was declared "cannot complete", filed as a HIGH, and
+# diagnosed three ways (a sidecar file, a specific mutation, a backgrounding bug) before the
+# truth — it simply takes 30+ minutes — was recalled rather than read. Cost: a false HIGH and
+# about an hour. So the property is not "the text contains progress lines" (buffering satisfies
+# that); it is that a line is READABLE while the process is still running.
+
+SLOW_SUITE_SRC = """#!/usr/bin/env bash
+sleep 1
+if grep -q 'GUARD = True' "$1"; then
+  printf 'PASS  guard intact\\n'
+  exit 0
+fi
+printf 'FAIL  guard missing\\n'
+exit 1
+"""
+
+DRIVER_SRC = """import sys
+sys.path.insert(0, {lib!r})
+import mutate
+report = mutate.run(
+    {subject!r},
+    ["bash", {suite!r}, {subject!r}],
+    [
+        mutate.Mutation("drop the guard", "GUARD = True", "GUARD = False"),
+        mutate.Mutation("raise the limit", "LIMIT = 10", "LIMIT = 99"),
+    ],
+    timeout=30,
+)
+print(report.text)
+"""
+
+
+def test_a_mutation_line_is_readable_before_the_campaign_exits(bed):
+    root, subject, suite = bed
+    cmd = suite(SLOW_SUITE_SRC, "slow.sh")
+    driver = root / "driver.py"
+    driver.write_text(
+        DRIVER_SRC.format(
+            lib=str(Path(mutate.__file__).parent),
+            subject=str(subject),
+            suite=cmd[1],
+        )
+    )
+    artifact = root / "run.log"
+
+    with open(artifact, "w") as sink:
+        proc = subprocess.Popen(
+            [sys.executable, str(driver)], stdout=sink, stderr=subprocess.STDOUT
+        )
+        seen_while_alive = ""
+        deadline = time.monotonic() + 60
+        while proc.poll() is None and time.monotonic() < deadline:
+            body = artifact.read_text()
+            if any(
+                word in body for word in ("BASELINE", "CAUGHT", "SURVIVED", "TIMEOUT")
+            ):
+                seen_while_alive = body
+                break
+            time.sleep(0.05)
+        proc.wait(timeout=60)
+
+    assert proc.returncode == 0, artifact.read_text()
+    assert seen_while_alive, (
+        "the artifact carried no progress line at any point while the campaign was alive — "
+        "empty is byte-identical to a stall, which is the measured defect:\n"
+        + artifact.read_text()
+    )
+
+
+def test_the_verdict_is_still_the_last_line_despite_streaming(bed):
+    """Streaming must not displace the verdict — a consumer reads the LAST line."""
+    root, subject, suite = bed
+    report = mutate.run(subject, suite(), [DROP_GUARD], timeout=30)
+    assert report.text.strip().splitlines()[-1] == report.verdict
+    assert report.verdict.startswith("RESULT: ")
+
+
+def test_progress_can_be_silenced_for_a_programmatic_caller(bed, capfd):
+    """`progress=None` restores the silent behaviour a library caller may depend on."""
+    root, subject, suite = bed
+    mutate.run(subject, suite(), [DROP_GUARD], timeout=30, progress=None)
+    assert capfd.readouterr().out == ""
+
+
 # ---------- the caught predicate: one definition, four cases ----------
 
 

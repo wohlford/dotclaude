@@ -196,6 +196,17 @@ MUTATIONS = [
         "        if baseline is None:",
         "        if False:",
     ),
+    mutate.Mutation(
+        "progress is no longer FLUSHED, so a redirected campaign buffers to the very end — "
+        "the artifact stays empty for the whole run and a stall is indistinguishable from work",
+        "    print(line, flush=True)",
+        "    print(line)",
+    ),
+    mutate.Mutation(
+        "progress is off by default, so every campaign that does not opt in keeps the defect",
+        "    progress=_stream,",
+        "    progress=None,",
+    ),
 ]
 
 
