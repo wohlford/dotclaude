@@ -344,8 +344,9 @@ left legal.
   verification tool silently inverted into a rubber stamp. Its `restored: …` line was simply
   ABSENT, which is what every killed run looks like, so nothing drew the eye. **And git cannot
   cover you when the subject is UNTRACKED** — no baseline to diff against, and `git status` shows a
-  bare `??` identical to a healthy new file. Verify restoration STRUCTURALLY (every mutation's
-  original text present, every replacement gone), never by reading the tree.
+  bare `??` identical to a healthy new file. Verify restoration by CONTENT — a pre-run digest, or
+  each anchor's occurrence COUNT — never by reading the tree, and never by mere PRESENCE, which
+  fails both ways: measured, a replacement occurring elsewhere too read as a live mutant.
 - **A run that never ENDS reaches no teardown at all — and "still running" reads as normal for as
   long as you allow.** A kill at least terminates, so `finally`, `trap` and the structural check
   above eventually get their turn; a hang delivers no signal, returns no control, and leaves no

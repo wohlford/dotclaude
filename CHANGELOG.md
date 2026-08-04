@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.73.1 — 2026-08-03
+- fix(CLAUDE.md): verify a restore by content, not string presence
+
 ## v0.73.0 — 2026-08-03
 - feat(claude-md-structure): measure the hazards section mechanically
 
