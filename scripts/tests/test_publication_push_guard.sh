@@ -836,10 +836,19 @@ assert_contains "$out" "refused because" "the refusal must be the detector's, no
 
 # ================= Task 5: per-cause hook-integrity remedies, reorder, symlink cause ============
 # `_hook_integrity_reason` now returns (reason, remedy) instead of a bare string, in the order
-# S < 2 < 5 < {3, 4, 6}. Every row below sends an ALLOWED refspec (origin main) so a block can
+# 2 < S < 5 < {3, 4, 6}. Every row below sends an ALLOWED refspec (origin main) so a block can
 # only come from the integrity check itself -- same convention as Task 1 above. `build_repo 1`
 # leaves a HEALTHY installed hook and tracked source in place; each row below removes or alters
 # exactly the pieces its cause needs, on top of that base.
+#
+# Cause S is REPORTED after containment (2), even though its underlying `is_symlink()` flag is
+# still COMPUTED before containment's `.resolve()` runs -- see the function's own docstring. S's
+# remedy ("remove the symlink, then reinstall") cannot clear a relocated `core.hooksPath`, because
+# the installer resolves its own destination the same way git does, honouring the relocation and
+# reinstalling right back into the decoy. Reporting containment first means a symlink+relocated
+# state gets containment's remedy (which covers both a relocated hooksPath and a symlinked hooks
+# *directory*), and S is only ever reported once containment has already passed -- exactly the
+# shape its own isolation row below builds.
 
 # ---- F1: the reported stale-checkout shape -- marker committed, nothing installed at all ----
 # Before this task, cause 3 ("the boundary hook is missing") fired first here and its only
@@ -868,19 +877,66 @@ assert_eq "$rc" 2 "a symlinked hook FILE blocks even though its target resolves 
 assert_contains "$out" "is a symlink" \
   "cause S is the one reported -- not merely that something blocked"
 
-# ---- Which-cause pinning: two causes live at once, over every adjacent pair in S < 2 < 5 <
+# ---- Which-cause pinning: two causes live at once, over every adjacent pair in 2 < S < 5 <
 # ---- {3, 4, 6}. Invariance alone (something blocked) would pass even if the EARLIER cause's own
 # ---- message never appeared -- these assert the specific text, not just the exit code.
 
 # (symlink + relocated): hooksPath relocated to a decoy dir, AND the hook AT the decoy is itself
-# a symlink pointing further outside. Both S's and 2's conditions hold; S must win.
+# a symlink pointing further outside (to /dev/null, which is nowhere near the repo). Both S's and
+# 2's conditions hold; 2 must win -- S's remedy is "remove the symlink, then reinstall", but
+# `install-git-hooks.sh` resolves its destination the same way git resolves the hooks path (both
+# go through `git rev-parse --git-path hooks`), so it would honour the very relocation this state
+# needs cleared and reinstall right back into the decoy, leaving the command refused forever.
+# Cause 2's remedy names the relocation directly and clears it.
 build_repo 1
 mkdir -p "$REPO/decoy"
 ln -s /dev/null "$REPO/decoy/pre-push"
 gi "$REPO" config core.hooksPath "$REPO/decoy"
 out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
 assert_eq "$rc" 2 "symlink+relocated: still blocks"
-assert_contains "$out" "is a symlink" "symlink+relocated: cause S wins, not cause 2"
+assert_contains "$out" "outside the repository's own hooks directory" \
+  "symlink+relocated: cause 2 wins, not cause S"
+
+# ---- Remedies actually work: follow the reported remedy LITERALLY, and the block must CLEAR
+# ---- afterwards. Invariance and cause-pinning above only prove WHICH text is printed; this is
+# ---- the real property F1/D1 exist to establish -- that the printed remedy is reachable and
+# ---- sufficient, not merely present.
+
+# (symlink+relocated, cause 2's remedy): unset core.hooksPath in the scope it was set. The decoy's
+# dangling symlink is left in place on purpose -- once hooksPath is unset, git never looks at the
+# decoy again, so the remedy needs nothing else to fully clear the block.
+build_repo 1
+mkdir -p "$REPO/decoy"
+ln -s /dev/null "$REPO/decoy/pre-push"
+gi "$REPO" config core.hooksPath "$REPO/decoy"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "remedy check (symlink+relocated): starts blocked"
+assert_contains "$out" "outside the repository's own hooks directory" \
+  "remedy check (symlink+relocated): cause 2 fired, as pinned above"
+gi "$REPO" config --unset core.hooksPath
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 0 "remedy check (symlink+relocated): unsetting core.hooksPath actually clears the block"
+
+# (cause S's own remedy): remove the symlink by hand, then run the REAL install-git-hooks.sh --
+# copied into the sandbox repo so `$SCRIPT_DIR/..` resolves to $REPO, matching how the remedy text
+# names it (a bare "scripts/install-git-hooks.sh", relative to the checkout the refusal fired in).
+build_repo 1
+mv "$REPO/.git/hooks/pre-push" "$REPO/.git/hooks/_real_pre_push"
+ln -s "$REPO/.git/hooks/_real_pre_push" "$REPO/.git/hooks/pre-push"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "remedy check (symlink-inside-hooks-dir): starts blocked"
+assert_contains "$out" "is a symlink" "remedy check (symlink-inside-hooks-dir): cause S fired"
+rm -f "$REPO/.git/hooks/pre-push"
+mkdir -p "$REPO/scripts"
+cp "$repo_root/scripts/install-git-hooks.sh" "$REPO/scripts/install-git-hooks.sh"
+chmod +x "$REPO/scripts/install-git-hooks.sh"
+install_out="$("$REPO/scripts/install-git-hooks.sh" 2>&1)"; install_rc=$?
+assert_eq "$install_rc" 0 "remedy check (symlink-inside-hooks-dir): the installer itself succeeds"
+assert_contains "$install_out" "installed" \
+  "remedy check (symlink-inside-hooks-dir): the installer reports what it did"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 0 \
+  "remedy check (symlink-inside-hooks-dir): remove-then-reinstall actually clears the block"
 
 # (source-missing + relocated): hooksPath relocated to a decoy dir (2's condition holds) AND the
 # tracked source is missing from the checkout (5's condition holds too). 2 precedes 5 -- hoisting
@@ -991,6 +1047,54 @@ out="$(judge "git ${VERB} origin dev" "$REPO")"; rc=$?
 assert_eq "$rc" 2 "PRESERVE: a real dev ${VERB} is still blocked"
 assert_contains "$out" "refusing to ${VERB} private 'dev' (or an ambiguous target):" \
   "PRESERVE: the runbook-grepped line is unchanged, byte for byte"
+
+# ============ Same argument as F1b, one call site over: config/env-injection refusals ==========
+# `_config_injection_reason`'s Block (the inline env/-c/config arm) and `_exported_injection_reason`'s
+# Block (the command-scoped arm) used to omit `boundary_unverifiable`, so both fell into the same
+# two-axis wording F1b already proved wrong for `_hook_integrity_reason` -- refused because of the
+# GATE, not the target, yet printed as if it were a statement about the target. Two commands measured
+# directly against HEAD before this fix, both in the ADOPTED repo with an ALLOWLISTED target:
+#   GIT_COMMON_DIR=/tmp/g git <verb> origin main  -> claimed "refusing to <verb> private 'dev'"
+#   GIT_EDITOR=vi git status                      -> claimed "could not determine whether this <verb>es"
+# Neither claim fits: the first refused main, not dev; the second was never a push candidate at all,
+# yet the guard judged the GIT_EDITOR= injection completely and refused on that, not on uncertainty.
+build_repo 1
+out="$(judge "GIT_COMMON_DIR=/tmp/g git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "GIT_COMMON_DIR= inline injection on an allowed target still blocks"
+assert_contains "$out" "about the boundary itself, not the target" \
+  "GIT_COMMON_DIR=: gets the GATE wording, same as an integrity refusal"
+assert_not_contains "$out" "refusing to ${VERB} private 'dev'" \
+  "GIT_COMMON_DIR=: must not claim a private-'dev' ${VERB} (the target was main)"
+assert_not_contains "$out" "could not judge" \
+  "GIT_COMMON_DIR=: must not claim the guard could not judge it -- it judged the gate fully"
+
+out="$(judge "GIT_EDITOR=vi git status" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "GIT_EDITOR= inline injection blocks even on a non-${VERB} subcommand"
+assert_contains "$out" "about the boundary itself, not the target" \
+  "GIT_EDITOR=: gets the GATE wording even though sub is 'status', not a ${VERB}"
+assert_not_contains "$out" "could not judge" \
+  "GIT_EDITOR=: must not claim the guard could not judge it"
+assert_not_contains "$out" "No ${VERB} was identified" \
+  "GIT_EDITOR=: must not claim uncertainty about a ${VERB} -- there was never a candidate at all"
+
+# The EXPORTED arm (a denied name reaching the invocation via `export` in an earlier segment, not
+# an inline prefix) answers the identical question and must get the same fix -- the two arms are
+# already coupled by `if token in claimed: continue` for DETECTION, and leaving only the inline
+# arm's wording fixed would reproduce this exact defect for the export-in-a-separate-segment shape.
+out="$(judge "export GIT_EDITOR=vi; git status" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "exported GIT_EDITOR= (separate segment) also blocks"
+assert_contains "$out" "about the boundary itself, not the target" \
+  "exported form: gets the same GATE wording as the inline form"
+assert_not_contains "$out" "could not judge" \
+  "exported form: must not claim the guard could not judge it either"
+
+# PRESERVE (config-injection axis): pairing an injection with a genuine dev ${VERB} must still be
+# possible to reach without the injection wording masking it -- not exercised elsewhere, so pinned
+# here directly. The refspec check runs AFTER the injection check (see _find_block_reason), so an
+# adopted-repo command carrying BOTH still reports the injection, never the dev refspec; this just
+# confirms that combination still blocks (rc=2), matching every row above.
+out="$(judge "GIT_EDITOR=vi git ${VERB} origin dev" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "PRESERVE: an injection alongside a real dev ${VERB} still blocks"
 
 # ================= Task 2/3: pure git-config classifiers (not yet wired to any behaviour) =====
 # assert_py <python expression against the guard module> <expected repr string>. Imports the guard

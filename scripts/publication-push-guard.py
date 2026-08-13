@@ -161,15 +161,27 @@ class Block(NamedTuple):
     much, which is why this is a two-axis split and not a rename: `git --git-dir=$X/.git push
     origin dev` IS a push and is unjudgeable, so it must keep the alarming wording.
 
-    `boundary_unverifiable` is a THIRD, orthogonal category: an `_hook_integrity_reason` refusal
-    fires only after `_judge_push` already returned None, i.e. always on an allowlisted target,
-    so `is_push` is correctly True here — the invocation was a real one — yet the "refusing to
-    push private 'dev'" wording is still wrong, because the target being refused is not private.
-    Flipping `is_push` to False would be equally wrong: that branch says "no push was
-    identified", and one was. Neither of the two existing messages fits, so this is its own
-    boolean rather than a third value squeezed onto `is_push` — the boundary could not be
-    verified, so no publish from this repo can be judged, which is a statement about the GATE,
-    not about the target.
+    `boundary_unverifiable` is a THIRD, orthogonal category, set by two call sites in
+    `_find_block_reason` for the same underlying reason: the refusal is a statement about the
+    GATE, not about the target, so neither of the two `is_push` messages fits.
+
+    - An `_hook_integrity_reason` refusal fires only after `_judge_push` already returned None,
+      i.e. always on an allowlisted target, so `is_push` is correctly True here — the invocation
+      was a real one — yet the "refusing to push private 'dev'" wording is still wrong, because
+      the target being refused is not private. Flipping `is_push` to False would be equally
+      wrong: that branch says "no push was identified", and one was.
+    - A config/env-injection refusal (`_config_injection_reason`'s inline env/`-c`/`config` arm,
+      or `_exported_injection_reason`'s command-scoped arm) is refused whatever the command goes
+      on to do, before `_judge_push` ever runs — so `is_push` can legitimately be either value
+      here, and BOTH of the two-axis messages are wrong regardless: measured, an inline
+      `GIT_COMMON_DIR=` ahead of an allowlisted target claimed a private-branch refusal on that
+      allowed target (`is_push=True` case), and an inline denied name ahead of an unrelated
+      subcommand claimed the guard "could not judge" a command it had in fact judged completely
+      (`is_push=False` case).
+
+    Neither of the two existing messages fits either case, so this is its own boolean rather than
+    a third value squeezed onto `is_push` — the boundary could not be verified, so no publish
+    from this repo can be judged, which is a statement about the gate, not about the target.
     """
 
     reason: str
@@ -730,19 +742,30 @@ def _hook_integrity_reason(root: str) -> tuple[str, str] | None:
     input is the missing file). Each cause below carries the remedy that is actually reachable
     from it.
 
-    Checked in a fixed order, and the order is load-bearing, not incidental:
+    Checked in a fixed order, and the order is load-bearing, not incidental. The full ordering is
+    `1 < 2 < S < 5 < {3, 4, 6}` -- cause 1 is the unresolvable-path branch just above, 2 is
+    containment, S is the symlink cause, 5 is the missing tracked source, and 3/4/6 are the
+    install-state causes below that:
 
-    - The new symlink cause (S) is probed BEFORE `.resolve()` is trusted. `.resolve()` follows
-      symlinks, so a hook that is itself a symlink pointing outside the common dir would trip
-      the containment cause first, leaving this branch installed but never reachable --
-      indistinguishable from a dead line. Narrower than containment: a symlinked hooks
-      *directory* holding a real regular hook file leaves the leaf `is_symlink()` probe False
-      (see the containment cause's wording below) and falls through to containment on its own.
-    - The tracked-source cause comes AFTER containment but BEFORE the install-state causes
-      (missing / not executable / digest mismatch), because every install-class remedy
-      presupposes that source existing -- but it must not be hoisted all the way to the top: a
-      checkout with both a missing source and a relocated hooks path must not be told "update
-      the checkout, then install", which cannot clear a relocation either.
+    - The symlink flag (cause S) is COMPUTED before `.resolve()` is trusted -- `.resolve()`
+      follows symlinks, so probing afterward would always read False and this cause would be
+      unreachable, indistinguishable from a dead line. But computing early does not require
+      REPORTING first: cause S's remedy ("remove the symlink, then reinstall") is unreachable
+      when the hooks path is ALSO relocated, because `scripts/install-git-hooks.sh` resolves its
+      destination through `git rev-parse --git-path hooks`, which honours a relocated
+      `core.hooksPath` -- so reinstalling lands right back in the decoy and the command stays
+      refused. Reporting containment (cause 2) FIRST closes that: its own remedy already covers
+      both a relocated `core.hooksPath` and a symlinked hooks *directory*, so cause S is reported
+      only once containment has already PASSED -- exactly the case its call site names, a
+      symlinked hook FILE whose target resolves inside the repository's own hooks directory.
+      Narrower than containment on its own terms too: a symlinked hooks directory holding a real
+      regular hook file leaves the leaf `is_symlink()` probe False (see the containment cause's
+      wording below) and falls through to containment on its own, never reaching cause S at all.
+    - The tracked-source cause comes AFTER containment and the symlink cause but BEFORE the
+      install-state causes (missing / not executable / digest mismatch), because every
+      install-class remedy presupposes that source existing -- but it must not be hoisted all the
+      way to the top: a checkout with both a missing source and a relocated hooks path must not be
+      told "update the checkout, then install", which cannot clear a relocation either.
 
     This reorder is message-selection only: the function still blocks iff any cause holds, so
     the refusal SET is invariant under it -- only which text gets printed changes.
@@ -779,14 +802,12 @@ def _hook_integrity_reason(root: str) -> tuple[str, str] | None:
             "confirm .git exists here and that ordinary git commands run in this repo -- git "
             f"itself could not resolve its own hooks path. {_NO_OVERRIDE_NOTE}",
         )
-    if is_hook_symlink:
-        return (
-            f"the installed boundary hook at {hook_raw} is a symlink",
-            f"remove the symlink at {hook_raw} yourself, then run {INSTALL_SCRIPT_RELPATH} -- "
-            "the installer refuses to install over a symlink even with --force, so removing it "
-            f"by hand comes first. {_NO_OVERRIDE_NOTE}",
-        )
     if common_dir not in hook.parents:
+        # Reported BEFORE cause S, even though `is_hook_symlink` was already computed above --
+        # see the ordering note in the docstring. A symlink whose resolution lands outside the
+        # repo's own hooks directory (this branch) needs the containment remedy, which covers a
+        # relocated `core.hooksPath` -- cause S's remedy (remove the symlink, reinstall) cannot
+        # clear a relocation, because the installer's own destination resolution honours it too.
         return (
             f"git resolves the boundary hook to {hook}, outside the repository's own hooks "
             "directory. This can happen because core.hooksPath has been relocated, or because "
@@ -795,6 +816,18 @@ def _hook_integrity_reason(root: str) -> tuple[str, str] | None:
             "core.hooksPath) and unset it in that scope; if .git/hooks is itself a symlinked "
             "directory, point it back at a real directory holding the tracked hook. "
             f"{_NO_OVERRIDE_NOTE}",
+        )
+    if is_hook_symlink:
+        # Reachable ONLY here, now that containment has already passed: the symlink's target
+        # resolves inside the repository's own hooks directory, so unsetting core.hooksPath
+        # (cause 2's remedy) would do nothing -- there is no relocation to undo, just a symlink
+        # standing in for what should be a real file. See the call-site comment above for the
+        # motivating shape (a byte-identical target inside .git/hooks, installed but dead).
+        return (
+            f"the installed boundary hook at {hook_raw} is a symlink",
+            f"remove the symlink at {hook_raw} yourself, then run {INSTALL_SCRIPT_RELPATH} -- "
+            "the installer refuses to install over a symlink even with --force, so removing it "
+            f"by hand comes first. {_NO_OVERRIDE_NOTE}",
         )
     tracked = Path(root, TRACKED_HOOK_RELPATH)
     if not tracked.is_file():
@@ -1423,7 +1456,16 @@ def _find_block_reason(command: str, cwd: str) -> Block | None:
         # hardcoding False here would route every one of these through the "no push was
         # identified" branch even when one of the invocations in `invocations` is a literal push.
         carries_push = any(s == "push" for _d, _c, s, _g, _t in invocations)
-        return Block(exported, carries_push)
+        # `boundary_unverifiable=True` -- this refusal is about the GATE (a denied `GIT_*` name
+        # reaching a git invocation via export), never about the target, exactly like the inline
+        # env-prefix arm below: both arms answer the identical question -- can this reach a git
+        # invocation and move or silence the boundary hook -- so leaving only the inline arm
+        # fixed would reproduce F1b's defect for the export-in-a-separate-segment shape, one call
+        # site over. An exported denied name ahead of a non-`dev` refspec would still falsely
+        # claim a private-branch refusal on an allowlisted target; ahead of an unrelated
+        # subcommand it would still falsely claim the guard could not judge the command, when in
+        # both cases it judged the gate completely.
+        return Block(exported, carries_push, boundary_unverifiable=True)
 
     for effective_dir, cdir, sub, seg, tokens in invocations:
         # BEFORE the known-safe shortcut, deliberately. `config` is known-safe, and the whole
@@ -1448,6 +1490,16 @@ def _find_block_reason(command: str, cwd: str) -> Block | None:
                         "silence it is refused whatever it goes on to do."
                     ),
                     is_push=any(s == "push" for _d, _c, s, _g, _t in invocations),
+                    # `boundary_unverifiable=True` -- see `Block`'s docstring. This refusal is
+                    # about the GATE, not the target: measured false before this fix, an inline
+                    # `GIT_COMMON_DIR=` ahead of an allowlisted target claimed a private-branch
+                    # refusal on that ALLOWED target, and an inline denied name ahead of a
+                    # non-push subcommand claimed the guard "could not judge" a command it had in
+                    # fact judged completely. Neither the is_push=True nor the is_push=False
+                    # wording fits a refusal about the gate itself -- same argument as F1b, one
+                    # call site over (that one for `_hook_integrity_reason`, this one for a
+                    # denied config/env name reaching the invocation directly).
+                    boundary_unverifiable=True,
                 )
         if sub != "push" and sub in KNOWN_SAFE_SUBCOMMANDS:
             continue
@@ -1584,12 +1636,14 @@ def main() -> int:
 
     if reason is not None:
         if reason.boundary_unverifiable:
-            # A THIRD category, checked before the two-axis split below. `_judge_push` already
-            # returned None to reach `_hook_integrity_reason`, so `is_push` is correctly True
-            # here -- but the target is allowlisted, so "refusing to push private 'dev'" is
-            # simply false, while claiming "no push was identified" (the other branch) is
-            # equally false, since one was. Neither fits: the refusal is about the GATE, not the
-            # target, so it gets its own wording.
+            # A THIRD category, checked before the two-axis split below, set from either of two
+            # call sites in `_find_block_reason` -- see `Block`'s docstring. For an
+            # `_hook_integrity_reason` refusal, `_judge_push` already returned None, so `is_push`
+            # is correctly True -- but the target is allowlisted, so "refusing to push private
+            # 'dev'" is simply false. For a config/env-injection refusal `is_push` can be either
+            # value, and "no push was identified" is equally false whenever one was. Neither
+            # two-axis message fits either case: the refusal is about the GATE, not the target,
+            # so it gets its own wording regardless of which call site produced it.
             print(
                 f"{PREFIX} refusing this git invocation -- this refusal is about the boundary "
                 f"itself, not the target: {reason.reason}",
