@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.77.6 — 2026-08-05
+- fix(publication-push-guard): catch an exported config injection
+
 ## v0.77.5 — 2026-08-04
 - fix(publication-push-guard): drop the inert attached -c branch
 
