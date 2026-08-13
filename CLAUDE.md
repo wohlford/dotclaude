@@ -22,6 +22,14 @@ Universal instructions for all projects.
 > through its own stale tags *and* a stale local branch. Verify by asking which refs still **contain**
 > the commit, never which tags you deleted.
 
+> **Run `/feature` for anything with design content — its step-0 triage IS the right-sizing
+> mechanism.** The pipeline is risk-tiered and its fast lane keeps a small change cheap, so judging a
+> change "too small to need it" substitutes your triage for the pipeline's, silently, at the moment
+> you can least see your own blind spot. Don't pre-judge the tier in the arguments — let triage
+> announce the lane. Measured: a "bounded one-function fix" came back **full lane on stakes**, and the
+> plan review then returned a BLOCKER: the design re-created the defect it was fixing, and the
+> author's own fixture passed and hid it. A skipped pipeline reads exactly like one that found nothing.
+
 > **Bugs get a regression test first.** When a bug is found, reproduce it as a failing test *before*
 > fixing it (RED→GREEN; see [workflows.md](./workflows.md)). Skipping is a flagged exception — state
 > why at fix time (e.g. untestable: timing/environment/interactive), never skip silently.
