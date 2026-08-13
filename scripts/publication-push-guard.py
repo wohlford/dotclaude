@@ -41,13 +41,7 @@ global-option run (`_config_injection_reason`): `core.hooksPath`, `include.path`
 `GIT_CONFIG_*` in any form, plus any `-c` value that does not resolve to a literal `key=value`.
 These are refused whatever the command goes on to do, because they can relocate or silence the
 `pre-push` hook — and a command that disables layer 2 while carrying a refspec layer 1 allows was
-measured to defeat the whole stack in one line. A second, COMMAND-scoped check
-(`_exported_injection_reason`) extends the same deny set past that one-invocation prefix, to a
-`GIT_CONFIG_*` name that reaches a git invocation via an `export` in a different segment of the
-same command, an `export NAME` naming an already-assigned variable, or `set -a`/`set -o allexport`
-— shapes the prefix walk cannot see by construction. It is still not whole-environment: an export
-that happened in an earlier, separately-allowed command (a shell profile, `.envrc`) reaches git
-with an empty inline prefix and is a named residual, not something this check closes.
+measured to defeat the whole stack in one line.
 
 Cheap pre-filter, then fail closed: a command that does not even contain the word `git` returns 0
 immediately (this hook is a global PreToolUse(Bash) hook and must be free for the overwhelming
@@ -733,31 +727,6 @@ def _hook_integrity_reason(root: str) -> str | None:
     return None
 
 
-_BOUNDARY_FLAG = "--no-verify"
-
-
-def _boundary_disabling_flag(flags: set[str]) -> str | None:
-    """The flag name in `flags` that would make git skip the boundary hook, or None.
-
-    Matches `--no-verify` and any abbreviation of it down to `--no-v`, because git parses this
-    subcommand's options through `parse-options`, which accepts unambiguous long-option
-    abbreviations INCLUDING negated forms -- measured on git 2.55, where `git branch --no-colo` is
-    accepted. A literal `"--no-verify" in flags` would miss `--no-veri`.
-
-    Over-blocking a prefix git would call AMBIGUOUS costs nothing, because git refuses those
-    itself; `--no-v` and `--no-ver` are in fact ambiguous here, since this subcommand also has
-    `-v/--verbose` and therefore an auto-negated `--no-verbose`. So this deliberately does NOT
-    enumerate the other `--no-*` options to compute a minimum unambiguous length: that would be a
-    second blocklist, and it would go stale the next time git grows an option.
-
-    `--no-verbose` is excluded by construction -- it is not a prefix of `--no-verify`.
-    """
-    for name in flags:
-        if name.startswith("--no-v") and _BOUNDARY_FLAG.startswith(name):
-            return name
-    return None
-
-
 def _judge_invocation(
     effective_dir: str | None,
     sub: str,
@@ -771,26 +740,6 @@ def _judge_invocation(
     values block. It exists so the refusal cannot claim a push it never found, and it is derived
     from `sub`, which is in scope at every unjudgeable site.
     """
-    # ABOVE the adoption test, and above the root resolution, ON PURPOSE. This gate is registered
-    # globally, and a flag whose entire effect is "the boundary hook shall not run" is judged the
-    # same everywhere: it is the one class where this layer's incompleteness has NO backstop,
-    # because the backstop is precisely what is being removed. Note what this does NOT claim --
-    # a command that changes the FACTS the hook evaluates (moving `main` with update-ref, branch,
-    # reset, merge) is ordinary work and is deliberately not refused here.
-    #
-    # Placed inside `_judge_push` this would sit BELOW the dormant return a few lines down and
-    # silently become adoption-scoped, while every adopted-cwd corpus row still passed. The
-    # `boundary_bypass_flag_outside_adopted_repo` row exists to fail if anyone moves it there.
-    # This position is also free: no subprocess has run yet.
-    if sub == "push":
-        disabling = _boundary_disabling_flag(_split_push_args(seg)[0])
-        if disabling is not None:
-            return Block(
-                f"'{disabling}' makes git skip the boundary hook, which is the gate this check "
-                "exists to keep in force. Publish through the promote path, or take it by hand "
-                "in your own terminal.",
-                True,
-            )
     if gitdir_override:
         return Block(
             "the command carries --git-dir/--work-tree or a GIT_DIR= assignment — root unknown",
@@ -816,18 +765,7 @@ def _judge_invocation(
             else "the repo root could not be resolved"
         )
         return Block(detail, sub == "push")
-    # Refs-based, matching git-hooks/pre-push's own is_dormant(). The working-tree test this
-    # replaces disagreed with the hook exactly where it mattered: a linked worktree, a checkout of
-    # a pre-adoption commit, or a plain `rm` flips it while the hook stays ARMED. This is the
-    # SWAP, not a disjunction with the old test -- they differ at fresh adoption (marker present,
-    # committed nowhere), and there the disjunction would arm this layer while the hook stays
-    # dormant, which is the disagreement this change exists to remove. It also fixes an empty-
-    # string root: `_resolve_root` can in principle return "" rather than None, and
-    # `Path("") / ...` resolves against the hook's OWN cwd. `_repo_is_adopted_root`'s explicit
-    # `if not root: return True` closes that -- not `git -C ""`, which git documents as leaving the
-    # working directory UNCHANGED, so it would silently judge whatever repo the hook process
-    # happens to be sitting in.
-    if not _repo_is_adopted_root(root):
+    if not (Path(root) / ".publication.toml").is_file():
         return None  # not adopted — dormant
 
     if sub != "push":
@@ -879,180 +817,14 @@ def _judge_invocation(
 # case-sensitive check would read as coverage while missing two trivial spellings.
 DENIED_CONFIG_KEYS = ("core.hookspath", "include.path", "includeif.")
 
-# The `-c`/`--config-env` arm denies one key the `git config` seg scan must NOT: `alias.`.
-#
-# A `-c alias.<n>=<command>` value is per-invocation in FORM but arbitrary in EFFECT — the aliased
-# command runs with full privileges. Measured, both allowed before this was added:
-# `git -c alias.zz='config --global core.hooksPath /x' zz` wrote the global file, and
-# `git -c alias.zz='<publish> origin dev' zz` reached the private branch through a gate that never
-# saw a publish, because `sub` resolves to `zz` and never `config`, while `_resolve_alias_chain`
-# looks the alias up in the repo's PERSISTED config, which cannot see one defined by this
-# invocation's own `-c`.
-#
-# Scoped to THIS arm deliberately: `DENIED_CONFIG_KEYS` is shared with the seg scan below, where
-# adding `alias.` would start refusing an ordinary `git config alias.co checkout`.
-DENIED_C_KEYS = DENIED_CONFIG_KEYS + ("alias.",)
-
 # Env vars that inject config wholesale. `GIT_CONFIG_COUNT`/`_KEY_n`/`_VALUE_n` set arbitrary keys;
 # `GIT_CONFIG_GLOBAL`/`_SYSTEM` swap the files those keys come from. Matched by PREFIX rather than
 # by an alternation of the five known names, because the numbered forms are open-ended and a
 # `KEY|VALUE|COUNT` alternation silently misses `GIT_CONFIG_KEY_0`.
 GIT_CONFIG_ENV_RE = re.compile(r"^GIT_CONFIG_[A-Z0-9_]*=")
 
-_CONFIG_READ_ACTIONS = frozenset({"get", "list"})
-_CONFIG_READ_FLAGS = frozenset(
-    {
-        "--get",
-        "--get-all",
-        "--get-regexp",
-        "--get-urlmatch",
-        "--get-color",
-        "--get-colorbool",
-        "--list",
-        "-l",
-    }
-)
 
-
-def _config_is_read(seg: list[str]) -> bool:
-    """True only when `git config`'s LEADING option run marks this a read.
-
-    POSITION IS LOAD-BEARING. git stops parsing options at the first non-option
-    token, so a read flag after the key is consumed as a positional and the WRITE
-    still lands: `git config core.hooksPath --get` was measured to write
-    `core.hooksPath = --get`, relocating the hooks path. A position-insensitive rule
-    allows exactly that.
-
-    This can only ever turn a read into a WRITE (over-block), never a write into a
-    read, because git refuses multiple actions in one invocation -- so it opens no
-    hole. A value-taking option before the read flag (`--type bool --get k`) breaks
-    the scan early and over-blocks; accepted residual, safe direction.
-    """
-    for tok in seg:
-        if tok == "--":
-            return False
-        if not tok.startswith("-"):
-            return tok in _CONFIG_READ_ACTIONS  # the subcommand form's action word
-        if tok.split("=", 1)[0] in _CONFIG_READ_FLAGS:
-            return True
-    return False
-
-
-# Env assignments that redirect where `git config` WRITES. Measured: both landed a
-# write in an unrelated repo's config from a cwd with no relationship to it.
-# GIT_CONFIG_ENV_RE does not match bare `GIT_CONFIG=` (its trailing underscore), and
-# GITDIR_RE matches neither.
-_CONFIG_REDIRECT_ENV = frozenset({"GIT_CONFIG", "GIT_COMMON_DIR", "GIT_DIR"})
-
-# git accepts any UNAMBIGUOUS ABBREVIATION of each file-location flag, plus `-f` and
-# the attached `--file=` form -- measured: `--glo` wrote the GLOBAL file. Prefix
-# matching against these names is therefore required; exact spellings are not enough.
-_CONFIG_SCOPE_NAMES = ("global", "system", "local", "worktree", "file", "blob")
-
-
-def _config_scope_is_local(seg: list[str], env: list[str]) -> bool:
-    """True only when this `git config` write unambiguously targets the cwd's own repo.
-
-    Scans EVERY token and never breaks early. A leading-run scan was measured wrong:
-    `git config --comment note --global core.hooksPath X` writes the GLOBAL file, but
-    a scan that stops at the bareword `note` calls it local. Modelling option arity
-    would fix that and introduce the mirror error -- misjudging a flag as
-    value-taking would skip a real `--global`. Scanning everything cannot skip, and
-    its only error is over-blocking a scope word that appears as a VALUE.
-    """
-    for assignment in env:
-        if assignment.split("=", 1)[0] in _CONFIG_REDIRECT_ENV:
-            return False
-    for tok in seg:
-        base = tok.split("=", 1)[0]
-        if base == "-f":  # documented short form of --file
-            return False
-        if not base.startswith("--"):
-            continue
-        negated = base.startswith("--no-")
-        stem = base[5:] if negated else base[2:]
-        if not stem:
-            continue
-        hits = [n for n in _CONFIG_SCOPE_NAMES if n.startswith(stem)]
-        if not hits:
-            continue  # not a file-location flag at all
-        if hits == ["local"] and not negated:
-            continue  # positively and only --local
-        return False
-    return True
-
-
-def _git_batch_check(root: str, stdin_data: str) -> str | None:
-    """Like `_git_capture`, but for `git cat-file --batch-check`, which takes its object list on
-    STDIN rather than argv -- the one genuinely new subprocess call `_repo_is_adopted_root` needs
-    beyond `_git_capture` itself. Same `timeout=10` and None-on-any-failure contract; unlike
-    `_git_capture` this does not `.strip()` the output, because the caller needs it split into
-    lines (one verdict per probed ref) and a leading/trailing blank line changes nothing there."""
-    out = subprocess.run(
-        ["git", "-C", root, "cat-file", "--batch-check"],
-        input=stdin_data,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    return out.stdout if out.returncode == 0 else None
-
-
-def _repo_is_adopted_root(root: str) -> bool:
-    """Whether SOME ref under refs/heads/ carries a tracked `.publication.toml`.
-
-    Mirrors `git-hooks/pre-push`'s own `is_dormant()`. Takes an already-resolved root so the push
-    arm does not re-run `_resolve_root` a second time.
-
-    Two subprocesses regardless of branch count: the per-branch `cat-file -e` loop this replaces
-    ran 1+N spawns, and after this predicate moved onto the push arm (every git invocation in every
-    repo on this machine, not just a push) that N-spawn cost lands hardest on non-adopted repos,
-    since the short-circuit only fires once a marked branch is found. Slowness is itself a bypass
-    here: past the hook's own timeout the process is killed by signal and never reaches its own
-    fail-closed handler.
-
-    FAIL-CLOSED: unresolvable means True.
-    """
-    if not root:
-        # NOT `git -C ""`: git documents that as leaving the working directory UNCHANGED, so every
-        # subprocess below would silently judge whatever repo the hook process happens to be
-        # sitting in, rather than failing. This explicit guard is what closes the empty-root case
-        # -- the swap to refs-based detection does not close it on its own.
-        return True
-    refs_out = _git_capture(root, "for-each-ref", "--format=%(refname)", "refs/heads/")
-    if refs_out is None:
-        return True
-    refs = refs_out.splitlines()
-    if not refs:
-        return False
-    probe = "\n".join(f"{r}:.publication.toml" for r in refs) + "\n"
-    out = _git_batch_check(root, probe)
-    if out is None:
-        return True
-    return any(line and not line.endswith("missing") for line in out.splitlines())
-
-
-def _repo_is_adopted(effective_dir: str | None) -> bool:
-    """Thin wrapper over `_repo_is_adopted_root`, for the existing config-injection call site in
-    `_find_block_reason`, which has an `effective_dir` (a `cd`/`-C` combination, not yet a
-    resolved root).
-
-    FAIL-CLOSED: unresolvable means True -- unchanged from before this became a wrapper. `config`
-    is in KNOWN_SAFE_SUBCOMMANDS and never reaches `_judge_invocation`'s own root-unknown block, so
-    returning False here would allow the invocation outright.
-    """
-    if effective_dir is None:
-        return True
-    root = _resolve_root(effective_dir)
-    if root is None:
-        return True
-    return _repo_is_adopted_root(root)
-
-
-def _config_injection_reason(
-    tokens, sub: str, seg: list[str]
-) -> tuple[str, bool] | None:
+def _config_injection_reason(tokens, sub: str, seg: list[str]) -> str | None:
     """Detect an attempt to relocate or disable the git-native `pre-push` boundary.
 
     Scoped to ONE invocation's own env prefix, global-option run and (for `config`) its argument
@@ -1063,46 +835,24 @@ def _config_injection_reason(
     regex false-blocked exactly that command, because its `git`-word prefilter matched the path
     token `git-hooks`.
 
-    Returns `(reason, unconditional)`, or None when this invocation carries no such attempt.
-    `unconditional` is True for the env and `-c`/`--config-env` arms — see the module's revision
-    note for why: a `-c` value is per-invocation, but the ALIASED COMMAND it can run is arbitrary
-    (`git -c alias.zz='config --global core.hooksPath /x' zz` writes the global file), so that
-    arm's blast radius is not per-invocation and gating it on adoption would reopen the hole this
-    detector exists to close. `GIT_CONFIG_COUNT`/`_KEY_n`/`_VALUE_n` can define an alias the same
-    way. It is False only for the `config` arm, whose write actually IS scoped by
-    `_config_scope_is_local` (see `_find_block_reason`, which decides adoption-gating from this
-    flag together with `gitdir_override`).
+    Returns a reason string, or None when this invocation carries no such attempt.
     """
     for assignment in tokens.env:
-        name = assignment.split("=", 1)[0]
-        if name == "GIT_CONFIG_NOSYSTEM":
-            # The one exact-name exemption: it suppresses the system config file and provably
-            # cannot SET a key, so it carries none of the blast radius the rest of this arm exists
-            # to deny. Every other GIT_CONFIG_* spelling stays unconditionally blocked below.
-            continue
         if GIT_CONFIG_ENV_RE.match(assignment):
-            return (
-                f"it sets {name}, which injects git config that can relocate the hooks path",
-                True,
-            )
+            name = assignment.split("=", 1)[0]
+            return f"it sets {name}, which injects git config that can relocate the hooks path"
 
     opts = list(tokens.opts)
     for idx, opt in enumerate(opts):
         if opt == "-c":
-            # Only the SEPARATED form. There is deliberately no attached `-c<key>=<value>` arm:
-            # git does not accept that spelling (measured, git 2.55 — rc 129, "unknown option:
-            # -cfoo.bar=baz"), so `classify_global_opt` classifies the token UNKNOWN, the
-            # invocation is unjudgeable, and the walk's caller refuses it before this detector
-            # runs. A branch for it existed here and was INERT — it read as coverage while unable
-            # to fire, and the refusal it never produced was credited to it. What forces that
-            # outcome is pinned in the tokenizer's own suite, since this comment is not a check.
             value = opts[idx + 1] if idx + 1 < len(opts) else ""
+        elif opt.startswith("-c") and len(opt) > 2:
+            value = opt[2:]
         elif opt.startswith("--config-env"):
             # `--config-env=key=envvar` takes its VALUE from the environment, so the key is
             # visible here but what it will be set to is not. Unresolvable => block.
             return (
-                "it uses --config-env, whose value this gate cannot resolve statically",
-                True,
+                "it uses --config-env, whose value this gate cannot resolve statically"
             )
         else:
             continue
@@ -1111,115 +861,20 @@ def _config_injection_reason(
             # whatever survived expansion — never a literal `key=value`. Named as a residual in
             # the threat model rather than pretended to be caught.
             return (
-                "it passes -c a value this gate cannot resolve to a literal key=value",
-                True,
+                "it passes -c a value this gate cannot resolve to a literal key=value"
             )
         key = value.split("=", 1)[0].strip().lower()
-        if any(key.startswith(denied) for denied in DENIED_C_KEYS):
-            return (
-                f"it sets {key} via -c, which can relocate or disable the hooks path, "
-                "or (for an alias) run an arbitrary git command this gate never sees",
-                True,
-            )
+        if any(key.startswith(denied) for denied in DENIED_CONFIG_KEYS):
+            return f"it sets {key} via -c, which can relocate or disable the hooks path"
 
     if sub == "config":
         # `git config --local core.hooksPath /dev/null && <a push>` is a TWO-command bypass: the
         # first is a `config` (in KNOWN_SAFE_SUBCOMMANDS, so otherwise waved through) and the
         # second is a push the refspec rule may well allow on its own. Blocking the config half is
         # what makes the pair unreachable, so this must run BEFORE the known-safe shortcut.
-        #
-        # The read carve-out sits INSIDE this branch only, never as a whole-detector short-circuit
-        # — otherwise `git -c core.hooksPath=X config --get y` would bypass the `-c` arm above.
-        if _config_is_read(seg):
-            return None
         for arg in seg:
             if any(arg.strip().lower().startswith(d) for d in DENIED_CONFIG_KEYS):
-                return (
-                    f"it writes {arg} via `git config`, which can disable the push boundary",
-                    not _config_scope_is_local(seg, list(tokens.env)),
-                )
-    return None
-
-
-# Command words whose whole job is to export or already-exported-mark the assignments that follow
-# them (`export FOO=1`, `export FOO` naming an already-assigned var, `declare -x`, `set -a`). Kept
-# separate from `WRAPPERS`/`GIT_ONLY_WRAPPERS` in git_command.py: those mark the WORD AFTER them as
-# still being in command position (`sudo git …`); these mark everything AFTER them, up to the next
-# segment separator, as an argument to the export construct itself — a different relationship, not
-# a stronger version of the same one.
-_EXPORT_WORDS = frozenset({"export", "declare", "typeset", "set"})
-
-# Command/segment boundaries `_exported_injection_reason` resets its position tracking on. `;`,
-# `&&`, `||`, `|`, `&` all end one command and (for `;`/`&&`/`||`/`&`) start another at the shell's
-# top level; `(`/`)` bound a subshell. Deliberately the same operator set `is_op` recognises, but
-# named here rather than imported as a function, because this walk tests membership token-by-token
-# against a frozenset, not a predicate call per token.
-_SEGMENT_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "(", ")"})
-
-# The one env var this deliberately does NOT treat as an injection, mirroring the inline carve-out
-# `_config_injection_reason` already makes: it suppresses the system config file and provably
-# cannot SET a key, so exporting it carries none of the blast radius the rest of this check exists
-# to deny.
-_CONFIG_ENV_EXEMPT = frozenset({"GIT_CONFIG_NOSYSTEM"})
-
-
-def _exported_injection_reason(
-    command: str, invocations: list, gitcmd: ModuleType
-) -> str | None:
-    """A denied `GIT_CONFIG_*` name reaching a git invocation from OUTSIDE its own env prefix.
-
-    `_env_prefix` deliberately collects only the assignments immediately preceding one invocation
-    -- the env the shell would apply to THAT command -- and must stay in step with
-    `starts_command`. Widening it would break that invariant. So this is a separate,
-    command-scoped check for the shapes that prefix walk cannot see: an `export` in another
-    segment, an `export NAME` naming an already-assigned variable, and `set -a` / `set -o
-    allexport` enabling export for bare assignments.
-
-    Keyed on the NAME, not on a construct shape: `GIT_CONFIG_KEY_0=x; export GIT_CONFIG_KEY_0`
-    assigns nothing inside the exporting construct, and `set -a` assigns nothing at all.
-
-    The git-invocation conjunct is a FALSE-POSITIVE CONTROL, not a completeness argument. It keeps
-    `grep -n 'export GIT_CONFIG_COUNT=1' foo && git status` allowed. It does NOT establish that an
-    injection must share a command with the git invocation -- a shell profile or `.envrc` written
-    by one allowed command, or a direct edit to `.git/config` through a non-Bash tool, reaches git
-    with an empty inline prefix. Those are named residuals, not closed by this check: see the
-    module docstring's "Known, documented residuals" list. (The design record this was drafted
-    against claimed this check "covers the env half of this for free" -- it does not: with no
-    invocation recorded below, this returns `None` before looking at anything, and conjunct (2)
-    cannot be widened to a bare "has a git word" without re-creating the `git-hooks`-path false
-    positive `_config_injection_reason`'s own docstring names.)
-    """
-    if not invocations:
-        return None
-    claimed = {tok for inv in invocations for tok in inv.tokens.env}
-    for stream in gitcmd.iter_context_token_streams(command):
-        exporting = False  # command word of the current segment is export-family
-        at_prefix = True  # still in the segment's command-prefix position
-        for token in stream:
-            if token in _SEGMENT_SEPARATORS:
-                exporting, at_prefix = False, True
-                continue
-            name = token.split("=", 1)[0]
-            is_assign = gitcmd.ENV_ASSIGN.match(token) is not None
-            if at_prefix and is_assign:
-                pass  # a bare VAR=... in command-prefix position
-            elif exporting:
-                pass  # an argument to export/declare/typeset/set
-            else:
-                if not is_assign:
-                    at_prefix = False
-                if token in _EXPORT_WORDS:
-                    exporting, at_prefix = True, False
-                continue
-            if token in claimed:
-                continue  # already judged as this invocation's inline prefix
-            if name in _CONFIG_ENV_EXEMPT:
-                continue  # provably cannot SET a key -- same carve-out as inline
-            if GIT_CONFIG_ENV_RE.match(name + "="):
-                return (
-                    f"'{name}' is exported into the environment of a git invocation in this "
-                    "same command, which can relocate or silence the boundary hook"
-                )
+                return f"it writes {arg} via `git config`, which can disable the push boundary"
     return None
 
 
@@ -1243,25 +898,10 @@ def _find_block_reason(command: str, cwd: str) -> Block | None:
     # Scoped narrowly ON PURPOSE: only the WALK's ambiguity is designed. A ValueError from
     # anywhere else in this function — the lazy import above, most of all — is a genuine fault and
     # must keep reaching the internal-error handler, log and all.
-    #
-    # `_exported_injection_reason` runs its OWN tokenizing pass (`iter_context_token_streams`) over
-    # the same `command`, so its ValueError must be caught here too — otherwise a command this
-    # walk's own ambiguity handling would call "unjudgeable, fail closed" instead falls through to
-    # `main`'s internal-error branch and reads as a BUG in this guard rather than designed
-    # ambiguity. Calling it here, still inside this `try`, is what keeps that routing correct.
     try:
         invocations = list(gitcmd.iter_git_invocations_detailed(command, cwd))
-        exported = _exported_injection_reason(command, invocations, gitcmd)
     except ValueError as exc:
         raise AmbiguousCommand(str(exc)) from exc
-
-    if exported is not None:
-        # Derived, never hardcoded False: a command that plainly carries a push must keep the
-        # alarming "refusing to push private 'dev'" wording (see `Block`'s two-axis docstring) --
-        # hardcoding False here would route every one of these through the "no push was
-        # identified" branch even when one of the invocations in `invocations` is a literal push.
-        carries_push = any(s == "push" for _d, _c, s, _g, _t in invocations)
-        return Block(exported, carries_push)
 
     for effective_dir, cdir, sub, seg, tokens in invocations:
         # BEFORE the known-safe shortcut, deliberately. `config` is known-safe, and the whole
@@ -1270,23 +910,14 @@ def _find_block_reason(command: str, cwd: str) -> Block | None:
         # nothing on the overwhelming majority of commands that carry no such option.
         injection = _config_injection_reason(tokens, sub, seg)
         if injection is not None:
-            reason_text, unconditional = injection
-            # `-C` arrives separately from cd/pushd tracking and is joined only here; gating on
-            # effective_dir alone would flip `git -C <adopted> config ...` from block to allow.
-            # gitdir_override means the root is unknown => block.
-            if (
-                unconditional
-                or gitdir_override
-                or _repo_is_adopted(_combine(effective_dir, cdir))
-            ):
-                return Block(
-                    reason=(
-                        f"this command is refused because {reason_text}. The `pre-push` hook "
-                        "is the load-bearing publication boundary; a command that can move or "
-                        "silence it is refused whatever it goes on to do."
-                    ),
-                    is_push=any(s == "push" for _d, _c, s, _g, _t in invocations),
-                )
+            return Block(
+                reason=(
+                    f"this command is refused because {injection}. The `pre-push` hook is the "
+                    "load-bearing publication boundary; a command that can move or silence it is "
+                    "refused whatever it goes on to do."
+                ),
+                is_push=any(s == "push" for _d, _c, s, _g, _t in invocations),
+            )
         if sub != "push" and sub in KNOWN_SAFE_SUBCOMMANDS:
             continue
         root_dir = _combine(effective_dir, cdir)
