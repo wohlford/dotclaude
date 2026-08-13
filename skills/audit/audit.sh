@@ -12,8 +12,9 @@ set -uo pipefail
 # A `.auditignore` at the scope root (opt-in, one glob pathspec per line, `#` comments and
 # blank lines ignored) excludes matching paths from the five text-content checks
 # (format-trailing-ws, format-crlf, format-final-newline, format-tabs, md-links) only — it
-# can never silence a code/config check (shellcheck, ruff, markdownlint, exec-bit, json,
-# toml, sync-docs, mutation-anchors, pre-push-installed, tests, hermetic, hermetic-outside).
+# can never silence a code/config check (shellcheck, ruff, markdownlint, env-claims, exec-bit,
+# json, toml, sync-docs, mutation-anchors, pre-push-installed, tests, hermetic,
+# hermetic-outside).
 # No file present, or a present-but-empty file, sweeps unchanged.
 #
 # Exit codes:
@@ -474,6 +475,33 @@ check_md_links() {
   else
     verdict_pass md-links
   fi
+}
+
+check_env_claims() {
+  local scope="$1" checker out rc
+  # OPT-IN BY SCOPE, exactly as check_markdownlint gates on "$scope/.markdownlint-cli2.jsonc" and
+  # check_pre_push_installed gates on a marker read from the scope's own refs. The checker is
+  # resolved from the AUDITED REPO, never from "$script_dir/../../scripts/" — its claim table is
+  # hardcoded to THIS repo's CLAUDE.md, so an installation-resolved checker would grade every
+  # foreign scope with this repo's claims.
+  checker="$scope/scripts/env-claims-check.py"
+  if [[ ! -f "$checker" ]]; then
+    verdict_skip env-claims 'scope does not ship scripts/env-claims-check.py'
+    return
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    verdict_skip env-claims 'python3 not found'
+    return
+  fi
+  out="$(python3 "$checker" --scope "$scope" 2>&1)"; rc=$?
+  case "$rc" in
+    0) verdict_pass env-claims ;;
+    3) verdict_skip env-claims 'the documented environment is not present on this machine' ;;
+    2) verdict_fail env-claims 'unprovable: the checker could not reach a verdict (instrument failure)'
+       print_offenders "$out" ;;
+    *) verdict_fail env-claims 'a documented environment claim no longer holds'
+       print_offenders "$out" ;;
+  esac
 }
 
 check_exec_bit() {
@@ -1192,6 +1220,7 @@ EOF
   check_ruff "$scope"
   check_markdownlint "$scope"
   check_md_links "$scope" "$ignore"
+  check_env_claims "$scope"
   check_exec_bit "$scope"
   check_json "$scope"
   check_toml "$scope"

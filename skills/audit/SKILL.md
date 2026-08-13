@@ -64,10 +64,12 @@ The user may optionally provide:
    and do not attempt a fix unless asked. An `INCOMPLETE` or missing verdict is a reason
    to re-run deliberately, not to assume the sweep would have passed.
 
-The sweep runs 17 checks: `format-trailing-ws`, `format-crlf`, `format-final-newline`,
+The sweep runs 18 checks: `format-trailing-ws`, `format-crlf`, `format-final-newline`,
 `format-tabs` (formatting); `shellcheck`, `ruff` (linters); `markdownlint` (opt-in, see Rules);
-`md-links` (relative link/anchor validity); `exec-bit` (tracked shebang files must be
-executable); `json`, `toml` (config validity); `sync-docs` (index-table drift);
+`md-links` (relative link/anchor validity); `env-claims` (opt-in, see Rules; CLAUDE.md's
+documented environment claims still hold on this machine);
+`exec-bit` (tracked shebang files must be executable);
+`json`, `toml` (config validity); `sync-docs` (index-table drift);
 `mutation-anchors` (every mutation campaign's anchor still resolves exactly once in the file it
 mutates); `pre-push-installed` (adopted repos: the tracked `git-hooks/pre-push` is installed at
 the resolved hooks path, executable, and matches its source); `tests` (shell suites + pytest);
@@ -132,7 +134,7 @@ becomes a `:(exclude)` pathspec — this mirrors the repo's own `.markdownlint-c
 
 It scopes ONLY the five text-content checks: `format-trailing-ws`, `format-crlf`,
 `format-final-newline`, `format-tabs`, `md-links`. Code/config checks (`shellcheck`, `ruff`,
-`markdownlint`, `exec-bit`, `json`, `toml`, `sync-docs`, `mutation-anchors`,
+`markdownlint`, `env-claims`, `exec-bit`, `json`, `toml`, `sync-docs`, `mutation-anchors`,
 `pre-push-installed`, `tests`, `hermetic`, `hermetic-outside`) are deliberately never scoped by
 it — a repo cannot hide a broken tracked `.json`, a non-executable shebang file, or an
 artifact its own suite dropped from the audit.
@@ -182,6 +184,13 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   nothing is never a clean result.
 - `markdownlint` only runs in repos opted in via `.markdownlint-cli2.jsonc` — opting in is a
   per-repo decision this skill reports, never makes.
+- `env-claims` only runs where the audited repo ships its own `scripts/env-claims-check.py` —
+  `SKIP` elsewhere, which is the expected verdict in most repos. The checker is resolved from
+  that repo rather than from this skill's own installation on purpose: its claim table is written
+  against that repo's own `CLAUDE.md`, so an installation-resolved checker would grade every
+  other repo against the wrong document. It also `SKIP`s when `python3` is absent, and when the
+  documented environment is not present on the machine — that last one is what stops a clone of a
+  published repo reporting a false `FAIL` for claims that were only ever true elsewhere.
 - `pre-push-installed` only runs in adopted repos (any `refs/heads/*` branch carrying a
   tracked `.publication.toml`) — `SKIP` elsewhere. It answers registration only: whether the
   hook that would enforce the push boundary is actually installed, executable, and current.
@@ -215,8 +224,8 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   non-zero, so `&&` chains still short-circuit. Under `nohup`, SIGHUP is ignored before
   the script starts and so cannot be trapped at all: a HUP then has no effect whatever —
   the run continues to completion and emits a normal verdict.
-- **`checks=<pass>/<fail>/<skip>` counts emitted verdict lines, not the 17 named checks.**
-  Two things make the totals differ from 17: an invalid `.auditignore` pattern adds a
-  `FAIL auditignore` that is not one of the 17, and without `--tests` none of `tests`,
-  `hermetic`, or `hermetic-outside` emits a line at all — so a static sweep totals 14 and a
-  full one 17. Compare counts only across runs invoked with the same flags.
+- **`checks=<pass>/<fail>/<skip>` counts emitted verdict lines, not the 18 named checks.**
+  Two things make the totals differ from 18: an invalid `.auditignore` pattern adds a
+  `FAIL auditignore` that is not one of the 18, and without `--tests` none of `tests`,
+  `hermetic`, or `hermetic-outside` emits a line at all — so a static sweep totals 15 and a
+  full one 18. Compare counts only across runs invoked with the same flags.

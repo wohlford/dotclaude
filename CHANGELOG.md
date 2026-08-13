@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.86.0 — 2026-08-10
+- feat(audit): add the scope-gated env-claims check
+
 ## v0.85.0 — 2026-08-10
 - feat(env-claims): verify CLAUDE.md's documented environment claims
 
