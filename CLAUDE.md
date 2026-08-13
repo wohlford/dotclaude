@@ -103,7 +103,10 @@ And before backgrounding a check that outruns the tool timeout, use `~/.claude/s
 rather than a wrapper of your own — it is the shipped remedy for the killed-run and
 graded-the-launch-tree hazards below, and you read its verdict back with `--status`, never from the
 launch. Four wrappers were hand-written in one session before it existed, three byte-equivalent;
-the fourth still let a sweep that had run 4 checks of 15 read as a clean pass.
+the fourth still let a sweep that had run 4 checks of 15 read as a clean pass. Give it `--expect
+'<verdict regex>'` at LAUNCH too — the pattern is recorded INTO the artifact, so a run that
+finished having executed nothing reports INDETERMINATE instead of a truthful, useless `DONE rc=0`.
+Measured: exactly that happened, and only an absent verdict line caught it.
 
 > Hooks (indexed in README.md) fire per-edit: a multi-step change that passes through an invalid
 > intermediate state (e.g. resolving conflict markers with two Edits) trips transient PostToolUse
@@ -133,7 +136,7 @@ plan and base you are actually executing before trusting any line; reset it when
 - **Default bash**: `/bin/bash` is the system bash (version 3.x, limited features)
 - **GNU Core Utilities**: Installed via MacPorts (`coreutils`)
   - **`/opt/local/libexec/gnubin` is already on PATH, so the UNPREFIXED names are GNU** — plain
-    `date`, `grep`, `sed`, `ls` are GNU coreutils, not BSD. Measured: BSD-only flags fail there
+    `date`, `grep`, `sed`, `ls` are GNU, not BSD. Measured: BSD-only flags fail there
     (`date -j` → `invalid option -- 'j'`), and reaching for `gdate` to "get GNU" is a no-op.
   - The `g`-prefixed names (`gls`, `ggrep`, `gdate`) still resolve, so both spellings work
   - Use GNU versions for advanced features like `--long-options`
@@ -205,27 +208,23 @@ left legal.
 
 #### It ran, but not on what you think
 
-- **Before believing a probe's verdict — FAIL *or* PASS — confirm it reached the subject, and that
-  your ENVIRONMENT did not answer for it.** An unresolvable shell variable produces both errors, since
-  a tool sees the command text *unexpanded*: one gate blocked on the literal path (a FAIL about
-  nothing), another allowed because the lookup keyed on it came back empty (a PASS about nothing). A
-  shell with no TTY does it too — a card-backed key cannot prompt for its PIN, so the agent REFUSES,
-  byte-identical to a rejected credential; "auth is down, go fix the card" was reported for a card
-  that was present and unlocked. **Or your TOOL was configured not to tell you** — a file flagged
-  `skip-worktree` reads as clean in `git status` while differing from the commit, so a "before"
-  digest reconstructed from committed content was wrong and a real postcondition checker returned a
-  FAIL that was purely the input. All measured. The clean run is the dangerous one — nobody
-  investigates it.
-- **A second instrument AGREEING is not a second measurement when it inherits the same harness —
-  so "independently corroborated" can mean one broken probe run twice.** Distinct from the bullet
-  above, which is one probe's environment lying: here the environment lies identically to everyone
-  who reaches for the obvious probe, and agreement is then produced BY the defect rather than
-  despite it. Measured: a defect recorded as *confirmed by measurement* and later *independently
-  corroborated by a different reviewer* did not exist — both had run the probe in a default shell
-  instead of the file's own `set -uo pipefail`, which inverts the answer. The corroboration was
-  logged as *raising confidence that it is real*, and its prescribed repair would have replaced a
-  working guard with a dead one. **Ask what the second run VARIED, never that it agreed** — if it
-  reused the harness, the axis that could be wrong was never tested twice.
+- **Before believing a probe's verdict — FAIL *or* PASS — confirm it REACHED the subject at all.**
+  An unresolvable shell variable produces both errors, since a tool sees the command text
+  *unexpanded*: one gate blocked on the literal path (a FAIL about nothing), another allowed because
+  the lookup keyed on it came back empty (a PASS about nothing). A shell with no TTY does it too — a
+  card-backed key cannot prompt for its PIN, so the agent REFUSES, byte-identical to a rejected
+  credential; "auth is down, go fix the card" was reported for a card that was present and unlocked.
+  Both measured. The clean run is the dangerous one — nobody investigates it.
+- **A probe that DID reach a subject may have reached the WRONG one — and then *did it reach the
+  subject* CLEARS it, which is exactly what hides it.** Ask instead whether the thing that answered
+  is the thing that matters. Measured twice, both truthful answers about the wrong subject. A file
+  flagged `skip-worktree` reads as clean in `git status` while differing from the commit, so a
+  "before" digest reconstructed from committed content was wrong and a real postcondition checker
+  returned a FAIL that was purely the input — the tool ran, and answered honestly about what it had
+  been told to see. And an agent shell can wrap a standard command in an unexported shell FUNCTION,
+  so a script child resolves the real binary and disagrees: a version probe reported the wrapper,
+  and a TRUE documented fact went into a durable record as false. **Two resolution probes
+  disagreeing — a bare name versus a path — was the only tell.**
 - **A change that is only correct in COMBINATION is one unit of work.** Two halves of a fix can be
   individually wrong in *opposite* directions — one alone over-blocks, the other alone lets the bug
   through — so landing half is not partial progress, it is a regression. And it is one no suite can
@@ -233,6 +232,29 @@ left legal.
   a filter and the flag that makes it safe, split across two tasks; the interval shipped the
   over-blocking half and broke a real workflow while three suites stayed green. Ship them together, or
   say plainly that the interval is broken and why.
+
+#### A second run proves less than it looks like
+
+- **A second instrument AGREEING is not a second measurement when it inherits the same harness —
+  so "independently corroborated" can mean one broken probe run twice.** The environment lies
+  identically to everyone who reaches for the obvious probe, so agreement is produced BY the defect
+  rather than despite it. Measured: a defect recorded as *confirmed by measurement* and later
+  *independently corroborated by a different reviewer* did not exist — both had run the probe in a
+  default shell instead of the file's own `set -uo pipefail`, which inverts the answer. The
+  corroboration was logged as *raising confidence that it is real*, and its prescribed repair would
+  have replaced a working guard with a dead one. **Ask what the second run VARIED, never that it
+  agreed** — if it reused the harness, the axis that could be wrong was never tested twice.
+- **A DIFFERENCE between two runs is about their subjects only if the instrument is deterministic —
+  and one sample per side cannot establish that.** The mirror of the bullet above: there, agreement
+  is manufactured by a shared defect; here DISAGREEMENT is manufactured by a noisy oracle and read
+  as signal. Measured: a verification harness scored 30/30 on one pinned tree and 34/35 on another,
+  and a 2×2 of four ~20-minute runs concluded the change had introduced the regression, blocking a
+  correct change for a day. The oracle was flaky at ~5–10%, so both cells were single draws from
+  one distribution; repeating the one named check 20 times per side settled it in under a minute —
+  2/20 against 1/20. Everything else was RIGHT, which is what hides it: both subjects pinned, the
+  harness held. **And "it reproduced" is not a rate** — the surprising cell was confirmed twice,
+  back to back, which replicates the machine's state as readily as the subject's. Measure each
+  side's RATE before believing the gap.
 
 #### It ran and could never have failed
 
