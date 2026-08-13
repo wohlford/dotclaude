@@ -290,20 +290,16 @@ def _reserved_word_preserve_rows(other: Path) -> list[Row]:
 #     member is a legal shell word as an argument to `export`, so this command is real; a fix
 #     that folds the reserved word into the separator branch (clearing `exporting` too, rather
 #     than leaving it alone) drops exactly this shape -- measured BLOCK -> ALLOW across three
-#     builds. Generated only for members that are legal bash IDENTIFIERS: `{` and `!` are not
-#     (`export {` is a bash syntax error), excluded under the floor assertion below rather than
-#     hand-picked -- a future RESERVED_WORDS member that fails the same check cannot silently
-#     drop out of witness coverage without this failing loudly.
-_RESERVED_WORD_NOT_A_BASH_IDENTIFIER = frozenset({"{", "!"})
-_derived_non_identifiers = {
-    word for word in new_gitcmd.RESERVED_WORDS if not word.isidentifier()
-}
-assert _derived_non_identifiers == _RESERVED_WORD_NOT_A_BASH_IDENTIFIER, (
-    "RESERVED_WORDS' non-identifier members drifted: derived "
-    f"{sorted(_derived_non_identifiers)}, pinned "
-    f"{sorted(_RESERVED_WORD_NOT_A_BASH_IDENTIFIER)} -- the regression-witness matrix below "
-    "would silently exclude (or wrongly include) a member nobody reviewed"
-)
+#     builds. Generated for EVERY member, including `{` and `!`.
+#
+#     An earlier draft excluded those two on the premise that `export {` is a bash SYNTAX error.
+#     That premise is false, measured: it is a RUNTIME error from the builtin (rc 1,
+#     "`{': not a valid identifier") and bash still EXPORTS the valid names alongside it --
+#     `export { GIT_CONFIG_COUNT=1` leaves `declare -x GIT_CONFIG_COUNT="1"` set. So both shapes
+#     carry a real injection and both are real witnesses: all three of `{`, `!` and the `do`
+#     control are measured BLOCK on this build. Excluding them would have dropped two rows for
+#     no reason, which is why the count floor below is the honest guard rather than a predicate
+#     over the members.
 
 
 def _reserved_word_export_position_rows() -> list[Row]:
@@ -328,18 +324,17 @@ def _reserved_word_export_position_rows() -> list[Row]:
                 "itself (D4's gap, measured ALLOW pre-fix)",
             )
         )
-        if word in _RESERVED_WORD_NOT_A_BASH_IDENTIFIER:
-            continue
         witness_command = f"export {word} GIT_CONFIG_COUNT ; git {PUSH_SAFE_ARGS}"
         rows.append(
             Row(
                 f"reserved_{label_word}_export_position_witness",
                 witness_command,
                 MUST_BLOCK,
-                f"'{word}' is a legal shell word as export's argument, so this command is "
-                "real -- folding the reserved-word branch into the separator branch clears "
-                "`exporting` and drops exactly this shape (measured regression, not "
-                "hypothetical)",
+                f"'{word}' reaches export as an argument and the valid name is exported "
+                "regardless -- measured, including for `{` and `!`, where the builtin errors "
+                "on the word itself (rc 1) yet still leaves GIT_CONFIG_COUNT exported. Folding "
+                "the reserved-word branch into the separator branch clears `exporting` and "
+                "drops exactly this shape (measured regression, not hypothetical)",
             )
         )
     return rows
@@ -1517,12 +1512,9 @@ def test_reserved_word_export_position_matrix_shape(rows: list[Row]) -> None:
         f"expected one gain row per RESERVED_WORDS member ({len(new_gitcmd.RESERVED_WORDS)}), "
         f"found {len(gain)}: {sorted(r.label for r in gain)}"
     )
-    expected_witness = len(new_gitcmd.RESERVED_WORDS) - len(
-        _RESERVED_WORD_NOT_A_BASH_IDENTIFIER
-    )
-    assert len(witness) == expected_witness, (
-        f"expected {expected_witness} witness rows (RESERVED_WORDS minus "
-        f"{sorted(_RESERVED_WORD_NOT_A_BASH_IDENTIFIER)}), found {len(witness)}: "
+    assert len(witness) == len(new_gitcmd.RESERVED_WORDS), (
+        f"expected one witness row per RESERVED_WORDS member "
+        f"({len(new_gitcmd.RESERVED_WORDS)}), found {len(witness)}: "
         f"{sorted(r.label for r in witness)}"
     )
 
