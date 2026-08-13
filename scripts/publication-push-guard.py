@@ -1333,6 +1333,17 @@ def _exported_injection_reason(
             if token in _SEGMENT_SEPARATORS:
                 exporting, at_prefix = False, True
                 continue
+            if token in gitcmd.RESERVED_WORDS:
+                # Command-PREFIX position only -- never `exporting`. Folding this into the
+                # separator branch above would also clear `exporting`, dropping tokens that
+                # reach detection only through it: `export do GIT_CONFIG_COUNT ; git <verb> …`
+                # is measured BLOCK -> ALLOW under that fold, because `do` would end the export
+                # construct early. A bare assignment right after a reserved word (`if true; then
+                # GIT_CONFIG_COUNT=1 ; fi ; git <verb> …`) is the gap this branch closes: the
+                # else-branch below used to clear `at_prefix` on the reserved word itself (it is
+                # not an assignment), so the assignment immediately after it was never checked.
+                at_prefix = True
+                continue
             name = token.split("=", 1)[0]
             is_assign = gitcmd.ENV_ASSIGN.match(token) is not None
             if at_prefix and is_assign:

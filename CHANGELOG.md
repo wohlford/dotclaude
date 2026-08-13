@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.79.11 — 2026-08-05
+- fix(publication-push-guard): reset command position on a reserved word
+
 ## v0.79.10 — 2026-08-05
 - fix(publication-push-guard): give each boundary failure its own remedy
 

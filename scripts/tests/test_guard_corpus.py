@@ -272,6 +272,79 @@ def _reserved_word_preserve_rows(other: Path) -> list[Row]:
     return rows
 
 
+# ---------- T3's own derived matrix: RESERVED_WORDS x command-PREFIX position -------------------
+#
+# Distinct from `_reserved_word_preserve_rows` above: that one pins RESERVED_WORDS' effect on cwd
+# tracking (an unrelated function). This one pins their effect on `_exported_injection_reason`'s
+# OWN position tracking (`at_prefix`/`exporting`). Hand-listing a single fixed example (say,
+# `then`, run ten times) would be ten identical rows and vacuous per member -- the same
+# floor-vs-glob trap `_reserved_word_preserve_rows` above already exists to avoid.
+#
+# Two shapes per member:
+#   GAIN -- `_RESERVED_WORD_WRAP[word]("GIT_CONFIG_COUNT=1")`, spliced ahead of a refspec layer 1
+#     already allows. Each member's own wrap shape places a bare assignment directly after the
+#     reserved word (e.g. `if true; then GIT_CONFIG_COUNT=1; fi`); before the fix, the
+#     else-branch cleared `at_prefix` on the reserved word itself (it is not an assignment), so
+#     the assignment right after it was never inspected. MUST_BLOCK on the patched build.
+#   REGRESSION-WITNESS -- `export <word> GIT_CONFIG_COUNT ; git <verb> ...`. Every RESERVED_WORDS
+#     member is a legal shell word as an argument to `export`, so this command is real; a fix
+#     that folds the reserved word into the separator branch (clearing `exporting` too, rather
+#     than leaving it alone) drops exactly this shape -- measured BLOCK -> ALLOW across three
+#     builds. Generated only for members that are legal bash IDENTIFIERS: `{` and `!` are not
+#     (`export {` is a bash syntax error), excluded under the floor assertion below rather than
+#     hand-picked -- a future RESERVED_WORDS member that fails the same check cannot silently
+#     drop out of witness coverage without this failing loudly.
+_RESERVED_WORD_NOT_A_BASH_IDENTIFIER = frozenset({"{", "!"})
+_derived_non_identifiers = {
+    word for word in new_gitcmd.RESERVED_WORDS if not word.isidentifier()
+}
+assert _derived_non_identifiers == _RESERVED_WORD_NOT_A_BASH_IDENTIFIER, (
+    "RESERVED_WORDS' non-identifier members drifted: derived "
+    f"{sorted(_derived_non_identifiers)}, pinned "
+    f"{sorted(_RESERVED_WORD_NOT_A_BASH_IDENTIFIER)} -- the regression-witness matrix below "
+    "would silently exclude (or wrongly include) a member nobody reviewed"
+)
+
+
+def _reserved_word_export_position_rows() -> list[Row]:
+    """T3 (D4)'s derived matrix over `RESERVED_WORDS`, for `_exported_injection_reason` -- see
+    the section comment above for the two shapes and why each is generated rather than
+    hand-listed. Verified against the floor assertion in
+    `test_reserved_word_export_position_matrix_shape` below."""
+    rows: list[Row] = []
+    for word in sorted(new_gitcmd.RESERVED_WORDS):
+        label_word = _LABEL_SAFE.get(word, word)
+        gain_command = (
+            f"{_RESERVED_WORD_WRAP[word]('GIT_CONFIG_COUNT=1')} ; git {PUSH_SAFE_ARGS}"
+        )
+        rows.append(
+            Row(
+                f"reserved_{label_word}_export_position_gain",
+                gain_command,
+                MUST_BLOCK,
+                f"'{word}''s own wrap shape places a bare GIT_CONFIG_COUNT=1 directly after it; "
+                "that assignment must still register as command-prefix position rather than "
+                "being dropped by the else-branch clearing at_prefix on the reserved word "
+                "itself (D4's gap, measured ALLOW pre-fix)",
+            )
+        )
+        if word in _RESERVED_WORD_NOT_A_BASH_IDENTIFIER:
+            continue
+        witness_command = f"export {word} GIT_CONFIG_COUNT ; git {PUSH_SAFE_ARGS}"
+        rows.append(
+            Row(
+                f"reserved_{label_word}_export_position_witness",
+                witness_command,
+                MUST_BLOCK,
+                f"'{word}' is a legal shell word as export's argument, so this command is "
+                "real -- folding the reserved-word branch into the separator branch clears "
+                "`exporting` and drops exactly this shape (measured regression, not "
+                "hypothetical)",
+            )
+        )
+    return rows
+
+
 def _build_rows(
     adopted: Path, other: Path, tracked_only: Path, worktree_only: Path
 ) -> list[Row]:
@@ -650,6 +723,28 @@ def _build_rows(
             "the same name, reaching the git invocation via `export` in a separate segment -- the "
             "command-scoped arm must deny it too, or fixing only the inline arm leaves this form "
             "open (the two arms are coupled by `if token in claimed: continue`)",
+        ),
+        # ---------- T3 (D4): reserved words reset command-PREFIX position only ------------------
+        *_reserved_word_export_position_rows(),
+        Row(
+            "coproc_named_group_pins_at_prefix_payload",
+            f"coproc x {{ GIT_CONFIG_COUNT=1; }}; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the one measured shape that discriminates the `at_prefix = True` payload from the "
+            "bare `continue`: the reserved word '{' here follows a plain word ('x'), never a "
+            "separator, so at_prefix was already False -- only re-setting it lets the "
+            "assignment right after '{' register as command-prefix position. Every "
+            "_RESERVED_WORD_WRAP shape places its reserved word right after a separator (or as "
+            "the stream's first token), where at_prefix is already True from something else, "
+            "which is why none of the derived rows above can pin this",
+        ),
+        Row(
+            "reserved_word_no_injection_control",
+            f"if true; then echo hi ; fi ; git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "the negative control for T3's matrix: a reserved word ahead of an ordinary, "
+            "non-GIT_*-shaped command must stay allowed -- the fix must not turn every "
+            "reserved word into a block",
         ),
         # ---------- MUST_ALLOW: allowed today, must stay allowed (an over-block guard) ----------
         Row(
@@ -1392,6 +1487,43 @@ def test_reserved_word_preserve_matrix_was_already_blocked_on_baseline(
     assert not failures, (
         "derived preserve row(s) were not actually blocked on the frozen baseline, so they prove "
         "nothing about a shrinking blocked set:\n" + "\n".join(failures)
+    )
+
+
+def test_reserved_word_export_position_matrix_shape(rows: list[Row]) -> None:
+    """FLOOR over T3 (D4)'s own derived matrix -- distinct from the shape assertion above, which
+    covers the unrelated cwd-tracking preserve matrix. Guards against the matrix silently losing
+    a member (e.g. two rows colliding on one label, or the witness generator's exclusion running
+    away) without any label-specific test noticing.
+
+    Unlike the preserve matrix above, these rows are NOT expected to have blocked on the frozen
+    baseline: `_exported_injection_reason` postdates `782039d` entirely (the module docstring's
+    WHY-vendored note), so every row here is a GAIN or a witness for a mechanism the baseline
+    never had -- asserting `baseline rc == 2` here would fail for a reason unrelated to this
+    matrix.
+    """
+    gain = [
+        r
+        for r in rows
+        if r.label.startswith("reserved_") and r.label.endswith("_export_position_gain")
+    ]
+    witness = [
+        r
+        for r in rows
+        if r.label.startswith("reserved_")
+        and r.label.endswith("_export_position_witness")
+    ]
+    assert len(gain) == len(new_gitcmd.RESERVED_WORDS), (
+        f"expected one gain row per RESERVED_WORDS member ({len(new_gitcmd.RESERVED_WORDS)}), "
+        f"found {len(gain)}: {sorted(r.label for r in gain)}"
+    )
+    expected_witness = len(new_gitcmd.RESERVED_WORDS) - len(
+        _RESERVED_WORD_NOT_A_BASH_IDENTIFIER
+    )
+    assert len(witness) == expected_witness, (
+        f"expected {expected_witness} witness rows (RESERVED_WORDS minus "
+        f"{sorted(_RESERVED_WORD_NOT_A_BASH_IDENTIFIER)}), found {len(witness)}: "
+        f"{sorted(r.label for r in witness)}"
     )
 
 
