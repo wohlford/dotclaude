@@ -1087,6 +1087,15 @@ def _config_is_read(seg: list[str]) -> bool:
 # target) and is kept for that. Do not fold the two together: an earlier, narrower env matcher
 # missed bare `GIT_CONFIG` and `GIT_COMMON_DIR` entirely, which is the F2 finding, and the presence
 # of those names HERE is what made that gap read as already covered.
+#
+# EXPECTED MUTATION SURVIVORS, recorded so the next campaign is not misread. Because the env arms
+# now deny every non-allowlisted `^GIT_` name BEFORE `_config_scope_is_local` is reached, its loop
+# over this set can no longer return False on any input that arrives through `_find_block_reason`.
+# A campaign will therefore report mutations to that loop as SURVIVED. **That is not licence to
+# delete it.** The obvious reading -- "dead code, remove it" -- is a NARROWING: the function is
+# still called directly by `test_publication_push_guard.sh`, and the arm above it is the only
+# thing making the loop unreachable, so removing this set would silently re-open the scope
+# classification the moment that arm is ever narrowed. Survivor, not corpse.
 _CONFIG_REDIRECT_ENV = frozenset({"GIT_CONFIG", "GIT_COMMON_DIR", "GIT_DIR"})
 
 # git accepts any UNAMBIGUOUS ABBREVIATION of each file-location flag, plus `-f` and
