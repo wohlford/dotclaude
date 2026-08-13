@@ -817,6 +817,20 @@ def _judge_invocation(
 # case-sensitive check would read as coverage while missing two trivial spellings.
 DENIED_CONFIG_KEYS = ("core.hookspath", "include.path", "includeif.")
 
+# The `-c`/`--config-env` arm denies one key the `git config` seg scan must NOT: `alias.`.
+#
+# A `-c alias.<n>=<command>` value is per-invocation in FORM but arbitrary in EFFECT — the aliased
+# command runs with full privileges. Measured, both allowed before this was added:
+# `git -c alias.zz='config --global core.hooksPath /x' zz` wrote the global file, and
+# `git -c alias.zz='<publish> origin dev' zz` reached the private branch through a gate that never
+# saw a publish, because `sub` resolves to `zz` and never `config`, while `_resolve_alias_chain`
+# looks the alias up in the repo's PERSISTED config, which cannot see one defined by this
+# invocation's own `-c`.
+#
+# Scoped to THIS arm deliberately: `DENIED_CONFIG_KEYS` is shared with the seg scan below, where
+# adding `alias.` would start refusing an ordinary `git config alias.co checkout`.
+DENIED_C_KEYS = DENIED_CONFIG_KEYS + ("alias.",)
+
 # Env vars that inject config wholesale. `GIT_CONFIG_COUNT`/`_KEY_n`/`_VALUE_n` set arbitrary keys;
 # `GIT_CONFIG_GLOBAL`/`_SYSTEM` swap the files those keys come from. Matched by PREFIX rather than
 # by an alternation of the five known names, because the numbered forms are open-ended and a
@@ -906,7 +920,46 @@ def _config_scope_is_local(seg: list[str], env: list[str]) -> bool:
     return True
 
 
-def _config_injection_reason(tokens, sub: str, seg: list[str]) -> str | None:
+def _repo_is_adopted(effective_dir: str | None) -> bool:
+    """Whether the repo containing `effective_dir` has adopted the publication model.
+
+    Mirrors `git-hooks/pre-push`'s own `is_dormant()` -- SOME ref under refs/heads/
+    carries a tracked `.publication.toml` -- rather than testing the working tree. A
+    linked worktree, a checkout of a pre-adoption commit, or a plain `rm` all flip the
+    working-tree test while the hook stays ARMED, so the two must agree or this gate
+    protects less than the hook it defends.
+
+    FAIL-CLOSED: unresolvable means True. `config` is in KNOWN_SAFE_SUBCOMMANDS and
+    never reaches `_judge_invocation`'s own root-unknown block, so returning False
+    here would allow the invocation outright.
+    """
+    if effective_dir is None:
+        return True
+    root = _resolve_root(effective_dir)
+    if root is None:
+        return True
+    refs = _git_capture(root, "for-each-ref", "--format=%(refname)", "refs/heads/")
+    if refs is None:
+        return True
+    for ref in refs.splitlines():
+        ref = ref.strip()
+        if not ref:
+            continue
+        probe = subprocess.run(
+            ["git", "-C", root, "cat-file", "-e", f"{ref}:.publication.toml"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        if probe.returncode == 0:
+            return True
+    return False
+
+
+def _config_injection_reason(
+    tokens, sub: str, seg: list[str]
+) -> tuple[str, bool] | None:
     """Detect an attempt to relocate or disable the git-native `pre-push` boundary.
 
     Scoped to ONE invocation's own env prefix, global-option run and (for `config`) its argument
@@ -917,12 +970,28 @@ def _config_injection_reason(tokens, sub: str, seg: list[str]) -> str | None:
     regex false-blocked exactly that command, because its `git`-word prefilter matched the path
     token `git-hooks`.
 
-    Returns a reason string, or None when this invocation carries no such attempt.
+    Returns `(reason, unconditional)`, or None when this invocation carries no such attempt.
+    `unconditional` is True for the env and `-c`/`--config-env` arms — see the module's revision
+    note for why: a `-c` value is per-invocation, but the ALIASED COMMAND it can run is arbitrary
+    (`git -c alias.zz='config --global core.hooksPath /x' zz` writes the global file), so that
+    arm's blast radius is not per-invocation and gating it on adoption would reopen the hole this
+    detector exists to close. `GIT_CONFIG_COUNT`/`_KEY_n`/`_VALUE_n` can define an alias the same
+    way. It is False only for the `config` arm, whose write actually IS scoped by
+    `_config_scope_is_local` (see `_find_block_reason`, which decides adoption-gating from this
+    flag together with `gitdir_override`).
     """
     for assignment in tokens.env:
+        name = assignment.split("=", 1)[0]
+        if name == "GIT_CONFIG_NOSYSTEM":
+            # The one exact-name exemption: it suppresses the system config file and provably
+            # cannot SET a key, so it carries none of the blast radius the rest of this arm exists
+            # to deny. Every other GIT_CONFIG_* spelling stays unconditionally blocked below.
+            continue
         if GIT_CONFIG_ENV_RE.match(assignment):
-            name = assignment.split("=", 1)[0]
-            return f"it sets {name}, which injects git config that can relocate the hooks path"
+            return (
+                f"it sets {name}, which injects git config that can relocate the hooks path",
+                True,
+            )
 
     opts = list(tokens.opts)
     for idx, opt in enumerate(opts):
@@ -934,7 +1003,8 @@ def _config_injection_reason(tokens, sub: str, seg: list[str]) -> str | None:
             # `--config-env=key=envvar` takes its VALUE from the environment, so the key is
             # visible here but what it will be set to is not. Unresolvable => block.
             return (
-                "it uses --config-env, whose value this gate cannot resolve statically"
+                "it uses --config-env, whose value this gate cannot resolve statically",
+                True,
             )
         else:
             continue
@@ -943,20 +1013,33 @@ def _config_injection_reason(tokens, sub: str, seg: list[str]) -> str | None:
             # whatever survived expansion — never a literal `key=value`. Named as a residual in
             # the threat model rather than pretended to be caught.
             return (
-                "it passes -c a value this gate cannot resolve to a literal key=value"
+                "it passes -c a value this gate cannot resolve to a literal key=value",
+                True,
             )
         key = value.split("=", 1)[0].strip().lower()
-        if any(key.startswith(denied) for denied in DENIED_CONFIG_KEYS):
-            return f"it sets {key} via -c, which can relocate or disable the hooks path"
+        if any(key.startswith(denied) for denied in DENIED_C_KEYS):
+            return (
+                f"it sets {key} via -c, which can relocate or disable the hooks path, "
+                "or (for an alias) run an arbitrary git command this gate never sees",
+                True,
+            )
 
     if sub == "config":
         # `git config --local core.hooksPath /dev/null && <a push>` is a TWO-command bypass: the
         # first is a `config` (in KNOWN_SAFE_SUBCOMMANDS, so otherwise waved through) and the
         # second is a push the refspec rule may well allow on its own. Blocking the config half is
         # what makes the pair unreachable, so this must run BEFORE the known-safe shortcut.
+        #
+        # The read carve-out sits INSIDE this branch only, never as a whole-detector short-circuit
+        # — otherwise `git -c core.hooksPath=X config --get y` would bypass the `-c` arm above.
+        if _config_is_read(seg):
+            return None
         for arg in seg:
             if any(arg.strip().lower().startswith(d) for d in DENIED_CONFIG_KEYS):
-                return f"it writes {arg} via `git config`, which can disable the push boundary"
+                return (
+                    f"it writes {arg} via `git config`, which can disable the push boundary",
+                    not _config_scope_is_local(seg, list(tokens.env)),
+                )
     return None
 
 
@@ -992,14 +1075,23 @@ def _find_block_reason(command: str, cwd: str) -> Block | None:
         # nothing on the overwhelming majority of commands that carry no such option.
         injection = _config_injection_reason(tokens, sub, seg)
         if injection is not None:
-            return Block(
-                reason=(
-                    f"this command is refused because {injection}. The `pre-push` hook is the "
-                    "load-bearing publication boundary; a command that can move or silence it is "
-                    "refused whatever it goes on to do."
-                ),
-                is_push=any(s == "push" for _d, _c, s, _g, _t in invocations),
-            )
+            reason_text, unconditional = injection
+            # `-C` arrives separately from cd/pushd tracking and is joined only here; gating on
+            # effective_dir alone would flip `git -C <adopted> config ...` from block to allow.
+            # gitdir_override means the root is unknown => block.
+            if (
+                unconditional
+                or gitdir_override
+                or _repo_is_adopted(_combine(effective_dir, cdir))
+            ):
+                return Block(
+                    reason=(
+                        f"this command is refused because {reason_text}. The `pre-push` hook "
+                        "is the load-bearing publication boundary; a command that can move or "
+                        "silence it is refused whatever it goes on to do."
+                    ),
+                    is_push=any(s == "push" for _d, _c, s, _g, _t in invocations),
+                )
         if sub != "push" and sub in KNOWN_SAFE_SUBCOMMANDS:
             continue
         root_dir = _combine(effective_dir, cdir)

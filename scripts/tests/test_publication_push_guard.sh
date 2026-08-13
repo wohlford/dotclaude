@@ -847,5 +847,101 @@ assert_py "_config_scope_is_local(['core.hooksPath','X'], ['GIT_CONFIG=/o'])"   
 assert_py "_config_scope_is_local(['core.hooksPath','X'], ['GIT_COMMON_DIR=/o/.git'])"       "False"
 assert_py "_config_scope_is_local(['core.hooksPath','X'], ['GIT_DIR=/o/.git'])"              "False"
 
+# ================= Task 4: adoption predicate + config-arm rewiring ===========================
+# Consumes Tasks 1-3: _config_is_read (the read carve-out) and _config_scope_is_local (the scope
+# allowlist) are now WIRED, gated by the new _repo_is_adopted predicate -- only the `config` arm's
+# WRITE reason becomes conditional on the invoking cwd's own repo having adopted the publication
+# model. The env and -c/--config-env arms keep today's unconditional reach (see the module's
+# revision note: a -c value's reach is not per-invocation, because the aliased command it can run
+# is arbitrary).
+#
+# assert_allows/assert_blocks cmd cwd label -- thin wrappers over judge(), in judge's own
+# (command, cwd) argument order, following the file's established out=...;rc=$? idiom.
+assert_allows() { # command cwd label
+  local out rc
+  out="$(judge "$1" "$2")"; rc=$?
+  assert_eq "$rc" 0 "$3"
+}
+assert_blocks() { # command cwd label
+  local out rc
+  out="$(judge "$1" "$2")"; rc=$?
+  assert_eq "$rc" 2 "$3"
+}
+
+# ---- newly allowed: a scoped-local config write from a NON-adopted cwd ----
+build_repo 0
+assert_allows "git config core.hooksPath .husky" "$REPO" \
+  "allows husky's install command in a non-adopted repo"
+
+# ---- newly allowed: a pure read, in either repo ----
+build_repo 0
+assert_allows "git config --get core.hooksPath" "$REPO" \
+  "allows a pure --get read in a non-adopted repo"
+build_repo 1
+assert_allows "git config --get core.hooksPath" "$REPO" \
+  "allows a pure --get read in the adopted repo"
+build_repo 1
+assert_allows "git config get core.hooksPath" "$REPO" \
+  "allows the subcommand-form 'get' read in the adopted repo"
+
+# ---- newly allowed: the one exact-name env exemption ----
+build_repo 0
+assert_allows "GIT_CONFIG_NOSYSTEM=1 git log -1" "$REPO" \
+  "allows GIT_CONFIG_NOSYSTEM in a non-adopted repo"
+
+# ---- still refused: every reach-in WRITE from a NON-adopted cwd -- the env/-c arms and a
+# non-local config-arm write all stay unconditional, so none of these become adoption-gated ----
+build_repo 1
+adopted_repo="$REPO"
+build_repo 0
+assert_blocks "git config --global core.hooksPath /dev/null" "$REPO" \
+  "still refuses a --global write from a non-adopted cwd"
+assert_blocks "git config --glo core.hooksPath /dev/null" "$REPO" \
+  "still refuses the --glo abbreviation from a non-adopted cwd"
+assert_blocks "git config --comment n --global core.hooksPath /x" "$REPO" \
+  "still refuses --comment then --global from a non-adopted cwd"
+assert_blocks "git config set --global core.hooksPath /x" "$REPO" \
+  "still refuses the subcommand-form 'set --global' from a non-adopted cwd"
+assert_blocks "git config -f $adopted_repo/.git/config core.hooksPath X" "$REPO" \
+  "still refuses -f pointed at the adopted repo's own config file, from a non-adopted cwd"
+assert_blocks "GIT_CONFIG=$adopted_repo/.git/config git config core.hooksPath X" "$REPO" \
+  "still refuses a GIT_CONFIG= redirect from a non-adopted cwd"
+assert_blocks "GIT_COMMON_DIR=$adopted_repo/.git git config core.hooksPath X" "$REPO" \
+  "still refuses a GIT_COMMON_DIR= redirect from a non-adopted cwd"
+# A `-c alias.<n>=<command>` value is per-invocation in FORM but arbitrary in EFFECT: the aliased
+# command runs with full privileges, so the arm's blast radius is not per-invocation at all.
+# Measured before the fix, both rc=0 (allowed): a global config write, and -- far worse -- a bare
+# publish to the private branch, in an ADOPTED repo. Neither reached the `config` arm, because
+# `sub` resolves to "zz" and never "config"; and `_resolve_alias_chain`'s own lookup queries the
+# repo's PERSISTED config in a fresh subprocess, which cannot see an alias defined only via THIS
+# invocation's own -c.
+#
+# The earlier reasoning that made the `-c` arm unconditional claimed this was "closed by
+# construction". That conflated two different things: unconditional-vs-gated governs what happens
+# AFTER a match, but `alias.` was never a denied key, so the arm never matched at all.
+assert_blocks "git -c alias.zz='config --global core.hooksPath /x' zz" "$REPO" \
+  "refuses an alias smuggling a global config write"
+assert_blocks "git -c alias.zz='${VERB} origin dev' zz" "$REPO" \
+  "refuses an alias smuggling a publish to the private branch"
+# The over-block this must NOT cause: defining an ORDINARY alias through the config arm stays
+# allowed, because `alias.` is added to the -c arm's key set only, never to DENIED_CONFIG_KEYS
+# (which the `git config` seg scan shares).
+assert_allows "git config alias.co checkout" "$REPO" \
+  "an ordinary alias definition via git config is still allowed"
+assert_blocks "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.zz git zz" "$REPO" \
+  "still refuses the GIT_CONFIG_COUNT alias-key smuggle from a non-adopted cwd"
+assert_blocks "git -C $adopted_repo config core.hooksPath /dev/null" "$REPO" \
+  "still refuses git -C <adopted> config from a non-adopted cwd"
+
+# ---- still refused: a write disguised as a read (position-sensitive) ----
+build_repo 1
+assert_blocks "git config core.hooksPath --get" "$REPO" \
+  "still refuses a write that only looks like a read (trailing --get)"
+
+# ---- still refused: a local denied write in the ADOPTED repo itself ----
+build_repo 1
+assert_blocks "git config core.hooksPath /dev/null" "$REPO" \
+  "still refuses a local denied write in the adopted repo"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.79.1 — 2026-08-04
+- fix(publication-push-guard): scope config injection to what it protects
+
 ## v0.79.0 — 2026-08-04
 - feat(publication-push-guard): add the config read and scope classifiers
 
