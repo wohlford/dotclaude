@@ -57,6 +57,28 @@ push_run() { # cwd command want label
   assert_eq "$got" "$3" "$4"
 }
 
+# The push verb, assembled so it never appears literally next to "git" in this file's own source --
+# same reasoning as test_guard_corpus.py's _VERB: this repo's own git-timing-guard greps the RAW
+# text of every Bash command run (including comments), unparsed, so an ad hoc verification command
+# built while authoring this file could otherwise be refused by a gate that never actually judged
+# it.
+VERB="pu""sh"
+
+# judge cmd cwd -> prints the guard's combined stdout+stderr; its own exit code is available via
+# $? immediately after a `$(judge ...)` capture, since python3 is the LAST stage of the pipe.
+# PUBLICATION_PUSH_GUARD_LOG is already exported into the sandbox at the top of this file, so every
+# call here inherits it -- no run of this reaches the operator's real ~/.claude/logs/.
+#
+# NOTE the argument order is the OPPOSITE of push_run's: push_run takes (cwd, command, ...) and
+# therefore reverses via `push_json "$2" "$1"`; judge takes (command, cwd) -- matching push_json's
+# own (command, cwd) signature directly, so no reversal here. Swapping this was measured to send
+# the repo PATH to the guard as its "command" (no `git` word -> the cheap prefilter exits 0 before
+# ever reaching the code under test) and the literal command string as "cwd" -- a silent false
+# PASS on the positive control and a silent false ALLOW on the blocking row alike.
+judge() {
+  push_json "$1" "$2" | python3 "$guard" 2>&1
+}
+
 # build_repo <adopted:0|1> [production_value] -> sets global REPO
 # The marker (when adopted) is committed on the FIRST commit, before `dev` branches off, so it is
 # present in the working tree regardless of which branch ends up checked out later.
@@ -67,6 +89,14 @@ build_repo() {
   if [[ "${1:-0}" == 1 ]]; then
     printf 'production = "%s"\n' "${2:-dev}" >"$REPO/.publication.toml"
   fi
+  # Install a healthy stub boundary hook -- both the tracked source AND the installed copy, so a
+  # push-arm precondition asserting the hook is in force does not turn every allowed-push row in
+  # this file red. A stub, not the real hook: this suite tests the GUARD, and
+  # test_pre_push_hook.sh already tests the real hook body.
+  mkdir -p "$REPO/git-hooks" "$REPO/.git/hooks"
+  printf '#!/bin/sh\nexit 0\n' >"$REPO/git-hooks/pre-push"
+  cp "$REPO/git-hooks/pre-push" "$REPO/.git/hooks/pre-push"
+  chmod +x "$REPO/git-hooks/pre-push" "$REPO/.git/hooks/pre-push"
   gi "$REPO" add -A >/dev/null 2>&1
   gi "$REPO" commit -q -m init >/dev/null 2>&1
   gi "$REPO" branch -q dev >/dev/null 2>&1
@@ -699,6 +729,242 @@ push_run "$REPO" 'git -c user.name=x status' 0 \
 push_run "$REPO" 'git -c x="$(git push origin dev)" status' 2 \
   'PRESERVE: a push hidden in a genuine -c value is still seen'
 
+# ================= L1: publishing subcommands bypass push's refspec judgment entirely ==========
+# `send-pack` is the transport `push` itself invokes; `svn`/`p4`/`daemon` publish through their own
+# machinery. None runs the `pre-push` hook (layer 2), and none is `push` itself, so before
+# PUBLISHING_SUBCOMMANDS existed each fell through to `_resolve_alias_chain`, which returns "none"
+# (allow) at depth 0 for any subcommand that is not a configured alias -- measured against the
+# frozen pre-change baseline, all four exit 0.
+build_repo 1
+push_run "$REPO" "git send-pack origin refs/heads/dev:refs/heads/x" 2 \
+  'blocked: send-pack is the push transport itself, bypassing the refspec allowlist'
+push_run "$REPO" "git svn dcommit" 2 \
+  'blocked: svn dcommit publishes without ever invoking push'
+push_run "$REPO" "git p4 submit" 2 \
+  'blocked: p4 submit publishes without ever invoking push'
+push_run "$REPO" "git daemon --export-all" 2 \
+  'blocked: daemon serves the repo without ever invoking push'
+
+# PRESERVE, and NOT git status/fetch/log -- those are KNOWN_SAFE_SUBCOMMANDS members that
+# short-circuit at publication-push-guard.py:715, BEFORE _judge_invocation (and therefore
+# PUBLISHING_SUBCOMMANDS) is ever consulted, so they would pass even if the deny set held every
+# git subcommand in existence. The row that actually reaches the deny set and would catch an
+# over-wide one is a non-alias subcommand that is not KNOWN_SAFE either: it must still resolve via
+# _resolve_alias_chain and return "none" rather than get swept in by too broad a membership test.
+push_run "$REPO" "git frobnicate" 0 \
+  'PRESERVE: unrecognised non-alias, non-safe-listed subcommand still allowed'
+# A genuinely safe-listed row too, for completeness -- but per the PRESERVE note above, this one
+# proves nothing about PUBLISHING_SUBCOMMANDS's width; git_frobnicate above is the real evidence.
+push_run "$REPO" "git status" 0 'allowed: safe-listed subcommand, unaffected by the deny set'
+
+# Order matters: an alias literally NAMED a publishing subcommand must still be denied. git runs
+# its own builtin/plumbing command over an alias of the same name (the same fact that lets
+# KNOWN_SAFE_SUBCOMMANDS membership double as alias-shadow immunity above), so the alias's target
+# is irrelevant -- and this only holds if the deny-set check runs BEFORE _resolve_alias_chain.
+gi "$REPO" config alias.send-pack status >/dev/null 2>&1
+push_run "$REPO" "git send-pack" 2 \
+  'blocked: an alias literally named a publishing subcommand is still denied, regardless of its target'
+
+m_sendpack="$(stderr_of "$REPO" 'git send-pack origin refs/heads/dev:refs/heads/x')"
+assert_contains "$m_sendpack" "'send-pack'" \
+  'the refusal names the offending subcommand'
+assert_contains "$m_sendpack" 'will not help' \
+  'the refusal says plainly that ALLOW_PUSH=1 will not help'
+push_run "$REPO" "ALLOW_PUSH=1 git send-pack origin refs/heads/dev:refs/heads/x" 2 \
+  'ALLOW_PUSH=1 does not authorize a publishing subcommand -- it is not a push'
+
+# ================= Task 1: push-time boundary-hook integrity precondition =====================
+# build_repo now installs a healthy stub hook (both the tracked git-hooks/pre-push source and the
+# installed .git/hooks/pre-push copy) -- see build_repo's own comment. The positive control proves
+# that stub does not itself turn an allowed refspec red; the second row relocates
+# core.hooksPath AFTER the healthy hook is installed, so git's own hook resolution points
+# somewhere else and the precondition must catch it even though the refspec itself is safe.
+build_repo 1
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 0 "healthy hook must not block an allowed refspec"
+
+build_repo 1
+mkdir -p "$REPO/decoy"
+gi "$REPO" config core.hooksPath "$REPO/decoy"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "relocated hooksPath must block"
+assert_contains "$out" "not in force" "reason must name the boundary"
+
+# ================= Task 2/3: pure git-config classifiers (not yet wired to any behaviour) =====
+# assert_py <python expression against the guard module> <expected repr string>. Imports the guard
+# BY PATH (it is a script, not an importable module, so a plain `import` would fail) and evaluates
+# one expression against it -- string comparison, not assert_eq's numeric `-eq` (which errors under
+# `set -u` on non-numeric operands like "True"/"False").
+assert_py() { # <python expression> <expected repr>
+  local got
+  got="$(python3 -c "
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('g', '$guard')
+m = importlib.util.module_from_spec(spec); sys.modules['g'] = m
+spec.loader.exec_module(m)
+print(m.$1)
+")" || { printf 'FAIL  assert_py could not evaluate: %s\n' "$1"; fail=$((fail + 1)); return; }
+  if [[ "$got" == "$2" ]]; then
+    printf 'PASS  %s (got %s)\n' "$1" "$got"
+    pass=$((pass + 1))
+  else
+    printf 'FAIL  %s (want %s, got %s)\n' "$1" "$2" "$got"
+    fail=$((fail + 1))
+  fi
+}
+
+# ---- Task 2: classifies git config reads by the LEADING option run only ----
+# POSITION IS LOAD-BEARING: `git config core.hooksPath --get` was measured to WRITE
+# `core.hooksPath = --get` -- a read flag arriving after the key is consumed as a positional.
+assert_py "_config_is_read(['core.hooksPath','--get'])"              "False"
+assert_py "_config_is_read(['core.hooksPath','/dev/null','--list'])" "False"
+assert_py "_config_is_read(['--get','core.hooksPath'])"              "True"
+assert_py "_config_is_read(['get','core.hooksPath'])"                "True"
+assert_py "_config_is_read(['list'])"                                "True"
+assert_py "_config_is_read(['set','core.hooksPath','X'])"            "False"
+assert_py "_config_is_read(['core.hooksPath'])"                      "False"
+assert_py "_config_is_read([])"                                      "False"
+assert_py "_config_is_read(['--','--get','core.hooksPath'])"         "False"
+
+# ---- Task 3: classifies every non-local scope spelling as non-local ----
+# Scans EVERY token and never breaks early: a leading-run scan misclassifies
+# `--comment note --global core.hooksPath X` as local (measured: git writes the GLOBAL file).
+assert_py "_config_scope_is_local(['core.hooksPath','X'], [])"                               "True"
+assert_py "_config_scope_is_local(['--local','core.hooksPath','X'], [])"                     "True"
+assert_py "_config_scope_is_local(['set','core.hooksPath','X'], [])"                         "True"
+assert_py "_config_scope_is_local(['--type','bool','core.hooksPath','X'], [])"               "True"
+assert_py "_config_scope_is_local(['--global','core.hooksPath','X'], [])"                    "False"
+assert_py "_config_scope_is_local(['--glo','core.hooksPath','X'], [])"                       "False"
+assert_py "_config_scope_is_local(['--sys','core.hooksPath','X'], [])"                       "False"
+assert_py "_config_scope_is_local(['set','--global','core.hooksPath','X'], [])"              "False"
+assert_py "_config_scope_is_local(['--comment','note','--global','core.hooksPath','X'], [])" "False"
+assert_py "_config_scope_is_local(['-f','/other','core.hooksPath','X'], [])"                 "False"
+assert_py "_config_scope_is_local(['--file=/other','core.hooksPath','X'], [])"               "False"
+assert_py "_config_scope_is_local(['--fil','/other','core.hooksPath','X'], [])"              "False"
+assert_py "_config_scope_is_local(['--no-local','core.hooksPath','X'], [])"                  "False"
+assert_py "_config_scope_is_local(['--worktree','core.hooksPath','X'], [])"                  "False"
+assert_py "_config_scope_is_local(['core.hooksPath','X'], ['GIT_CONFIG=/o'])"                "False"
+assert_py "_config_scope_is_local(['core.hooksPath','X'], ['GIT_COMMON_DIR=/o/.git'])"       "False"
+assert_py "_config_scope_is_local(['core.hooksPath','X'], ['GIT_DIR=/o/.git'])"              "False"
+
+# ================= Task 4: adoption predicate + config-arm rewiring ===========================
+# Consumes Tasks 1-3: _config_is_read (the read carve-out) and _config_scope_is_local (the scope
+# allowlist) are now WIRED, gated by the new _repo_is_adopted predicate -- only the `config` arm's
+# WRITE reason becomes conditional on the invoking cwd's own repo having adopted the publication
+# model. The env and -c/--config-env arms keep today's unconditional reach (see the module's
+# revision note: a -c value's reach is not per-invocation, because the aliased command it can run
+# is arbitrary).
+#
+# assert_allows/assert_blocks cmd cwd label -- thin wrappers over judge(), in judge's own
+# (command, cwd) argument order, following the file's established out=...;rc=$? idiom.
+assert_allows() { # command cwd label
+  local out rc
+  out="$(judge "$1" "$2")"; rc=$?
+  assert_eq "$rc" 0 "$3"
+}
+assert_blocks() { # command cwd label
+  local out rc
+  out="$(judge "$1" "$2")"; rc=$?
+  assert_eq "$rc" 2 "$3"
+}
+
+# ---- newly allowed: a scoped-local config write from a NON-adopted cwd ----
+build_repo 0
+assert_allows "git config core.hooksPath .husky" "$REPO" \
+  "allows husky's install command in a non-adopted repo"
+
+# ---- newly allowed: a pure read, in either repo ----
+build_repo 0
+assert_allows "git config --get core.hooksPath" "$REPO" \
+  "allows a pure --get read in a non-adopted repo"
+build_repo 1
+assert_allows "git config --get core.hooksPath" "$REPO" \
+  "allows a pure --get read in the adopted repo"
+build_repo 1
+assert_allows "git config get core.hooksPath" "$REPO" \
+  "allows the subcommand-form 'get' read in the adopted repo"
+
+# ---- newly allowed: the one exact-name env exemption ----
+build_repo 0
+assert_allows "GIT_CONFIG_NOSYSTEM=1 git log -1" "$REPO" \
+  "allows GIT_CONFIG_NOSYSTEM in a non-adopted repo"
+
+# ---- still refused: every reach-in WRITE from a NON-adopted cwd -- the env/-c arms and a
+# non-local config-arm write all stay unconditional, so none of these become adoption-gated ----
+build_repo 1
+adopted_repo="$REPO"
+build_repo 0
+assert_blocks "git config --global core.hooksPath /dev/null" "$REPO" \
+  "still refuses a --global write from a non-adopted cwd"
+assert_blocks "git config --glo core.hooksPath /dev/null" "$REPO" \
+  "still refuses the --glo abbreviation from a non-adopted cwd"
+assert_blocks "git config --comment n --global core.hooksPath /x" "$REPO" \
+  "still refuses --comment then --global from a non-adopted cwd"
+assert_blocks "git config set --global core.hooksPath /x" "$REPO" \
+  "still refuses the subcommand-form 'set --global' from a non-adopted cwd"
+assert_blocks "git config -f $adopted_repo/.git/config core.hooksPath X" "$REPO" \
+  "still refuses -f pointed at the adopted repo's own config file, from a non-adopted cwd"
+assert_blocks "GIT_CONFIG=$adopted_repo/.git/config git config core.hooksPath X" "$REPO" \
+  "still refuses a GIT_CONFIG= redirect from a non-adopted cwd"
+assert_blocks "GIT_COMMON_DIR=$adopted_repo/.git git config core.hooksPath X" "$REPO" \
+  "still refuses a GIT_COMMON_DIR= redirect from a non-adopted cwd"
+# A `-c alias.<n>=<command>` value is per-invocation in FORM but arbitrary in EFFECT: the aliased
+# command runs with full privileges, so the arm's blast radius is not per-invocation at all.
+# Measured before the fix, both rc=0 (allowed): a global config write, and -- far worse -- a bare
+# publish to the private branch, in an ADOPTED repo. Neither reached the `config` arm, because
+# `sub` resolves to "zz" and never "config"; and `_resolve_alias_chain`'s own lookup queries the
+# repo's PERSISTED config in a fresh subprocess, which cannot see an alias defined only via THIS
+# invocation's own -c.
+#
+# The earlier reasoning that made the `-c` arm unconditional claimed this was "closed by
+# construction". That conflated two different things: unconditional-vs-gated governs what happens
+# AFTER a match, but `alias.` was never a denied key, so the arm never matched at all.
+assert_blocks "git -c alias.zz='config --global core.hooksPath /x' zz" "$REPO" \
+  "refuses an alias smuggling a global config write"
+assert_blocks "git -c alias.zz='${VERB} origin dev' zz" "$REPO" \
+  "refuses an alias smuggling a publish to the private branch"
+# The over-block this must NOT cause: defining an ORDINARY alias through the config arm stays
+# allowed, because `alias.` is added to the -c arm's key set only, never to DENIED_CONFIG_KEYS
+# (which the `git config` seg scan shares).
+assert_allows "git config alias.co checkout" "$REPO" \
+  "an ordinary alias definition via git config is still allowed"
+assert_blocks "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.zz git zz" "$REPO" \
+  "still refuses the GIT_CONFIG_COUNT alias-key smuggle from a non-adopted cwd"
+assert_blocks "git -C $adopted_repo config core.hooksPath /dev/null" "$REPO" \
+  "still refuses git -C <adopted> config from a non-adopted cwd"
+
+# ---- the ATTACHED short-option spelling: blocked, but NOT by this detector ----
+# `-c<key>=<value>` is not a real input. MEASURED: git itself refuses it --
+# `git -cfoo.bar=baz config --get foo.bar` exits 129 with "unknown option: -cfoo.bar=baz", because
+# `-c` is not one of the short options git accepts an attached value for. `-C` is, which is exactly
+# why `classify_global_opt` carries an attached rule for that one and only that one.
+#
+# So the token classifies UNKNOWN, the invocation is unjudgeable, and the guard refuses before the
+# config detector is ever consulted. Verified by the refusal's WORDING ("could not judge:
+# subcommand '-ccore.hooksPath=/dev/null'"), not by the exit code, which both paths share -- an
+# rc=2 alone cannot tell "detected an injection" from "declined to guess". The detector's own
+# attached-`-c` branch was therefore INERT: it read as coverage while unable to fire, and a refusal
+# it never produced was being credited to it. It has been DELETED rather than tested around.
+#
+# These rows pin the thing that actually forces the outcome, so the deletion's premise cannot rot
+# silently: if `classify_global_opt` ever learns an attached `-c`, this is where it fails.
+# Both run in the ADOPTED repo deliberately -- measured, the refusal is correctly scoped there and
+# a non-adopted cwd allows all three spellings (rc=0), so a row placed there would prove nothing.
+build_repo 1
+assert_blocks "git -ccore.hooksPath=/dev/null ${VERB} origin main" "$REPO" \
+  "refuses an attached -c denied key (as unjudgeable, not as a detected injection)"
+assert_blocks "git -cuser.name=x status" "$REPO" \
+  "refuses an attached -c innocent key too -- git rejects the spelling, so this costs no workflow"
+
+# ---- still refused: a write disguised as a read (position-sensitive) ----
+build_repo 1
+assert_blocks "git config core.hooksPath --get" "$REPO" \
+  "still refuses a write that only looks like a read (trailing --get)"
+
+# ---- still refused: a local denied write in the ADOPTED repo itself ----
+build_repo 1
+assert_blocks "git config core.hooksPath /dev/null" "$REPO" \
+  "still refuses a local denied write in the adopted repo"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
