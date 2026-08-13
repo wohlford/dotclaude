@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.84.0 — 2026-08-09
+- feat(run-long): report INDETERMINATE when a run reached no verdict
+
 ## v0.83.5 — 2026-08-09
 - docs(CLAUDE.md): add the one-sample-per-cell comparison hazard
 

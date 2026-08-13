@@ -148,8 +148,8 @@ MUTATIONS = [
         ":",
     ),
     mutate.Mutation(
-        "the subject never reaches the header, so no verdict can be tied to a tree at all",
-        'printf "%s\\n" "$subject"',
+        "the header block never reaches the artifact, so no verdict can be tied to a tree or a pattern",
+        'printf "%s\\n" "$header"',
         ":",
     ),
 ]

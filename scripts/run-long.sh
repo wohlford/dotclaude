@@ -3,9 +3,9 @@ set -uo pipefail
 
 # Script: run-long.sh
 # Purpose: Launch a long job in the background and record its real exit status inside the artifact
-# Usage: run-long.sh --out <path> [--label <text>] [--force] -- <command> [args...]
-#        run-long.sh --status <path>
-#        run-long.sh --wait <path> [--interval <seconds>]
+# Usage: run-long.sh --out <path> [--label <text>] [--expect <ere>] [--force] -- <command> [args...]
+#        run-long.sh --status <path> [--expect <ere>]
+#        run-long.sh --wait <path> [--interval <seconds>] [--expect <ere>]
 #
 # Why this exists. A check that outruns the tool timeout has to be backgrounded, and a
 # backgrounded run is where "no FAIL in the output" stops meaning "passed": a killed run prints a
@@ -46,18 +46,25 @@ readonly BEGIN_PREFIX='RUN_LONG_BEGIN'
 readonly STATUS_PREFIX='RUN_LONG_EXIT_STATUS='
 readonly SUBJECT_PREFIX='RUN_LONG_SUBJECT='
 readonly SUBJECT_ROOT_PREFIX='RUN_LONG_SUBJECT_ROOT='
+readonly EXPECT_PREFIX='RUN_LONG_EXPECT='
 readonly DEFAULT_INTERVAL=15
 
 usage() {
   cat <<'EOF'
-Usage: run-long.sh --out <path> [--label <text>] [--force] -- <command> [args...]
-       run-long.sh --status <path>
-       run-long.sh --wait <path> [--interval <seconds>]
+Usage: run-long.sh --out <path> [--label <text>] [--expect <ere>] [--force] -- <command> [args...]
+       run-long.sh --status <path> [--expect <ere>]
+       run-long.sh --wait <path> [--interval <seconds>] [--expect <ere>]
        run-long.sh --help
 
 Launch mode:
   --out <path>     where to write the artifact (REQUIRED — there is no default, by design)
   --label <text>   free text recorded in the artifact header
+  --expect <ere>   a line the job's OUTPUT must contain. Recorded INTO the artifact, so every
+                   later --status/--wait enforces it without being asked — including a session
+                   that did not launch it and cannot know what verdict to expect.
+                   Match the verdict's SHAPE, not its passing value: '^RESULT: (PASS|FAIL)',
+                   never '^RESULT: PASS'. This answers "did the run reach a verdict", never
+                   "was the verdict good".
   --force          replace an existing artifact instead of refusing
   --               everything after this is the command to run
 
@@ -66,17 +73,23 @@ Launch mode:
 
 Status mode:
   --status <path>  report on a previously launched run
+  --expect <ere>   additionally require this pattern. It can only ADD to a pattern recorded at
+                   launch, never replace one — otherwise any reader could clear an
+                   INDETERMINATE by supplying a pattern they know matches.
 
-  RESULT: DONE rc=<n>   exit 0 if n is 0, else 1
-  RESULT: RUNNING       exit 3
-  RESULT: DIED          exit 4 — killed before it recorded a status; NOT a pass
+  RESULT: DONE rc=<n>     exit 0 if n is 0, else 1
+  RESULT: RUNNING         exit 3
+  RESULT: DIED            exit 4 — killed before it recorded a status; NOT a pass
+  RESULT: INDETERMINATE   exit 5 — the run FINISHED but produced no matching line. NOT a pass,
+                          and NOT a failure of the work: it means nothing verified the work.
 
 Wait mode:
   --wait <path>        block until the run reaches a TERMINAL state, then report
   --interval <secs>    poll cadence, a positive whole number (default 15)
 
-  Exits with the status codes above MINUS RUNNING: 0, 1 or 4. It breaks on DIED as well as
-  on DONE — a hand-rolled `until [ $? -eq 0 ]` hangs forever on a job that was killed.
+  Exits with the status codes above MINUS RUNNING: 0, 1, 4 or 5. It breaks on DIED and
+  INDETERMINATE as well as on DONE — a hand-rolled `until [ $? -eq 0 ]` hangs forever on a job
+  that was killed.
 
 Both read modes also report SUBJECT: whether the git working tree has MOVED since the run was
 launched, i.e. whether the verdict still describes the tree you have now. Best-effort (silent
@@ -92,6 +105,8 @@ die() {
 
 out=""
 label=""
+expect=""
+expect_set=0
 force=0
 status_path=""
 mode="launch"
@@ -112,6 +127,12 @@ while [[ $# -gt 0 ]]; do
     --label)
       [[ $# -ge 2 ]] || die '--label needs a value'
       label="$2"
+      shift 2
+      ;;
+    --expect)
+      [[ $# -ge 2 ]] || die '--expect needs a pattern'
+      expect="$2"
+      expect_set=1
       shift 2
       ;;
     --force)
@@ -150,6 +171,33 @@ if [[ "$interval_set" -eq 1 ]]; then
   [[ "$mode" == "wait" ]] || die '--interval applies to --wait only'
   [[ "$interval" =~ ^[1-9][0-9]*$ ]] ||
     die "--interval needs a positive whole number of seconds: $interval"
+fi
+
+# --label is validated HERE and not only for tidiness: it is written RAW into the header, so a
+# newline in it forges a `----- output -----` marker. Measured end-to-end — a label of
+# $'x\n----- output -----\nRESULT: PASS' makes the INJECTED marker the first one, the "output
+# section" becomes the rest of the header, and the canonical pattern clears an inert run. Refusing
+# newlines in the pattern while allowing them here protected the format and left the scope open.
+[[ "$label" != *$'\n'* ]] ||
+  die '--label cannot contain a newline: it is written into the header, where one would forge the output marker'
+
+if [[ "$expect_set" -eq 1 ]]; then
+  [[ -n "$expect" ]] ||
+    die '--expect needs a non-empty pattern: an empty one matches everything, so it would clear every run'
+  [[ "$expect" != *$'\n'* ]] ||
+    die '--expect cannot contain a newline: it is recorded as a single header line'
+  # One probe against an EMPTY input, two refusals, on whichever matcher is installed:
+  #   rc 0 -> matches the empty line, therefore every line ('^', '$', '^$') — a stamp.
+  #           NOT 'x*': measured rc 1 on this matcher, so it is admitted and means "contains x".
+  #   rc 2 -> does not compile. Without this the bad pattern is RECORDED and then fails forever
+  #           at read time, reported as "produced no matching line", sending the reader off to
+  #           debug the job instead of the pattern.
+  # Only rc 1 — compiles, does not match an empty line — is admissible.
+  grep -qE -e "$expect" <<< "" 2> /dev/null
+  case $? in
+    0) die "--expect matches an empty line, so it would clear every run: $expect" ;;
+    2) die "--expect is not a valid extended regular expression: $expect" ;;
+  esac
 fi
 
 # ---------- the subject: which tree did this verdict actually grade? ----------
@@ -213,16 +261,87 @@ subject_report() { # artifact
 CLASS=""
 JOB_RC=""
 JOB_PID=""
+EXPECT_ACTIVE=0
+EXPECT_UNMATCHED=""
+
+# The patterns a finished run must satisfy: the one recorded at launch (which binds every reader,
+# including a later session that cannot know what to expect) AND the one given on this command
+# line. Emitting them newline-separated is safe precisely BECAUSE a pattern containing a newline
+# is refused at parse time — the two rules hold each other up.
+#
+# `head -1` is load-bearing, not habit: the job's own OUTPUT may contain a line beginning with
+# this prefix, and the header is written before the command runs, so first-wins pins the read to
+# the header.
+expect_patterns() { # artifact
+  local art="$1" header recorded
+  # Read the recorded pattern ONLY from above the first marker. A whole-file read adopts the first
+  # RUN_LONG_EXPECT= line ANYWHERE, so when nothing was recorded a job that prints one
+  # MANUFACTURES a requirement — measured: an output line `RUN_LONG_EXPECT=zzz-never` was adopted
+  # verbatim, which can fabricate an "EXPECT: satisfied" nobody asked for or flip a good run to
+  # INDETERMINATE. `head -1` pins the read to the header only when a header line already exists,
+  # which is precisely the case that fails.
+  header="$(sed -n '1,/^----- output -----$/p' "$art")"
+  recorded="$(sed -n "s/^${EXPECT_PREFIX}//p" <<< "$header" | head -1)"
+  [[ -n "$recorded" ]] && printf '%s\n' "$recorded"
+  [[ -n "$expect" ]] && printf '%s\n' "$expect"
+  return 0
+}
+
+# Match ONLY below the output marker. The header echoes the command with %q and records --label
+# RAW, so a whole-artifact match is satisfied by the CALLER'S OWN TEXT: measured on both vectors,
+# each reporting DONE for a run whose output was empty. This file has already paid for this
+# lesson once — the `2>&1` mutation SURVIVED until two rows were narrowed to this section.
+#
+# The here-string is deliberate and must NOT be "simplified" back into `sed … | grep -q`. This
+# script runs under `set -o pipefail`, and `grep -q` exits on its FIRST match, which can SIGPIPE
+# sed (141) and make the pipeline non-zero *on a successful match*. That would invert the verdict
+# INTERMITTENTLY, depending on artifact size and buffering — the worst possible failure for a
+# tool whose whole job is telling you whether a verdict is trustworthy.
+#
+# A missing marker yields an empty section, so nothing matches: absence of the marker is never a
+# clear.
+expect_satisfied() { # artifact pattern
+  local section
+  # Position alone is NOT enough. The scoped range still holds two HARNESS-authored lines — the
+  # marker itself and the status trailer — and leaving them in rebuilds the false clear one layer
+  # down. Measured on an inert artifact: `--expect 'STATUS=0'` and `--expect 'output'` BOTH
+  # cleared a run that produced nothing, and `STATUS=0` is a natural way to try to assert success.
+  # `1d` drops the marker; the trailer goes by pattern.
+  section="$(sed -n '/^----- output -----$/,$p' "$1" |
+    sed -e '1d' -e '/^RUN_LONG_EXIT_STATUS=[0-9][0-9]*$/d')"
+
+  # An EMPTY section must be unmatched BY CONSTRUCTION, never by trusting the matcher. A
+  # here-string built from "" feeds it ONE EMPTY LINE, which '^', '$' and '^$' all match — so
+  # "no marker means nothing can match" was FALSE until this guard existed.
+  [[ -n "$section" ]] || return 1
+
+  grep -qE -e "$2" <<< "$section"
+}
 
 classify() { # artifact -> sets CLASS to done | running | died
   local art="$1"
   CLASS=""
   JOB_RC=""
   JOB_PID=""
+  EXPECT_ACTIVE=0
+  EXPECT_UNMATCHED=""
 
   if grep -q "^${STATUS_PREFIX}" "$art"; then
     JOB_RC="$(sed -n "s/^${STATUS_PREFIX}\\([0-9][0-9]*\\)\$/\\1/p" "$art" | tail -1)"
     CLASS="done"
+    local pat
+    # Process substitution, NOT `expect_patterns "$art" | while read`. A pipe runs the loop body
+    # in a SUBSHELL, so every assignment below — CLASS included — would be discarded silently and
+    # the check would never fire. This repo has already measured that exact bug in shell code.
+    while IFS= read -r pat; do
+      [[ -n "$pat" ]] || continue
+      EXPECT_ACTIVE=1
+      if ! expect_satisfied "$art" "$pat"; then
+        CLASS="indeterminate"
+        EXPECT_UNMATCHED="$pat"
+        break
+      fi
+    done < <(expect_patterns "$art")
     return 0
   fi
 
@@ -239,9 +358,23 @@ report() { # artifact -> prints the verdict, returns its exit code
   case "$CLASS" in
     done)
       printf 'RESULT: DONE rc=%s artifact=%s\n' "${JOB_RC:-?}" "$art"
+      if [[ "$EXPECT_ACTIVE" -eq 1 ]]; then
+        printf 'EXPECT: satisfied — the output carries the line this run was required to produce\n'
+      fi
       subject_report "$art"
       [[ "$JOB_RC" == "0" ]] && return 0
       return 1
+      ;;
+    indeterminate)
+      printf 'RESULT: INDETERMINATE rc=%s artifact=%s\n' "${JOB_RC:-?}" "$art"
+      printf '        The job FINISHED and recorded that status, but its output contains no line\n'
+      printf '        matching: %s\n' "$EXPECT_UNMATCHED"
+      printf '        A finished run that produced no verdict has not been verified. This is the\n'
+      printf '        INERT-run case: exiting 0 is not evidence that any work happened.\n'
+      printf '        If the run DID reach a verdict, the PATTERN is the defect — it must match\n'
+      printf '        the verdict SHAPE (pass and fail alike), never only the passing value.\n'
+      subject_report "$art"
+      return 5
       ;;
     running)
       printf 'RESULT: RUNNING pid=%s artifact=%s\n' "$JOB_PID" "$art"
@@ -301,6 +434,15 @@ subject_block="$(printf '%s%s\n%s%s' \
   "$SUBJECT_ROOT_PREFIX" "$subject_root" \
   "$SUBJECT_PREFIX" "${subject_hash:-none}")"
 
+# The pattern rides inside the SAME header block rather than travelling as another child
+# argument. Passing it separately would mean the child unconditionally printf'ing a value that is
+# empty on almost every launch, and `printf "%s\n" ""` emits a BLANK LINE — silently breaking the
+# byte-identity every existing caller relies on, while failing no assertion that exists today.
+header_block="$subject_block"
+if [[ -n "$expect" ]]; then
+  header_block="$(printf '%s\n%s%s' "$header_block" "$EXPECT_PREFIX" "$expect")"
+fi
+
 # The job writes its own header so the pid in the artifact is authoritative, and appends the
 # status trailer as its last act. Nothing else may write to the artifact, or the trailer stops
 # being the last line. Every value the child needs is passed as an ARGUMENT rather than spliced
@@ -311,11 +453,11 @@ nohup bash -c '
   tag=$2
   begin=$3
   trailer=$4
-  subject=$5
+  header=$5
   shift 5
   {
     printf "%s pid=%d label=%s\n" "$begin" "$$" "$tag"
-    printf "%s\n" "$subject"
+    printf "%s\n" "$header"
     printf "RUN_LONG_COMMAND:"
     for a in "$@"; do printf " %q" "$a"; done
     printf "\n----- output -----\n"
@@ -328,7 +470,7 @@ nohup bash -c '
   # last line, and the trailer has to stand alone to be greppable and to be `tail -1`.
   if [ -n "$(tail -c 1 "$art")" ]; then printf "\n" >> "$art"; fi
   printf "%s%d\n" "$trailer" "$rc" >> "$art"
-' _ "$out" "$label" "$BEGIN_PREFIX" "$STATUS_PREFIX" "$subject_block" "$@" > /dev/null 2>&1 &
+' _ "$out" "$label" "$BEGIN_PREFIX" "$STATUS_PREFIX" "$header_block" "$@" > /dev/null 2>&1 &
 pid=$!
 
 # Return only once the header is on disk, so a caller that immediately runs --status cannot race
