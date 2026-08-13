@@ -101,7 +101,10 @@ steps below and **Execute and integrate** apply this rule; they do not re-decide
   the artifact's `YYYY-MM-DD-<name>` slug, spec and plan together, written to `/debrief` step 5's
   bar: **self-contained enough to re-derive the plan from scratch, including the rationale and any
   defect a review caught.** **Update that same file in place** at every later fold/recommit — a
-  record that exists but has gone stale rebuilds this same bug one level up. The working file still
+  record that exists but has gone stale rebuilds this same bug one level up. **Security-gate
+  finding detail is the one exception and goes to its own `YYYY-MM-DD-<name>-security.md`** (Step 4)
+  — this record is a restore source, and the two roots reroute independently, so where only one is
+  ignored a restore writes it straight into a tracked path. The working file still
   lives at `specs/`/`plans/` for the pipeline and SDD to read; restore it from the memory record if
   it vanishes mid-run. **Then prove the memory record just as concretely** — it exists, is non-empty,
   and its content reflects the fold you just made. Same standard as bullet 1, not a weaker one.
@@ -391,7 +394,9 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
      branch **Step 0.5 already computed** (`dev` in an adopted repo, `main`/`master` otherwise; this
      does **not** read `.publication.toml`'s `production` key). Use **one slice** unless the diff is
      too large to pass whole; only then split it, **by file group, and say so** — never silently
-     truncate.
+     truncate. **Ask it to name every file in the diff that participates in each finding**, including
+     a call site, import or config edge that makes something reachable — a fold has to touch the whole
+     set, and a one-file location hides exactly the reachability the diff alone does not show.
 
    - **When you do slice, make coverage true by construction.** **Enumerate the slices first and
      assert the union of their paths equals `git diff --name-only <base>...HEAD`.** Without it the
@@ -435,8 +440,24 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
      *deterministic* in drawing this contrast — `/audit` is this pipeline's only deterministic gate,
      and the builtin is itself model-executed.)
 
-   - **Name which reviewer actually ran** in the report — builtin or fallback — so no summary implies
-     the builtin passed when it never executed.
+     **The tree the final round judged must equal the integrated tree.** So a fold owes another round,
+     and if you will not pay for that round, do not fold — a standing FAIL then stops you. Without it
+     the re-run is the only thing that ever puts fold-introduced code inside the review. **Each round
+     re-derives its slice set from the current diff**, so a fold that grows the footprint grows the
+     review.
+
+   - **The report carries the gate's decisions, not just its verdict.** Name which reviewer actually
+     ran — builtin or fallback — so no summary implies the builtin passed when it never executed;
+     **each round's commit**, so the number of rounds is countable from something other than the
+     report asserting it; and **the commit whose tree the final round judged**, which must equal the
+     integrated tree. A missing line here is the only trace an omitted round leaves. **Finding-level
+     detail goes to its OWN record in Step 0.5's memory directory** (`YYYY-MM-DD-<name>-security.md`)
+     — never the spec/plan record, which that step names as a **restore source** for `specs/`/`plans/`
+     and which is therefore one restore away from a tracked file wherever only one of those two roots
+     is ignored. Anything committed carries counts and commits only. **A restated finding's
+     verification stays inline in the report** — it is the grounding for the only FAIL-to-clean
+     transition this gate has, and grounding the report's reader cannot reach is grounding that does
+     not exist; the record carries the supporting detail, never the claim itself.
 
    If security has surfaced *since* triage, the triage was wrong: re-triage per Step 0 rather than
    bolting this review onto a fast-lane change. Re-triaging here is **relabelling forward, not a
@@ -452,7 +473,15 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
    `superpowers:finishing-a-development-branch`: verify the project's test suite
    passes (if the repo has none, say so and rely on the per-task reviews), then
    **merge the feature branch** back to its base and clean up. The **merge is the default end
-   action** — do not pause to choose it. If tests fail, stop and report; do not merge.
+   action** — do not pause to choose it. If tests fail, stop and report; do not merge. **The base
+   must not have moved either** — assert `git merge-base <base> <feature-tip>` equals the base tip
+   before merging, and if it moved, rebase and re-run **at minimum** the suite and `/audit`, plus —
+   where Step 4 applied — that gate, exactly as the adopted finish does. **Also assert the final
+   round's commit and the feature tip have the same tree** — a fast-forward guarantees the merged tree
+   equals the *tip's*, never that the tip is what any round judged, and the adopted arm needs the same
+   assert for the same reason. **On either mismatch, do not merge:** stop and report, or re-run the
+   gate on the tip and treat its verdict as the final round. Otherwise the merge integrates a tree no
+   round judged, and any conflict resolution lands in it having appeared in no reviewer's diff.
    **Adopted repos**: do not merge — finish instead via **Adopted-repo finish: re-derive onto
    `dev`**, below.
 
@@ -467,17 +496,22 @@ history never had to be.
 1. **Freeze the oracle.** The feature-tip tree — the SDD-reviewed, gate-passed final state from steps
    1–4 above — is the convergence target; it is never re-coded, only repartitioned into bricks.
    **Record the feature-tip SHA now**, before the branch is discarded — the tip tree-compare in point
-   4 needs it.
+   4 needs it. **Assert the final security round's commit and the feature tip have the same tree**
+   before freezing, where that gate applied; on mismatch, do not freeze — re-run the gate on the tip
+   and treat its verdict as the final round, or stop and report. Point 4 compares the integrated tree
+   to this *oracle*, never to what a round judged, so without this assert any commit landing between
+   the final round and the freeze rides in unreviewed and point 4 still passes.
    - **Precondition (BLOCKER): `dev` must not have moved since the branch was cut.** Assert
      `git merge-base dev <feature-tip>` equals `dev`'s current tip. `/feature` spans sessions, so
      `dev` advancing underneath a long-running branch is plausible, not a corner case. If `dev`
-     moved, **rebase the feature branch onto `dev`'s current tip, re-run at minimum the test suite,
-     and freeze the *rebased* tip** as the oracle instead. Skip this and the tip `git diff --quiet` in
-     point 4 would still pass — but only by *reverting* `dev`'s interim commits back out, a false
+     moved, **rebase the feature branch onto `dev`'s current tip, re-run at minimum the test suite —
+     and, where Step 4's security gate applied, that gate too, since a rebase changes the tree the
+     gate judged exactly as a fold does — and freeze the *rebased* tip** as the oracle instead. Skip this and the
+     tip `git diff --quiet` in point 4 would still pass — but only by *reverting* `dev`'s interim commits back out, a false
      GREEN that silently deletes work `dev` already has. If the rebase conflicts, resolve them against
      each commit's frozen intent (never silently drop a hunk) — and if one cannot be resolved without
      altering what a commit was meant to do, **stop and report**; never force a resolution that
-     changes the brick's intent. If the post-rebase suite fails, **stop
+     changes the brick's intent. If the post-rebase suite **or gate** fails, **stop
      and report — do not freeze a broken tip as the oracle.**
 2. **Re-plan a clean brick sequence.** Working from `dev..<feature-tip>`, narrate the total change as
    a ground-up sequence of bricks — **repartitioning the reviewed code, not re-inventing it**. This is
@@ -568,7 +602,7 @@ step — e.g.
   warrant it. The default execute-then-integrate phase adds the SDD subagent passes (one implementer +
   reviews per task, plus the final whole-branch review), the security gate when triage
   flagged security — a builtin attempt **plus**, whenever that yields no valid verdict, an `opus`
-  fallback dispatch and up to one retry — each of those two, not the builtin attempt, multiplied per slice on a diff large enough to split,
+  fallback dispatch and up to one retry — each of those two, not the builtin attempt, multiplied per slice on a diff large enough to split **and again per round**, since every fold owes a further round,
   so budget it as the gate's real cost and not as one pass — and `/vet`'s reviewer dispatch when the
   diff touches a skill or agent (`/audit` is
   deterministic and near-free — excluded from this accounting, and never cut for budget); `--plan-only`
