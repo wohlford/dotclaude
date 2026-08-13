@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.81.6 — 2026-08-06
+- docs(CLAUDE.md): add the default-mode scope hazard
+
 ## v0.81.5 — 2026-08-06
 - fix(test_publish_fold_plan.py): disable tag signing in repo fixtures
 
