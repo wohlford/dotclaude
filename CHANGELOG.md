@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.87.1 — 2026-08-10
+- test(env-claims): add the mutation campaign
+
 ## v0.87.0 — 2026-08-10
 - feat(env-claims): run the suite when the checker changes
 
