@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.79.4 — 2026-08-04
+- test(publication-push-guard): cover two branches a campaign found bare
+
 ## v0.79.3 — 2026-08-04
 - docs(recast-commit-gate): name the unknown-global-option fail-open
 

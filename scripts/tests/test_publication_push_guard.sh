@@ -790,6 +790,40 @@ out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
 assert_eq "$rc" 2 "relocated hooksPath must block"
 assert_contains "$out" "not in force" "reason must name the boundary"
 
+# Relocation to a decoy holding a BYTE-IDENTICAL, EXECUTABLE copy of the hook.
+#
+# Added because a mutation campaign proved the row above does not test what it appears to: its
+# decoy is EMPTY, so `hook.is_file()` refuses first and the containment check never has to decide.
+# Measured -- mutating `if common_dir not in hook.parents` to `if False` SURVIVED the entire suite.
+# The verdict was right, by a check further down; the containment branch was uncovered.
+#
+# Here every later check passes -- the file exists, is executable, and its digest matches the
+# tracked source -- so containment is the only thing that can still refuse. It must: a hooks
+# directory outside the repository is not one the repository controls, whatever it happens to hold
+# right now. The assertion is on the RELOCATION wording, not merely on rc=2, because both branches
+# return 2 and only the reason distinguishes which one fired.
+build_repo 1
+mkdir -p "$REPO/decoy"
+cp "$REPO/git-hooks/pre-push" "$REPO/decoy/pre-push"
+chmod +x "$REPO/decoy/pre-push"
+gi "$REPO" config core.hooksPath "$REPO/decoy"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "relocation to an IDENTICAL hook still blocks (containment, not content)"
+assert_contains "$out" "relocated" \
+  "reason must name the relocation -- not a missing or altered file, which is a different branch"
+
+# A denied LOCAL write from a cwd that is not a git repository at all.
+#
+# Also added from a surviving mutant: flipping `_repo_is_adopted`'s unresolvable-root branch from
+# `return True` to `return False` survived the whole suite, because every other config row runs in a
+# real repo and the root always resolves. That branch's docstring states exactly why it must fail
+# CLOSED -- `config` is in KNOWN_SAFE_SUBCOMMANDS, so a False here does not fall through to some
+# stricter check, it ALLOWS the invocation outright. A stated safety property nothing exercised.
+NONREPO="$(mktemp -d)"
+out="$(judge "git config core.hooksPath /dev/null" "$NONREPO")"; rc=$?
+assert_eq "$rc" 2 "a denied local write from a non-repo cwd fails closed (root unresolvable)"
+assert_contains "$out" "refused because" "the refusal must be the detector's, not a crash"
+
 # ================= Task 2/3: pure git-config classifiers (not yet wired to any behaviour) =====
 # assert_py <python expression against the guard module> <expected repr string>. Imports the guard
 # BY PATH (it is a script, not an importable module, so a plain `import` would fail) and evaluates
@@ -932,6 +966,29 @@ assert_blocks "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.zz git zz" "$REPO" \
   "still refuses the GIT_CONFIG_COUNT alias-key smuggle from a non-adopted cwd"
 assert_blocks "git -C $adopted_repo config core.hooksPath /dev/null" "$REPO" \
   "still refuses git -C <adopted> config from a non-adopted cwd"
+
+# ---- the ATTACHED short-option spelling: blocked, but NOT by this detector ----
+# `-c<key>=<value>` is not a real input. MEASURED: git itself refuses it --
+# `git -cfoo.bar=baz config --get foo.bar` exits 129 with "unknown option: -cfoo.bar=baz", because
+# `-c` is not one of the short options git accepts an attached value for. `-C` is, which is exactly
+# why `classify_global_opt` carries an attached rule for that one and only that one.
+#
+# So the token classifies UNKNOWN, the invocation is unjudgeable, and the guard refuses before the
+# config detector is ever consulted. Verified by the refusal's WORDING ("could not judge:
+# subcommand '-ccore.hooksPath=/dev/null'"), not by the exit code, which both paths share -- an
+# rc=2 alone cannot tell "detected an injection" from "declined to guess". The detector's own
+# attached-`-c` branch was therefore INERT: it read as coverage while unable to fire, and a refusal
+# it never produced was being credited to it. It has been DELETED rather than tested around.
+#
+# These rows pin the thing that actually forces the outcome, so the deletion's premise cannot rot
+# silently: if `classify_global_opt` ever learns an attached `-c`, this is where it fails.
+# Both run in the ADOPTED repo deliberately -- measured, the refusal is correctly scoped there and
+# a non-adopted cwd allows all three spellings (rc=0), so a row placed there would prove nothing.
+build_repo 1
+assert_blocks "git -ccore.hooksPath=/dev/null ${VERB} origin main" "$REPO" \
+  "refuses an attached -c denied key (as unjudgeable, not as a detected injection)"
+assert_blocks "git -cuser.name=x status" "$REPO" \
+  "refuses an attached -c innocent key too -- git rejects the spelling, so this costs no workflow"
 
 # ---- still refused: a write disguised as a read (position-sensitive) ----
 build_repo 1
