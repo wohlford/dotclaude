@@ -17,6 +17,7 @@ reporting a perfect score built on a predicate that is always true.
 
 from __future__ import annotations
 
+import inspect
 import os
 import signal
 import stat
@@ -1005,3 +1006,142 @@ def test_module_is_not_executable():
     path = Path(__file__).resolve().parent.parent / "lib" / "mutate.py"
     assert not os.access(path, os.X_OK)
     assert not path.read_text().startswith("#!")
+
+
+# ---------- CLI usage: `--help` derives its call signature, it does not restate it ----------
+
+# `python3 mutate.py --help` printed 0 bytes and exited 0, same as a bare invocation — a library
+# with no visible call signature and no error either. The fix derives the usage text from
+# `inspect.signature(run)` and `Mutation._fields` rather than hand-typing a copy that drifts the
+# moment either side changes silently.
+
+MUTATE_PY = Path(mutate.__file__).resolve()
+
+
+def _run_cli(*args):
+    return subprocess.run(
+        [sys.executable, str(MUTATE_PY), *args],
+        capture_output=True,
+        text=True,
+    )
+
+
+def _own_line(text: str, prefix: str) -> str:
+    """The one line of `text` that starts with `prefix`, or raise.
+
+    Scoped to a single line on purpose: `report_path`, `fail_pattern`, `old` and `label` all
+    recur in the usage's prose section too, so a whole-stdout assertion would still pass with
+    the line under test deleted outright.
+    """
+    for line in text.splitlines():
+        if line.strip().startswith(prefix):
+            return line
+    raise AssertionError(f"no line starts with {prefix!r} in:\n{text}")
+
+
+def test_help_stdout_nonempty_and_stderr_silent():
+    proc = _run_cli("--help")
+    assert proc.returncode == 0
+    assert proc.stdout.strip(), "the help text is empty"
+    assert proc.stderr == "", proc.stderr
+
+
+def test_h_alias_matches_help():
+    proc = _run_cli("-h")
+    assert proc.returncode == 0
+    assert proc.stdout.strip()
+
+
+def test_help_run_line_names_every_run_parameter():
+    """The set is DERIVED from `run`'s own signature, so a renamed/added parameter cannot drift."""
+    proc = _run_cli("--help")
+    run_line = _own_line(proc.stdout, "run(")
+    for name in inspect.signature(mutate.run).parameters:
+        assert name in run_line, (
+            f"{name!r} missing from the run(...) line: {run_line!r}"
+        )
+
+
+def test_help_mutation_fields_line_names_every_field():
+    proc = _run_cli("--help")
+    fields_line = _own_line(proc.stdout, "Mutation fields:")
+    for name in mutate.Mutation._fields:
+        assert name in fields_line, (
+            f"{name!r} missing from the fields line: {fields_line!r}"
+        )
+
+
+def test_help_has_no_memory_address_noise():
+    """A callable default rendered with a bare `repr()` leaks `<function ... at 0x...>`."""
+    proc = _run_cli("--help")
+    assert "0x" not in proc.stdout
+
+
+def test_example_runs_against_a_real_fixture(tmp_path):
+    """Extract `mutate._EXAMPLE`, substitute real fixture paths, and actually run it.
+
+    This is the row that makes the printed example drift-proof: if `run`'s signature or
+    behaviour ever moves out from under the example text, this executes the mismatch instead of
+    a human eyeballing prose that looks plausible either way.
+    """
+    root = tmp_path.resolve()
+    subject = root / "subject.py"
+    subject.write_text("VALUE = 'old text'\n")
+    suite = root / "test_suite.py"
+    suite.write_text(
+        "import pathlib\n"
+        f"SUBJECT = pathlib.Path({str(subject)!r})\n"
+        "def test_guard():\n"
+        "    assert 'old text' in SUBJECT.read_text()\n"
+    )
+    report = root / "report.txt"
+
+    example = mutate._EXAMPLE
+    assert example.count("SUBJECT") == 1
+    assert example.count("SUITE") == 1
+    assert example.count("REPORT") == 1
+    example = example.replace("SUBJECT", repr(str(subject)))
+    example = example.replace("SUITE", repr(str(suite)))
+    example = example.replace("REPORT", repr(str(report)))
+
+    driver = root / "run_example.py"
+    driver.write_text(
+        f"import sys\nsys.path.insert(0, {str(MUTATE_PY.parent)!r})\n{example}\n"
+    )
+
+    proc = subprocess.run(
+        [sys.executable, str(driver)], capture_output=True, text=True, cwd=root
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    written = report.read_text()
+    assert _own_line(written, "RESULT:")
+
+
+def test_bare_invocation_exits_2_with_stderr_only():
+    proc = _run_cli()
+    assert proc.returncode == 2
+    assert proc.stderr.strip()
+    assert proc.stdout == ""
+
+
+def test_unknown_argument_exits_2_with_stderr_only():
+    proc = _run_cli("--nope")
+    assert proc.returncode == 2
+    assert proc.stderr.strip()
+    assert proc.stdout == ""
+
+
+def test_importing_the_module_is_silent():
+    """The module must do nothing on import — all of its behaviour lives behind `__main__`."""
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"import sys; sys.path.insert(0, {str(MUTATE_PY.parent)!r}); import mutate",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0
+    assert proc.stdout == ""
+    assert proc.stderr == ""

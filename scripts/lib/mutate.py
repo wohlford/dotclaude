@@ -93,6 +93,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Iterable, NamedTuple, Sequence
@@ -558,3 +559,73 @@ def run(
         dest.write_text(report.text + "\n")
 
     return report
+
+
+_EXAMPLE = """\
+from mutate import Mutation, run
+
+report = run(
+    SUBJECT,                                    # Path to the file to mutate
+    ["python3", "-m", "pytest", "-q", SUITE],   # argv of the suite that must notice
+    [Mutation("label", "old text", "new text")],
+    report_path=REPORT,                         # no default - omit and nothing is written
+)
+raise SystemExit(report.rc)"""
+
+
+def _render_default(value) -> str:
+    """Render a parameter default without leaking a memory address."""
+    return value.__name__ if callable(value) else repr(value)
+
+
+def _usage() -> str:
+    """Build usage text, DERIVING the call signature from the code itself.
+
+    Derived rather than restated: a usage string repeating the signature is a copy, and a copy
+    drifts the moment either side changes. Nothing would ever compare them, so the drift is silent.
+    """
+    import inspect
+
+    rendered = []
+    for name, param in inspect.signature(run).parameters.items():
+        if param.kind is inspect.Parameter.KEYWORD_ONLY and "*" not in rendered:
+            rendered.append("*")
+        if param.default is inspect.Parameter.empty:
+            rendered.append(name)
+        else:
+            rendered.append(name + "=" + _render_default(param.default))
+    return "\n".join(
+        [
+            (__doc__ or "").splitlines()[0],
+            "This is a LIBRARY - import it; running it directly only prints this text.",
+            "",
+            "    from mutate import Mutation, run",
+            "    run(" + ", ".join(rendered) + ")",
+            "",
+            "    Mutation fields: " + ", ".join(Mutation._fields),
+            "",
+            "Minimal campaign:",
+            _EXAMPLE,
+            "",
+            "Contract points a signature cannot show:",
+            "  * report_path has NO default - omit it and nothing is written anywhere.",
+            "  * The unmutated BASELINE must be green, or the campaign is ERROR, not PASS.",
+            "  * The subject is mutated in place and restored; do not edit it during a run.",
+            "  * Each old string must appear EXACTLY ONCE in the subject.",
+            "",
+            "Worked examples: scripts/tests/mutate_*.py",
+        ]
+    )
+
+
+def main(argv) -> int:
+    """Print usage; 0 when it was asked for, 2 otherwise."""
+    if list(argv) in (["--help"], ["-h"]):
+        print(_usage())
+        return 0
+    print(_usage(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

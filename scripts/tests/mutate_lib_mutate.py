@@ -207,6 +207,33 @@ MUTATIONS = [
         "    progress=_stream,",
         "    progress=None,",
     ),
+    # ---- CLI usage: `--help` derives its call signature instead of printing nothing.
+    mutate.Mutation(
+        "the __main__ guard no longer gates anything, so the CLI block fires on plain import — "
+        "the highest-stakes row: it protects all 14 importers",
+        'if __name__ == "__main__":',
+        "if True:",
+    ),
+    mutate.Mutation(
+        "the --help/-h condition is always false, so no invocation ever prints usage to stdout",
+        '    if list(argv) in (["--help"], ["-h"]):',
+        "    if False:",
+    ),
+    mutate.Mutation(
+        "main() no longer exits 2 for a bad invocation",
+        "    return 2",
+        "    return 0",
+    ),
+    mutate.Mutation(
+        "the rendered run(...) line stops reflecting run's real parameters — the anti-drift row",
+        '", ".join(rendered)',
+        '"subject, command, mutations"',
+    ),
+    mutate.Mutation(
+        "_render_default falls back to a bare repr(), leaking a callable's memory address",
+        "    return value.__name__ if callable(value) else repr(value)",
+        "    return repr(value)",
+    ),
 ]
 
 

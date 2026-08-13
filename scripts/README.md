@@ -65,4 +65,5 @@ One is worth naming, because you need it *before* you would think to look it up.
 it existed, and every re-derivation silently lost a different safety property — most often the
 unmutated baseline, without which an already-red suite scores every mutation as caught and the
 campaign prints a flawless sweep. `tests/mutate_lib_mutate.py` is the runner's own campaign, run
-on demand rather than collected by pytest.
+on demand rather than collected by pytest. `python3 lib/mutate.py --help` prints its call
+signature, derived from `run`'s own parameters rather than restated by hand.
