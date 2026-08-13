@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.77.0 — 2026-08-06
+- feat(install-git-hooks): license a stale-hook overwrite by blob history
+
 ## v0.76.1 — 2026-08-05
 - docs(pre-push): scope the verb-splitting note to new rows
 
