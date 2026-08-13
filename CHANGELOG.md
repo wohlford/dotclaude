@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.81.8 — 2026-08-07
+- fix(audit): fail hermetic-outside when it could not measure
+
 ## v0.81.7 — 2026-08-07
 - fix(audit): fail when an applicable test family could not run
 

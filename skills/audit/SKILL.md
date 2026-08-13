@@ -89,12 +89,28 @@ to the other's instrument:
   fails to follow it reports zero files, which reads exactly like "nothing changed". Session-state
   directories that legitimately churn are exempt by name; **everything else is watched by default**,
   so a directory nobody anticipated is covered. A timestamp marker catches *appends*, which leave the
-  path set unchanged. It `SKIP`s when the root lies inside the scope (`hermetic` covers that) and
-  **`FAIL`s if it ever watches zero files** — a probe that measured nothing is never a clean result.
+  path set unchanged. Its **one** `SKIP` is the root lying inside the scope, where `hermetic` covers
+  it; every other way of not measuring is a `FAIL`, since a probe that measured nothing is never a
+  clean result. So it **`FAIL`s if it watches zero files** under a root that exists, if it cannot
+  create its marker, if any watched root cannot be enumerated — the last aggregated across
+  roots, because reporting only the last root's status made a failure invisible unless it happened
+  to sort last — and if the configured root **exists but cannot be resolved**, which is a third way
+  of measuring nothing rather than a fourth kind of absence. An **absent** root is not skipped
+  either: absent-and-still-absent is a verified `PASS`, while a root the suite **created** is the
+  outside write it always was and now `FAIL`s. The `PASS` there is vacuous-but-verified, and it is
+  narrow on purpose — a path that is merely unusable (not a directory, or a directory that cannot
+  be traversed) resolves to the same empty string as one that does not exist, so gating on
+  resolution alone would have handed a positive verdict to exactly the unmeasured probe this check
+  exists to reject.
 
 `hermetic-outside` attributes to the suite anything that changed under the root during the window.
 Run non-interactively that is exact; run alongside a live session that also writes there, a `FAIL`
-may name that session's work. It never fails the other way: nothing turns a real write into a `PASS`.
+may name that session's work — and a session *deleting* under a watched root mid-walk can surface
+as an `unprovable` enumeration failure rather than an attribution one, so quiesce the tree and
+re-run once before reading a lone `unprovable` as a broken instrument. It never fails the other
+way: nothing turns a real write into a `PASS`.
+One bound it does **not** claim: a suite that creates a path and deletes it again reads as clean —
+a path-set comparison cannot see a create-then-delete, and the marker only dates files that survive.
 
 **Not every hermeticity `FAIL` is pollution, and the reason text after the em dash says which.**
 Only `the suite changed the working tree` and `the suite wrote outside the scope, under <root>`

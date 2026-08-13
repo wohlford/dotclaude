@@ -600,7 +600,13 @@ check_case "RED: a check newly given \$ignore contradicts both scoped sites" \
 #    longer contains `hermetic-outside`. Only the floor can object.
 # ---------------------------------------------------------------------------
 floor_reached="$sandbox/floor-reached-audit.sh"
-mutate_all "$audit_sh" "$floor_reached" 'hermetic-outside' 'hermetic-elsewhere' 10
+# The count is DECLARED, not discovered, so that a verdict silently appearing or vanishing in
+# check_hermetic_outside fails this row rather than sliding through. Raised 10 -> 13 when the
+# absent-root SKIP was replaced by a verified PASS/FAIL pair and the AFTER/modified
+# enumerations gained their own unprovable verdicts; 13 -> 14 when a security review found the
+# absent-root PASS also firing for a root that EXISTS but cannot be resolved, which needed its
+# own unprovable verdict to stop the widening handing a positive result to an unmeasured probe.
+mutate_all "$audit_sh" "$floor_reached" 'hermetic-outside' 'hermetic-elsewhere' 14
 mutate_all "$floor_reached" "$floor_reached.2" \
   'check_hermetic_outside' 'check_hermetic_elsewhere' 2
 mv "$floor_reached.2" "$floor_reached"

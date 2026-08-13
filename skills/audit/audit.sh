@@ -203,12 +203,21 @@ hermetic_is_churn() { # name -> 0 when exempt
   printf '%s\n' "$HERMETIC_CHURN" | grep -Fxq "$1"
 }
 
-hermetic_config_root() { # -> physical config root, or nonzero if there isn't one
+hermetic_config_root_raw() { # -> the CONFIGURED root path, resolved or not
+  # Split out so the precedence lives in exactly one place. Callers need to tell "no such path"
+  # apart from "present but unresolvable", and the only honest way to ask that is against the
+  # same string `hermetic_config_root` consulted — a hand-copied second expansion here is how
+  # the two silently disagree the first time the precedence changes.
   # `${HOME:-}`, not `$HOME`: under `set -u` an unbound variable does not fail this function,
   # it KILLS the shell (measured: rc 127). An unset HOME would abort the whole sweep instead
   # of skipping one check. Empty then yields `/.claude`, which is not a directory, so the
   # missing-root path below is reached normally.
-  local raw="${AUDIT_HERMETIC_ROOT:-${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}}"
+  printf '%s\n' "${AUDIT_HERMETIC_ROOT:-${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}}"
+}
+
+hermetic_config_root() { # -> physical config root, or nonzero if there isn't one
+  local raw
+  raw="$(hermetic_config_root_raw)"
   [[ -d "$raw" ]] || return 1
   # `cd -P` resolves the symlink before anything walks it. The measured trap: the root IS a
   # symlink, so `find ~/.claude -type f` returns ZERO files — which reads exactly like
@@ -228,15 +237,24 @@ EOF
 }
 
 hermetic_outside_files() { # watch-roots [extra find predicates...] -> absolute file paths
-  local roots="$1" p
+  local roots="$1" p agg=0
   shift
   while IFS= read -r p; do
     [[ -z "$p" ]] && continue
+    # An entry that vanished between the `ls` above and this walk is DATA, not instrument
+    # failure — it surfaces as `vanished` in the comparison. Only a walk that FAILED on an
+    # entry still present leaves part of the tree unmeasured.
+    [[ -e "$p" ]] || continue
     # -L on every walk: the root and its entries may each be symlinks (see the trap above).
-    find -L "$p" -type f "$@" 2>/dev/null
+    find -L "$p" -type f "$@" 2>/dev/null || agg=1
   done <<EOF
 $roots
 EOF
+  # AGGREGATED, never the loop's last status. `find` runs once per root, so a bare `while`
+  # reports only the LAST root's result and a failure anywhere earlier is invisible. Measured:
+  # roots [MISSING, ok] returned 0 with one walk failed, while [ok, MISSING] returned 1 — so
+  # the guard downstream fired or not depending on nothing but the order of `ls` output.
+  return "$agg"
 }
 
 # ---------- .auditignore helpers ----------
@@ -969,27 +987,70 @@ check_hermetic() { # scope before-snapshot before-status
 check_hermetic_outside() { # scope root before-files before-status marker
   local scope="$1" root="$2" before="$3" before_status="$4" marker="$5"
   local roots after n_before n_after appeared vanished modified floor_bad f scope_phys
+  local root_now eff_root after_status mod_status
 
+  # An absent root is NOT a reason to skip: a suite that CREATES the config root from nothing
+  # is itself an outside write, and the SKIP this replaces waved exactly that through. So
+  # re-resolve — but ONLY when it was absent at launch. An unconditional re-resolve would fall
+  # back to the operator's real config root in unit rows that deliberately run with
+  # AUDIT_HERMETIC_ROOT unset, silently watching live production instead of the fixture.
+  root_now=""
   if [[ -z "$root" ]]; then
-    verdict_skip hermetic-outside 'no Claude config root to watch'
-    return
+    root_now="$(hermetic_config_root)" || root_now=""
   fi
+  eff_root="${root:-$root_now}"
+
+  # Containment is judged against whichever root is in play, and BEFORE the absent-root
+  # branches below — otherwise a root created inside the scope earns a misattributed
+  # outside-write FAIL instead of the SKIP that says a sibling check already covers it.
   # Both sides must be PHYSICAL. main() resolves the scope with a plain `pwd` (logical), while
   # the root is resolved with `cd -P` — so under a symlinked TMPDIR the scope reads `/tmp/…`
   # and the root `/private/tmp/…`, and the containment test below could never match. Measured:
   # this silently skipped the SKIP on every macOS default, and only a fixture built under
   # `mktemp -d` exposed it.
-  scope_phys="$(cd -P "$scope" 2>/dev/null && pwd)" || scope_phys="$scope"
-  if [[ "$root" == "$scope_phys" || "$root" == "$scope_phys"/* ]]; then
-    verdict_skip hermetic-outside 'config root lies inside the scope — hermetic covers it'
+  if [[ -n "$eff_root" ]]; then
+    scope_phys="$(cd -P "$scope" 2>/dev/null && pwd)" || scope_phys="$scope"
+    if [[ "$eff_root" == "$scope_phys" || "$eff_root" == "$scope_phys"/* ]]; then
+      verdict_skip hermetic-outside 'config root lies inside the scope — hermetic covers it'
+      return
+    fi
+  fi
+
+  # Absent at launch and still absent: nothing existed to be written to and nothing was
+  # created, so the property is vacuously true — and VERIFIED so, which a SKIP never was.
+  # Returning here is also what keeps the zero-files FAIL below honest: that check's subject
+  # is a root that EXISTS but traverses nothing (the symlink trap), never a legitimately
+  # absent one, which would otherwise false-block every host without a config root.
+  if [[ -z "$root" ]] && [[ -z "$root_now" ]]; then
+    # An empty resolution means one of THREE things, and only one of them is vacuously true:
+    # no such path, a path that is not a directory, or a directory that cannot be traversed.
+    # `hermetic_config_root` collapses all three, so gating the PASS on resolution alone hands
+    # a POSITIVE verdict to a probe that measured nothing — this check's whole subject, rebuilt
+    # inside its own fix. Worse than the SKIP it replaced, which at least reads as a coverage
+    # gap. `-e` is the discriminator: it needs only stat on the path, so it stays true for an
+    # untraversable directory and for a regular file, and is false for genuine absence.
+    if [[ -e "$(hermetic_config_root_raw)" ]]; then
+      verdict_fail hermetic-outside \
+        'unprovable: the config root exists but could not be resolved, so nothing was watched'
+      return
+    fi
+    verdict_pass hermetic-outside
     return
   fi
+  if [[ -z "$root" ]]; then
+    verdict_fail hermetic-outside "the suite created the config root at $root_now"
+    return
+  fi
+
+  # Reached only when the root existed at launch, so the marker was actually ATTEMPTED.
+  # Gating on that ordering rather than re-testing the root is what stops the absent-root
+  # path failing on a marker nobody ever tried to create.
   if [[ -z "$marker" ]]; then
-    verdict_skip hermetic-outside 'could not create a timestamp marker; modifications unprovable'
+    verdict_fail hermetic-outside 'unprovable: could not create a timestamp marker, so modifications are unmeasurable'
     return
   fi
   if [[ "$before_status" -ne 0 ]]; then
-    verdict_fail hermetic-outside 'could not snapshot the config root BEFORE the suite ran'
+    verdict_fail hermetic-outside 'unprovable: could not enumerate the config root BEFORE the suite ran'
     return
   fi
 
@@ -1010,7 +1071,16 @@ EOF
   fi
 
   roots="$(hermetic_watch_roots "$root")"
-  after="$(hermetic_outside_files "$roots" | LC_ALL=C sort)"
+  # Status captured here too, not only for the BEFORE snapshot. A truncated AFTER is the
+  # quieter direction of the same defect: the comparison then reports files as `vanished`
+  # that are merely unseen, and — worse — a real write into a subtree that became
+  # unenumerable reads as no change at all, i.e. a clean PASS. `set -o pipefail` (line 2) is
+  # what makes this `$?` the enumerator's rather than `sort`'s; do not remove it.
+  after="$(hermetic_outside_files "$roots" | LC_ALL=C sort)"; after_status=$?
+  if [[ "$after_status" -ne 0 ]]; then
+    verdict_fail hermetic-outside 'unprovable: could not enumerate the config root AFTER the suite ran'
+    return
+  fi
 
   # The denominator. Zero watched files is never a clean bill of health — it is the signature
   # of a probe that traversed nothing (see hermetic_config_root's symlink trap).
@@ -1025,7 +1095,11 @@ EOF
   vanished="$(lines_only_in_first "$before" "$after")"
   # An APPEND leaves the path set unchanged, and the measured instance WAS an append to a log
   # that already existed — a path-set comparison alone would have called it clean.
-  modified="$(hermetic_outside_files "$roots" -newer "$marker" | LC_ALL=C sort)"
+  modified="$(hermetic_outside_files "$roots" -newer "$marker" | LC_ALL=C sort)"; mod_status=$?
+  if [[ "$mod_status" -ne 0 ]]; then
+    verdict_fail hermetic-outside 'unprovable: could not enumerate modifications under the config root'
+    return
+  fi
 
   if [[ -z "$appeared" ]] && [[ -z "$vanished" ]] && [[ -z "$modified" ]]; then
     verdict_pass hermetic-outside

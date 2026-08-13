@@ -1332,6 +1332,88 @@ case "$rO9_out" in
     printf '  --- output ---\n%s\n  --------------\n' "$rO9_out" ;;
 esac
 
+# --- rO10/rO11: an ABSENT root is measured, not skipped ------------------------------------
+# The SKIP these replace did not merely under-report: it WAIVED a real catch, because a suite
+# that creates the config root from nothing is itself an outside write. rO11 is the catch;
+# rO10 is the half that keeps it from being a false block on any host without a config root.
+rO_abs="$tmp/rO10_absent"
+mk_outside_repo "$rO_abs" ':'
+run_outside "$rO_abs" "$tmp/never-created" --tests
+assert_has 'PASS hermetic-outside' \
+  'rO10: an absent root with no write is PASS — vacuously true and verified, never SKIP'
+assert_not_has 'SKIP hermetic-outside' 'rO10: an absent root is no longer skipped'
+assert_not_has 'watched 0 files' \
+  'rO10: the zero-files guard must not fire on a legitimately absent root (that is a false block)'
+
+rO_mk="$tmp/rO11_creator"
+rO_mk_root="$tmp/made-by-suite"
+mk_outside_repo "$rO_mk" "mkdir -p '$rO_mk_root' && : > '$rO_mk_root/x'"
+run_outside "$rO_mk" "$rO_mk_root" --tests
+assert_has 'FAIL hermetic-outside' 'rO11: a suite that CREATES the config root is an outside write'
+assert_has 'created the config root' \
+  'rO11: the reason names the creation — a bare FAIL would also be satisfied by the zero-files guard'
+assert_rc 1 'rO11: creating the config root drives the sweep to exit 1'
+
+# --- rO12: the enumerator aggregates per-root failures, it does not report the LAST one -----
+# Measured pre-fix: roots [unreadable, ok] returned 0 while [ok, unreadable] returned 1 — so
+# whether the guard downstream fired depended on nothing but the order `ls` happened to emit.
+# The third pair is what keeps this row honest: an unconditionally strict enumerator would
+# satisfy the first two and is not the fix.
+rO12_lock="$tmp/agg_locked"; rO12_ok="$tmp/agg_ok"
+mkdir -p "$rO12_lock" "$rO12_ok"; : > "$rO12_lock/f"; : > "$rO12_ok/f"
+chmod 000 "$rO12_lock"
+# shellcheck disable=SC2016  # `$1`/`$2` belong to the INNER shell, not this one
+rO12_out="$(bash -c 'set -uo pipefail
+source "$1"
+hermetic_outside_files "$(printf "%s\n%s\n" "$2" "$3")" >/dev/null; printf "bad_first=%d\n" "$?"
+hermetic_outside_files "$(printf "%s\n%s\n" "$3" "$2")" >/dev/null; printf "bad_last=%d\n" "$?"
+hermetic_outside_files "$(printf "%s\n%s\n" "$3" "$3")" >/dev/null; printf "both_ok=%d\n" "$?"' \
+  _ "$engine" "$rO12_lock" "$rO12_ok" 2>&1)"
+chmod 755 "$rO12_lock" 2>/dev/null || true
+OUT="$rO12_out"
+assert_has 'bad_first=1' 'rO12: an unwalkable root that is not LAST is still reported'
+assert_has 'bad_last=1'  'rO12: an unwalkable root that is last is reported'
+assert_has 'both_ok=0'   'rO12: two good roots still succeed — the aggregate is not unconditional'
+
+# --- rO13: a BEFORE snapshot that could not enumerate is unprovable, and says so ------------
+# This is the guard a previously-filed defect declared dead. It is not dead: `set -uo pipefail`
+# at audit.sh's top makes the capture the enumerator's status, not `sort`'s. This row exists so
+# that removing pipefail — which would silently kill the guard — fails loudly instead.
+rO13_root="$tmp/before_fail_root"
+mkdir -p "$rO13_root/readable" "$rO13_root/locked"
+: > "$rO13_root/readable/f"; : > "$rO13_root/locked/f"
+chmod 000 "$rO13_root/locked"
+run_outside "$rO_abs" "$rO13_root" --tests
+chmod 755 "$rO13_root/locked" 2>/dev/null || true
+assert_has 'FAIL hermetic-outside' 'rO13: an unenumerable watch root fails rather than passing'
+assert_has 'unprovable:' 'rO13: the verdict is named unprovable, not a measured finding'
+assert_has 'BEFORE the suite ran' \
+  'rO13: the reason names the BEFORE snapshot — the guard a filed defect wrongly called dead'
+
+# --- rO14: a root that EXISTS but cannot be RESOLVED is unprovable, never a vacuous PASS -----
+# rO10's absent-root PASS is only honest when the root is genuinely absent. `hermetic_config_root`
+# returns nonzero on three conditions that collapse to the same empty string — no such path, a
+# path that is not a directory, and a directory that cannot be traversed — so without this row
+# the widening hands a POSITIVE verdict to exactly the "probe measured nothing" case this whole
+# check exists to reject. Worse than the SKIP it replaced: a SKIP is documented as a coverage gap
+# to relay, a PASS is not. Both halves below reached `PASS hermetic-outside` when first measured.
+rO14_file="$tmp/rO14_root_is_a_file"
+: > "$rO14_file"
+run_outside "$rO_abs" "$rO14_file" --tests
+assert_has 'FAIL hermetic-outside' 'rO14: a regular file as the config root is not a PASS'
+assert_has 'unprovable:' 'rO14: it is named unprovable — the instrument failed, nothing was measured'
+assert_not_has 'PASS hermetic-outside' \
+  'rO14: the vacuous-absence PASS must not fire on a root that is present but unresolvable'
+
+rO14_lock="$tmp/rO14_untraversable"
+mkdir -p "$rO14_lock"
+chmod 000 "$rO14_lock"
+run_outside "$rO_abs" "$rO14_lock" --tests
+chmod 755 "$rO14_lock" 2>/dev/null || true
+assert_has 'FAIL hermetic-outside' \
+  'rO14: a config root that exists but cannot be traversed is not a PASS'
+assert_rc 1 'rO14: an unresolvable config root drives the sweep to exit 1'
+
 # ============================================================================
 # rMA. The mutation-anchors gate's POPULATION
 # ============================================================================
