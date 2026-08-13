@@ -67,12 +67,14 @@ beyond those four on purpose: a labeled row nothing ever checks is decoration, n
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -88,6 +90,26 @@ NEW_GUARD = REPO_ROOT / "scripts" / "publication-push-guard.py"
 _BASELINE_ROOT = _TESTS_DIR / "fixtures" / "prechange"
 BASELINE_GUARD = _BASELINE_ROOT / "scripts" / "publication-push-guard.py"
 BASELINE_GIT_COMMAND = _BASELINE_ROOT / "scripts" / "lib" / "git_command.py"
+
+
+def _load_baseline_gitcmd() -> ModuleType:
+    """Import the FROZEN baseline `git_command.py` under its own module name -- never
+    `git_command`, which `new_gitcmd` above already occupies in `sys.modules`; importing the
+    baseline under the same name would silently replace it there, and every later `import
+    git_command` anywhere in the process (this module's own top-level import already ran, but a
+    fixture-scoped re-import elsewhere would not) would resolve to the WRONG build. The baseline
+    file is self-contained stdlib-only (verified: `os`, `re`, `shlex`, `typing`), so no further
+    sys.path surgery is needed to load it standalone."""
+    spec = importlib.util.spec_from_file_location(
+        "baseline_git_command", BASELINE_GIT_COMMAND
+    )
+    assert spec is not None and spec.loader is not None, (
+        f"could not build an import spec for {BASELINE_GIT_COMMAND}"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 
 # Must match publication-push-guard.py's own LOG_ENV_VAR constant -- see the hermeticity note
 # in the module docstring above.
@@ -389,14 +411,16 @@ def _build_rows(other: Path) -> list[Row]:
             MUST_BLOCK,
             "same L1 deny-set catch as send_pack_direct",
         ),
+        # ---------- Task 4 (F3): the boundary token reaches the paren branch ---------------------
         Row(
             "cd_other_gitdashc_then_P",
             f"(cd {other_s} && git -c) ; {P}",
-            XFAIL_TODAY,
-            'literal "do not consume the boundary token" drops the whole invocation instead of '
-            "returning the operator to the loop AND appending an unjudgeable truncated one -- F3's "
-            "two-part fix; one half alone is a regression",
-            xfail_task="Task 4",
+            MUST_BLOCK,
+            "the truncated `git -c`'s ambiguous value slot hands the ')' back to the main loop "
+            "instead of swallowing it, so the paren branch pops the subshell cwd and the real "
+            "push is judged in the adopted repo -- both halves of F3's two-part fix are required: "
+            "an unjudgeable invocation is still appended for the truncated `git -c` itself, so "
+            "nothing disappears either",
         ),
         # ---------- MUST_ALLOW: allowed today, must stay allowed (an over-block guard) ----------
         Row(
@@ -743,3 +767,83 @@ def test_reserved_word_preserve_matrix_was_already_blocked_on_baseline(
         "derived preserve row(s) were not actually blocked on the frozen baseline, so they prove "
         "nothing about a shrinking blocked set:\n" + "\n".join(failures)
     )
+
+
+# ---------- Task 4 (F3): the boundary token must reach the paren branch ----------
+#
+# `dashC_semicolon_boundary` / `dashc_semicolon_boundary` (defined above, in the main MUST_BLOCK
+# section) are the PRESERVE rows nothing else covers: a quoted ';' in a value-taking option's slot,
+# with no subshell in sight, so F3's fix must not disturb the pre-existing "unresolvable
+# subcommand blocks" fallback that already caught them. `cd_other_gitdashc_then_P` is the GAIN row
+# -- the leak F3 exists to close.
+
+
+def test_boundary_preserve_rows_were_already_blocked_on_baseline(
+    rows: list[Row], verdicts: dict[str, tuple[int, int]]
+) -> None:
+    """Assert-them-rc-2-on-the-baseline-FIRST, per the task: without this, a preserve row that
+    happened to be allowed on both builds would pass `test_blocked_set_does_not_shrink` for free,
+    proving nothing about F3."""
+    labels = ["dashC_semicolon_boundary", "dashc_semicolon_boundary"]
+    failures = [
+        f"{label}: baseline rc={verdicts[label][0]} (want 2)"
+        for label in labels
+        if verdicts[label][0] != 2
+    ]
+    assert not failures, (
+        "boundary-token preserve row(s) were not actually blocked on the frozen baseline, so they "
+        "are not real preserve rows:\n" + "\n".join(failures)
+    )
+
+
+def test_gain_row_was_allowed_on_baseline_and_is_blocked_on_new_build(
+    verdicts: dict[str, tuple[int, int]],
+) -> None:
+    """The explicit before/after measurement for F3's gain, not just the generic MUST_BLOCK check:
+    the frozen baseline actually leaked (rc 0 -- the subshell cwd escaped and the real push was
+    judged in the non-adopted `other` repo) and the new build actually blocks it (rc 2)."""
+    label = "cd_other_gitdashc_then_P"
+    baseline_rc, new_rc = verdicts[label]
+    assert baseline_rc == 0, (
+        f"{label}: baseline rc={baseline_rc} (want 0) -- if the baseline no longer leaks, this "
+        "row is not measuring what it claims to"
+    )
+    assert new_rc == 2, (
+        f"{label}: new build rc={new_rc} (want 2) -- the leak is not fixed"
+    )
+
+
+def test_no_invocation_disappears_relative_to_baseline(
+    sandbox: Sandbox, rows: list[Row]
+) -> None:
+    """S6/F3's property, asserted directly against the tokenizer rather than only through guard
+    exit codes: for every corpus row, if the FROZEN baseline's `iter_git_invocations_with_cwd`
+    finds at least one invocation, the new build must too. `effective_dir` may legitimately change
+    (that is the whole point of F3 -- a leaked cwd becomes a correctly-popped one), and the SHAPE
+    of an ambiguous invocation may change (see the boundary-token branch in `_walk_context`), but
+    the count must never go from non-zero to zero -- that is literal disappearance, the exact
+    regression a first, over-literal reading of "do not consume the boundary token" produced."""
+    old_gitcmd = _load_baseline_gitcmd()
+    cwd = str(sandbox.repo)
+    failures = []
+    for row in rows:
+        try:
+            old_invocations = old_gitcmd.iter_git_invocations_with_cwd(row.command, cwd)
+        except ValueError:
+            continue  # baseline ambiguity-reject -- nothing to compare against
+        if not old_invocations:
+            continue  # nothing to preserve for this row
+        try:
+            new_invocations = new_gitcmd.iter_git_invocations_with_cwd(row.command, cwd)
+        except ValueError:
+            failures.append(
+                f"{row.label}: baseline found {len(old_invocations)} invocation(s), new build "
+                "raised ValueError (0 invocations)"
+            )
+            continue
+        if not new_invocations:
+            failures.append(
+                f"{row.label}: baseline found {len(old_invocations)} invocation(s), new build "
+                "found 0 -- an invocation disappeared"
+            )
+    assert not failures, "\n".join(failures)

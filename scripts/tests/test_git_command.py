@@ -986,3 +986,56 @@ def test_an_option_value_slot_does_not_swallow_an_operator(command):
 def test_an_option_that_really_takes_a_value_still_consumes_it(command, want):
     """PRESERVE: over-correcting here would mis-parse every ordinary `-c key=value` invocation."""
     assert _subs(command) == want, command
+
+
+# ---------- F3: the value-slot boundary token must reach the paren branch ----------
+# `value_slot_op`'s fallback (the branch just above, in `_walk_context`) used to record the
+# ambiguous token as a bogus subcommand AND keep scanning forward for its argument segment,
+# swallowing everything up to the next real operator or `git` -- including a `)` that was closing
+# a real subshell. That stole the token from the paren-counting branch at the top of the walk, so
+# the subshell's cd never popped. Measured: `(cd /elsewhere && git -c) ; git push origin dev`
+# yielded TWO invocations, both with effective_dir "/elsewhere" -- the real push judged where the
+# guard is dormant. The fix is two-part: hand the token back to the loop (`i = j`, not `i = k`) so
+# the paren branch runs, AND still append an unjudgeable invocation for the truncated `git -c` so
+# nothing disappears -- see git_command.py's `is_op(tokens[j])` / `value_slot_op` branch.
+
+
+def test_value_slot_ambiguity_does_not_leak_a_subshell_cwd():
+    """THE SECURITY ROW for F3, mirroring test_options_only_invocation_does_not_leak_a_subshell_cwd
+    one slot to the left: the `)` must reach the paren branch even though it arrived by way of an
+    option's ambiguous value slot, not a bare options-only run."""
+    found = git_command.iter_git_invocations_with_cwd(
+        "(cd /elsewhere && git -c) ; git push origin dev", "/repo"
+    )
+    push = next(r for r in found if r[2] == "push")
+    assert push[0] == "/repo", f"cwd leaked out of the subshell: {found!r}"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -C ';' push origin dev",
+        "git -c ';' push origin dev",
+    ],
+)
+def test_value_slot_ambiguity_still_records_an_invocation(command):
+    """PRESERVE, and the direction that ALLOWS if F3 is implemented as only "hand the token back":
+    a literal reading of "do not consume the boundary token" makes `i = j` the whole fix, which
+    drops the invocation outright -- neither "push" nor anything else ever gets attached to a `git`
+    invocation, so the walk finds nothing and a real command that should block is silently allowed.
+    The fix must also append an unjudgeable invocation for the truncated `git`, so at least one
+    invocation is always recorded here. A SECOND `git` token before "push" would re-anchor the walk
+    on its own (the pre-existing, already-covered two-`git` form) and pass even under a "drop"
+    implementation -- deliberately single-`git`, so this actually exercises the append half."""
+    found = git_command.iter_git_invocations_with_cwd(command, "/repo")
+    assert found, f"invocation disappeared for {command!r}: {found!r}"
+
+
+def test_value_slot_ambiguity_control_rows_still_detect_the_real_push():
+    """Controls, both PRESERVE. The first has no `-c`/`-C` at all -- an ordinary subshell `cd`
+    isolated by the pre-existing paren-counting branch, untouched by F3. The second DOES exercise
+    F3's branch (`-c` immediately precedes the closing `)`, the same ambiguity as the security row
+    above) but has no `cd` inside the subshell to leak, so it was already correctly detected before
+    this fix; it pins that the two-part change does not newly drop it."""
+    assert "push" in _subs("(cd /elsewhere && true) ; git push origin dev")
+    assert "push" in _subs("(git -c) ; git push origin dev")

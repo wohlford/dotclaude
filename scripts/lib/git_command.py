@@ -1021,7 +1021,41 @@ def _walk_context(
                 # before giving up, or a context hidden there is lost.
                 _descend(tokens[i:n], cwd_state)
                 break
-            if is_op(tokens[j]) and not value_slot_op:
+            if is_op(tokens[j]):
+                if value_slot_op:
+                    # F3: `value_slot_op` means tokens[j] is the SAME ambiguous token the comment
+                    # above already named — it might be a real control operator (a `)` closing a
+                    # subshell, a `;` ending the command) or the literal quoted value a directory
+                    # named e.g. `;` would produce. Recording tokens[j] as the subcommand (below)
+                    # covers the second reading: an unresolvable, non-word "subcommand" fails the
+                    # consumers' literal-subcommand rule and blocks, so content that was hiding
+                    # behind the quoted value is never silently allowed.
+                    #
+                    # But scanning forward from here for an argument segment — the way the generic
+                    # fallback below does for a genuine subcommand — covers that second reading only
+                    # by ACCIDENT, and breaks the first one: if tokens[j] really is a `)`, grabbing
+                    # tokens after it as this invocation's `seg` both buries whatever real
+                    # invocation follows (never independently judged, allowed outright if THIS
+                    # invocation's dir turns out dormant) and skips past the operator itself, so the
+                    # paren-counting branch at the top of this loop never sees it and never pops
+                    # `subshell_cwds`. That is exactly the leak
+                    # `(cd OTHER && git -c) ; <push of dev>` measures: two invocations, both judged
+                    # in `OTHER`, the push included.
+                    #
+                    # So: append the ambiguous invocation with NO argument scan (seg=[]) — it
+                    # over-blocks on its own via the unresolvable subcommand, never disappearing —
+                    # and hand the token back to the main loop (`i = j`, never `i = j + 1` or the
+                    # `k`-scanning fallback below) so a real operator is processed normally (the
+                    # paren branch pops the subshell cwd) and a real subsequent invocation is walked
+                    # on its own, in its own correctly resolved cwd. Both halves are required
+                    # together: dropping the append (nothing recorded) turns the preserve rows
+                    # `git -C ';' <push> origin dev` / `git -c ';' <push> origin dev` from
+                    # blocked into allowed, since neither reading is a `git`-prefixed invocation the
+                    # walk would otherwise notice.
+                    _descend(tokens[i:j], cwd_state)
+                    results.append((cwd_state, cdir, tokens[j], []))
+                    i = j
+                    continue
                 # OPTIONS-ONLY invocation (`git --version | head`): the token in command position
                 # is the following control operator, not a subcommand. Recording it as one was a
                 # FAIL-OPEN, not just a nonsense verdict — it STEALS the token from the paren
