@@ -119,6 +119,12 @@ def sandbox(tmp_path):
     """
     root = tmp_path.resolve()
     subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "commit.gpgsign", "false"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "config", "tag.gpgsign", "false"], check=True
+    )
     (root / "subject.sh").write_text("alpha\nbravo\ncharlie\n")
     (root / "scripts" / "tests").mkdir(parents=True)
     box = Sandbox(root)

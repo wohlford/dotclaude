@@ -46,6 +46,7 @@ mk() {
   git -C "$r" config user.email t@t.invalid
   git -C "$r" config user.name t
   git -C "$r" config commit.gpgsign false
+  git -C "$r" config tag.gpgsign false
   cp "$subject" "$r/scripts/install-git-hooks.sh"
   chmod +x "$r/scripts/install-git-hooks.sh"
 
@@ -161,6 +162,7 @@ git init -q -b dev "$r"
 git -C "$r" config user.email t@t.invalid
 git -C "$r" config user.name t
 git -C "$r" config commit.gpgsign false
+git -C "$r" config tag.gpgsign false
 cp "$subject" "$r/scripts/install-git-hooks.sh"; chmod +x "$r/scripts/install-git-hooks.sh"
 printf 'seed\n' > "$r/seed.txt"; git -C "$r" add seed.txt; git -C "$r" commit -qm seed
 printf '#!/usr/bin/env bash\nexit 0\n' > "$r/git-hooks/pre-push"   # untracked on purpose

@@ -170,6 +170,7 @@ git clone -q "$r.origin.git" "$r.other"
 git -C "$r.other" config user.email test@test.invalid
 git -C "$r.other" config user.name test
 git -C "$r.other" config commit.gpgsign false
+git -C "$r.other" config tag.gpgsign false
 printf 'extra\n' >> "$r.other/CHANGELOG.md"
 git -C "$r.other" add -A
 git -C "$r.other" commit -qm 'someone else published'

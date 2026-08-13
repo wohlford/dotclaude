@@ -24,6 +24,7 @@ mkrepo() {
   git -C "$1" config user.email test@test.invalid
   git -C "$1" config user.name test
   git -C "$1" config commit.gpgsign false
+  git -C "$1" config tag.gpgsign false
 }
 
 # Ownership is proven by a CONTENT SENTINEL inside the hook's own source, not merely its

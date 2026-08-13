@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.81.12 — 2026-08-07
+- test: disable both git signing keys in every fixture repo
+
 ## v0.81.11 — 2026-08-07
 - docs(CLAUDE.md): add the widened-verdict hazard and split its group
 

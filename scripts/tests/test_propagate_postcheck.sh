@@ -87,6 +87,7 @@ mk() {
   git -C "$s" config user.email test@test.invalid
   git -C "$s" config user.name test
   git -C "$s" config commit.gpgsign false
+  git -C "$s" config tag.gpgsign false
 
   settings_json committed scripts/guard-one.sh > "$s/settings.json"
   printf 'v1\n' > "$s/payload.txt"
@@ -97,6 +98,7 @@ mk() {
   git -C "$l" config user.email test@test.invalid
   git -C "$l" config user.name test
   git -C "$l" config commit.gpgsign false
+  git -C "$l" config tag.gpgsign false
 
   # The runtime file: same registrations, machine-local model. This is the skip-worktree state.
   settings_json runtime-local scripts/guard-one.sh > "$l/settings.json"

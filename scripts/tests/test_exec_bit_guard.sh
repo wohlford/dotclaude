@@ -35,6 +35,7 @@ mkrepo() { # dir — init with identity, signing off, and a seed commit
   git -C "$1" config user.email test@test.invalid
   git -C "$1" config user.name test
   git -C "$1" config commit.gpgsign false
+  git -C "$1" config tag.gpgsign false
   git -C "$1" commit -q --allow-empty -m seed
 }
 
@@ -102,6 +103,7 @@ git init -q "$tmp/r7"
 git -C "$tmp/r7" config user.email test@test.invalid
 git -C "$tmp/r7" config user.name test
 git -C "$tmp/r7" config commit.gpgsign false
+git -C "$tmp/r7" config tag.gpgsign false
 printf '#!/bin/sh\nfirst\n' > "$tmp/r7/first.sh"
 git -C "$tmp/r7" add first.sh
 assert 'git commit -m x' "$tmp/r7" 2 'initial commit in fresh repo (unborn HEAD) -> blocked'

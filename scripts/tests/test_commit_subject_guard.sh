@@ -33,6 +33,7 @@ mkrepo() { # dir [marker-body] — init and opt in unless marker-body is the lit
   git -C "$1" config user.email test@test.invalid
   git -C "$1" config user.name test
   git -C "$1" config commit.gpgsign false
+  git -C "$1" config tag.gpgsign false
   git -C "$1" commit -q --allow-empty -m seed
   if [ "${2:-}" != NONE ]; then
     printf '%s\n' "${2:-$'subject_advise = 72\nsubject_block = 80'}" > "$1/.commit-conventions.toml"

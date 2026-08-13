@@ -77,6 +77,7 @@ def sandbox(tmp_path):
     git(root, "config", "user.email", "t@example.invalid")
     git(root, "config", "user.name", "T")
     git(root, "config", "commit.gpgsign", "false")
+    git(root, "config", "tag.gpgsign", "false")
     return root
 
 
@@ -288,6 +289,7 @@ def test_the_actual_propagate_restore_drops_a_hook_and_the_check_catches_it(tmp_
     git(dev, "config", "user.email", "t@example.invalid")
     git(dev, "config", "user.name", "T")
     git(dev, "config", "commit.gpgsign", "false")
+    git(dev, "config", "tag.gpgsign", "false")
     commit_settings(dev, hooks(A, B))
 
     # Production is a clone that tracks dev, exactly as the dogfood repo does.
@@ -300,6 +302,7 @@ def test_the_actual_propagate_restore_drops_a_hook_and_the_check_catches_it(tmp_
     git(live, "config", "user.email", "t@example.invalid")
     git(live, "config", "user.name", "T")
     git(live, "config", "commit.gpgsign", "false")
+    git(live, "config", "tag.gpgsign", "false")
 
     # The runtime file carries a machine-local hook and is marked skip-worktree, so git assumes
     # worktree == index for it — the property that makes a plain diff probe useless.

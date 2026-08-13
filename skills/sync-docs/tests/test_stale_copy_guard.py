@@ -53,6 +53,12 @@ def make_repo(tmp_path: Path, *, embed_copy: bool, mutate: bool) -> Path:
     (repo / "skills").mkdir(parents=True)
     (repo / "README.md").write_text(MARKED_DOC)
     subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "commit.gpgsign", "false"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "tag.gpgsign", "false"], check=True
+    )
     if embed_copy:
         dest = repo / "skills" / "sync-docs"
         shutil.copytree(

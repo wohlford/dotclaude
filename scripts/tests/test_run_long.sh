@@ -332,7 +332,7 @@ git -C "$repo" init -q >/dev/null 2>&1
 printf 'one\n' > "$repo/file.txt"
 git -C "$repo" add file.txt >/dev/null 2>&1
 git -C "$repo" -c user.email=t@example.invalid -c user.name=T -c commit.gpgsign=false \
-  commit -qm init >/dev/null 2>&1
+  -c tag.gpgsign=false commit -qm init >/dev/null 2>&1
 
 if git -C "$repo" rev-parse HEAD >/dev/null 2>&1; then
   sa="$(art subj)"

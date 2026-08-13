@@ -126,6 +126,7 @@ mkrepo() { # dir -> git init with test identity, signing/autocrlf/safecrlf off
   git -C "$1" config user.email test@test.invalid
   git -C "$1" config user.name test
   git -C "$1" config commit.gpgsign false
+  git -C "$1" config tag.gpgsign false
   git -C "$1" config core.autocrlf false
   git -C "$1" config core.safecrlf false
 }

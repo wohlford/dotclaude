@@ -67,6 +67,8 @@ def bed(tmp_path):
             "user.name=t",
             "-c",
             "commit.gpgsign=false",
+            "-c",
+            "tag.gpgsign=false",
             "commit",
             "-qm",
             "init",
