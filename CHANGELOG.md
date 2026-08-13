@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.85.0 — 2026-08-10
+- feat(env-claims): verify CLAUDE.md's documented environment claims
+
 ## v0.84.3 — 2026-08-09
 - docs(CLAUDE.md): split the probe bullet and add the harness-shim vector
 

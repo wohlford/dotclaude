@@ -17,6 +17,7 @@ for how the index below stays in sync.
 | `commit-subject-guard.py`        | PreToolUse hook — refuse a commit whose subject is provably at or over the block limit                                         |
 | `commit-subject-test.sh`         | PostToolUse hook — run the commit-subject suites, and py39-compat on any scripts/*.py edit                                     |
 | `debrief-backlog-test.sh`        | PostToolUse hook — run the debrief backlog-helper suite when its Python changes                                                |
+| `env-claims-check.py`            | Verify CLAUDE.md's documented environment claims still hold on this machine                                                    |
 | `exec-bit-guard-test.sh`         | PostToolUse hook — run the exec-bit-guard test suite when the gate or its suite changes                                        |
 | `exec-bit-guard.sh`              | PreToolUse hook — block `git commit` when it would record a new shebang file without the exec bit (or a 755→644 downgrade)     |
 | `fixture-signing-check.py`       | Flag test fixtures whose git repos can inherit the operator's global signing config                                            |
