@@ -37,7 +37,13 @@ def run(script, *args, timeout=30):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
-def git(repo, *args, check=True, env=None):
-    """Run git in `repo` with signing off and a fixed identity; optional env override."""
+def git(repo, *args, check=True, env=None, timeout=30):
+    """Run git in `repo` with signing off and a fixed identity; optional env override.
+
+    `timeout` matches `run()`'s: a fixture git call that blocks — on a signing prompt with no
+    TTY, say — must fail loudly rather than strand the suite with no verdict.
+    """
     cmd = ["git", "-C", str(repo), *_GIT_CFG, *args]
-    return subprocess.run(cmd, capture_output=True, text=True, check=check, env=env)
+    return subprocess.run(
+        cmd, capture_output=True, text=True, check=check, env=env, timeout=timeout
+    )

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.81.13 — 2026-08-07
+- test(recast_helpers.py): bound git calls so a hang fails loudly
+
 ## v0.81.12 — 2026-08-07
 - test: disable both git signing keys in every fixture repo
 
