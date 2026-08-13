@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.79.2 — 2026-08-04
+- fix(git_command): name the walk's record and derive the wrapper set
+
 ## v0.79.1 — 2026-08-04
 - fix(publication-push-guard): scope config injection to what it protects
 

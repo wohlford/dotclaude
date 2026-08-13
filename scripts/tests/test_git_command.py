@@ -1039,3 +1039,144 @@ def test_value_slot_ambiguity_control_rows_still_detect_the_real_push():
     this fix; it pins that the two-part change does not newly drop it."""
     assert "push" in _subs("(cd /elsewhere && true) ; git push origin dev")
     assert "push" in _subs("(git -c) ; git push origin dev")
+
+
+# ---------- the walk's record shape was restated in three places, and drifted ----------
+# `_walk_context` appends FIVE-element records at all three of its append sites, while its return
+# annotation, its `results` declaration and its docstring each said FOUR. Nothing failed and nothing
+# could: annotations are not checked at runtime, and both public wrappers were independently correct
+# -- `iter_git_invocations_with_cwd` slices to four deliberately, `iter_git_invocations_detailed` is
+# annotated five. So the code was right and every line that claimed to describe it was wrong, which
+# is the adjacency hazard exactly: the next editor adding a sixth element is told the wrong shape by
+# the only three lines that state one.
+#
+# The repair is to stop RESTATING the shape rather than to correct the three copies of it: one
+# `Invocation` NamedTuple that the annotations name instead of respelling. Slicing a NamedTuple
+# yields a plain tuple, so `r[:4]` and every positional unpack downstream stay byte-identical --
+# asserted below rather than assumed.
+#
+# This pair also closes a real gap: until now nothing in THIS suite exercised the detailed form or
+# `InvocationTokens` at all. The fifth element is what lets a config check scope itself to one
+# invocation's own tokens, and its only coverage was end-to-end, through the guard.
+
+
+def test_detailed_records_expose_their_fields_by_name():
+    """RED before the NamedTuple -- the walk emitted bare tuples, so there were no names to read and
+    prose was the only statement of the shape, which is precisely what had drifted. Naming the
+    fields makes the shape a value that cannot disagree with itself.
+
+    `-c core.hooksPath=...` is the shape the fifth element exists for: the key sits in the global
+    option run, ahead of a subcommand that is itself entirely innocent."""
+    (inv,) = git_command.iter_git_invocations_detailed(
+        "git -c core.hooksPath=/x status", "/repo"
+    )
+    assert inv.effective_dir == "/repo"
+    assert inv.cdir is None
+    assert inv.subcommand == "status"
+    assert inv.arg_tokens == []
+    assert inv.tokens.opts == ["-c", "core.hooksPath=/x"], (
+        f"the option run must be carried verbatim and in order: {inv.tokens.opts!r}"
+    )
+    assert inv.tokens.env == []
+
+
+def test_detailed_records_carry_the_env_prefix_of_their_own_invocation():
+    """The other half of the fifth element, and the one alignment is load-bearing for: with two
+    invocations in one line, each must carry ITS OWN env prefix. A consumer that scoped a check to
+    `tokens.env` while the walk handed it the other command's assignments would match text belonging
+    to a command it is not judging -- the whole reason these tokens ride on the record instead of
+    being re-derived by the caller."""
+    first, second = git_command.iter_git_invocations_detailed(
+        "GIT_CONFIG_COUNT=1 git status && git log", "/repo"
+    )
+    assert first.subcommand == "status"
+    assert first.tokens.env == ["GIT_CONFIG_COUNT=1"]
+    assert second.subcommand == "log"
+    assert second.tokens.env == [], (
+        f"the second invocation inherited the first's env prefix: {second.tokens.env!r}"
+    )
+
+
+def test_the_four_tuple_form_stays_a_plain_four_tuple():
+    """PRESERVE, and green before the refactor as well as after -- recorded as a preserve row rather
+    than dressed up as the RED. Its value is the one direction a NamedTuple could break things:
+    `iter_git_invocations_with_cwd` is unpacked positionally at ~40 call sites, so its slice must
+    keep yielding a PLAIN four-tuple, not a five-field record that merely compares equal to one.
+    `type(...) is tuple` is deliberate over `isinstance`, which every NamedTuple would satisfy."""
+    command = "cd /elsewhere && git -c core.hooksPath=/x status"
+    four = git_command.iter_git_invocations_with_cwd(command, "/repo")
+    five = git_command.iter_git_invocations_detailed(command, "/repo")
+    assert four, "fixture built no invocations -- the rows below would pass vacuously"
+    assert [len(r) for r in four] == [4] * len(four)
+    assert all(type(r) is tuple for r in four), (
+        f"the four-tuple form must stay a plain tuple for positional unpacking: {four!r}"
+    )
+    assert four == [tuple(r)[:4] for r in five], (
+        "the two public forms disagree: the four-tuple form is no longer the detailed form's "
+        f"first four elements -- {four!r} vs {five!r}"
+    )
+
+
+# ---------- the two backward walks must consult the SAME wrapper set ----------
+# `_git_starts_command` proves command position with `extra_wrappers=GIT_ONLY_WRAPPERS`, while
+# `_env_prefix` -- whose docstring says the two "must stay in step", because the tokens one steps
+# OVER are the tokens the other must COLLECT -- hand-copied the single current member as a literal
+# `prev == "exec"`. The two agree today only because the set happens to have exactly one element, so
+# no input can currently tell them apart and no ordinary test could be red.
+#
+# The drift direction is FAIL-OPEN, which is why this is pinned rather than left to the docstring:
+# add a member to GIT_ONLY_WRAPPERS and the walk still finds `git` after it, but the env prefix in
+# front of it is silently dropped -- so a `GIT_CONFIG_*` assignment becomes invisible to any check
+# scoped to `tokens.env`, which is exactly the config-injection detector.
+
+
+def test_env_prefix_consults_GIT_ONLY_WRAPPERS_rather_than_a_hand_copied_member(
+    monkeypatch,
+):
+    """RED before the fix. The set is monkeypatched because the invariant is about DRIFT, and drift
+    is unobservable while the set has one member -- the coupling has to be exercised at a second
+    member or it is not being tested at all. `runwrap` is deliberately absent from `WRAPPERS`, so
+    the only thing that can put `git` in command position here is `GIT_ONLY_WRAPPERS`."""
+    monkeypatch.setattr(
+        git_command, "GIT_ONLY_WRAPPERS", frozenset({"exec", "runwrap"})
+    )
+    (inv,) = git_command.iter_git_invocations_detailed(
+        "GIT_CONFIG_COUNT=1 runwrap git status", "/repo"
+    )
+    assert inv.subcommand == "status", (
+        "precondition failed: the walk never reached the invocation, so the env assertion below "
+        f"would be about nothing -- {inv!r}"
+    )
+    assert inv.tokens.env == ["GIT_CONFIG_COUNT=1"], (
+        "the env prefix was dropped in front of a GIT_ONLY_WRAPPERS member: `_env_prefix` broke on "
+        f"a wrapper `_git_starts_command` steps over -- {inv.tokens.env!r}"
+    )
+
+
+def test_env_prefix_still_collects_across_the_real_wrapper_sets():
+    """PRESERVE, green before and after -- the un-monkeypatched controls, one per set, so the fix
+    cannot buy the row above by breaking the behaviour that already worked."""
+    (via_git_only,) = git_command.iter_git_invocations_detailed(
+        "GIT_CONFIG_COUNT=1 exec git status", "/repo"
+    )
+    assert via_git_only.tokens.env == ["GIT_CONFIG_COUNT=1"]
+    (via_wrappers,) = git_command.iter_git_invocations_detailed(
+        "GIT_CONFIG_COUNT=1 sudo git status", "/repo"
+    )
+    assert via_wrappers.tokens.env == ["GIT_CONFIG_COUNT=1"]
+
+
+def test_only_dash_C_has_an_attached_short_form_because_only_dash_C_accepts_one():
+    """The asymmetry between `-C` and `-c` is real, not an oversight, and a consumer downstream had
+    written a branch for an attached `-c` that could never fire. MEASURED against git 2.55:
+    `git -cfoo.bar=baz config --get foo.bar` exits 129 with "unknown option: -cfoo.bar=baz", while
+    the separated `-c foo.bar=baz` form prints `baz`. So an attached `-c` is not merely unhandled
+    here -- it is not a command git will run.
+
+    Pinned because a deletion downstream now RESTS on it: were this to start classifying as `flag`,
+    the invocation would become judgeable and a spelling that is currently refused would be waved
+    through, with nothing left to catch it."""
+    assert git_command.classify_global_opt("-cfoo.bar=baz") == "unknown"
+    assert git_command.classify_global_opt("-c") == "value"
+    assert git_command.classify_global_opt("-C/some/path") == "flag"
+    assert git_command.classify_global_opt("-C") == "value"

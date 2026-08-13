@@ -144,6 +144,33 @@ class InvocationTokens(NamedTuple):
     opts: list[str]
 
 
+class Invocation(NamedTuple):
+    """One `git` invocation the walk found, with everything known about it at that position.
+
+    A NamedTuple rather than a bare tuple so the record's SHAPE is stated once, here, instead of
+    being respelled by every annotation that mentions it. It was previously a bare 5-tuple restated
+    in three places — `_walk_context`'s return annotation, its `results` declaration and its
+    docstring — and all three had drifted to four while the code appended five. Nothing failed,
+    because an annotation is not checked at runtime; the cost was paid by the next reader.
+
+    Slicing yields a PLAIN tuple, which is what keeps `iter_git_invocations_with_cwd`'s four-tuple
+    contract byte-identical for the ~40 call sites that unpack it positionally.
+
+    Attributes:
+        effective_dir: Working directory in force here, or None when it is not statically knowable.
+        cdir: This invocation's own `-C` value, if it carried one.
+        subcommand: The token in the subcommand slot — which may be an unjudgeable option token.
+        arg_tokens: The invocation's argument segment.
+        tokens: Its env prefix and global-option run — see `InvocationTokens`.
+    """
+
+    effective_dir: str | None
+    cdir: str | None
+    subcommand: str
+    arg_tokens: list[str]
+    tokens: InvocationTokens
+
+
 # Exec-wrappers that run their argument as a command, so `git` right after one is still in command
 # position (`sudo git commit`, `time git commit`). Bounded on purpose — an unknown leading word
 # (`echo git commit`) is treated as NOT a command, preserving the phantom-commit guard.
@@ -938,6 +965,13 @@ def _env_prefix(tokens: list[str], idx: int) -> list[str]:
     consumer reading these sees exactly what the shell would apply. Wrappers are stepped over
     without being collected — `env FOO=1 git …` puts the assignment after the wrapper, and
     `sudo git …` carries no assignment at all.
+
+    Both wrapper sets are consulted BY NAME rather than restated. This walk previously hand-copied
+    `GIT_ONLY_WRAPPERS`'s single member as a literal `prev == "exec"`, directly beneath the sentence
+    above promising the two walks stay in step — undetectable while that set has one element, and
+    fail-open the moment it gains a second: `_git_starts_command` would still put `git` in command
+    position after the new wrapper while this walk stopped short of the assignments in front of it,
+    so a `GIT_CONFIG_*` prefix would vanish from every check scoped to these tokens.
     """
     out: list[str] = []
     j = idx - 1
@@ -945,7 +979,7 @@ def _env_prefix(tokens: list[str], idx: int) -> list[str]:
         prev = tokens[j]
         if ENV_ASSIGN.match(prev):
             out.append(prev)
-        elif not (prev in WRAPPERS or prev == "exec"):
+        elif not (prev in WRAPPERS or prev in GIT_ONLY_WRAPPERS):
             break
         j -= 1
     out.reverse()
@@ -1028,7 +1062,7 @@ def _prepare(text: str, depth: int) -> tuple[str, list[CommandContext]]:
 
 def _walk_context(
     ctx: CommandContext, base_cwd: str | None, max_depth: int
-) -> tuple[list[tuple[str | None, str | None, str, list[str]]], str | None]:
+) -> tuple[list[Invocation], str | None]:
     """Walk ONE context in source order, recursing into the contexts it introduces.
 
     Args:
@@ -1037,8 +1071,9 @@ def _walk_context(
         max_depth: Maximum nesting depth before the input is treated as ambiguous.
 
     Returns:
-        The invocations found — each ``(effective_dir, cdir, subcommand, arg_tokens)`` — and the
-        working directory in force at the END of this context.
+        The `Invocation` records found, in command order, and the working directory in force at the
+        END of this context. The record names its own fields — this line deliberately does not
+        respell them, which is how it came to disagree with the code it describes.
 
     Raises:
         ValueError: On unbalanced quotes, an unterminated context, or excessive nesting.
@@ -1049,7 +1084,7 @@ def _walk_context(
     outer, nested = _prepare(ctx.text, ctx.depth)
     tokens = strip_redirects(tokenize(newlines_to_separators(outer)))
 
-    results: list[tuple[str | None, str | None, str, list[str]]] = []
+    results: list[Invocation] = []
     cwd_state = base_cwd
     walked: set[int] = set()
 
@@ -1188,7 +1223,7 @@ def _walk_context(
                 # segment nothing independently judges.
                 _descend(tokens[i:j], cwd_state)
                 results.append(
-                    (
+                    Invocation(
                         cwd_state,
                         cdir,
                         unknown_opt,
@@ -1236,7 +1271,7 @@ def _walk_context(
                     # walk would otherwise notice.
                     _descend(tokens[i:j], cwd_state)
                     results.append(
-                        (
+                        Invocation(
                             cwd_state,
                             cdir,
                             tokens[j],
@@ -1293,7 +1328,7 @@ def _walk_context(
             # the walk jumps `i = k` straight past it.
             _descend(tokens[i:k], cwd_state)
             results.append(
-                (
+                Invocation(
                     cwd_state,
                     cdir,
                     tokens[j],
@@ -1357,7 +1392,7 @@ def iter_git_invocations_with_cwd(
 
 def iter_git_invocations_detailed(
     command: str, base_cwd: str | None, max_depth: int = MAX_CONTEXT_DEPTH
-) -> list[tuple[str | None, str | None, str, list[str], InvocationTokens]]:
+) -> list[Invocation]:
     """`iter_git_invocations_with_cwd`, plus each invocation's env prefix and global-option run.
 
     Same walk, same order, same raises — the extra element is recorded by the walk itself, so a
