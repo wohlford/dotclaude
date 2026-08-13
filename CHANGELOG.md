@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.79.6 — 2026-08-05
+- fix(publication-push-guard): refuse a boundary-hook bypass flag
+
 ## v0.79.5 — 2026-08-05
 - docs(audit): name instrument failure as a second hermeticity FAIL cause
 

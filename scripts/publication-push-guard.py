@@ -727,6 +727,31 @@ def _hook_integrity_reason(root: str) -> str | None:
     return None
 
 
+_BOUNDARY_FLAG = "--no-verify"
+
+
+def _boundary_disabling_flag(flags: set[str]) -> str | None:
+    """The flag name in `flags` that would make git skip the boundary hook, or None.
+
+    Matches `--no-verify` and any abbreviation of it down to `--no-v`, because git parses this
+    subcommand's options through `parse-options`, which accepts unambiguous long-option
+    abbreviations INCLUDING negated forms -- measured on git 2.55, where `git branch --no-colo` is
+    accepted. A literal `"--no-verify" in flags` would miss `--no-veri`.
+
+    Over-blocking a prefix git would call AMBIGUOUS costs nothing, because git refuses those
+    itself; `--no-v` and `--no-ver` are in fact ambiguous here, since this subcommand also has
+    `-v/--verbose` and therefore an auto-negated `--no-verbose`. So this deliberately does NOT
+    enumerate the other `--no-*` options to compute a minimum unambiguous length: that would be a
+    second blocklist, and it would go stale the next time git grows an option.
+
+    `--no-verbose` is excluded by construction -- it is not a prefix of `--no-verify`.
+    """
+    for name in flags:
+        if name.startswith("--no-v") and _BOUNDARY_FLAG.startswith(name):
+            return name
+    return None
+
+
 def _judge_invocation(
     effective_dir: str | None,
     sub: str,
@@ -740,6 +765,26 @@ def _judge_invocation(
     values block. It exists so the refusal cannot claim a push it never found, and it is derived
     from `sub`, which is in scope at every unjudgeable site.
     """
+    # ABOVE the adoption test, and above the root resolution, ON PURPOSE. This gate is registered
+    # globally, and a flag whose entire effect is "the boundary hook shall not run" is judged the
+    # same everywhere: it is the one class where this layer's incompleteness has NO backstop,
+    # because the backstop is precisely what is being removed. Note what this does NOT claim --
+    # a command that changes the FACTS the hook evaluates (moving `main` with update-ref, branch,
+    # reset, merge) is ordinary work and is deliberately not refused here.
+    #
+    # Placed inside `_judge_push` this would sit BELOW the dormant return a few lines down and
+    # silently become adoption-scoped, while every adopted-cwd corpus row still passed. The
+    # `boundary_bypass_flag_outside_adopted_repo` row exists to fail if anyone moves it there.
+    # This position is also free: no subprocess has run yet.
+    if sub == "push":
+        disabling = _boundary_disabling_flag(_split_push_args(seg)[0])
+        if disabling is not None:
+            return Block(
+                f"'{disabling}' makes git skip the boundary hook, which is the gate this check "
+                "exists to keep in force. Publish through the promote path, or take it by hand "
+                "in your own terminal.",
+                True,
+            )
     if gitdir_override:
         return Block(
             "the command carries --git-dir/--work-tree or a GIT_DIR= assignment — root unknown",
@@ -996,9 +1041,14 @@ def _config_injection_reason(
     opts = list(tokens.opts)
     for idx, opt in enumerate(opts):
         if opt == "-c":
+            # Only the SEPARATED form. There is deliberately no attached `-c<key>=<value>` arm:
+            # git does not accept that spelling (measured, git 2.55 — rc 129, "unknown option:
+            # -cfoo.bar=baz"), so `classify_global_opt` classifies the token UNKNOWN, the
+            # invocation is unjudgeable, and the walk's caller refuses it before this detector
+            # runs. A branch for it existed here and was INERT — it read as coverage while unable
+            # to fire, and the refusal it never produced was credited to it. What forces that
+            # outcome is pinned in the tokenizer's own suite, since this comment is not a check.
             value = opts[idx + 1] if idx + 1 < len(opts) else ""
-        elif opt.startswith("-c") and len(opt) > 2:
-            value = opt[2:]
         elif opt.startswith("--config-env"):
             # `--config-env=key=envvar` takes its VALUE from the environment, so the key is
             # visible here but what it will be set to is not. Unresolvable => block.
