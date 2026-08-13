@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.84.3 — 2026-08-09
+- docs(CLAUDE.md): split the probe bullet and add the harness-shim vector
+
 ## v0.84.2 — 2026-08-09
 - test(mutate-run-long): add rows for the expect verdict
 
