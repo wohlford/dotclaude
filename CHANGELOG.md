@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.82.1 — 2026-08-07
+- docs(CLAUDE.md): add the widened-matcher and indirection hazards
+
 ## v0.82.0 — 2026-08-07
 - feat(fixture-signing): flag fixture repos that inherit signing config
 

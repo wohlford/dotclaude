@@ -290,7 +290,7 @@ left legal.
   count against the working tree and name what the predicate excluded; **do not just switch to a
   filesystem glob**, which then grades artifacts the commit will never contain.
 
-#### Your matcher matched text you did not mean
+#### Your matcher matched text you did not mean — or missed text you did
 
 - **Multi-line literal checks are a case for Python.** `grep -F` treats an embedded newline as
   *alternation*, not a sequence: `grep -Fc "$(printf 'a\nb')"` counts lines matching **either**, so a
@@ -298,6 +298,14 @@ left legal.
   (`needle in open(f).read()`) or `grep -Pzo`.
 - **A phrase you believe is one line may have WRAPPED — then a line-based grep returns 0, and
   absence is not evidence of absence.** Match against the file's whole text, not line by line.
+- **A property can arrive by INDIRECTION, so its absence from a file's TEXT is not its absence in
+  EFFECT.** Matching the whole text does not rescue you here, because the setting really is not in
+  the file — it is supplied by an imported or included module one hop away. Measured twice in one
+  session, independently: a queued note called a file defective because it contained no occurrence
+  of the setting, and a re-check of that claim reproduced the identical error before either was
+  run — the file imported a helper that had passed the setting on every call since the day it was
+  written. Grep the CLOSURE rather than the node, or assert the property's effect rather than its
+  text.
 
 #### The signal you read belongs to something else
 
@@ -373,6 +381,16 @@ left legal.
   verdict it replaced, which the docs at least told the reader to relay as a coverage gap.
   **Enumerate the sentinel's preimage before promoting any of it**, and take the discriminator from
   the source the helper consulted — re-deriving it at the call site copies a rule that then drifts.
+- **Widening a matcher to fix an under-report can make it NON-TERMINATING — and the check you would
+  run next passes.** Not the narrowing hazard: nothing stops being matched here, and every answer it
+  gives is still right; it just never finishes giving one. An alternation whose branches can split
+  one token more than one way costs `k` parses per repetition and `k**n` over `n` of them, and a
+  backtracking engine memoises nothing. Measured: a fold that widened one option group ran 0.05s,
+  0.48s, 4.4s, 31s at n=5..8 on a single crafted line — reachable from any file the scan reads.
+  Note what CLEARS it and should not: *prove the corpus still
+  matches* passes flawlessly, because the match SET only grew. Nor is the repair to narrow back — an
+  unambiguous form that was wider still ran in 0.0000s. **Ask what a widened alternation costs in
+  PARSES, not only in what it now matches.**
 
 #### It answered its own question, not the one you are relying on
 
