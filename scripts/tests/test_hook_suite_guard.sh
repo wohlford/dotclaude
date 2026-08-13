@@ -63,6 +63,7 @@ exec-bit|exec-bit-guard-test.sh|scripts/exec-bit-guard.sh|scripts/tests/test_exe
 guard-secrets|guard-secrets-test.sh|scripts/guard-secrets.sh|scripts/tests/test_guard_secrets.sh
 markdownlint|markdownlint-check-test.sh|scripts/markdownlint-check.sh|scripts/tests/test_markdownlint_check.sh
 md-links|md-links-check-test.sh|scripts/md-links-check.py|scripts/tests/test_md_links_check.sh
+memory-index-check|memory-index-check-test.sh|scripts/memory-index-check.py|scripts/tests/test_memory_index_check.sh
 style-check|style-check-test.sh|scripts/style-check.sh|scripts/tests/test_style_check.sh
 sync-docs|sync-docs-test.sh|skills/sync-docs/sync_docs.py|skills/sync-docs/tests/test_stub.py
 commit-subject|commit-subject-test.sh|scripts/lib/commit_subject.py|scripts/tests/test_commit_subject_guard.sh scripts/tests/test_commit_subject.py scripts/tests/test_py39_compat.sh

@@ -107,6 +107,14 @@
           },
           {
             "type": "command",
+            "command": "$HOME/.claude/scripts/memory-index-check.py"
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/memory-index-check-test.sh"
+          },
+          {
+            "type": "command",
             "command": "$HOME/.claude/scripts/exec-bit-guard-test.sh"
           },
           {
