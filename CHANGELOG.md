@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.81.2 — 2026-08-06
+- docs(CLAUDE.md): add the deploy-half ordering hazard
+
 ## v0.81.1 — 2026-08-06
 - test(propagate-postcheck): anchor the boundary-hook check
 

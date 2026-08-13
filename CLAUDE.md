@@ -401,6 +401,17 @@ left legal.
   afterwards there were eight and only seven were anyone's job. Re-read the wrapper against the
   case you ADDED — it is the one no reviewer holds a prior for, and the one your own attention
   already spent itself on.
+- **Two halves that ARRIVE TOGETHER can still TAKE EFFECT at different instants, so shipping them
+  as one unit does not close an ordering constraint.** The unit that fails you is the UPDATE, not
+  the commit — atomic delivery buys nothing here. A tool read into memory when an operation is
+  INVOKED runs its pre-update version for that entire run, while a tool the same run resolves by
+  PATH is already the new one, so the halves activate in the order the runtime chooses. Measured: a
+  step that satisfies an assertion and the assertion itself arrived in one update, and the landing
+  run still executed the OLD performer against the NEW assertion and failed, once, by construction.
+  Nothing in the new code can change what an already-loaded old copy does, so this class is
+  foreseeable and never fixable — predict it and say plainly that the first run will fail and what
+  clears it, or the failure reads as a broken deploy rather than as the change arriving, which
+  invites exactly the wrong repair.
 
 #### The check itself writes — what it leaves behind is the hazard
 
