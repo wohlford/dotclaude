@@ -355,6 +355,129 @@ check_has  "$OUT" 'PASS settings-identical' 'strict dead gate: byte-identity rea
 check_has  "$OUT" 'FAIL hooks-registered' 'strict dead gate: the hooks check still catches it'
 check_has  "$OUT" 'guard-one' 'strict dead gate: the missing hook is named'
 
+# ---------- N. the boundary hook, adopted fixtures ----------
+
+# mk_adopted DIR -> mk(), plus what makes the boundary real: a tracked .publication.toml (the
+# adoption predicate), a tracked git-hooks/pre-push with history, a LOCAL refs/heads/main, and the
+# hook installed in live.
+#
+# The local `main` is load-bearing HERE for a specific reason: the check under test FAILs an armed
+# repo whose refs/heads/main does not resolve, mirroring audit.sh. A clone gives you origin/main
+# only, so without this line every row below would return that FAIL and none of them would reach
+# the digest logic they were written for -- every verdict correct, every verdict about the wrong
+# question. (This is also why fixtures for the boundary at large need it: the allowlist is stated
+# in terms of reachability from local main.)
+mk_adopted() {
+  local d="$1"
+  mk "$d"
+  local s="$d/src" l="$d/live"
+  mkdir -p "$s/git-hooks"
+  printf '# adopted\nproduction = "dev"\n' > "$s/.publication.toml"
+  printf '#!/usr/bin/env bash\n# boundary hook v1\nexit 0\n' > "$s/git-hooks/pre-push"
+  chmod +x "$s/git-hooks/pre-push"
+  git -C "$s" add -A
+  git -C "$s" commit -qm 'adopt: boundary hook v1'
+  git -C "$l" fetch -q "$s" dev
+  git -C "$l" merge -q --ff-only FETCH_HEAD
+  git -C "$l" branch -q main 2>/dev/null || true
+  cp "$l/git-hooks/pre-push" "$(cd "$l" && git rev-parse --path-format=absolute --git-path hooks)/pre-push"
+  chmod +x "$(cd "$l" && git rev-parse --path-format=absolute --git-path hooks)/pre-push"
+}
+
+hookdest() { printf '%s/pre-push\n' "$(cd "$1" && git rev-parse --path-format=absolute --git-path hooks)"; }
+
+# advance_hook DIR -> a src commit changing the boundary hook (the promote that goes stale).
+advance_hook() {
+  printf '#!/usr/bin/env bash\n# boundary hook v2\nexit 0\n' > "$1/src/git-hooks/pre-push"
+  git -C "$1/src" commit -qam 'boundary hook v2'
+}
+
+# --- clean: installed matches tracked ---
+r="$tmproot/hook-clean"; mk_adopted "$r"
+before="$(sha256_of "$r/live/settings.json")"
+advance_payload "$r"; promote "$r"
+OUT="$("$engine" --scope "$r/live" --before-sha "$before" 2>/dev/null)"; RC=$?
+check_eq  "$RC" 0 'hook clean: rc=0'
+check_has "$OUT" 'PASS pre-push-installed' 'hook clean: the boundary hook check passes'
+
+# --- stale: the promote changed the hook and nothing re-installed it ---
+# This is the exact state the postcheck reported RESULT: PASS over before this check existed.
+r="$tmproot/hook-stale"; mk_adopted "$r"
+before="$(sha256_of "$r/live/settings.json")"
+advance_hook "$r"; promote "$r"
+OUT="$("$engine" --scope "$r/live" --before-sha "$before" 2>/dev/null)"; RC=$?
+check_eq   "$RC" 1 'hook stale: rc=1'
+check_has  "$OUT" 'FAIL pre-push-installed' 'hook stale: the check FAILS'
+check_has  "$OUT" 'RESULT: FAIL' 'hook stale: RESULT is FAIL'
+check_has  "$OUT" 'install-git-hooks.sh --force-if-ours' 'hook stale: the remedy is named'
+
+# --- foreign: installed matches no tracked version; the installer remedy must NOT be offered ---
+r="$tmproot/hook-foreign"; mk_adopted "$r"
+before="$(sha256_of "$r/live/settings.json")"
+advance_hook "$r"; promote "$r"
+printf '#!/usr/bin/env bash\n# planted\nexit 0\n' > "$(hookdest "$r/live")"
+OUT="$("$engine" --scope "$r/live" --before-sha "$before" 2>/dev/null)"; RC=$?
+check_eq    "$RC" 1 'hook foreign: rc=1'
+check_has   "$OUT" 'FAIL pre-push-installed' 'hook foreign: the check FAILS'
+check_lacks "$OUT" '--force-if-ours' 'hook foreign: the installer remedy is NOT offered'
+
+# --- missing ---
+r="$tmproot/hook-missing"; mk_adopted "$r"
+before="$(sha256_of "$r/live/settings.json")"
+advance_payload "$r"; promote "$r"
+rm -f "$(hookdest "$r/live")"
+OUT="$("$engine" --scope "$r/live" --before-sha "$before" 2>/dev/null)"; RC=$?
+check_eq  "$RC" 1 'hook missing: rc=1'
+check_has "$OUT" 'not installed' 'hook missing: the cause is named'
+
+# --- not executable: git silently ignores such a hook, so this must not read as clean ---
+r="$tmproot/hook-noexec"; mk_adopted "$r"
+before="$(sha256_of "$r/live/settings.json")"
+advance_payload "$r"; promote "$r"
+chmod -x "$(hookdest "$r/live")"
+OUT="$("$engine" --scope "$r/live" --before-sha "$before" 2>/dev/null)"; RC=$?
+check_eq  "$RC" 1 'hook noexec: rc=1'
+check_has "$OUT" 'not executable' 'hook noexec: the cause is named'
+
+# --- symlink: refused, and NOT reported as a digest match ---
+# Without this row, deleting the `-L` branch would let a symlink pointing at current tracked
+# content PASS here while audit.sh FAILs it and the installer refuses it -- three tools, two
+# answers, on the one condition the shared check name promises they agree about.
+r="$tmproot/hook-symlink"; mk_adopted "$r"
+before="$(sha256_of "$r/live/settings.json")"
+advance_payload "$r"; promote "$r"
+d="$(hookdest "$r/live")"; rm -f "$d"; ln -s "$r/live/git-hooks/pre-push" "$d"
+OUT="$("$engine" --scope "$r/live" --before-sha "$before" 2>/dev/null)"; RC=$?
+check_eq  "$RC" 1 'hook symlink: rc=1 even though the target content matches'
+check_has "$OUT" 'is a symlink' 'hook symlink: the symlink cause is named'
+
+# --- tracked source missing from an ADOPTED repo ---
+r="$tmproot/hook-nosource"; mk_adopted "$r"
+before="$(sha256_of "$r/live/settings.json")"
+advance_payload "$r"; promote "$r"
+rm -f "$r/live/git-hooks/pre-push"
+OUT="$("$engine" --scope "$r/live" --before-sha "$before" 2>/dev/null)"; RC=$?
+check_eq  "$RC" 1 'hook nosource: rc=1'
+check_has "$OUT" 'tracked source' 'hook nosource: the missing source is named'
+
+# --- armed but refs/heads/main does not resolve ---
+# audit.sh FAILs this state; so must the postcheck, or the two disagree about one repo.
+r="$tmproot/hook-nomain"; mk_adopted "$r"
+before="$(sha256_of "$r/live/settings.json")"
+advance_payload "$r"; promote "$r"
+git -C "$r/live" branch -q -D main
+OUT="$("$engine" --scope "$r/live" --before-sha "$before" 2>/dev/null)"; RC=$?
+check_eq  "$RC" 1 'hook nomain: rc=1'
+check_has "$OUT" 'refs/heads/main does not resolve' 'hook nomain: the cause is named'
+
+# --- non-adopted: SKIP, and the 59 pre-existing rows depend on this being the default ---
+r="$tmproot/hook-unadopted"; mk "$r"
+before="$(sha256_of "$r/live/settings.json")"
+advance_payload "$r"; promote "$r"
+OUT="$("$engine" --scope "$r/live" --before-sha "$before" 2>/dev/null)"; RC=$?
+check_eq  "$RC" 0 'hook unadopted: rc=0'
+check_has "$OUT" 'SKIP pre-push-installed' 'hook unadopted: the check skips, it does not pass'
+
 # ---------- summary ----------
 # Printed BEFORE the verdict is computed, so its absence is itself the signal that this
 # run died rather than passed.

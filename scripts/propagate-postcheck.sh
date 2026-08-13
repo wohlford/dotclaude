@@ -3,7 +3,9 @@ set -uo pipefail
 
 # Script: propagate-postcheck.sh
 # Purpose: Verify /propagate's LOCAL promote landed correctly, choosing the postcondition branch
-#          itself instead of leaving that to the operator
+#          itself instead of leaving that to the operator. Also asserts, unconditionally on an
+#          adopted repo, that the pre-push boundary hook installed at .git/hooks/pre-push is
+#          current — the fast-forward alone cannot have updated it (see pre-push-installed).
 # Usage: propagate-postcheck.sh --scope <live> --before-sha <sha256> [--ref <ref>] [--before-head <commit>]
 #
 # Scope: this script verifies; it changes nothing. It runs AFTER the fast-forward, so every
@@ -79,6 +81,8 @@ script_name="$(basename "$0")"
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 
 readonly SETTINGS=settings.json
+readonly TRACKED_HOOK=git-hooks/pre-push
+readonly INSTALLER=scripts/install-git-hooks.sh
 
 pass_count=0
 fail_count=0
@@ -134,9 +138,30 @@ file_sha256() {
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
+# hook_is_a_tracked_version SCOPE PATH -> 0 when PATH's content is a blob TRACKED_HOOK has held
+# in HEAD's history. Mirrors install-git-hooks.sh's license so the diagnosis here and the
+# installer's decision there cannot disagree about the same file.
+hook_is_a_tracked_version() { # scope path
+  local scope="$1" path="$2" blob members
+  blob="$(git -C "$scope" hash-object -- "$path" 2>/dev/null)"
+  [[ -n "$blob" ]] || return 1
+
+  # Accumulate first, then match with a HERESTRING -- never `… | grep -qx`. This file runs under
+  # `set -o pipefail`, and `grep -q` exits at its first match, SIGPIPEing whatever writes to it;
+  # pipefail surfaces that as 141 and the function reports "not a tracked version" on exactly the
+  # inputs that DO match. Measured. Accumulating alone does NOT fix it -- the `printf` feeding
+  # grep is just as killable -- so the pipeline has to go, not merely move.
+  members="$(git -C "$scope" rev-list HEAD -- "$TRACKED_HOOK" 2>/dev/null \
+    | while IFS= read -r c; do
+        git -C "$scope" rev-parse -q --verify "$c:$TRACKED_HOOK" 2>/dev/null
+      done)"
+  grep -qx "$blob" <<<"$members"
+}
+
 main() {
   local scope="" before_sha="" ref=FETCH_HEAD before_head="" head_src=ORIG_HEAD
   local head_sha ref_sha base changed in_range helper out rc identity_note got
+  local adopted hook_ref hook_dir hook_dest
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -278,6 +303,71 @@ main() {
         printf '%s\n' "$out" | sed 's/^/  /'
         ;;
     esac
+  fi
+
+  # ---------- pre-push-installed ----------
+  # Same NAME and same adoption predicate as audit.sh's check_pre_push_installed, deliberately:
+  # the two instruments assert the same invariant, so a divergent predicate would let them
+  # disagree about the same repo and leave the operator arbitrating between two tools.
+  #
+  # Read-only, like everything else here. It reports what to run; it never runs it.
+  adopted=no
+  while IFS= read -r hook_ref; do
+    [[ -z "$hook_ref" ]] && continue
+    if git -C "$scope" cat-file -e "${hook_ref}:.publication.toml" 2>/dev/null; then
+      adopted=yes
+      break
+    fi
+  done < <(git -C "$scope" for-each-ref --format='%(refname)' refs/heads/ 2>/dev/null)
+
+  hook_dir="$(cd "$scope" 2>/dev/null \
+    && git rev-parse --path-format=absolute --git-path hooks 2>/dev/null)"
+  hook_dest="${hook_dir:+$hook_dir/pre-push}"
+
+  if [[ "$adopted" == no ]]; then
+    verdict_skip pre-push-installed \
+      'repo not adopted -- no refs/heads/* branch carries .publication.toml'
+  elif ! git -C "$scope" rev-parse --quiet --verify refs/heads/main >/dev/null 2>&1; then
+    # audit.sh:751-753 mirrors the boundary hook's own BLOCK case here rather than skipping past
+    # it. Omitting this branch is not a smaller check -- it is the SAME check disagreeing with
+    # audit.sh about the same repo, which is the one outcome sharing the name must not produce.
+    verdict_fail pre-push-installed \
+      'armed (a branch carries .publication.toml) but refs/heads/main does not resolve'
+  elif [[ -z "$hook_dir" ]]; then
+    # Without this, an unresolvable hooks dir degrades $hook_dest to the literal "/pre-push" and
+    # the run FAILs while naming a path that was never the subject.
+    verdict_fail pre-push-installed 'could not resolve the git hooks directory'
+  elif [[ ! -f "$scope/$TRACKED_HOOK" ]]; then
+    verdict_fail pre-push-installed \
+      "adopted, but the tracked source $TRACKED_HOOK is missing from $scope"
+  elif [[ ! -e "$hook_dest" ]]; then
+    verdict_fail pre-push-installed \
+      "not installed -- $hook_dest does not exist; run $INSTALLER --force-if-ours in $scope"
+  elif [[ -L "$hook_dest" ]]; then
+    # Ahead of the regular-file test, because `-f` FOLLOWS a symlink: a link to a real file
+    # satisfies `-f` and the symlink cause would never be reported.
+    verdict_fail pre-push-installed \
+      "$hook_dest is a symlink -- must be a regular copy; remove it by hand first"
+  elif [[ ! -f "$hook_dest" ]]; then
+    # Ahead of the digest read, because file_sha256 on a FIFO BLOCKS FOREVER. A non-regular
+    # destination must be refused rather than measured -- a hang leaves no verdict at all, which
+    # is worse than any wrong one.
+    verdict_fail pre-push-installed "$hook_dest is not a regular file"
+  elif [[ ! -x "$hook_dest" ]]; then
+    verdict_fail pre-push-installed \
+      "$hook_dest is not executable -- git silently ignores such a hook; chmod +x it"
+  elif [[ "$(file_sha256 "$hook_dest")" == "$(file_sha256 "$scope/$TRACKED_HOOK")" ]]; then
+    verdict_pass pre-push-installed
+  elif hook_is_a_tracked_version "$scope" "$hook_dest"; then
+    # STALE: a prior tracked version, so the installer's own license covers it and naming the
+    # remedy is correct.
+    verdict_fail pre-push-installed \
+      "$hook_dest is a PRIOR tracked version of $TRACKED_HOOK -- run $INSTALLER --force-if-ours in $scope"
+  else
+    # FOREIGN: deliberately does NOT name the installer. The remedy is wrong here -- what is
+    # installed was never a version of this hook, and deciding what it is comes first.
+    verdict_fail pre-push-installed \
+      "$hook_dest matches NO tracked version of $TRACKED_HOOK -- it was not installed from this repo; inspect it before replacing it"
   fi
 
   if [[ "$fail_count" -eq 0 ]]; then
