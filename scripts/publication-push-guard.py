@@ -138,7 +138,7 @@ PREFIX = "publication-push-guard:"
 
 
 class Block(NamedTuple):
-    """A refusal, plus WHICH question produced it. Both values block — this is not a severity.
+    """A refusal, plus WHICH question produced it. All values block — this is not a severity.
 
     `is_push` is True only when a push was actually identified (a literal `push`, or an alias
     chain that resolves to one). It is False when the guard could not judge the command at all:
@@ -151,10 +151,21 @@ class Block(NamedTuple):
     it with an override — the reflex the push rules exist to prevent. The inverse matters just as
     much, which is why this is a two-axis split and not a rename: `git --git-dir=$X/.git push
     origin dev` IS a push and is unjudgeable, so it must keep the alarming wording.
+
+    `boundary_unverifiable` is a THIRD, orthogonal category: an `_hook_integrity_reason` refusal
+    fires only after `_judge_push` already returned None, i.e. always on an allowlisted target,
+    so `is_push` is correctly True here — the invocation was a real one — yet the "refusing to
+    push private 'dev'" wording is still wrong, because the target being refused is not private.
+    Flipping `is_push` to False would be equally wrong: that branch says "no push was
+    identified", and one was. Neither of the two existing messages fits, so this is its own
+    boolean rather than a third value squeezed onto `is_push` — the boundary could not be
+    verified, so no publish from this repo can be judged, which is a statement about the GATE,
+    not about the target.
     """
 
     reason: str
     is_push: bool
+    boundary_unverifiable: bool = False
 
 
 class AmbiguousCommand(ValueError):
@@ -690,9 +701,42 @@ def _resolve_alias_chain(
 # against this working-tree file to detect a stale or hand-edited install.
 TRACKED_HOOK_RELPATH = "git-hooks/pre-push"
 
+# The installer every per-cause remedy below either names or presupposes. A single constant so
+# the five call sites cannot drift from one another (or from the tracked-source comment above).
+INSTALL_SCRIPT_RELPATH = "scripts/install-git-hooks.sh"
 
-def _hook_integrity_reason(root: str) -> str | None:
+# Appended to every remedy `_hook_integrity_reason` returns. This gate does not read the
+# ALLOW_PUSH=1 override at all (see the module docstring), and an integrity refusal is exactly
+# the case where reaching for it is most tempting -- the refspec itself is fine.
+_NO_OVERRIDE_NOTE = "ALLOW_PUSH=1 will not help."
+
+
+def _hook_integrity_reason(root: str) -> tuple[str, str] | None:
     """Why the boundary is not in force at `root`, or None when it is.
+
+    Returns a ``(reason, remedy)`` pair instead of a bare string. The single call site used to
+    append ONE remedy ("reinstall with scripts/install-git-hooks.sh") to whichever of this
+    function's causes fired -- wrong for a relocated `core.hooksPath` (reinstalling cannot undo
+    a relocation) and impossible in principle for a missing tracked source (the installer's own
+    input is the missing file). Each cause below carries the remedy that is actually reachable
+    from it.
+
+    Checked in a fixed order, and the order is load-bearing, not incidental:
+
+    - The new symlink cause (S) is probed BEFORE `.resolve()` is trusted. `.resolve()` follows
+      symlinks, so a hook that is itself a symlink pointing outside the common dir would trip
+      the containment cause first, leaving this branch installed but never reachable --
+      indistinguishable from a dead line. Narrower than containment: a symlinked hooks
+      *directory* holding a real regular hook file leaves the leaf `is_symlink()` probe False
+      (see the containment cause's wording below) and falls through to containment on its own.
+    - The tracked-source cause comes AFTER containment but BEFORE the install-state causes
+      (missing / not executable / digest mismatch), because every install-class remedy
+      presupposes that source existing -- but it must not be hoisted all the way to the top: a
+      checkout with both a missing source and a relocated hooks path must not be told "update
+      the checkout, then install", which cannot clear a relocation either.
+
+    This reorder is message-selection only: the function still blocks iff any cause holds, so
+    the refusal SET is invariant under it -- only which text gets printed changes.
 
     Three facts observed WITHOUT the boundary's cooperation, so no spelling of any
     command evades it: git's own resolution of the hook path (which already honours
@@ -709,29 +753,69 @@ def _hook_integrity_reason(root: str) -> str | None:
         root, "rev-parse", "--path-format=absolute", "--git-common-dir"
     )
     if resolved is None or common is None:
-        return "the hook path could not be resolved"
+        return (
+            "the hook path could not be resolved",
+            "confirm .git exists here and that ordinary git commands run in this repo -- git "
+            f"itself could not resolve its own hooks path. {_NO_OVERRIDE_NOTE}",
+        )
     try:
-        hook = Path(root, resolved).resolve()
+        hook_raw = Path(root, resolved)
+        # Probed on the RAW (unresolved) path -- see the ordering note in the docstring above.
+        is_hook_symlink = hook_raw.is_symlink()
+        hook = hook_raw.resolve()
         common_dir = Path(common).resolve()
     except OSError:
-        return "the hook path could not be resolved"
+        return (
+            "the hook path could not be resolved",
+            "confirm .git exists here and that ordinary git commands run in this repo -- git "
+            f"itself could not resolve its own hooks path. {_NO_OVERRIDE_NOTE}",
+        )
+    if is_hook_symlink:
+        return (
+            f"the installed boundary hook at {hook_raw} is a symlink",
+            f"remove the symlink at {hook_raw} yourself, then run {INSTALL_SCRIPT_RELPATH} -- "
+            "the installer refuses to install over a symlink even with --force, so removing it "
+            f"by hand comes first. {_NO_OVERRIDE_NOTE}",
+        )
     if common_dir not in hook.parents:
         return (
-            f"git resolves the boundary hook to {hook}, outside the repository's own "
-            "hooks directory -- core.hooksPath has been relocated"
+            f"git resolves the boundary hook to {hook}, outside the repository's own hooks "
+            "directory. This can happen because core.hooksPath has been relocated, or because "
+            ".git/hooks itself is a symlinked directory pointing elsewhere",
+            "find where core.hooksPath is set (git config --show-origin --get "
+            "core.hooksPath) and unset it in that scope; if .git/hooks is itself a symlinked "
+            "directory, point it back at a real directory holding the tracked hook. "
+            f"{_NO_OVERRIDE_NOTE}",
         )
-    if not hook.is_file():
-        return f"the boundary hook is missing at {hook}"
-    if not os.access(hook, os.X_OK):
-        return f"the boundary hook at {hook} is not executable"
     tracked = Path(root, TRACKED_HOOK_RELPATH)
     if not tracked.is_file():
-        return f"the tracked hook source {TRACKED_HOOK_RELPATH} is missing"
+        return (
+            f"the tracked hook source {TRACKED_HOOK_RELPATH} is missing from this checkout",
+            "this checkout predates the publication boundary; fetch and check out a revision "
+            f"carrying {TRACKED_HOOK_RELPATH} and {INSTALL_SCRIPT_RELPATH}, then run the "
+            f"installer -- fetching is not a publish, so nothing here blocks it. "
+            f"{_NO_OVERRIDE_NOTE}",
+        )
+    if not hook.is_file():
+        return (
+            f"the boundary hook is missing at {hook}",
+            f"run {INSTALL_SCRIPT_RELPATH}, or copy {TRACKED_HOOK_RELPATH} to {hook} by hand "
+            f"and chmod +x it. {_NO_OVERRIDE_NOTE}",
+        )
+    if not os.access(hook, os.X_OK):
+        return (
+            f"the boundary hook at {hook} is not executable",
+            f"chmod +x {hook}, or re-run {INSTALL_SCRIPT_RELPATH}. {_NO_OVERRIDE_NOTE}",
+        )
     if (
         hashlib.sha256(hook.read_bytes()).hexdigest()
         != hashlib.sha256(tracked.read_bytes()).hexdigest()
     ):
-        return f"the installed boundary hook at {hook} does not match {TRACKED_HOOK_RELPATH}"
+        return (
+            f"the installed boundary hook at {hook} does not match {TRACKED_HOOK_RELPATH}",
+            f"run {INSTALL_SCRIPT_RELPATH} --force -- the installer refuses to overwrite a "
+            f"differing regular file without --force. {_NO_OVERRIDE_NOTE}",
+        )
     return None
 
 
@@ -866,10 +950,19 @@ def _judge_invocation(
         return Block(reason, True)
     integrity = _hook_integrity_reason(root)
     if integrity is not None:
+        integrity_reason, integrity_remedy = integrity
         return Block(
-            f"the publication boundary is not in force: {integrity}. ALLOW_PUSH=1 will "
-            "not help; reinstall with scripts/install-git-hooks.sh.",
-            True,
+            # NOT "is not in force" -- that is true of six of the seven causes but FALSE of a
+            # symlinked hook that resolves to a good, digest-matching file inside the repo's own
+            # hooks directory: git follows it and the boundary really does run. Measured. That
+            # shape is refused anyway (the installer refuses symlinks even under --force, because
+            # a DANGLING one is silently ignored), but it is refused as a state this guard will
+            # not clear, not as an absent boundary. Overclaiming here would re-create, at this new
+            # cause, exactly the false-attribution defect the per-cause split exists to remove.
+            f"the publication boundary is not in a state this guard will clear: "
+            f"{integrity_reason}. {integrity_remedy}",
+            is_push=True,
+            boundary_unverifiable=True,
         )
     return None
 
@@ -1461,7 +1554,19 @@ def main() -> int:
         return 2
 
     if reason is not None:
-        if reason.is_push:
+        if reason.boundary_unverifiable:
+            # A THIRD category, checked before the two-axis split below. `_judge_push` already
+            # returned None to reach `_hook_integrity_reason`, so `is_push` is correctly True
+            # here -- but the target is allowlisted, so "refusing to push private 'dev'" is
+            # simply false, while claiming "no push was identified" (the other branch) is
+            # equally false, since one was. Neither fits: the refusal is about the GATE, not the
+            # target, so it gets its own wording.
+            print(
+                f"{PREFIX} refusing this git invocation -- this refusal is about the boundary "
+                f"itself, not the target: {reason.reason}",
+                file=sys.stderr,
+            )
+        elif reason.is_push:
             # A push WAS identified. Unchanged wording — a runbook greps for this line, and this
             # is the case where alarm is correct.
             print(

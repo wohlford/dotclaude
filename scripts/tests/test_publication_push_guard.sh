@@ -143,6 +143,16 @@ assert_contains() { # haystack needle label
   fi
 }
 
+assert_not_contains() { # haystack needle label
+  if printf '%s' "$1" | grep -qF -- "$2"; then
+    printf 'FAIL  %s (unexpectedly found: %s)\n' "$3" "$2"
+    fail=$((fail + 1))
+  else
+    printf 'PASS  %s\n' "$3"
+    pass=$((pass + 1))
+  fi
+}
+
 # The command carries a distinctive marker so we can prove the RECORD is of THIS command and not
 # some generic string the guard would have emitted regardless.
 FE_CMD='git status --short # marker-Xy7Qz-unique'
@@ -788,7 +798,7 @@ mkdir -p "$REPO/decoy"
 gi "$REPO" config core.hooksPath "$REPO/decoy"
 out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
 assert_eq "$rc" 2 "relocated hooksPath must block"
-assert_contains "$out" "not in force" "reason must name the boundary"
+assert_contains "$out" "not in a state this guard will clear" "reason must name the boundary"
 
 # Relocation to a decoy holding a BYTE-IDENTICAL, EXECUTABLE copy of the hook.
 #
@@ -823,6 +833,164 @@ NONREPO="$(mktemp -d)"
 out="$(judge "git config core.hooksPath /dev/null" "$NONREPO")"; rc=$?
 assert_eq "$rc" 2 "a denied local write from a non-repo cwd fails closed (root unresolvable)"
 assert_contains "$out" "refused because" "the refusal must be the detector's, not a crash"
+
+# ================= Task 5: per-cause hook-integrity remedies, reorder, symlink cause ============
+# `_hook_integrity_reason` now returns (reason, remedy) instead of a bare string, in the order
+# S < 2 < 5 < {3, 4, 6}. Every row below sends an ALLOWED refspec (origin main) so a block can
+# only come from the integrity check itself -- same convention as Task 1 above. `build_repo 1`
+# leaves a HEALTHY installed hook and tracked source in place; each row below removes or alters
+# exactly the pieces its cause needs, on top of that base.
+
+# ---- F1: the reported stale-checkout shape -- marker committed, nothing installed at all ----
+# Before this task, cause 3 ("the boundary hook is missing") fired first here and its only
+# remedy named scripts/install-git-hooks.sh -- a script this checkout does not have. After the
+# reorder, cause 5 (tracked source missing) fires first, and its remedy needs no file this
+# checkout lacks: it names a fetch, not a script.
+build_repo 1
+rm -f "$REPO/.git/hooks/pre-push" "$REPO/git-hooks/pre-push"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "F1: stale checkout (no hook, no tracked source) still blocks"
+assert_contains "$out" "fetch and check out" \
+  "F1: the remedy is reachable from the stale checkout -- names a fetch, not a missing script"
+assert_contains "$out" "is missing from this checkout" \
+  "F1: the reported cause is the tracked source, not the installed hook"
+
+# ---- Cause S in isolation: a symlinked hook FILE whose target resolves INSIDE the repo ----
+# The symlink's target is byte-identical to the tracked source and lives inside .git/hooks/
+# itself, so containment (2), is_file, X_OK and the digest would ALL pass if the leaf were
+# resolved instead of probed raw first. Without the is_symlink() probe running before
+# .resolve(), this exact repo would ALLOW -- installed but dead, indistinguishable from working.
+build_repo 1
+mv "$REPO/.git/hooks/pre-push" "$REPO/.git/hooks/_real_pre_push"
+ln -s "$REPO/.git/hooks/_real_pre_push" "$REPO/.git/hooks/pre-push"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "a symlinked hook FILE blocks even though its target resolves inside the repo"
+assert_contains "$out" "is a symlink" \
+  "cause S is the one reported -- not merely that something blocked"
+
+# ---- Which-cause pinning: two causes live at once, over every adjacent pair in S < 2 < 5 <
+# ---- {3, 4, 6}. Invariance alone (something blocked) would pass even if the EARLIER cause's own
+# ---- message never appeared -- these assert the specific text, not just the exit code.
+
+# (symlink + relocated): hooksPath relocated to a decoy dir, AND the hook AT the decoy is itself
+# a symlink pointing further outside. Both S's and 2's conditions hold; S must win.
+build_repo 1
+mkdir -p "$REPO/decoy"
+ln -s /dev/null "$REPO/decoy/pre-push"
+gi "$REPO" config core.hooksPath "$REPO/decoy"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "symlink+relocated: still blocks"
+assert_contains "$out" "is a symlink" "symlink+relocated: cause S wins, not cause 2"
+
+# (source-missing + relocated): hooksPath relocated to a decoy dir (2's condition holds) AND the
+# tracked source is missing from the checkout (5's condition holds too). 2 precedes 5 -- hoisting
+# 5 to the very top (the natural misreading of "5 first") would tell this exact repo "update the
+# checkout, then install", which cannot clear a relocation.
+build_repo 1
+mkdir -p "$REPO/decoy"
+gi "$REPO" config core.hooksPath "$REPO/decoy"
+rm -f "$REPO/git-hooks/pre-push"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "source-missing+relocated: still blocks"
+assert_contains "$out" "outside the repository's own hooks directory" \
+  "source-missing+relocated: cause 2 wins, not cause 5"
+
+# (hook-missing + source-missing): no installed hook (3's condition holds) AND no tracked source
+# (5's condition holds too). 5 precedes 3 -- every install-class remedy (3's included)
+# presupposes the tracked source existing.
+build_repo 1
+rm -f "$REPO/.git/hooks/pre-push" "$REPO/git-hooks/pre-push"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "hook-missing+source-missing: still blocks"
+assert_contains "$out" "is missing from this checkout" \
+  "hook-missing+source-missing: cause 5 wins, not cause 3"
+
+# (not-executable + source-missing): the installed hook exists but lost its executable bit (4's
+# condition holds) AND the tracked source is missing (5's condition holds too). This is the row
+# that actually pins 5-vs-4: "5 first" is not the same claim as "5 before {3,4,6}", and an
+# implementer who ordered 4 before 5 would pass every row above and fail only this one.
+build_repo 1
+chmod -x "$REPO/.git/hooks/pre-push"
+rm -f "$REPO/git-hooks/pre-push"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "not-executable+source-missing: still blocks"
+assert_contains "$out" "is missing from this checkout" \
+  "not-executable+source-missing: cause 5 wins, not cause 4"
+
+# ---- Refusal-set invariance: every individual cause, alone, still blocks. The reorder is
+# ---- message-selection only -- never a change to WHETHER the function returns non-None. (The
+# ---- None case -- a healthy hook still allows -- is already covered above, at the top of Task 1.)
+build_repo 1
+gi "$REPO" config core.hooksPath "$REPO/nonexistent-decoy"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "invariance: cause 2 alone still blocks"
+
+build_repo 1
+rm -f "$REPO/git-hooks/pre-push"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "invariance: cause 5 alone still blocks"
+
+build_repo 1
+rm -f "$REPO/.git/hooks/pre-push"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "invariance: cause 3 alone still blocks"
+
+build_repo 1
+chmod -x "$REPO/.git/hooks/pre-push"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "invariance: cause 4 alone still blocks"
+
+build_repo 1
+printf '#!/bin/sh\nexit 1\n' >"$REPO/.git/hooks/pre-push"
+chmod +x "$REPO/.git/hooks/pre-push"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "invariance: cause 6 (digest mismatch) alone still blocks"
+
+# ---- Cause "1" (unresolvable), defensive: every call site above has already had `root` proven
+# ---- by `_resolve_root`, so this cause cannot be reached through the judge()/push_run() pipeline
+# ---- the rows above use. Probed directly, against a root that cannot be `git -C`'d at all (a
+# ---- regular file, not a directory) -- the one shape that makes git's OWN root resolution fail
+# ---- before this function's logic ever runs.
+BADROOT="$(mktemp)"
+badroot_reason="$(python3 -c "
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('g', '$guard')
+m = importlib.util.module_from_spec(spec); sys.modules['g'] = m
+spec.loader.exec_module(m)
+result = m._hook_integrity_reason('$BADROOT')
+print(result[0] if result else '(none)')
+")"
+badroot_label="cause 1 (unresolvable): reported directly against a root git -C cannot use"
+if [[ "$badroot_reason" == "the hook path could not be resolved" ]]; then
+  printf 'PASS  %s\n' "$badroot_label"
+  pass=$((pass + 1))
+else
+  printf 'FAIL  %s (got: %s)\n' "$badroot_label" "$badroot_reason"
+  fail=$((fail + 1))
+fi
+rm -f "$BADROOT"
+
+# ---- F1b: an integrity refusal on an ALLOWLISTED target must claim neither two-axis message.
+# ---- `main` is allowlisted (Task 1's own positive control proves it), so this refusal fires only
+# ---- because of the boundary's own state -- not because of anything about the target.
+build_repo 1
+rm -f "$REPO/.git/hooks/pre-push"
+out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "F1b: an integrity refusal on an allowed target still blocks"
+assert_contains "$out" "about the boundary itself, not the target" \
+  "F1b: integrity refusals get their own wording"
+assert_not_contains "$out" "refusing to ${VERB} private 'dev'" \
+  "F1b: must not claim a private-'dev' ${VERB} (the target was main)"
+assert_not_contains "$out" "No ${VERB} was identified" \
+  "F1b: must not claim no ${VERB} was identified (one was)"
+
+# PRESERVE: a genuine private-branch refusal must still print the exact runbook-grepped line,
+# byte for byte -- F1b's new message path must not have touched the is_push=True line itself.
+build_repo 1
+out="$(judge "git ${VERB} origin dev" "$REPO")"; rc=$?
+assert_eq "$rc" 2 "PRESERVE: a real dev ${VERB} is still blocked"
+assert_contains "$out" "refusing to ${VERB} private 'dev' (or an ambiguous target):" \
+  "PRESERVE: the runbook-grepped line is unchanged, byte for byte"
 
 # ================= Task 2/3: pure git-config classifiers (not yet wired to any behaviour) =====
 # assert_py <python expression against the guard module> <expected repr string>. Imports the guard

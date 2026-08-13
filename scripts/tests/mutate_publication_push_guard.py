@@ -29,12 +29,21 @@ MUTATIONS = [
     # ---- the two-axis refusal split (a refusal must not misdescribe what it judged)
     mutate.Mutation(
         "every refusal blames a push again, including ones that found none",
-        "        if reason.is_push:",
-        "        if True:",
+        "        elif reason.is_push:",
+        "        elif True:",
     ),
     mutate.Mutation(
         "an unjudgeable PUSH is de-alarmed — the direction that softens a real refusal",
-        "        if reason.is_push:",
+        "        elif reason.is_push:",
+        "        elif False:",
+    ),
+    # A THIRD arm joined the split: an integrity refusal is about the boundary, not the target,
+    # so it must not fall through to either two-axis branch. Collapsing it sends those refusals
+    # into the is_push arm, which then claims a private-branch publish on an ALLOWLISTED target
+    # -- the exact misattribution the arm was added to remove.
+    mutate.Mutation(
+        "an integrity refusal falls back to blaming the target again",
+        "        if reason.boundary_unverifiable:",
         "        if False:",
     ),
     mutate.Mutation(
