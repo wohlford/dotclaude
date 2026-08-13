@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.88.1 — 2026-08-12
+- docs(CLAUDE.md): add the lossy-converter extraction hazard
+
 ## v0.88.0 — 2026-08-10
 - feat(delegating): add DELEGATING.md and wire it into the dispatch path
 

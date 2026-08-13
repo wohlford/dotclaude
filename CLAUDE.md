@@ -348,6 +348,16 @@ left legal.
   run — the file imported a helper that had passed the setting on every call since the day it was
   written. Grep the CLOSURE rather than the node, or assert the property's effect rather than its
   text.
+- **A CONVERTER can silently drop most of a document and still exit 0, so you search a SUBSET that
+  reads as the whole.** Neither wrapping nor indirection: the text never reached you at all, and the
+  extraction reported success. Measured: `pdftotext -layout` over a printed code review returned 372
+  plausible lines with every inline `code` span intact and **every prose paragraph absent** — the
+  body font carried no usable ToUnicode map and the monospace font did. Nothing looked broken, only
+  sparse, so a summary built from it would have named the right files while missing every reviewer's
+  actual point; rendering the pages to images recovered all of it. **Check the extraction's YIELD
+  against the source before trusting any search over it** — not by size or line count, which is what
+  a genuinely sparse document also produces, but by confirming one specific passage you can see with
+  your own eyes survived the conversion.
 
 #### The signal you read belongs to something else
 
