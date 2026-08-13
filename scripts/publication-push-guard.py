@@ -889,7 +889,15 @@ def _judge_invocation(
         )
 
     root = _resolve_root(effective_dir)
-    if root is None:
+    if not root:
+        # Not `root is None`: `_resolve_root` cannot currently return "" (measured — a bare
+        # repo's `--show-toplevel` exits 128, which already yields None), so this is defensive
+        # hardening, not a live path. It closes the same hole `_repo_is_adopted_root`'s own `if
+        # not root: return True` already closes at ITS call site, one call earlier: an empty
+        # root must never reach a `git -C ""` subprocess, which git documents as leaving the
+        # working directory UNCHANGED — silently judging whatever repo this process happens to
+        # be sitting in, rather than refusing outright.
+        #
         # Name the commonest cause when the evidence is right here in the token: a hook sees
         # command text UNEXPANDED, so `-C "$live"` is four literal characters and can never
         # resolve. Saying so turns an inscrutable refusal into a one-word fix.
@@ -907,12 +915,13 @@ def _judge_invocation(
     # a pre-adoption commit, or a plain `rm` flips it while the hook stays ARMED. This is the
     # SWAP, not a disjunction with the old test -- they differ at fresh adoption (marker present,
     # committed nowhere), and there the disjunction would arm this layer while the hook stays
-    # dormant, which is the disagreement this change exists to remove. It also fixes an empty-
-    # string root: `_resolve_root` can in principle return "" rather than None, and
-    # `Path("") / ...` resolves against the hook's OWN cwd. `_repo_is_adopted_root`'s explicit
-    # `if not root: return True` closes that -- not `git -C ""`, which git documents as leaving the
-    # working directory UNCHANGED, so it would silently judge whatever repo the hook process
-    # happens to be sitting in.
+    # dormant, which is the disagreement this change exists to remove.
+    #
+    # `root` cannot be empty here -- the `if not root:` check above already refused it, closing
+    # an empty string at THIS call site directly. `_repo_is_adopted_root`'s own `if not root:
+    # return True` guard is not redundant, though: it is still load-bearing for its OTHER caller,
+    # `_repo_is_adopted`, which the config-injection call site in `_find_block_reason` uses and
+    # which never runs through this function at all.
     if not _repo_is_adopted_root(root):
         return None  # not adopted — dormant
 
