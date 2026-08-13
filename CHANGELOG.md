@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.81.10 — 2026-08-07
+- docs(CLAUDE.md): add the shared-harness corroboration hazard
+
 ## v0.81.9 — 2026-08-07
 - docs(audit): mark a plain sweep PASS as no evidence the suite ran
 

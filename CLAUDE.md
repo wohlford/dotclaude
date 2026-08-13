@@ -213,6 +213,16 @@ left legal.
   digest reconstructed from committed content was wrong and a real postcondition checker returned a
   FAIL that was purely the input. All measured. The clean run is the dangerous one — nobody
   investigates it.
+- **A second instrument AGREEING is not a second measurement when it inherits the same harness —
+  so "independently corroborated" can mean one broken probe run twice.** Distinct from the bullet
+  above, which is one probe's environment lying: here the environment lies identically to everyone
+  who reaches for the obvious probe, and agreement is then produced BY the defect rather than
+  despite it. Measured: a defect recorded as *confirmed by measurement* and later *independently
+  corroborated by a different reviewer* did not exist — both had run the probe in a default shell
+  instead of the file's own `set -uo pipefail`, which inverts the answer. The corroboration was
+  logged as *raising confidence that it is real*, and its prescribed repair would have replaced a
+  working guard with a dead one. **Ask what the second run VARIED, never that it agreed** — if it
+  reused the harness, the axis that could be wrong was never tested twice.
 - **A change that is only correct in COMBINATION is one unit of work.** Two halves of a fix can be
   individually wrong in *opposite* directions — one alone over-blocks, the other alone lets the bug
   through — so landing half is not partial progress, it is a regression. And it is one no suite can
@@ -220,6 +230,9 @@ left legal.
   a filter and the flag that makes it safe, split across two tasks; the interval shipped the
   over-blocking half and broke a real workflow while three suites stayed green. Ship them together, or
   say plainly that the interval is broken and why.
+
+#### It ran and could never have failed
+
 - **A regression test that never reaches the defect passes for free — watch it FAIL before you trust
   its PASS.** The fixture's environment is part of the subject: `mktemp -d` under a symlinked
   `$TMPDIR` (`/tmp` → `/private/tmp`) yields a *logical* path that does not physically contain the
