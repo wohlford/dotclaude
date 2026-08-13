@@ -226,6 +226,9 @@ left legal.
   edited minutes later. Freeze the tree for the run, or re-run afterwards and name the tree each
   verdict covers. **Re-running only the cheap subset is the trap** — that asserts the skipped checks
   could not have been reached, which is the dependency-graph excuse, and it owes the same grep.
+  **The run may even predate your SESSION** — a backgrounded job survives the exit while the waiter
+  that would have notified you does not, so the next session edits inside a window it cannot see and
+  reads the failure as pollution rather than its own doing. Look for a live run before editing.
 - **A tool that IGNORES an argument it cannot parse answers with its OWN defaults, and the run looks
   normal.** Neither refusal nor crash: the wrong-shaped input is discarded unread and the tool falls
   back to what it discovers for itself, so the verdict is **true** about a configuration you never
