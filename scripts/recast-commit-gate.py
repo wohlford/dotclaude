@@ -31,6 +31,26 @@ operators (``-A&&git``), leading/trailing redirects, bare wrappers (``sudo``/``t
 ``revert`` is out of scope (its content was gated when first committed on the branch). Resolving
 aliases, nested command strings, and wrapper argument lists is tracked as future hardening.
 
+One more fail-open form, listed separately because it is a REGRESSION rather than an original gap:
+a commit preceded by a global option the shared walk's allowlist does not recognise
+(``git --frob commit -m x``). The unknown token lands in the subcommand slot and the walk stops
+there rather than guessing its arity, so no ``commit`` is ever seen and this gate does not fire.
+Measured against both builds: the pre-narrowing walk scanned past the unknown option and returned
+``[(None, 'commit', ['-m','x'])]``; today's returns ``[(None, '--frob', [])]``. Refusing to guess is
+right for the walk — the alternative is inventing an arity — but the caught set shrank as a side
+effect, in a sibling nobody re-measured, which is the narrowing-drops-true-positives shape exactly.
+Bounded today by git itself: an unknown global option is refused before anything runs (measured,
+git 2.55 — ``git --frob status`` exits 129, ``unknown option: --frob``), so no command of this shape
+executes and there is nothing to gate. The real exposure is a FUTURE git global option this
+allowlist has not learned: that command WOULD run, and this gate would silently not fire. Pinned,
+with a positive control, in ``scripts/tests/test_recast_hooks.sh``.
+
+Measured alongside it, and the reason this was documented rather than repaired in the shared walk:
+the SAME input fails CLOSED in ``publication-push-guard.py`` — an unjudgeable subcommand is refused
+there, blocking even an otherwise-allowed refspec. So the shrink lands only in this gate, whose
+contract is fail-open, and not in the security gate. Teaching the walk an in-band unjudgeable marker
+would touch every consumer to fix a shape none of them can currently reach.
+
 Exit codes:
   0 — not a relevant commit, or the affected suite(s) passed (fail OPEN on any ambiguity about whether
       the command is even a commit; never false-block a non-commit).

@@ -176,6 +176,23 @@ printf 'changed\n' >>"$REPO/skills/recast/recast-state.sh"
 gi "$REPO" add skills/recast/recast-state.sh >/dev/null 2>&1
 gate_run "$REPO" "git add -A && git commit -m x" 2 "gate: compound 'add && commit' (pre-staged) -> 2"
 
+# An unrecognised GLOBAL OPTION is a documented fail-open — pinned, because it is a REGRESSION and
+# not an original gap. The shared walk stops at the unknown token rather than guessing its arity, so
+# the `commit` two slots over is never seen; the pre-narrowing walk scanned past it and DID reach the
+# commit. Refusing to guess is right for the walk, but the shrink landed in this sibling, which
+# nobody re-measured at the time.
+#
+# The FIRST row is the whole point: without a positive control, "exit 0" is what a completely broken
+# gate returns too, so the fail-open row below would pass for the wrong reason forever. Same repo,
+# same staged change, same message — the ONLY difference is the unknown option.
+build_repo fail
+printf 'changed\n' >>"$REPO/skills/recast/recast-state.sh"
+gi "$REPO" add skills/recast/recast-state.sh >/dev/null 2>&1
+gate_run "$REPO" "git commit -m x" 2 \
+  "gate: positive control — this exact tree and staging IS gated -> 2"
+gate_run "$REPO" "git --frob commit -m x" 0 \
+  "gate: an unrecognised global option is a documented fail-open -> 0"
+
 # operator fused to the prior token / newline-joined 'add … commit' must not bypass the gate
 build_repo fail
 printf 'changed\n' >>"$REPO/skills/recast/recast-state.sh"   # unstaged
