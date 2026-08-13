@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.77.1 — 2026-08-07
+- fix(tests): disable git signing in the two fixtures that sign today
+
 ## v0.77.0 — 2026-08-06
 - feat(install-git-hooks): license a stale-hook overwrite by blob history
 

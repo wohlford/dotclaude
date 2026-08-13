@@ -50,10 +50,11 @@ sandbox="$(mktemp -d)"
 sandbox="$(cd -P "$sandbox" && pwd)"
 trap 'rm -rf "$sandbox"' EXIT
 
-git_id() { # dir -> test identity, signing off
+git_id() { # dir -> test identity, signing off (BOTH keys: an annotated tag signs too)
   git -C "$1" config user.email test@test.invalid
   git -C "$1" config user.name test
   git -C "$1" config commit.gpgsign false
+  git -C "$1" config tag.gpgsign false
 }
 
 install_hook() { # repo_dir [source]
