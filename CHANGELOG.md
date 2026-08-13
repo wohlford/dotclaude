@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.81.5 — 2026-08-06
+- fix(test_publish_fold_plan.py): disable tag signing in repo fixtures
+
 ## v0.81.4 — 2026-08-09
 - docs(CLAUDE.md): point run-long users at --expect
 
