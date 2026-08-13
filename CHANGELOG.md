@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.76.1 — 2026-08-05
+- docs(pre-push): scope the verb-splitting note to new rows
+
 ## v0.76.0 — 2026-08-05
 - feat(pre-push): add the git-native publication boundary and its check
 

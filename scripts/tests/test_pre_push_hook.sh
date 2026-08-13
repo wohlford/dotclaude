@@ -222,8 +222,10 @@ else
   fail_line "deleting an otherwise-unreachable ref is allowed and the ref is gone" "$out (rc=$rc); still present: $still_present"
 fi
 
-# Assembled so the verb never sits literally next to "git" in this file's own source --
-# same reasoning as test_publication_push_guard.sh's VERB and test_guard_corpus.py's _VERB.
+# Assembled for the same reason as test_publication_push_guard.sh's VERB and
+# test_guard_corpus.py's _VERB. NOTE: this is a convention for NEWLY authored rows only -- the
+# rows above this point spell the verb out next to "git" some fifteen times, and are deliberately
+# left alone rather than churned. Do not read this as a property of the file.
 VERB="pu""sh"
 
 # ============================================================================
