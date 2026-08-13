@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.82.3 — 2026-08-07
+- docs(CLAUDE.md): add the output-format rubber-stamp hazard
+
 ## v0.82.2 — 2026-08-07
 - fix(feature): trace security-gate rounds and bound the finish
 

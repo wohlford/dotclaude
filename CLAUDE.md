@@ -252,6 +252,15 @@ left legal.
   appeared only once the paired input was varied to one that rule ALLOWS. Vary the dimension you are
   actually testing, and require at least one row whose verdict would MOVE if the mechanism were
   deleted — a sheet where nothing moves is measuring the rule above it.
+- **A comparison against another party's OUTPUT FORMAT can be unsatisfiable — and gating an *allow*
+  on it builds a rubber stamp, not a dead guard.** Not two sides you resolved differently yourself,
+  where normalising is the fix: you do not own both producers, so the move is to SAMPLE what each
+  actually emits before comparing them. Measured: an exemption became available when every file a
+  report named was absent from a diff's file list — but the reporting party's contract was
+  `file:line` and its harness separately demanded absolute paths, while the diff listed bare
+  relative ones. Nothing could ever match, so every item read as absent and every item took the
+  exemption, on files the change was actively editing. It ran on each item and returned a verdict
+  each time, so *did it reach the subject* clears it.
 
 #### Right verdict, wrong inputs — stale tool or tree, wrong population or parameters
 
