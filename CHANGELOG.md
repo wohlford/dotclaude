@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.79.5 — 2026-08-05
+- docs(audit): name instrument failure as a second hermeticity FAIL cause
+
 ## v0.79.4 — 2026-08-04
 - test(publication-push-guard): cover two branches a campaign found bare
 
