@@ -29,6 +29,7 @@ Wondering how the pieces fit — what takes effect where, and what owns what? Se
 | [workflows.md](workflows.md) | Development workflows — the `/feature` pipeline, with Explore/Plan/Code/Commit and TDD as primitives |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | How this repo fits together — enforcement mesh, staging→propagate lifecycle, source-of-truth map |
 | [TESTING.md](TESTING.md) | Test layout and conventions (pytest suites, fixture-repo factories, harness style) |
+| [DELEGATING.md](DELEGATING.md) | Constraints a delegated subagent must observe — the block to paste into each dispatch |
 
 ### Skills (Slash Commands)
 

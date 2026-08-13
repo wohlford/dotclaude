@@ -292,6 +292,13 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
      every implementer and reviewer silently runs at the session tier — usually the most capable and
      most expensive. That one omission costs more than every review in this pipeline combined, and it
      is invisible: nothing reports it.
+   - **Deliver [`DELEGATING.md`](../../DELEGATING.md)'s constraint block into every implementer
+     dispatch, the way that file prescribes** — pasted verbatim and positioned **last**, plus the two
+     companion steps it names (copy it into the plan's `## Global Constraints`; cite the file's path
+     around the block, never inside it). Last, because a delegate's own template may instruct it to
+     commit its work, and an override only lands if it arrives after the text it overrides. Paste the
+     block **whole**: only one of its lines concerns committing, and the rest are independently
+     load-bearing, so trimming it to what a given dispatch appears to need silently drops them.
    - Dispatch per the tier ladder in [agents/README.md](../../agents/README.md): **implementers** at
      the cheapest tier that fits (a task whose plan text carries the complete code is transcription →
      `haiku`; multi-file integration or judgment → `sonnet`); **task reviewers** at `sonnet`; the
