@@ -54,6 +54,15 @@ appetite they own (how strict a gate should be, what false-block rate is accepta
 are paying for, and anything where proceeding wrongly would be unsafe or waste substantial work.
 Batch whatever survives — ask once, at a natural checkpoint, not as each item arises.
 
+## Delegating
+
+**Dispatch subagents freely — the standing preference is MORE of them, not fewer**, and no
+per-dispatch permission is needed. Once a plan is reviewed, delegate execution by default; keep only
+what is genuinely yours — verifying each returned result, foreground commits, and decisions the user
+owns. Never give your own remaining context as a reason to stop; the real ceiling is the DEPENDENCY
+GRAPH (disjoint file sets parallelize; two tasks rewriting one function do not), which is checkable,
+where "low on context" is not.
+
 ## Skills, agents, hooks, and plugins
 
 **[~/.claude/README.md](./README.md) carries the full generated indexes** — every skill, agent,

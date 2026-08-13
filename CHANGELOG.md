@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.75.14 — 2026-08-05
+- docs(CLAUDE.md): record the standing grant to delegate freely
+
 ## v0.75.13 — 2026-08-05
 - docs(CLAUDE.md): warn that a background run outlives its session
 
