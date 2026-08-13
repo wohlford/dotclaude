@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.83.1 — 2026-08-08
+- fix(test_mutate.py): park the campaign instead of racing exit flush
+
 ## v0.83.0 — 2026-08-07
 - feat(memory-index-check): flag index entries grown into content
 

@@ -106,10 +106,39 @@ RAISE_LIMIT = mutate.Mutation("raise the limit", "LIMIT = 10", "LIMIT = 99")
 # diagnosed three ways (a sidecar file, a specific mutation, a backgrounding bug) before the
 # truth — it simply takes 30+ minutes — was recalled rather than read. Cost: a false HIGH and
 # about an hour. So the property is not "the text contains progress lines" (buffering satisfies
-# that); it is that a line is READABLE while the process is still running.
+# that); it is that a line is READABLE while the process is still running — and "still running"
+# must be established BY CONSTRUCTION, since a child flushes its whole buffer at exit and a
+# parent can read that finished artifact before `poll()` reports the exit: measured at 2/20 and
+# 1/20 false clears.
 
-SLOW_SUITE_SRC = """#!/usr/bin/env bash
-sleep 1
+# The suite parks the campaign inside its SECOND mutation's run, identified by that mutation's
+# own marker. By then the campaign has emitted both the baseline line and a per-mutation line,
+# so what the test observes is progress arriving INCREMENTALLY, not merely an opening line.
+# While this script blocks, the campaign is inside `communicate()` and cannot have exited — which
+# is what makes an exit-time flush impossible here rather than merely unlikely.
+#
+# The park must stay EARLY in the campaign. Measured at this point the artifact holds 224 bytes,
+# and nothing reaches the file until ~8200 — the binding limit is TextIOWrapper's 8192-char
+# pending buffer, NOT the 4096-byte block size underneath it — so there are about 200 further
+# progress lines of headroom. Move the park later and a buffered mutant would fill that buffer
+# and flush for FREE before the snapshot, so this row would go green with the defect present,
+# which is byte-identical to green without it.
+#
+# The wait is bounded in WALL CLOCK, not iterations: an iteration count is not a bound, because
+# the multiplier belongs to the host. Measured here, `sleep 0.1` costs 0.263s — this machine adds
+# a flat ~0.146s to every sleep, so a 150-iteration version ran 38s, not the 16s it claimed, i.e.
+# OVER the driver's 30s per-mutant timeout rather than under it. 20s of wall clock is genuinely
+# under that cap. On overrun either way the behaviour is safe: whichever bound expires first, the
+# campaign's own `_terminate_group` reaps this script and its `sleep` along with it.
+# `-F --` because the marker is DERIVED: a renamed row could carry a leading `-` or a regex
+# metacharacter, and as a BRE those silently never match, so the gate would quietly stop firing.
+# (A marker containing a single quote would still break the generated script — out of bounds.)
+GATED_SUITE_SRC = """#!/usr/bin/env bash
+if grep -qF -- '{marker}' "$1"; then
+  : > "{ready}"
+  end=$(( $(date +%s) + 20 ))
+  while [ ! -e "{release}" ] && [ "$(date +%s)" -lt "$end" ]; do sleep 0.1; done
+fi
 if grep -q 'GUARD = True' "$1"; then
   printf 'PASS  guard intact\\n'
   exit 0
@@ -118,57 +147,146 @@ printf 'FAIL  guard missing\\n'
 exit 1
 """
 
+# The mutation list is DERIVED from the module's own rows rather than retyped here. The gate
+# above greps for the second row's marker, so a hand-copy would let a rename unhook the gate
+# silently: the campaign would apply one string while the script waited for another, and the
+# park would simply never happen.
 DRIVER_SRC = """import sys
 sys.path.insert(0, {lib!r})
 import mutate
 report = mutate.run(
     {subject!r},
     ["bash", {suite!r}, {subject!r}],
-    [
-        mutate.Mutation("drop the guard", "GUARD = True", "GUARD = False"),
-        mutate.Mutation("raise the limit", "LIMIT = 10", "LIMIT = 99"),
-    ],
+    [mutate.Mutation(*m) for m in {mutations!r}],
     timeout=30,
 )
 print(report.text)
 """
 
 
+def _terminate_driver_group(proc) -> None:
+    """Reap the driver's process GROUP, not just the driver.
+
+    A bare `kill()` leaves whatever the driver spawned into its own group, which is the leak
+    `mutate._terminate_group` exists for and which `test_a_timed_out_suite_does_not_leak_its_
+    CHILDREN` asserts against. The driver is started in its own session so this can `killpg`
+    without taking pytest down with it.
+
+    Honest limit: `mutate.run` gives its suite `start_new_session=True` too, so the gated script
+    and its `sleep` sit in a group this cannot reach. That leak is BOUNDED rather than absent —
+    the caller has already touched the release file, and the script's own wall-clock cap expires
+    regardless — but it is not reaped here, and saying otherwise would be the reassuring line
+    that stops the next reader looking.
+    """
+    # Bare OSError, mirroring `mutate._terminate_group`: this runs inside a `finally`, so any
+    # exception escaping here would mask the genuine assertion — the exact masking the caller's
+    # `parked is not None` guard exists to prevent. A narrower list is a bet on the errno set.
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def test_a_mutation_line_is_readable_before_the_campaign_exits(bed):
+    """Progress must reach the artifact DURING the run, not in one flush at exit.
+
+    The campaign is parked inside its second mutation's suite run, so it cannot have exited and
+    an exit-time flush cannot be what the snapshot shows. Asserting the verdict is still ABSENT
+    is what makes that checkable rather than assumed: it is the assertion that fails if the park
+    ever stops parking.
+
+    Measured before this shape existed: polling `while proc.poll() is None` and accepting any
+    progress word passed 2/20 and 1/20 against the flush mutation on two subjects, because a
+    child flushes its whole buffer at interpreter shutdown and the parent can read that complete
+    artifact before `poll()` reports the exit. All three spurious passes contained the final
+    verdict line.
+    """
     root, subject, suite = bed
-    cmd = suite(SLOW_SUITE_SRC, "slow.sh")
+    ready, release = root / "ready", root / "release"
+    # Both the gate's marker and the campaign's rows come from RAISE_LIMIT, so they cannot drift
+    # apart: rename it and the gate follows, rather than waiting for a string nobody applies.
+    cmd = suite(
+        GATED_SUITE_SRC.format(marker=RAISE_LIMIT.new, ready=ready, release=release),
+        "gated.sh",
+    )
     driver = root / "driver.py"
     driver.write_text(
         DRIVER_SRC.format(
             lib=str(Path(mutate.__file__).parent),
             subject=str(subject),
             suite=cmd[1],
+            mutations=[tuple(DROP_GUARD), tuple(RAISE_LIMIT)],
         )
     )
     artifact = root / "run.log"
+    # PYTHONUNBUFFERED makes the interpreter flush stdout whatever `_stream` does, so a driver
+    # that inherited it would pass this test with the flush REMOVED — the environment answering
+    # for the subject, silently, because green-with-defect is byte-identical to green-without.
+    # Strip it rather than trusting whatever the ambient environment happens to hold.
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}
 
     with open(artifact, "w") as sink:
         proc = subprocess.Popen(
-            [sys.executable, str(driver)], stdout=sink, stderr=subprocess.STDOUT
+            [sys.executable, str(driver)],
+            stdout=sink,
+            stderr=subprocess.STDOUT,
+            env=env,
+            # Its own session, so the teardown can reap a process GROUP without signalling
+            # pytest itself. Without this a `killpg` here would kill the test run.
+            start_new_session=True,
         )
-        seen_while_alive = ""
-        deadline = time.monotonic() + 60
-        while proc.poll() is None and time.monotonic() < deadline:
-            body = artifact.read_text()
-            if any(
-                word in body for word in ("BASELINE", "CAUGHT", "SURVIVED", "TIMEOUT")
-            ):
-                seen_while_alive = body
-                break
-            time.sleep(0.05)
-        proc.wait(timeout=60)
+        parked = None
+        try:
+            deadline = time.monotonic() + 60
+            while not ready.exists() and time.monotonic() < deadline:
+                # An early exit is a hard failure, never a reason to stop looking — it is the
+                # one state in which the artifact could hold a complete, flushed-at-exit run.
+                assert proc.poll() is None, (
+                    "the campaign exited before it ever parked:\n"
+                    + artifact.read_text()
+                )
+                time.sleep(0.02)
+            assert ready.exists(), (
+                "the campaign never reached its second mutation:\n"
+                + artifact.read_text()
+            )
+            parked = artifact.read_text()
+        finally:
+            release.touch()
+            # A campaign that hangs is the very defect class this suite polices, so the teardown
+            # must not hang with it — but it must not TALK OVER it either. The two conditions
+            # share a cause: a campaign that hung before mutation 2 fails the assert above AND
+            # then times out here, so raising unconditionally would replace the real diagnosis
+            # with a message about a park that never happened. Only speak when nothing else has.
+            try:
+                proc.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                _terminate_driver_group(proc)
+                if parked is not None:
+                    # Carry the snapshot: this branch pre-empts the three assertions below, so
+                    # dropping it would repeat one line down the very masking the guard above
+                    # exists to stop — the evidence would be gone with the tmp_path.
+                    raise AssertionError(
+                        "the driver never exited after the park was released:\n"
+                        + parked
+                    ) from None
 
-    assert proc.returncode == 0, artifact.read_text()
-    assert seen_while_alive, (
-        "the artifact carried no progress line at any point while the campaign was alive — "
-        "empty is byte-identical to a stall, which is the measured defect:\n"
-        + artifact.read_text()
+    assert "RESULT:" not in parked, (
+        "the campaign had already finished, so this snapshot proves nothing about streaming — "
+        "the park failed to park:\n" + parked
     )
+    assert "BASELINE" in parked and "[1/2]" in parked, (
+        "the artifact carried no progress while the campaign was parked mid-run — empty is "
+        "byte-identical to a stall, which is the measured defect:\n" + parked
+    )
+    assert proc.returncode == 0, artifact.read_text()
 
 
 def test_the_verdict_is_still_the_last_line_despite_streaming(bed):
