@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.80.0 — 2026-08-06
+- feat(propagate): re-install the boundary hook after a promote
+
 ## v0.79.17 — 2026-08-06
 - docs(CLAUDE.md): add the wrapper-overclaim and snapshot-restore hazards
 

@@ -219,6 +219,53 @@ test -f "$(git rev-parse --show-toplevel)/.publication.toml"
      the blocker and the manual options (`git checkout -- <file>` is safe only when it already equals
      the incoming version).
 
+   **Then re-install the boundary hook — after both merge arms (the plain fast-forward and the
+   parked-`settings.json` dance), before the postcheck.** The `pre-push` hook is a COPY at
+   `.git/hooks/pre-push`; git never manages that directory, so the fast-forward above cannot have
+   updated it. Every promote that changes `git-hooks/pre-push` therefore leaves production running
+   the PREVIOUS gate, and it compounds — each un-repaired promote puts the installed copy one
+   further generation behind.
+
+   ```bash
+   if [ -f "$live/git-hooks/pre-push" ]; then
+     "$live/scripts/install-git-hooks.sh" --force-if-ours
+   fi
+   ```
+
+   **The guard is not cosmetic.** Step 5 is shared by adopted and non-adopted repos alike, and a
+   non-adopted repo ships no `git-hooks/pre-push` — so an unguarded call exits 1 on *every*
+   non-adopted promote, contradicting **Publication model awareness** above, which promises those
+   repos run completely unchanged. The guard is safe in the one direction that matters: an
+   *adopted* repo missing its tracked source is not silently skipped here, because the postcheck
+   below FAILs it explicitly ("adopted, but the tracked source … is missing").
+
+   **Production's OWN post-merge copy**, deliberately: the fast-forward has already updated
+   `$live/scripts/`, so a promoted change to the tooling is executed by its own new tools rather
+   than by the copy it replaces. **Never reach the installer through an indirection** such as
+   `~/.claude/scripts/install-git-hooks.sh`: the installer derives its repo root from its own
+   invocation path, not by resolving symlinks to their target, so an indirection that does not
+   mirror `$live` can resolve a DIFFERENT repository and install into the wrong `.git/hooks/`.
+   (On this machine that particular path happens to fail closed instead — `~/.claude` is a
+   submodule of another repo and does not symlink `git-hooks/` — but do not rely on the shape of
+   any one machine's layout.)
+
+   **Placement is load-bearing.** This sits where the two merge arms have CONVERGED. Attached to
+   either merge site alone it would silently skip the other arm. It also runs only after a merge
+   that actually completed — every failure branch above ends in *report and STOP*, and none of
+   them fall through to here.
+
+   `--force-if-ours`, never a bare `--force`: the flag overwrites only when the installed copy is a
+   blob this repo's tracked hook has held somewhere in history — a prior output of this installer,
+   merely stale. **On refusal, do NOT reach for `--force`** — note the installer's own third error
+   line still suggests it, because that message predates this flag and is addressed to a human who
+   has already identified what is installed. Instead: **stop, and do not treat the promote as
+   complete.** Diff the installed hook against `$live/git-hooks/pre-push`, and ask the user before
+   deleting or force-installing anything. Refusal has several causes — foreign or hand-edited
+   content, a symlink, a missing tracked source, an unresolvable hooks directory, or a history in
+   which the current hook's blob does not appear — and on an **adopted** repo the postcheck below
+   distinguishes them and names the remedy that applies. On a non-adopted repo it does not, because
+   the boundary is dormant there and the postcheck skips accordingly.
+
    **Then verify the promote left no dead gate — always, both arms.** The postcondition BRANCHES on
    whether `settings.json` was in the incoming range, and *choosing that branch by hand* is the step
    this repo measured going wrong: the strict arm was four separate commands with no single verdict
@@ -249,6 +296,22 @@ test -f "$(git rev-parse --show-toplevel)/.publication.toml"
      `settings-hooks-check.py` (resolved beside the postcheck, whose path it prints). **This runs on
      both arms on purpose:** gating it on the range would let a mis-determined range hide a dropped
      registration, which is the very failure the branch decision exists to prevent.
+   - `pre-push-installed` — the installed `.git/hooks/pre-push` copy is present, a regular file,
+     executable, and byte-identical to the tracked `git-hooks/pre-push`. **Adopted repos only** —
+     it SKIPs where no `refs/heads/*` carries `.publication.toml`, which is exactly when the
+     boundary hook is dormant and there is no live gate to be stale about. On failure it separates
+     a **prior tracked version** (names `install-git-hooks.sh --force-if-ours`) from one matching
+     **no** tracked version (deliberately does not name the installer — decide what is there
+     first). Note this check is deliberately stricter than `/audit`'s same-named one, which falls
+     back to the committed blob when the worktree source is absent; here a missing tracked source
+     is a FAIL.
+
+   **One-time, on the first promote after the re-install step itself ships.** `/propagate`'s own
+   body is read when it is INVOKED — from production's pre-merge copy — while the postcheck is
+   resolved by path *after* the merge. So on that one promote the old skill runs (no install step)
+   and the new postcheck grades it: expect `FAIL pre-push-installed … is a PRIOR tracked version`.
+   That is the change landing, not a broken promote. Run the remedy it names once by hand, re-run
+   the postcheck, and proceed on `RESULT: PASS`. Every later promote installs before it asserts.
 
    On a `hooks-registered` failure it names every registration the commit carries and the runtime
    lacks; add those to the runtime file by hand, keeping its `model`/`enabledPlugins` values, and
