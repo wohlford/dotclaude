@@ -70,6 +70,15 @@ these as the reason the `pre-push` hook exists, not as a short list of edge case
     expansion time is invisible here in principle, not by oversight.
   - `sh -c "git push …"` / `eval "git push …"`: the nested command string is opaque to the
     tokenizer, so these are NOT detected (same accepted gap as git_command's own WRAPPERS scope).
+  - **`HOME=` and `XDG_CONFIG_HOME=` relocate the boundary, and are NOT denied.** The env
+    allowlist below is keyed on a `^GIT_` name shape, so it closes the `GIT_*` part of the env
+    axis and nothing else. Both of these redirect where git reads its GLOBAL config, which can
+    carry `core.hooksPath` — measured: with a hostile `HOME`, `--git-path hooks/pre-push` moves,
+    the real hook does not run, and this gate ALLOWS the invocation. `_hook_integrity_reason`
+    cannot see it by construction: that probe runs in THIS process's environment, never the
+    proposed command's. Pre-existing (the narrower `^GIT_CONFIG_` matcher this allowlist replaced
+    cleared them too) and deliberately not closed here, because widening the deny beyond `GIT_*`
+    needs its own false-block measurement. **Do not read the allowlist as closing the env axis.**
   - Alias resolution chases the chain recursively (matching real git), bounded by a depth cap and
     cycle guard (both fail closed if hit). A chain that resolves — at ANY depth — to `push` is
     BLOCKED unconditionally: this hook does not attempt to reproduce git's own alias-argument

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.79.14 — 2026-08-05
+- docs(publication-push-guard): name the config-redirect env residual
+
 ## v0.79.13 — 2026-08-05
 - fix(publication-push-guard): refuse an empty repo root, not only None
 
