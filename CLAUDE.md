@@ -57,14 +57,15 @@ user** (Agent tool, `model: fable` — a diverse model when you are Opus). Ask i
 answer the question on the merits, *and* to judge whether this is really the user's call. Bring back
 the conclusion and its reasoning — never a menu of options for the user to arbitrate.
 
-**Ask the user directly only for:** authorization (anything outward-facing or hard to reverse), risk
-appetite they own (how strict a gate should be, what false-block rate is acceptable), the scope they
-are paying for, and anything where proceeding wrongly would be unsafe or waste substantial work.
-Batch whatever survives — ask once, at a natural checkpoint, not as each item arises. **That list is
-what SURVIVES Fable, never what SKIPS it** — judging whether to ask is one of Fable's two jobs, so
-pre-classifying a question as the user's routes around the only check on that classification, which
-is the least trustworthy step since over-asking is the failure mode. Authorization alone is a true
-exception: it is not a question about the merits, so there is nothing for Fable to weigh.
+**The list below is what SURVIVES Fable, never what SKIPS it** — judging whether to ask is one of
+Fable's two jobs, so pre-classifying a question as the user's routes around the only check on that
+classification, which is the least trustworthy step since over-asking is the failure mode.
+Authorization alone is a true exception: it is not a question about the merits, so there is nothing
+for Fable to weigh. **Only then, ask the user directly for:** authorization (anything outward-facing
+or hard to reverse), risk appetite they own (how strict a gate should be, what false-block rate is
+acceptable), the scope they are paying for, and anything where proceeding wrongly would be unsafe or
+waste substantial work. Batch whatever survives — ask once, at a natural checkpoint, not as each
+item arises.
 
 ## Delegating
 
@@ -202,7 +203,10 @@ left legal.
   nothing), another allowed because the lookup keyed on it came back empty (a PASS about nothing). A
   shell with no TTY does it too — a card-backed key cannot prompt for its PIN, so the agent REFUSES,
   byte-identical to a rejected credential; "auth is down, go fix the card" was reported for a card
-  that was present and unlocked. All measured. The clean run is the dangerous one — nobody
+  that was present and unlocked. **Or your TOOL was configured not to tell you** — a file flagged
+  `skip-worktree` reads as clean in `git status` while differing from the commit, so a "before"
+  digest reconstructed from committed content was wrong and a real postcondition checker returned a
+  FAIL that was purely the input. All measured. The clean run is the dangerous one — nobody
   investigates it.
 - **A change that is only correct in COMBINATION is one unit of work.** Two halves of a fix can be
   individually wrong in *opposite* directions — one alone over-blocks, the other alone lets the bug

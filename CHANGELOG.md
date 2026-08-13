@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.79.8 — 2026-08-05
+- docs(CLAUDE.md): widen the environment hazard and reorder the ask rule
+
 ## v0.79.7 — 2026-08-05
 - fix(publication-push-guard): adopt the hook's refs-based adoption test
 
