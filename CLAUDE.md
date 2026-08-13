@@ -392,6 +392,15 @@ left legal.
   that N is only computable once you know the bound**, and the binding one is often not yours: a
   downstream reader's cap, a buffer, a rate limit. When you cannot name the number, that is the
   finding — say the limit is unknown rather than picking a fixture size that makes it invisible.
+- **Splitting one message into per-case messages does not stop it overclaiming — the shared WRAPPER
+  around them is a new claim about EVERY case, and you will only check it against the cases you set
+  out to fix.** Measured: a refusal that misattributed its cause was split into seven per-case
+  diagnoses with per-case remedies, which fixed the original defect — while the sentence wrapping
+  all seven still asserted a condition that was plainly false for the one case just added. The
+  split MANUFACTURED the unchecked whole: beforehand there was one claim and it was verified;
+  afterwards there were eight and only seven were anyone's job. Re-read the wrapper against the
+  case you ADDED — it is the one no reviewer holds a prior for, and the one your own attention
+  already spent itself on.
 
 #### The check itself writes — what it leaves behind is the hazard
 
@@ -439,6 +448,16 @@ left legal.
   default output path left a stray artifact in the repo root, untracked and un-ignored, while the
   campaign reported a clean restore and a perfect score. Deny the subject a writable cwd, or
   snapshot the tree — and read every teardown, stash and rollback the same way.
+- **A tool that snapshots a file, mutates it, and restores ITS OWN snapshot silently discards
+  whatever you write to that file while it runs.** Not under-restoration but OVER-restoration: the
+  snapshot is authoritative and stale, so your edit is reverted without a word. Measured: a mutation
+  campaign was running against a file when that file was edited; the restore wrote back the pre-run
+  bytes and the edit was gone. Meanwhile the failures its live mutants produced read exactly like
+  the edit breaking the suite, so the natural response — debug your own change — aims at nothing.
+  The reassuring line traps you here too: `restored: sha256 unchanged` is TRUE and says nothing
+  about your edit, because the digest it compares against is the snapshot's. Treat such a tool as
+  owning its subject exclusively while it runs, and check for a live mutant before believing any
+  failure that coincides with one.
 - **A teardown runs only on the path you tested — a KILLED run skips it and leaves the subject
   broken.** `finally`, `trap` and `atexit` do not survive a default SIGTERM, so a harness stopped by
   a timeout restores nothing. Measured: a mutation campaign killed at a 2-minute cap left its

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.79.17 — 2026-08-06
+- docs(CLAUDE.md): add the wrapper-overclaim and snapshot-restore hazards
+
 ## v0.79.16 — 2026-08-05
 - docs(publication-push-guard): record the expected scope-set survivor
 
