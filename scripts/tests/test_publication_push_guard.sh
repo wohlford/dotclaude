@@ -790,6 +790,62 @@ out="$(judge "git ${VERB} origin main" "$REPO")"; rc=$?
 assert_eq "$rc" 2 "relocated hooksPath must block"
 assert_contains "$out" "not in force" "reason must name the boundary"
 
+# ================= Task 2/3: pure git-config classifiers (not yet wired to any behaviour) =====
+# assert_py <python expression against the guard module> <expected repr string>. Imports the guard
+# BY PATH (it is a script, not an importable module, so a plain `import` would fail) and evaluates
+# one expression against it -- string comparison, not assert_eq's numeric `-eq` (which errors under
+# `set -u` on non-numeric operands like "True"/"False").
+assert_py() { # <python expression> <expected repr>
+  local got
+  got="$(python3 -c "
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('g', '$guard')
+m = importlib.util.module_from_spec(spec); sys.modules['g'] = m
+spec.loader.exec_module(m)
+print(m.$1)
+")" || { printf 'FAIL  assert_py could not evaluate: %s\n' "$1"; fail=$((fail + 1)); return; }
+  if [[ "$got" == "$2" ]]; then
+    printf 'PASS  %s (got %s)\n' "$1" "$got"
+    pass=$((pass + 1))
+  else
+    printf 'FAIL  %s (want %s, got %s)\n' "$1" "$2" "$got"
+    fail=$((fail + 1))
+  fi
+}
+
+# ---- Task 2: classifies git config reads by the LEADING option run only ----
+# POSITION IS LOAD-BEARING: `git config core.hooksPath --get` was measured to WRITE
+# `core.hooksPath = --get` -- a read flag arriving after the key is consumed as a positional.
+assert_py "_config_is_read(['core.hooksPath','--get'])"              "False"
+assert_py "_config_is_read(['core.hooksPath','/dev/null','--list'])" "False"
+assert_py "_config_is_read(['--get','core.hooksPath'])"              "True"
+assert_py "_config_is_read(['get','core.hooksPath'])"                "True"
+assert_py "_config_is_read(['list'])"                                "True"
+assert_py "_config_is_read(['set','core.hooksPath','X'])"            "False"
+assert_py "_config_is_read(['core.hooksPath'])"                      "False"
+assert_py "_config_is_read([])"                                      "False"
+assert_py "_config_is_read(['--','--get','core.hooksPath'])"         "False"
+
+# ---- Task 3: classifies every non-local scope spelling as non-local ----
+# Scans EVERY token and never breaks early: a leading-run scan misclassifies
+# `--comment note --global core.hooksPath X` as local (measured: git writes the GLOBAL file).
+assert_py "_config_scope_is_local(['core.hooksPath','X'], [])"                               "True"
+assert_py "_config_scope_is_local(['--local','core.hooksPath','X'], [])"                     "True"
+assert_py "_config_scope_is_local(['set','core.hooksPath','X'], [])"                         "True"
+assert_py "_config_scope_is_local(['--type','bool','core.hooksPath','X'], [])"               "True"
+assert_py "_config_scope_is_local(['--global','core.hooksPath','X'], [])"                    "False"
+assert_py "_config_scope_is_local(['--glo','core.hooksPath','X'], [])"                       "False"
+assert_py "_config_scope_is_local(['--sys','core.hooksPath','X'], [])"                       "False"
+assert_py "_config_scope_is_local(['set','--global','core.hooksPath','X'], [])"              "False"
+assert_py "_config_scope_is_local(['--comment','note','--global','core.hooksPath','X'], [])" "False"
+assert_py "_config_scope_is_local(['-f','/other','core.hooksPath','X'], [])"                 "False"
+assert_py "_config_scope_is_local(['--file=/other','core.hooksPath','X'], [])"               "False"
+assert_py "_config_scope_is_local(['--fil','/other','core.hooksPath','X'], [])"              "False"
+assert_py "_config_scope_is_local(['--no-local','core.hooksPath','X'], [])"                  "False"
+assert_py "_config_scope_is_local(['--worktree','core.hooksPath','X'], [])"                  "False"
+assert_py "_config_scope_is_local(['core.hooksPath','X'], ['GIT_CONFIG=/o'])"                "False"
+assert_py "_config_scope_is_local(['core.hooksPath','X'], ['GIT_COMMON_DIR=/o/.git'])"       "False"
+assert_py "_config_scope_is_local(['core.hooksPath','X'], ['GIT_DIR=/o/.git'])"              "False"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

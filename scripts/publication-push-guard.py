@@ -823,6 +823,88 @@ DENIED_CONFIG_KEYS = ("core.hookspath", "include.path", "includeif.")
 # `KEY|VALUE|COUNT` alternation silently misses `GIT_CONFIG_KEY_0`.
 GIT_CONFIG_ENV_RE = re.compile(r"^GIT_CONFIG_[A-Z0-9_]*=")
 
+_CONFIG_READ_ACTIONS = frozenset({"get", "list"})
+_CONFIG_READ_FLAGS = frozenset(
+    {
+        "--get",
+        "--get-all",
+        "--get-regexp",
+        "--get-urlmatch",
+        "--get-color",
+        "--get-colorbool",
+        "--list",
+        "-l",
+    }
+)
+
+
+def _config_is_read(seg: list[str]) -> bool:
+    """True only when `git config`'s LEADING option run marks this a read.
+
+    POSITION IS LOAD-BEARING. git stops parsing options at the first non-option
+    token, so a read flag after the key is consumed as a positional and the WRITE
+    still lands: `git config core.hooksPath --get` was measured to write
+    `core.hooksPath = --get`, relocating the hooks path. A position-insensitive rule
+    allows exactly that.
+
+    This can only ever turn a read into a WRITE (over-block), never a write into a
+    read, because git refuses multiple actions in one invocation -- so it opens no
+    hole. A value-taking option before the read flag (`--type bool --get k`) breaks
+    the scan early and over-blocks; accepted residual, safe direction.
+    """
+    for tok in seg:
+        if tok == "--":
+            return False
+        if not tok.startswith("-"):
+            return tok in _CONFIG_READ_ACTIONS  # the subcommand form's action word
+        if tok.split("=", 1)[0] in _CONFIG_READ_FLAGS:
+            return True
+    return False
+
+
+# Env assignments that redirect where `git config` WRITES. Measured: both landed a
+# write in an unrelated repo's config from a cwd with no relationship to it.
+# GIT_CONFIG_ENV_RE does not match bare `GIT_CONFIG=` (its trailing underscore), and
+# GITDIR_RE matches neither.
+_CONFIG_REDIRECT_ENV = frozenset({"GIT_CONFIG", "GIT_COMMON_DIR", "GIT_DIR"})
+
+# git accepts any UNAMBIGUOUS ABBREVIATION of each file-location flag, plus `-f` and
+# the attached `--file=` form -- measured: `--glo` wrote the GLOBAL file. Prefix
+# matching against these names is therefore required; exact spellings are not enough.
+_CONFIG_SCOPE_NAMES = ("global", "system", "local", "worktree", "file", "blob")
+
+
+def _config_scope_is_local(seg: list[str], env: list[str]) -> bool:
+    """True only when this `git config` write unambiguously targets the cwd's own repo.
+
+    Scans EVERY token and never breaks early. A leading-run scan was measured wrong:
+    `git config --comment note --global core.hooksPath X` writes the GLOBAL file, but
+    a scan that stops at the bareword `note` calls it local. Modelling option arity
+    would fix that and introduce the mirror error -- misjudging a flag as
+    value-taking would skip a real `--global`. Scanning everything cannot skip, and
+    its only error is over-blocking a scope word that appears as a VALUE.
+    """
+    for assignment in env:
+        if assignment.split("=", 1)[0] in _CONFIG_REDIRECT_ENV:
+            return False
+    for tok in seg:
+        base = tok.split("=", 1)[0]
+        if base == "-f":  # documented short form of --file
+            return False
+        if not base.startswith("--"):
+            continue
+        negated = base.startswith("--no-")
+        stem = base[5:] if negated else base[2:]
+        if not stem:
+            continue
+        hits = [n for n in _CONFIG_SCOPE_NAMES if n.startswith(stem)]
+        if not hits:
+            continue  # not a file-location flag at all
+        if hits == ["local"] and not negated:
+            continue  # positively and only --local
+        return False
+    return True
+
 
 def _config_injection_reason(tokens, sub: str, seg: list[str]) -> str | None:
     """Detect an attempt to relocate or disable the git-native `pre-push` boundary.
