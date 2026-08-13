@@ -200,6 +200,15 @@ left legal.
   **But a RED proves only that SOMETHING failed, not that your named subject did** — a row titled for
   one guard fired off a *different* assertion that raised first, so deleting the guard it named left
   the suite green (measured). Mutate what a row names; if the suite holds, the row is not testing it.
+- **When every row of a probe shares a condition some EARLIER rule already decides, the sheet
+  answers a question it never asked — and reads as "no work needed".** Not the reached-the-subject
+  hazard above: the probe does reach it, and a rule upstream of the mechanism then disposes of every
+  row before that mechanism is ever consulted. Measured: a probe of a config-injection detector
+  paired each injection with the one input an earlier rule already refused, came back *blocked* on
+  every row, and was written up as "already covered — the plan's premise is wrong". The real hole
+  appeared only once the paired input was varied to one that rule ALLOWS. Vary the dimension you are
+  actually testing, and require at least one row whose verdict would MOVE if the mechanism were
+  deleted — a sheet where nothing moves is measuring the rule above it.
 
 #### Right verdict, wrong inputs — stale tool or tree, wrong population or parameters
 

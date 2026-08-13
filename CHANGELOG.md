@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.75.11 — 2026-08-04
+- docs(CLAUDE.md): warn when a probe's rows share a masking condition
+
 ## v0.75.10 — 2026-08-04
 - docs(CLAUDE.md): warn that a small-N fixture hides a threshold
 
