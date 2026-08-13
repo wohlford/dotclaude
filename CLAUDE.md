@@ -103,7 +103,10 @@ And before backgrounding a check that outruns the tool timeout, use `~/.claude/s
 rather than a wrapper of your own — it is the shipped remedy for the killed-run and
 graded-the-launch-tree hazards below, and you read its verdict back with `--status`, never from the
 launch. Four wrappers were hand-written in one session before it existed, three byte-equivalent;
-the fourth still let a sweep that had run 4 checks of 15 read as a clean pass.
+the fourth still let a sweep that had run 4 checks of 15 read as a clean pass. Give it `--expect
+'<verdict regex>'` at LAUNCH too — the pattern is recorded INTO the artifact, so a run that
+finished having executed nothing reports INDETERMINATE instead of a truthful, useless `DONE rc=0`.
+Measured: exactly that happened, and only an absent verdict line caught it.
 
 > Hooks (indexed in README.md) fire per-edit: a multi-step change that passes through an invalid
 > intermediate state (e.g. resolving conflict markers with two Edits) trips transient PostToolUse
@@ -132,7 +135,10 @@ plan and base you are actually executing before trusting any line; reset it when
 - **Shell**: Prefer MacPorts bash (`/opt/local/bin/bash`) for scripts requiring advanced features
 - **Default bash**: `/bin/bash` is the system bash (version 3.x, limited features)
 - **GNU Core Utilities**: Installed via MacPorts (`coreutils`)
-  - GNU tools are prefixed with `g` (e.g., `gls`, `ggrep`, `gdate`)
+  - **`/opt/local/libexec/gnubin` is already on PATH, so the UNPREFIXED names are GNU** — plain
+    `date`, `grep`, `sed`, `ls` are GNU coreutils, not BSD. Measured: BSD-only flags fail there
+    (`date -j` → `invalid option -- 'j'`), and reaching for `gdate` to "get GNU" is a no-op.
+  - The `g`-prefixed names (`gls`, `ggrep`, `gdate`) still resolve, so both spellings work
   - Use GNU versions for advanced features like `--long-options`
 
 ## Language and Tooling Preferences
@@ -213,6 +219,27 @@ left legal.
   digest reconstructed from committed content was wrong and a real postcondition checker returned a
   FAIL that was purely the input. All measured. The clean run is the dangerous one — nobody
   investigates it.
+- **A second instrument AGREEING is not a second measurement when it inherits the same harness —
+  so "independently corroborated" can mean one broken probe run twice.** Distinct from the bullet
+  above, which is one probe's environment lying: here the environment lies identically to everyone
+  who reaches for the obvious probe, and agreement is then produced BY the defect rather than
+  despite it. Measured: a defect recorded as *confirmed by measurement* and later *independently
+  corroborated by a different reviewer* did not exist — both had run the probe in a default shell
+  instead of the file's own `set -uo pipefail`, which inverts the answer. The corroboration was
+  logged as *raising confidence that it is real*, and its prescribed repair would have replaced a
+  working guard with a dead one. **Ask what the second run VARIED, never that it agreed** — if it
+  reused the harness, the axis that could be wrong was never tested twice.
+- **A DIFFERENCE between two runs is about their subjects only if the instrument is deterministic —
+  and one sample per side cannot establish that.** The mirror of the bullet above: there, agreement
+  is manufactured by a shared defect; here DISAGREEMENT is manufactured by a noisy oracle and read
+  as signal. Measured: a verification harness scored 30/30 on one pinned tree and 34/35 on another,
+  and a 2×2 of four ~20-minute runs concluded the change had introduced the regression, blocking a
+  correct change for a day. The oracle was flaky at ~5–10%, so both cells were single draws from
+  one distribution; repeating the one named check 20 times per side settled it in under a minute —
+  2/20 against 1/20. Everything else was RIGHT, which is what hides it: both subjects pinned, the
+  harness held. **And "it reproduced" is not a rate** — the surprising cell was confirmed twice,
+  back to back, which replicates the machine's state as readily as the subject's. Measure each
+  side's RATE before believing the gap.
 - **A change that is only correct in COMBINATION is one unit of work.** Two halves of a fix can be
   individually wrong in *opposite* directions — one alone over-blocks, the other alone lets the bug
   through — so landing half is not partial progress, it is a regression. And it is one no suite can
@@ -220,6 +247,9 @@ left legal.
   a filter and the flag that makes it safe, split across two tasks; the interval shipped the
   over-blocking half and broke a real workflow while three suites stayed green. Ship them together, or
   say plainly that the interval is broken and why.
+
+#### It ran and could never have failed
+
 - **A regression test that never reaches the defect passes for free — watch it FAIL before you trust
   its PASS.** The fixture's environment is part of the subject: `mktemp -d` under a symlinked
   `$TMPDIR` (`/tmp` → `/private/tmp`) yields a *logical* path that does not physically contain the
@@ -239,6 +269,15 @@ left legal.
   appeared only once the paired input was varied to one that rule ALLOWS. Vary the dimension you are
   actually testing, and require at least one row whose verdict would MOVE if the mechanism were
   deleted — a sheet where nothing moves is measuring the rule above it.
+- **A comparison against another party's OUTPUT FORMAT can be unsatisfiable — and gating an *allow*
+  on it builds a rubber stamp, not a dead guard.** Not two sides you resolved differently yourself,
+  where normalising is the fix: you do not own both producers, so the move is to SAMPLE what each
+  actually emits before comparing them. Measured: an exemption became available when every file a
+  report named was absent from a diff's file list — but the reporting party's contract was
+  `file:line` and its harness separately demanded absolute paths, while the diff listed bare
+  relative ones. Nothing could ever match, so every item read as absent and every item took the
+  exemption, on files the change was actively editing. It ran on each item and returned a verdict
+  each time, so *did it reach the subject* clears it.
 
 #### Right verdict, wrong inputs — stale tool or tree, wrong population or parameters
 
@@ -277,7 +316,7 @@ left legal.
   count against the working tree and name what the predicate excluded; **do not just switch to a
   filesystem glob**, which then grades artifacts the commit will never contain.
 
-#### Your matcher matched text you did not mean
+#### Your matcher matched text you did not mean — or missed text you did
 
 - **Multi-line literal checks are a case for Python.** `grep -F` treats an embedded newline as
   *alternation*, not a sequence: `grep -Fc "$(printf 'a\nb')"` counts lines matching **either**, so a
@@ -285,6 +324,14 @@ left legal.
   (`needle in open(f).read()`) or `grep -Pzo`.
 - **A phrase you believe is one line may have WRAPPED — then a line-based grep returns 0, and
   absence is not evidence of absence.** Match against the file's whole text, not line by line.
+- **A property can arrive by INDIRECTION, so its absence from a file's TEXT is not its absence in
+  EFFECT.** Matching the whole text does not rescue you here, because the setting really is not in
+  the file — it is supplied by an imported or included module one hop away. Measured twice in one
+  session, independently: a queued note called a file defective because it contained no occurrence
+  of the setting, and a re-check of that claim reproduced the identical error before either was
+  run — the file imported a helper that had passed the setting on every call since the day it was
+  written. Grep the CLOSURE rather than the node, or assert the property's effect rather than its
+  text.
 
 #### The signal you read belongs to something else
 
@@ -328,6 +375,9 @@ left legal.
   shared set would have RE-OPENED the hole the task existed to close, since that set was consulted at
   more call sites than I had in mind. The implementer declined the literal wording. **Read a
   delegate's push-back as evidence, not insubordination.**
+
+#### The repair you would reach for first makes it worse
+
 - **A surviving mutant's obvious remedy — write a stronger assertion — is the wrong one when the
   code it names cannot change any outcome.** Measured twice in one session, resolving oppositely.
   In one, a branch's verdict was already forced by the check below it, so the survivor was really
@@ -346,6 +396,27 @@ left legal.
   writes tests from the false positive, never from what quietly left. **Ask what stops being
   MATCHED, not whether the noise stopped** — and prove it with a corpus of things that must STILL
   match, run against the old build and the new one.
+- **Upgrading a "could not measure" verdict into a POSITIVE one hands that positive to every case
+  the vague verdict was quietly absorbing.** The mirror of the bullet above: nothing stops being
+  matched here, the same inputs arrive and are simply judged more strongly. A helper reporting
+  failure through ONE sentinel — an empty string, `None`, a bare nonzero — has already erased *why*,
+  so a caller re-reading it as "nothing to measure, therefore fine" asserts fine for its whole
+  preimage. Measured: a resolver returned that sentinel on three conditions — target absent, not a
+  directory, not enterable — and a fix that correctly turned *absent* into a verified pass turned
+  *unmeasurable* into one too, rebuilding the defect it was written to remove; worse than the vague
+  verdict it replaced, which the docs at least told the reader to relay as a coverage gap.
+  **Enumerate the sentinel's preimage before promoting any of it**, and take the discriminator from
+  the source the helper consulted — re-deriving it at the call site copies a rule that then drifts.
+- **Widening a matcher to fix an under-report can make it NON-TERMINATING — and the check you would
+  run next passes.** Not the narrowing hazard: nothing stops being matched here, and every answer it
+  gives is still right; it just never finishes giving one. An alternation whose branches can split
+  one token more than one way costs `k` parses per repetition and `k**n` over `n` of them, and a
+  backtracking engine memoises nothing. Measured: a fold that widened one option group ran 0.05s,
+  0.48s, 4.4s, 31s at n=5..8 on a single crafted line — reachable from any file the scan reads.
+  Note what CLEARS it and should not: *prove the corpus still
+  matches* passes flawlessly, because the match SET only grew. Nor is the repair to narrow back — an
+  unambiguous form that was wider still ran in 0.0000s. **Ask what a widened alternation costs in
+  PARSES, not only in what it now matches.**
 
 #### It answered its own question, not the one you are relying on
 
@@ -374,6 +445,16 @@ left legal.
   probe of the real input settled it, allowed before and after. **Ask what makes a rule FIRE before
   reasoning about what it does when it fires.** What nearly hid it: the plan then asserted the
   block, so a compliant implementer would have written a passing test around the false premise.
+- **A tool's DEFAULT MODE can be narrower than its name, its call site, and even its source imply —
+  so its PASS answers a smaller question than the one you are relying on.** Measured: a sweep
+  reported 14 checks passing by default and 17 under the flag that adds the test suite and its
+  pollution checks, and a gate was nearly cleared by citing the plain PASS as evidence the suite
+  had passed. Note what CONFIRMS the wrong belief — the source carries an unmistakable call to the
+  test runner that reads as unconditional until you notice it sits inside the opt-in branch, so
+  checking the code is the natural move and it agrees with you. Only the run's own ENUMERATION of
+  the checks it performed settles it: a missing row is the sole artifact that names what did not
+  happen. Distinct from reaching for the wrong instrument — this is the right one, in a mode you
+  never asked for.
 
 #### It answered about the PARTS; your claim is about the WHOLE
 
@@ -561,7 +642,9 @@ left legal.
 
 ### GNU vs BSD Tools
 
-macOS ships BSD tools by default. GNU versions (MacPorts) provide more features:
+macOS ships BSD tools by default, but **this machine already prepends
+`/opt/local/libexec/gnubin`**, so an unprefixed `grep`/`sed`/`date`/`ls` is the GNU one. The table
+is what each side offers, not what you get by default here:
 
 | Tool | BSD | GNU | Key Difference |
 |------|-----|-----|----------------|
@@ -570,4 +653,5 @@ macOS ships BSD tools by default. GNU versions (MacPorts) provide more features:
 | date | `/bin/date` | `gdate` | Better parsing |
 | ls | `/bin/ls` | `gls` | `--color`, `--group-directories-first` |
 
-To use GNU by default: `export PATH="/opt/local/libexec/gnubin:$PATH"`
+Already in effect here: `export PATH="/opt/local/libexec/gnubin:$PATH"` — verify with
+`which date` rather than assuming either way, since a shell that lacks it silently gives you BSD.

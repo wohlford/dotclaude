@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.81.4 — 2026-08-09
+- docs(CLAUDE.md): point run-long users at --expect
+
 ## v0.81.3 — 2026-08-06
 - docs(CLAUDE.md): name run-long.sh alongside mutate.py
 
