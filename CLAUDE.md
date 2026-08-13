@@ -136,7 +136,7 @@ plan and base you are actually executing before trusting any line; reset it when
 - **Default bash**: `/bin/bash` is the system bash (version 3.x, limited features)
 - **GNU Core Utilities**: Installed via MacPorts (`coreutils`)
   - **`/opt/local/libexec/gnubin` is already on PATH, so the UNPREFIXED names are GNU** — plain
-    `date`, `grep`, `sed`, `ls` are GNU coreutils, not BSD. Measured: BSD-only flags fail there
+    `date`, `grep`, `sed`, `ls` are GNU, not BSD. Measured: BSD-only flags fail there
     (`date -j` → `invalid option -- 'j'`), and reaching for `gdate` to "get GNU" is a no-op.
   - The `g`-prefixed names (`gls`, `ggrep`, `gdate`) still resolve, so both spellings work
   - Use GNU versions for advanced features like `--long-options`
@@ -232,6 +232,14 @@ left legal.
   a filter and the flag that makes it safe, split across two tasks; the interval shipped the
   over-blocking half and broke a real workflow while three suites stayed green. Ship them together, or
   say plainly that the interval is broken and why.
+- **A liveness reading is a SAMPLE, not a state — "still running" goes stale exactly like the
+  verdict it stands in for.** The job may have ended normally, written its verdict and exited, while
+  you go on quoting a status taken minutes or hours earlier. Measured three times in one session: a
+  backgrounded check called still-running long after it had finished — once masking a FAIL for
+  several minutes, once masking a PASS for over an hour — and each time the operator, not the
+  reporter, noticed. The instrument was blameless throughout: its status query and its artifact both
+  answered truthfully whenever asked. **Re-read before every claim about liveness**; "it is still
+  going" is a measurement carrying a timestamp, never remembered state.
 
 #### A second run proves less than it looks like
 
