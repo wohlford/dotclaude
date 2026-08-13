@@ -272,7 +272,9 @@ def _reserved_word_preserve_rows(other: Path) -> list[Row]:
     return rows
 
 
-def _build_rows(adopted: Path, other: Path) -> list[Row]:
+def _build_rows(
+    adopted: Path, other: Path, tracked_only: Path, worktree_only: Path
+) -> list[Row]:
     """The full corpus.
 
     `other` is a second, NON-adopted fixture repo. It began as a splice for the two subshell-`cd`
@@ -283,9 +285,18 @@ def _build_rows(adopted: Path, other: Path) -> list[Row]:
     TARGET (`-f <adopted>/.git/config`, `--file=`, `GIT_CONFIG=`, `-C <adopted>`). Those are the
     shape that proves standing in a non-adopted directory does not put the adopted repo out of
     reach -- the hole that scoping the detector to adoption would otherwise open.
+
+    `tracked_only` and `worktree_only` are D2's two fixtures (see `_build_tracked_only_repo` /
+    `_build_worktree_only_repo` below): the marker tracked-on-a-branch-but-deleted-from-disk case
+    the refs-based predicate must still see as adopted, and the marker-on-disk-but-committed-
+    nowhere case both predicates must agree is dormant.
     """
     other_s = str(other)
     adopted_s = str(adopted)
+    tracked_only_s = str(tracked_only)
+    worktree_only_s = str(worktree_only)
+    assert tracked_only.is_dir(), f"corpus fixture missing: {tracked_only}"
+    assert worktree_only.is_dir(), f"corpus fixture missing: {worktree_only}"
     return [
         # ---------- MUST_BLOCK: blocked today, must stay blocked on every future build ----------
         Row(
@@ -567,6 +578,21 @@ def _build_rows(adopted: Path, other: Path) -> list[Row]:
             "layer 1 is registered globally and judge-removal is refused everywhere, adopted or "
             "not -- THIS row is the placement discriminator: it fails if the check is written "
             "inside _judge_push, which sits BELOW _judge_invocation's dormant return",
+        ),
+        # ---------- D2: the push arm's adoption predicate now matches the hook's own refs-based
+        # test (`is_dormant()`), not a working-tree `.is_file()` check --------------------------
+        Row(
+            "marker_tracked_but_deleted_from_worktree",
+            f"cd {tracked_only_s} && git {_VERB} origin dev",
+            MUST_BLOCK,
+            "the hook stays ARMED off refs, so layer 1 must not go dormant on a deleted marker",
+        ),
+        Row(
+            "marker_uncommitted_stays_dormant",
+            f"cd {worktree_only_s} && git {_VERB} origin main",
+            MUST_ALLOW,
+            "marker present but committed nowhere: refs-based dormancy matches the hook's. Shaped "
+            "so BOTH builds allow -- see the note below; the discriminator is the integrity check",
         ),
         # ---------- MUST_ALLOW: allowed today, must stay allowed (an over-block guard) ----------
         Row(
@@ -875,10 +901,62 @@ def _build_other_repo(base: Path) -> Path:
     return other
 
 
+def _build_tracked_only_repo(base: Path) -> Path:
+    """D2's GAIN fixture: the marker is committed and reachable from `refs/heads/dev`, then
+    removed from the WORKING TREE only (`unlink`, never `git rm` -- no commit records the
+    removal). This is case 2 of the spike's 3x2 table, and the hole D2 exists to close: the
+    working-tree test the push arm used to run reads False here (the file is gone from disk) and
+    goes dormant, while the boundary hook's own `is_dormant()` -- and this task's refs-based
+    `_repo_is_adopted_root` -- both read True, because the blob is still reachable from a tracked
+    commit. No boundary hook is installed here on purpose: the corpus row pushes the literal
+    branch `dev`, which `_judge_push` refuses before `_hook_integrity_reason` is ever consulted,
+    so hook presence cannot affect this row's verdict either way.
+    """
+    repo = base / "tracked_only"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "README.md").write_text("hello\n")
+    (repo / ".publication.toml").write_text('production = "main"\n')
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "init")
+    _git(repo, "branch", "-q", "dev")
+    _git(repo, "checkout", "-q", "dev")
+    (repo / ".publication.toml").unlink()
+    return repo
+
+
+def _build_worktree_only_repo(base: Path) -> Path:
+    """D2's swap-vs-disjunction discriminator: the marker is written to the WORKING TREE only --
+    never `git add`ed, so it is committed nowhere and unreachable from any ref. This is case 3 of
+    the spike's 3x2 table. HEAD is `main` (no `dev` branch at all), and -- deliberately -- no
+    boundary hook is installed anywhere in this fixture.
+
+    The row built from this fixture (`marker_uncommitted_stays_dormant`) pushes `origin main` and
+    is MUST_ALLOW on both the frozen baseline (which predates `_hook_integrity_reason` entirely)
+    and the new, swapped build (which goes dormant on the refs-based test before ever reaching
+    `_judge_push` or the hook-integrity check). The row does NOT discriminate on the refspec --
+    `main` is safe under either reading of "adopted". It discriminates against the REJECTED
+    disjunction design: `old-test OR new-test` would call this repo adopted (the working-tree test
+    alone says True), arm the push judgment, clear `_judge_push` (main isn't dev), and then reach
+    `_hook_integrity_reason`, which refuses because no hook is installed here -- flipping this row
+    to a block. The swap never arms in the first place, so it never reaches that check.
+    """
+    repo = base / "worktree_only"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "README.md").write_text("hello\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "init")
+    (repo / ".publication.toml").write_text('production = "main"\n')
+    return repo
+
+
 @dataclass(frozen=True)
 class Sandbox:
     repo: Path
     other: Path
+    tracked_only: Path
+    worktree_only: Path
     baseline_log: Path
     new_log: Path
 
@@ -891,11 +969,15 @@ def sandbox(tmp_path_factory: pytest.TempPathFactory) -> Sandbox:
     base = tmp_path_factory.mktemp("guard-corpus").resolve()
     repo = _build_adopted_repo(base)
     other = _build_other_repo(base)
+    tracked_only = _build_tracked_only_repo(base)
+    worktree_only = _build_worktree_only_repo(base)
     logs = base / "logs"
     logs.mkdir()
     return Sandbox(
         repo=repo,
         other=other,
+        tracked_only=tracked_only,
+        worktree_only=worktree_only,
         baseline_log=logs / "baseline-errors.log",
         new_log=logs / "new-errors.log",
     )
@@ -903,7 +985,9 @@ def sandbox(tmp_path_factory: pytest.TempPathFactory) -> Sandbox:
 
 @pytest.fixture(scope="session")
 def rows(sandbox: Sandbox) -> list[Row]:
-    result = _build_rows(sandbox.repo, sandbox.other)
+    result = _build_rows(
+        sandbox.repo, sandbox.other, sandbox.tracked_only, sandbox.worktree_only
+    )
     assert result, "corpus row list must never be empty"
     return result
 
