@@ -116,6 +116,46 @@ MUTATIONS = [
         '  if [[ "$fail_count" -eq 0 ]]; then\n    result_line PASS 0',
         "  if true; then\n    result_line PASS 0",
     ),
+    mutate.Mutation(
+        "the adoption predicate is inverted, so an adopted repo skips the check entirely",
+        '  if [[ "$adopted" == no ]]; then',
+        '  if [[ "$adopted" == yes ]]; then',
+    ),
+    mutate.Mutation(
+        "an armed repo with no refs/heads/main passes, disagreeing with audit.sh about one repo",
+        '  elif ! git -C "$scope" rev-parse --quiet --verify refs/heads/main >/dev/null 2>&1; then',
+        "  elif false; then",
+    ),
+    mutate.Mutation(
+        "a symlinked destination is judged by its TARGET's bytes, so a dead hook reads as installed",
+        '  elif [[ -L "$hook_dest" ]]; then',
+        "  elif false; then",
+    ),
+    mutate.Mutation(
+        "the tracked source can be missing and the check still reaches a digest verdict",
+        '  elif [[ ! -f "$scope/$TRACKED_HOOK" ]]; then',
+        "  elif false; then",
+    ),
+    mutate.Mutation(
+        "a non-executable hook reads as installed, which is the silent fail-open git itself has",
+        '  elif [[ ! -x "$hook_dest" ]]; then',
+        "  elif false; then",
+    ),
+    mutate.Mutation(
+        "the digest comparison always holds, so a stale boundary hook reads as current",
+        '  elif [[ "$(file_sha256 "$hook_dest")" == "$(file_sha256 "$scope/$TRACKED_HOOK")" ]]; then',
+        "  elif true; then",
+    ),
+    mutate.Mutation(
+        "a missing hook falls through to the wrong diagnosis, so the operator is told the wrong thing",
+        '  elif [[ ! -e "$hook_dest" ]]; then',
+        "  elif false; then",
+    ),
+    mutate.Mutation(
+        "a stale hook is diagnosed as foreign, so the operator is not told the remedy that works",
+        '  elif hook_is_a_tracked_version "$scope" "$hook_dest"; then',
+        "  elif false; then",
+    ),
 ]
 
 

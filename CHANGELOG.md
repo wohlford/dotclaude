@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.81.1 — 2026-08-06
+- test(propagate-postcheck): anchor the boundary-hook check
+
 ## v0.81.0 — 2026-08-06
 - feat(propagate-postcheck): assert the boundary hook is installed
 
