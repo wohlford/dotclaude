@@ -159,8 +159,11 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   header, so the directory existing is never taken as proof that every suite's text is in it. **These artifacts are not
   durable** either: they live under the system temp root and are aged out, so a path read from an
   old transcript may be gone.
-- A tool that isn't installed surfaces as `SKIP`, not a silent pass — always relay `SKIP`s; each
-  is a coverage gap, not a clean bill of health.
+- A tool that isn't installed surfaces as `SKIP` only when nothing needed it — always relay
+  `SKIP`s; each is a coverage gap, not a clean bill of health. When applicable work exists
+  (e.g. `test_*.py` files tracked) and the tool that would run it is missing, that is instrument
+  failure, not inapplicability: it surfaces as `FAIL … unprovable`, since a probe that measured
+  nothing is never a clean result.
 - `markdownlint` only runs in repos opted in via `.markdownlint-cli2.jsonc` — opting in is a
   per-repo decision this skill reports, never makes.
 - `pre-push-installed` only runs in adopted repos (any `refs/heads/*` branch carrying a

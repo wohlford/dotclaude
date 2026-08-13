@@ -662,6 +662,92 @@ else
   fail_line '15o: the underscored-name suite keeps its OWN complete log despite the collision'
 fi
 
+# --- 15p/15q shared: a python3 shim that defeats `-m pytest` while forwarding every other
+# invocation (tomllib checks, etc.) to the real interpreter. NOT a symlink farm hiding python3
+# wholesale — that would also SKIP md-links/sync-docs/toml/mutation-anchors for reasons
+# unrelated to `tests`, and it varies the wrong axis: an implementation keying the new FAIL on
+# `! command -v python3` would pass such a farm while the realistic host (python3 present,
+# pytest absent) keeps laundering silently into PASS. See
+# specs/2026-08-06-audit-never-ran-verdicts.md D1a. Path pinned with `pwd -P`: $tmp is not
+# pinned by this suite (unlike its siblings) and `/tmp` -> `/private/tmp` is symlinked here.
+p15_tmp="$(cd "$tmp" && pwd -P)"
+p15_bin="$p15_tmp/no_pytest_bin"
+mkdir -p "$p15_bin"
+p15_real_py3="$(command -v python3)"
+cat > "$p15_bin/python3" <<EOF
+#!/bin/sh
+if [ "\$1" = "-m" ] && [ "\$2" = "pytest" ]; then
+  echo "No module named pytest" >&2
+  exit 1
+fi
+exec "$p15_real_py3" "\$@"
+EOF
+chmod +x "$p15_bin/python3"
+
+# --- 15p: Defect A, PASS-laundering — a passing shell suite must not cover for a Python
+# family that never ran at all (pytest missing while test_*.py files exist) ---
+r15p="$p15_tmp/r15p_pass_laundered"
+mkrepo "$r15p"
+mkdir -p "$r15p/scripts/tests"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$r15p/scripts/tests/test_ok.sh"
+chmod +x "$r15p/scripts/tests/test_ok.sh"
+printf 'def test_thing():\n    assert True\n' > "$r15p/test_thing.py"
+commit_all "$r15p" seed
+OUT="$(PATH="$p15_bin:$PATH" "$engine" --scope "$r15p" --tests 2>&1)"
+RC=$?
+assert_not_has 'PASS tests' \
+  '15p: a passing shell suite must not launder pytest silence into PASS tests'
+assert_has 'FAIL tests' '15p: pytest missing with test_*.py present -> FAIL tests'
+assert_has 'unprovable:' '15p: the FAIL names the verdict as unprovable, not a real result'
+assert_has '1 test_*.py file(s) present but the runner could not start' \
+  '15p: the reason names the missing runner and the file count'
+assert_has 'No module named pytest' \
+  '15p: the reason quotes the runner OWN words — the predicate is "-m pytest failed", which is
+       equally satisfied by python3 being absent, so a fixed string would misname the remedy'
+assert_rc 1 '15p: the unprovable verdict drives the sweep to exit 1'
+assert_has 'RESULT: FAIL' '15p: the unprovable verdict is counted in the RESULT line, not just printed'
+
+# --- 15q: Defect A, false SKIP reason — with no shell suites at all, the pre-fix engine's
+# shared `ran` flag never becomes true, so it reports SKIP with a reason that is factually
+# false (test_*.py files DO exist; only the runner is missing) ---
+r15q="$p15_tmp/r15q_false_skip"
+mkrepo "$r15q"
+printf 'def test_thing():\n    assert True\n' > "$r15q/test_thing.py"
+commit_all "$r15q" seed
+OUT="$(PATH="$p15_bin:$PATH" "$engine" --scope "$r15q" --tests 2>&1)"
+RC=$?
+assert_not_has 'SKIP tests' \
+  '15q: pytest missing with test_*.py present must not read as SKIP'
+assert_not_has 'no scripts/tests/test_*.sh or test_*.py found' \
+  '15q: the SKIP reason claiming no test files exist must never appear once test_*.py files exist'
+assert_has 'FAIL tests' '15q: pytest missing with test_*.py present (no shell suites) -> FAIL tests'
+assert_has 'unprovable:' '15q: the FAIL names the verdict as unprovable'
+assert_rc 1 '15q: the unprovable verdict drives the sweep to exit 1'
+assert_has 'RESULT: FAIL' '15q: the unprovable verdict is counted in the RESULT line'
+
+# --- 15r: the applicability pathspec must not FALSE-BLOCK on a file that merely contains the
+# substring. Git pathspecs are wildmatch WITHOUT WM_PATHNAME, so `*` crosses `/` and `test_`
+# matches anywhere in the path: `src/latest_run.py` matches `*test_*.py` (la-test_-run). On the
+# pre-fix engine that over-match was harmless — it only decided whether pytest was INVOKED, and
+# a passing shell suite covered the silence. Turning applicability into a FAIL converts it into
+# a false block on any adopting repo, against a gate measured at 0/10 false blocks. The shell
+# suite below is what proves the row: post-fix the Python family is simply inapplicable, so the
+# check must reach `PASS tests` on the shell family alone rather than reporting unprovable.
+r15r="$p15_tmp/r15r_substring_only"
+mkrepo "$r15r"
+mkdir -p "$r15r/scripts/tests" "$r15r/src"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$r15r/scripts/tests/test_ok.sh"
+chmod +x "$r15r/scripts/tests/test_ok.sh"
+printf 'def latest():\n    return 1\n' > "$r15r/src/latest_run.py"
+commit_all "$r15r" seed
+OUT="$(PATH="$p15_bin:$PATH" "$engine" --scope "$r15r" --tests 2>&1)"
+RC=$?
+assert_not_has 'FAIL tests' \
+  '15r: a file merely CONTAINING "test_" in its path is not an applicable pytest suite'
+assert_not_has 'unprovable:' \
+  '15r: no unprovable verdict — nothing about this repo needed pytest'
+assert_has 'PASS tests' '15r: the shell family still runs and reports on its own'
+
 # ============================================================================
 # 16. BSD-safe newest-version picker (used by the markdownlint node-bin fallback)
 # ============================================================================

@@ -819,7 +819,7 @@ check_pre_push_installed() {
 }
 
 check_tests() {
-  local scope="$1" ran=false detail="" sh_list py_list t out rc note
+  local scope="$1" ran=false detail="" unprovable="" sh_list py_list t out rc note py_count py_why
   sh_list="$(git -C "$scope" ls-files -- 'scripts/tests/test_*.sh' 2>/dev/null)"
   while IFS= read -r t; do
     [[ -z "$t" ]] && continue
@@ -833,13 +833,49 @@ check_tests() {
     fi
   done <<< "$sh_list"
 
-  py_list="$(git -C "$scope" ls-files -- '*test_*.py' 2>/dev/null)"
-  if [[ -n "$py_list" ]] && python3 -m pytest --version >/dev/null 2>&1; then
-    ran=true
-    out="$(cd "$scope" && python3 -m pytest -q 2>&1)"; rc=$?
-    if [[ "$rc" -ne 0 ]]; then
-      if tests_artifact_write "$scope" pytest "$out"; then note=""; else note=' (full output NOT preserved)'; fi
-      detail="${detail}pytest exited ${rc}:${note}"$'\n'"$(tests_excerpt "$out")"$'\n'
+  # `:(glob)` is load-bearing. A plain `*test_*.py` pathspec is wildmatch WITHOUT WM_PATHNAME,
+  # so `*` crosses `/` and `test_` matches anywhere in the PATH: `src/latest_run.py` matches
+  # (la-test_-run). While that only decided whether pytest was INVOKED it was harmless; now that
+  # it decides a FAIL, an over-match is a false block on every adopting repo. `:(glob)**/` still
+  # matches at any depth, top level included — verified against both.
+  py_list="$(git -C "$scope" ls-files -- ':(glob)**/test_*.py' 2>/dev/null)"
+  # APPLICABILITY and EXECUTION are separate questions, and must not share one flag. With a
+  # single `ran`, a passing shell suite above laundered this family's silence into `PASS tests`
+  # — the sweep reporting a clean result for suites it never ran. Measured; that was the defect.
+  if [[ -n "$py_list" ]]; then
+    if python3 -m pytest --version >/dev/null 2>&1; then
+      ran=true
+      out="$(cd "$scope" && python3 -m pytest -q 2>&1)"; rc=$?
+      if [[ "$rc" -ne 0 ]]; then
+        if tests_artifact_write "$scope" pytest "$out"; then note=""; else note=' (full output NOT preserved)'; fi
+        detail="${detail}pytest exited ${rc}:${note}"$'\n'"$(tests_excerpt "$out")"$'\n'
+      fi
+    else
+      # The files existing is what establishes applicability, so a missing runner here is
+      # INSTRUMENT FAILURE, not inapplicability — the one case where `SKIP` would be a lie.
+      py_count="$(printf '%s\n' "$py_list" | grep -c . || true)"
+      # Quote the runner's OWN words rather than naming a cause. The predicate is "`-m pytest`
+      # would not start", which is equally satisfied by pytest being absent, by python3 being
+      # absent, and by a plugin failing to import — so a fixed "pytest is not installed" names
+      # the wrong remedy in two of the three, on a fail-closed gate whose message is the only
+      # thing the operator acts on. Report the measurement; do not infer between hypotheses.
+      py_why="$(python3 -m pytest --version 2>&1 | tail -1)"
+      [[ -n "$py_why" ]] || py_why='python3 -m pytest is not runnable'
+      unprovable="${py_count} test_*.py file(s) present but the runner could not start: ${py_why}"
+    fi
+  fi
+
+  # Checked BEFORE `ran`, which speaks only for the families that did execute — consulting it
+  # first is exactly what let one family hide behind another. Emitted through `verdict_fail` and
+  # never a bare `printf`: only `verdict_fail` increments `fail_count`, and `fail_count` is the
+  # sole input to the rc and to the RESULT line a publish gate allowlists. A hand-rolled printf
+  # here would look like a failure and still exit 0 — this defect wearing the fix's clothes.
+  if [[ -n "$unprovable" ]]; then
+    if [[ -n "$detail" ]]; then
+      detail="${detail}${unprovable}"$'\n'
+    else
+      verdict_fail tests "unprovable: $unprovable"
+      return
     fi
   fi
 
