@@ -187,8 +187,14 @@ if [[ "$expect_set" -eq 1 ]]; then
   [[ "$expect" != *$'\n'* ]] ||
     die '--expect cannot contain a newline: it is recorded as a single header line'
   # One probe against an EMPTY input, two refusals, on whichever matcher is installed:
-  #   rc 0 -> matches the empty line, therefore every line ('^', '$', '^$') — a stamp.
-  #           NOT 'x*': measured rc 1 on this matcher, so it is admitted and means "contains x".
+  #   rc 0 -> matches the empty line, therefore every line — a stamp. Which patterns fall in this
+  #           class is MATCHER-DEPENDENT, which is exactly why this asks the installed matcher
+  #           instead of hard-coding a list. Measured on GNU grep 3.12, the matcher a script here
+  #           actually resolves: '^', '$', '^$', 'x*' and '.*' are ALL refused.
+  #           Do not re-derive that list from an interactive shell — this session's `grep` is a
+  #           harness-injected shell FUNCTION shimming to ugrep, which answers differently ('x*'
+  #           and '.*' admitted). The function is not exported, so scripts get GNU grep; a probe
+  #           run at the prompt grades the shim rather than the environment.
   #   rc 2 -> does not compile. Without this the bad pattern is RECORDED and then fails forever
   #           at read time, reported as "produced no matching line", sending the reader off to
   #           debug the job instead of the pattern.

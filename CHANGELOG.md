@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.84.1 — 2026-08-09
+- fix(run-long): correct the matcher note measured through a shim
+
 ## v0.84.0 — 2026-08-09
 - feat(run-long): report INDETERMINATE when a run reached no verdict
 
