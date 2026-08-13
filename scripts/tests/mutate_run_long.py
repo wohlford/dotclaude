@@ -152,6 +152,89 @@ MUTATIONS = [
         'printf "%s\\n" "$header"',
         ":",
     ),
+    # --- --expect: does a finished run reach a verdict at all? ---------------------------------
+    mutate.Mutation(
+        "the expect check never runs, so an inert finished run reads DONE again",
+        '      if ! expect_satisfied "$art" "$pat"; then',
+        "      if false; then",
+    ),
+    # THE load-bearing rows — one per LAYER of the scope boundary, because the review found the
+    # false clear surviving at each one in turn.
+    mutate.Mutation(
+        "the expect match widens to the WHOLE artifact, so the header's own text clears an inert run",
+        '  section="$(sed -n \'/^----- output -----$/,$p\' "$1" |\n'
+        "    sed -e '1d' -e '/^RUN_LONG_EXIT_STATUS=[0-9][0-9]*$/d')\"",
+        '  section="$(cat "$1")"',
+    ),
+    mutate.Mutation(
+        "the harness's own marker and trailer stay in scope, so 'EXIT_STATUS=0' clears an inert run",
+        "    sed -e '1d' -e '/^RUN_LONG_EXIT_STATUS=[0-9][0-9]*$/d')\"",
+        '    cat)"',
+    ),
+    mutate.Mutation(
+        "INDETERMINATE returns 0 — inertness starts reading as success",
+        '      subject_report "$art"\n      return 5',
+        '      subject_report "$art"\n      return 0',
+    ),
+    # NOT "becomes a rubber stamp" — measured, it does not. With this check gone, `--expect ''`
+    # still dies rc 2 via the probe below (`grep -qE -e '' <<< ""` → rc 0 → "matches an empty
+    # line"). This line decides only WHICH DIAGNOSIS the user gets, so the row is caught solely by
+    # x1b's message-text assertion. Labelling it as a stamp would make the row unfalsifiable.
+    mutate.Mutation(
+        "the empty-pattern DIAGNOSIS is lost — '' is still refused, but named as the wrong defect",
+        '  [[ -n "$expect" ]] ||\n'
+        "    die '--expect needs a non-empty pattern: an empty one matches everything, "
+        "so it would clear every run'",
+        ":",
+    ),
+    mutate.Mutation(
+        "the newline refusal is dropped, so a multi-line pattern corrupts the header format",
+        "  [[ \"$expect\" != *$'\\n'* ]] ||\n"
+        "    die '--expect cannot contain a newline: it is recorded as a single header line'",
+        ":",
+    ),
+    mutate.Mutation(
+        "the pattern never reaches the header, so the obligation stops travelling with the artifact",
+        'header_block="$(printf \'%s\\n%s%s\' "$header_block" "$EXPECT_PREFIX" "$expect")"',
+        ":",
+    ),
+    mutate.Mutation(
+        "the RECORDED pattern is ignored at read time — only an explicit flag would ever apply",
+        '  [[ -n "$recorded" ]] && printf \'%s\\n\' "$recorded"',
+        ":",
+    ),
+    mutate.Mutation(
+        "the read-time pattern is ignored, so it can no longer ADD a requirement",
+        '  [[ -n "$expect" ]] && printf \'%s\\n\' "$expect"',
+        ":",
+    ),
+    mutate.Mutation(
+        "the empty-section guard is dropped — a here-string feeds ONE EMPTY LINE, which '^' matches",
+        '  [[ -n "$section" ]] || return 1',
+        ":",
+    ),
+    mutate.Mutation(
+        "the recorded-pattern read un-scopes from the header, so job OUTPUT can manufacture one",
+        '  header="$(sed -n \'1,/^----- output -----$/p\' "$art")"\n'
+        '  recorded="$(sed -n "s/^${EXPECT_PREFIX}//p" <<< "$header" | head -1)"',
+        '  recorded="$(sed -n "s/^${EXPECT_PREFIX}//p" "$art" | head -1)"',
+    ),
+    mutate.Mutation(
+        "the --label newline refusal is dropped, so a label can FORGE the output marker",
+        "[[ \"$label\" != *$'\\n'* ]] ||\n"
+        "  die '--label cannot contain a newline: it is written into the header, "
+        "where one would forge the output marker'",
+        ":",
+    ),
+    mutate.Mutation(
+        "the empty-line / uncompilable pattern probe is dropped, so '^' becomes a rubber stamp",
+        '  grep -qE -e "$expect" <<< "" 2> /dev/null\n'
+        "  case $? in\n"
+        '    0) die "--expect matches an empty line, so it would clear every run: $expect" ;;\n'
+        '    2) die "--expect is not a valid extended regular expression: $expect" ;;\n'
+        "  esac",
+        ":",
+    ),
 ]
 
 
@@ -163,7 +246,22 @@ MUTATIONS = [
 # stops the status trailer being written takes **297s** and is genuinely CAUGHT (43 passed, 17
 # failed), against a 28s unmutated baseline. Two rows behave this way, so expect this campaign to
 # run for tens of minutes; launch it with `scripts/run-long.sh` and read the artifact.
-SUITE_TIMEOUT_SECONDS = 900
+# Re-measured 2026-08-09, after the suite grew from 80 to 108 rows. The two pathological rows
+# roughly DOUBLED — the trailer row went 297s -> 610.0s — and the BEGIN row crossed the old 900s
+# cap, coming back TIMEOUT: indeterminate, not survived, and therefore an unproven row rather than
+# a failing one. Measured in isolation at a 2700s cap it is **CAUGHT at 1351.0s**, against a 26.9s
+# baseline (50x).
+#
+# So the cap is sized from that observed worst LEGITIMATE run, not from plausibility: 3600s is
+# ~2.7x it, matching the ratio the old 900s cap held against its own 297s worst case.
+#
+# **The cost is superlinear in suite size and is NOT fully explained.** Thirteen launches paying
+# the launcher's full 250x0.02s header-wait budget accounts for ~65s of the ~1324s of overhead;
+# where the rest goes has not been chased down. Two successive attempts to model it from launch
+# counts were wrong, which is why this number comes from a measurement instead. **Re-measure this
+# cap whenever rows are added to `test_run_long.sh`** rather than assuming headroom — and expect
+# the whole campaign to run about an hour now.
+SUITE_TIMEOUT_SECONDS = 3600
 
 
 def main() -> int:

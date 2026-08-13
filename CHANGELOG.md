@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.84.2 — 2026-08-09
+- test(mutate-run-long): add rows for the expect verdict
+
 ## v0.84.1 — 2026-08-09
 - fix(run-long): correct the matcher note measured through a shim
 
