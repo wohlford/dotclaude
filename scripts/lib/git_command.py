@@ -20,9 +20,129 @@ import re
 import shlex
 from typing import NamedTuple
 
-# git *global* options (before the subcommand) that consume a following value token.
-GLOBAL_VALUE_OPTS = {"-c", "--git-dir", "--work-tree", "--namespace"}
+# git *global* options (before the subcommand), classified by whether they consume the FOLLOWING
+# token. The pair is an ALLOWLIST and the classifier below defaults to "unknown", because the
+# blocklist shape this replaces — "anything I don't recognise is valueless, so step over it" —
+# was a measured fail-open: `git --attr-source HEAD <push> origin dev` yielded subcommand `HEAD`
+# with the real push sitting unexamined in the argument segment, and the guard's only question
+# about a non-push subcommand is whether it is an alias FOR push, so `HEAD` cleared it. Every
+# option git grows in future lands as "unknown" and blocks, which is the safe direction; the cost
+# is a false block that adding one name fixes.
+GLOBAL_VALUE_OPTS = {
+    "-c",
+    "-C",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--attr-source",
+    "--config-env",
+}
+
+# Valueless: they never consume the following token, so the token after one is still a candidate
+# subcommand. `--list-cmds` is real only in its `=<spec>` form and `--exec-path` only prints when
+# bare, but both are harmless to step over, and omitting `--list-cmds` would block an agent
+# following publication-push-guard's own comment, which cites `--list-cmds=main`.
+GLOBAL_FLAG_OPTS = {
+    "--exec-path",
+    "-v",
+    "--version",
+    "-h",
+    "--help",
+    "--html-path",
+    "--man-path",
+    "--info-path",
+    "-p",
+    "-P",
+    "--paginate",
+    "--no-pager",
+    "--bare",
+    "--no-replace-objects",
+    "--no-lazy-fetch",
+    "--no-optional-locks",
+    "--no-advice",
+    "--literal-pathspecs",
+    "--noglob-pathspecs",
+    "--icase-pathspecs",
+    "--glob-pathspecs",
+    "--list-cmds",
+}
+
+# The FLOOR. Discovery cannot detect ABSENCE — a set that quietly loses a member still parses, and
+# a *misclassified* one is worse than a missing one: moving `--git-dir` to the valueless set would
+# make its value token read as the subcommand. So name the members whose absence must alarm and a
+# minimum size, and let the sets only ever grow past it. This raises rather than warns, and every
+# consumer imports this module inside a try/except that BLOCKS on failure, so a violated floor
+# fails closed. `--super-prefix` is deliberately absent: it does not exist in git 2.55, so pinning
+# it would freeze a name that is already gone.
+_FLOOR_VALUE = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace"})
+_FLOOR_FLAG = frozenset({"--exec-path", "--no-pager", "-P", "--paginate", "--bare"})
+if not _FLOOR_VALUE <= GLOBAL_VALUE_OPTS:
+    raise RuntimeError(
+        f"GLOBAL_VALUE_OPTS lost required members: {sorted(_FLOOR_VALUE - GLOBAL_VALUE_OPTS)}"
+    )
+if not _FLOOR_FLAG <= GLOBAL_FLAG_OPTS:
+    raise RuntimeError(
+        f"GLOBAL_FLAG_OPTS lost required members: {sorted(_FLOOR_FLAG - GLOBAL_FLAG_OPTS)}"
+    )
+if GLOBAL_VALUE_OPTS & GLOBAL_FLAG_OPTS:
+    raise RuntimeError(
+        "an option cannot be both value-taking and valueless: "
+        f"{sorted(GLOBAL_VALUE_OPTS & GLOBAL_FLAG_OPTS)}"
+    )
+if len(GLOBAL_VALUE_OPTS) < 7 or len(GLOBAL_FLAG_OPTS) < 22:
+    raise RuntimeError(
+        f"global-option allowlist shrank below its floor: {len(GLOBAL_VALUE_OPTS)} value-taking "
+        f"(min 7), {len(GLOBAL_FLAG_OPTS)} valueless (min 22)"
+    )
+
+
+def classify_global_opt(opt: str) -> str:
+    """Classify a global option token as ``value`` / ``flag`` / ``unknown``.
+
+    ``value`` consumes the following token; ``flag`` does not; ``unknown`` means this walk cannot
+    say which, so the caller must treat the invocation as unjudgeable and block rather than guess.
+    An attached long value (``--git-dir=/x``) is self-contained and therefore classifies as
+    ``flag`` — but only once its BASE name is recognised, or an unknown ``--foo=bar`` would read
+    as judged simply for containing an ``=``.
+    """
+    if opt.startswith("--") and "=" in opt:
+        base = opt.split("=", 1)[0]
+        return (
+            "flag"
+            if base in GLOBAL_VALUE_OPTS or base in GLOBAL_FLAG_OPTS
+            else "unknown"
+        )
+    if opt in GLOBAL_VALUE_OPTS:
+        return "value"
+    if opt in GLOBAL_FLAG_OPTS:
+        return "flag"
+    # Attached `-C<path>`, the one short option with an attached form git actually accepts. The
+    # caller reads the path off it; here it only needs to not consume the next token.
+    if opt.startswith("-C") and len(opt) > 2:
+        return "flag"
+    return "unknown"
+
+
 ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+class InvocationTokens(NamedTuple):
+    """The tokens a consumer needs to judge an invocation's CONFIGURATION, not just its subcommand.
+
+    Carried on the invocation record rather than returned as a parallel list, for the same reason
+    the walk tracks `cd` itself: only this walk knows which tokens belong to which invocation, so
+    alignment is structural instead of asserted. A consumer scoping a check to `opts`/`env` cannot
+    match text belonging to some other command in the same line — which is what makes a
+    whole-command regex false-block a read-only `grep 'core.hooksPath=…' git-hooks/pre-push`.
+
+    Attributes:
+        env: Env-assignment tokens immediately preceding the `git` token (`FOO=1 git …`).
+        opts: The global-option run between `git` and the subcommand, verbatim and in order.
+    """
+
+    env: list[str]
+    opts: list[str]
+
 
 # Exec-wrappers that run their argument as a command, so `git` right after one is still in command
 # position (`sudo git commit`, `time git commit`). Bounded on purpose — an unknown leading word
@@ -810,6 +930,28 @@ def starts_command(
     return True
 
 
+def _env_prefix(tokens: list[str], idx: int) -> list[str]:
+    """Collect the env-assignment tokens immediately preceding `tokens[idx]`, in source order.
+
+    Mirrors `starts_command`'s backward walk and must stay in step with it: the same tokens it
+    steps OVER to prove command position are the ones that carry env into this invocation, so a
+    consumer reading these sees exactly what the shell would apply. Wrappers are stepped over
+    without being collected — `env FOO=1 git …` puts the assignment after the wrapper, and
+    `sudo git …` carries no assignment at all.
+    """
+    out: list[str] = []
+    j = idx - 1
+    while j >= 0:
+        prev = tokens[j]
+        if ENV_ASSIGN.match(prev):
+            out.append(prev)
+        elif not (prev in WRAPPERS or prev == "exec"):
+            break
+        j -= 1
+    out.reverse()
+    return out
+
+
 def _git_starts_command(tokens: list[str], idx: int) -> bool:
     """`starts_command`, scoped for recognising a `git` invocation: reserved words (`if`, `!`, …)
     and `exec` both count as command-position boundaries here. Every `is_git(...)`-guarded call
@@ -975,6 +1117,9 @@ def _walk_context(
         if is_git(tok) and _git_starts_command(tokens, i):
             j = i + 1
             cdir = None
+            # Captured BEFORE the option walk moves `j`: `tokens[i + 1 : j]` at each record site
+            # below is then exactly this invocation's global-option run, however that walk ended.
+            env_pre = _env_prefix(tokens, i)
             # Set when a value-taking option's value slot holds an operator-LOOKING token. That is
             # genuinely ambiguous: `is_op` classifies by TEXT and shlex(posix=True) strips quotes,
             # so a real `;` and a quoted `';'` (a directory literally named `;`) are the same
@@ -988,8 +1133,24 @@ def _walk_context(
             # token as the subcommand — the pre-existing behaviour — which fails the consumers'
             # literal-subcommand rule and blocks. Over-block on ambiguity; never disappear.
             value_slot_op = False
+            unknown_opt: str | None = None
             while j < n and tokens[j].startswith("-"):
                 opt = tokens[j]
+                kind = classify_global_opt(opt)
+                if kind == "unknown":
+                    # F2. The old fallback here was `else: j += 1` — assume valueless and step
+                    # over. That is a blocklist, and it admits every option nobody listed: for
+                    # `git --attr-source HEAD <push> origin dev` it stepped over `--attr-source`,
+                    # took `HEAD` as the subcommand, and left the push in the argument segment,
+                    # which no consumer re-examines. Measured ALLOWED against the shipped guard.
+                    #
+                    # Guessing the other way is no better — assuming value-taking would let an
+                    # unknown FLAG swallow a real subcommand. There is no safe guess, so stop
+                    # walking and mark the invocation unjudgeable, exactly as the ambiguous
+                    # value-slot below does. Break rather than continue: every token past here
+                    # depends on the arity we just failed to determine.
+                    unknown_opt = opt
+                    break
                 # An option that takes a VALUE must never consume a control operator as that
                 # value. `git -c ; git push origin dev` made `-c` swallow the `;`, so the walk
                 # resumed at `git` and recorded ONE invocation with subcommand "git" and the push
@@ -1000,9 +1161,7 @@ def _walk_context(
                 # and the two must agree: hand the operator back to the loop rather than eating
                 # it. A real shell would fail on the missing value anyway, so nothing legitimate
                 # is lost.
-                takes_value = opt == "-C" or (
-                    opt in GLOBAL_VALUE_OPTS and "=" not in opt
-                )
+                takes_value = kind == "value"
                 if takes_value and j + 1 < n and is_op(tokens[j + 1]):
                     value_slot_op = True
                     j += 1
@@ -1012,10 +1171,33 @@ def _walk_context(
                 elif opt.startswith("-C") and len(opt) > 2:
                     cdir = opt[2:]
                     j += 1
-                elif opt in GLOBAL_VALUE_OPTS and "=" not in opt and j + 1 < n:
+                elif takes_value and j + 1 < n:
                     j += 2
                 else:
+                    # Reached only by a classified FLAG, or by a value-taking option with no token
+                    # left to consume (the truncated branch below then handles it). It is no
+                    # longer the catch-all it used to be: "unknown" broke out above.
                     j += 1
+            if unknown_opt is not None:
+                # Same posture as the ambiguous value slot below, and for the same reason: record
+                # the invocation rather than dropping it. The unknown option becomes the recorded
+                # subcommand, which no consumer's literal-subcommand rule accepts and no alias
+                # lookup resolves, so the invocation blocks. Deliberately NO argument scan (seg=[])
+                # — scanning forward past an option whose arity is unknown is exactly the guess
+                # this branch exists to refuse, and it would bury any following invocation in a
+                # segment nothing independently judges.
+                _descend(tokens[i:j], cwd_state)
+                results.append(
+                    (
+                        cwd_state,
+                        cdir,
+                        unknown_opt,
+                        [],
+                        InvocationTokens(env_pre, tokens[i + 1 : j]),
+                    )
+                )
+                i = j
+                continue
             if j >= n:
                 # Truncated invocation: no subcommand. Still descend into the global-option run
                 # before giving up, or a context hidden there is lost.
@@ -1053,7 +1235,15 @@ def _walk_context(
                     # blocked into allowed, since neither reading is a `git`-prefixed invocation the
                     # walk would otherwise notice.
                     _descend(tokens[i:j], cwd_state)
-                    results.append((cwd_state, cdir, tokens[j], []))
+                    results.append(
+                        (
+                            cwd_state,
+                            cdir,
+                            tokens[j],
+                            [],
+                            InvocationTokens(env_pre, tokens[i + 1 : j]),
+                        )
+                    )
                     i = j
                     continue
                 # OPTIONS-ONLY invocation (`git --version | head`): the token in command position
@@ -1102,7 +1292,15 @@ def _walk_context(
             # `git commit -m "$(git push origin dev)"` hides the push in the argument segment, and
             # the walk jumps `i = k` straight past it.
             _descend(tokens[i:k], cwd_state)
-            results.append((cwd_state, cdir, tokens[j], seg))
+            results.append(
+                (
+                    cwd_state,
+                    cdir,
+                    tokens[j],
+                    seg,
+                    InvocationTokens(env_pre, tokens[i + 1 : j]),
+                )
+            )
             i = k
             continue
 
@@ -1148,8 +1346,39 @@ def iter_git_invocations_with_cwd(
     """
     if len(command) > MAX_COMMAND_LENGTH:
         raise ValueError("command exceeds the maximum length this scanner will parse")
-    results, _ = _walk_context(CommandContext(command, 0), base_cwd, max_depth)
-    return results
+    # Sliced to four deliberately: the walk records a fifth `InvocationTokens` element, and this
+    # signature is unpacked positionally at ~40 call sites. Widening it here would break every one
+    # of them for the benefit of the single consumer that wants the tokens, which asks instead via
+    # `iter_git_invocations_detailed` below.
+    return [
+        r[:4] for r in _walk_context(CommandContext(command, 0), base_cwd, max_depth)[0]
+    ]
+
+
+def iter_git_invocations_detailed(
+    command: str, base_cwd: str | None, max_depth: int = MAX_CONTEXT_DEPTH
+) -> list[tuple[str | None, str | None, str, list[str], InvocationTokens]]:
+    """`iter_git_invocations_with_cwd`, plus each invocation's env prefix and global-option run.
+
+    Same walk, same order, same raises — the extra element is recorded by the walk itself, so a
+    consumer scoping a check to one invocation's own tokens gets an alignment it does not have to
+    assert. Use this when the question is about an invocation's CONFIGURATION (`-c`, `GIT_CONFIG_*`)
+    rather than its subcommand; use the four-tuple form for everything else.
+
+    Args:
+        command: The raw shell-command string to scan.
+        base_cwd: Working directory the command starts in, or None if already unknown.
+        max_depth: Maximum context nesting depth before the input is treated as ambiguous.
+
+    Returns:
+        One ``(effective_dir, cdir, subcommand, arg_tokens, tokens)`` tuple per invocation.
+
+    Raises:
+        ValueError: Same conditions as `iter_git_invocations_with_cwd`.
+    """
+    if len(command) > MAX_COMMAND_LENGTH:
+        raise ValueError("command exceeds the maximum length this scanner will parse")
+    return _walk_context(CommandContext(command, 0), base_cwd, max_depth)[0]
 
 
 def iter_context_token_streams(

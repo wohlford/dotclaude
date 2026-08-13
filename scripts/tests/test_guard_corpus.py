@@ -146,6 +146,10 @@ P = _p("origin dev")  # a real push of dev, in the adopted repo's own refspec gr
 # The same, without the leading "git " -- for splicing after inserted options
 # ("git -C ';' " + PUSH_ARGS, etc.).
 PUSH_ARGS = f"{_VERB} origin dev"
+# A refspec layer 1 ALLOWS. Task 7's rows need this: pairing a config injection with `dev` proves
+# nothing, because the refspec rule blocks first and the row passes whether or not the detector
+# exists. Measured -- a probe built that way reported every injection "already blocked".
+PUSH_SAFE_ARGS = f"{_VERB} origin main"
 
 
 # ---------- row categories ----------
@@ -373,18 +377,89 @@ def _build_rows(other: Path) -> list[Row]:
         Row(
             "attr_source_launders",
             f"git --attr-source HEAD {PUSH_ARGS}",
-            XFAIL_TODAY,
-            "an unrecognised global option is not yet unjudgeable -- the option-scan loop stops "
-            "at HEAD and launders the real subcommand into HEAD's own bogus argument segment (F2)",
-            xfail_task="Task 5",
+            MUST_BLOCK,
+            "CLOSED by Task 5: --attr-source is now classified value-taking, so HEAD is consumed "
+            "as its value instead of being laundered into a bogus subcommand. Kept as MUST_BLOCK "
+            "rather than deleted -- this was a measured fail-open (rc 0 against the shipped "
+            "build), and the row is what stops it returning",
         ),
         Row(
             "super_prefix_two_args_launders",
             f"git --super-prefix xx {PUSH_ARGS}",
-            XFAIL_TODAY,
-            "same F2 laundering as attr_source_launders; --super-prefix does not exist in git "
-            "2.55 but this tokenizer never consults real git to find that out",
-            xfail_task="Task 5",
+            MUST_BLOCK,
+            "CLOSED by Task 5, but by the OTHER half: --super-prefix does not exist in git 2.55 "
+            "and is deliberately absent from both allowlists, so it classifies as unknown -> the "
+            "invocation is unjudgeable -> blocked. This row is the one that proves the allowlist "
+            "default itself, not merely that one more name was added to it",
+        ),
+        # ---------- Task 7: relocating or silencing the load-bearing pre-push boundary ----------
+        # Every row pushes a refspec layer 1 ALLOWS (`main`), deliberately. Pairing the injection
+        # with `dev` would prove nothing: the refspec rule fires first and the row would pass
+        # whether or not a detector existed. Measured -- a first probe did exactly that and read
+        # as "all blocked, no work needed".
+        Row(
+            "hooksPath_c_canonical",
+            f"git -c core.hooksPath=/dev/null {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "disabling the hooks path defeats layer 2 while the refspec sails through layer 1",
+        ),
+        Row(
+            "hooksPath_c_lowercase",
+            f"git -c core.hookspath=/dev/null {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "git config keys are case-insensitive; a case-sensitive check reads as coverage "
+            "while missing this exact spelling",
+        ),
+        Row(
+            "hooksPath_c_uppercase",
+            f"git -c CORE.HOOKSPATH=/dev/null {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the other case spelling git accepts",
+        ),
+        Row(
+            "include_path_indirection",
+            f"git -c include.path=/tmp/evil.cfg {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "include.path reaches hooksPath one hop away -- denying only the direct key would "
+            "leave the indirect route open",
+        ),
+        Row(
+            "git_config_global_env",
+            f"GIT_CONFIG_GLOBAL=/tmp/evil.cfg git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "swaps the file the config comes from, so no denied KEY appears in the command",
+        ),
+        Row(
+            "git_config_numbered_env",
+            f"GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null "
+            f"git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the numbered form is open-ended -- a COUNT|KEY|VALUE alternation misses KEY_0",
+        ),
+        Row(
+            "config_write_then_safe_push",
+            f"git config --local core.hooksPath /dev/null && git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the two-command bypass: `config` is in KNOWN_SAFE_SUBCOMMANDS and the push that "
+            "follows is one layer 1 allows, so blocking the config half is what makes the PAIR "
+            "unreachable -- this is why the detector runs before the known-safe shortcut",
+        ),
+        Row(
+            "unresolvable_c_value",
+            f'git -c "$K" {PUSH_SAFE_ARGS}',
+            MUST_BLOCK,
+            "shlex strips the quotes, so no literal key=value survives; unresolvable => block, "
+            "rather than being read as a harmless option",
+        ),
+        # The false block the previous whole-command design produced, kept as a MUST_ALLOW so a
+        # future re-widening of the detector's scope fails here rather than in someone's session.
+        Row(
+            "readonly_grep_of_the_hook",
+            "grep -n 'core.hooksPath=/dev/null' git-hooks/pre-push",
+            MUST_ALLOW,
+            "a read-only grep carries no git invocation in command position, so a detector scoped "
+            "to invocation tokens cannot see it; a whole-command regex false-blocked this exact "
+            "command because its git-word prefilter matched the path token `git-hooks`",
         ),
         Row(
             "send_pack_direct",
@@ -715,9 +790,18 @@ def test_xfail_today_rows_are_still_allowed(
 ) -> None:
     """Tripwire: each XFAIL_TODAY row names the task expected to fix it. If a row starts blocking
     before that task lands (or before it is explicitly reclassified), this fails loudly instead of
-    leaving a stale "not yet fixed" marker in the corpus -- the row's whole reason for existing."""
+    leaving a stale "not yet fixed" marker in the corpus -- the row's whole reason for existing.
+
+    An EMPTY set is legal and is the branch's goal state, not a broken fixture. It was briefly
+    asserted non-empty, which was wrong in a way worth recording: it made the corpus unable to
+    express "every named fail-open is now closed" without someone inventing a placeholder gap. The
+    tripwire's force does not come from the list being non-empty -- it comes from every row IN it
+    still being allowed, which is vacuously (and correctly) true of an empty list. The guard's
+    remaining residuals (`sh -c`, `eval`, an unlisted wrapper carrying its own arguments) are
+    ACCEPTED, not scheduled, so they do not belong here: XFAIL_TODAY names a task, and no task is
+    coming for those.
+    """
     xfail = [r for r in rows if r.category == XFAIL_TODAY]
-    assert xfail, "no XFAIL_TODAY rows defined"
     failures = [
         f"{r.label}: new build now blocks (rc={verdicts[r.label][1]}) -- move it out of "
         f"XFAIL_TODAY ({r.xfail_task} may have landed); why it was xfailed: {r.why}"

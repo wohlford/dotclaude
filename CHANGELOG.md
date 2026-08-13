@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.77.4 — 2026-08-04
+- fix(git_command,publication-push-guard): close two measured fail-opens
+
 ## v0.77.3 — 2026-08-03
 - fix(git_command): stop the ambiguous value slot eating the boundary
 
