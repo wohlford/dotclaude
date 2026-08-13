@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.83.3 — 2026-08-09
+- docs(CLAUDE.md): correct the GNU-vs-BSD default this machine uses
+
 ## v0.83.2 — 2026-08-08
 - fix(mutate): print a derived call signature instead of nothing
 

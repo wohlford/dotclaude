@@ -132,7 +132,10 @@ plan and base you are actually executing before trusting any line; reset it when
 - **Shell**: Prefer MacPorts bash (`/opt/local/bin/bash`) for scripts requiring advanced features
 - **Default bash**: `/bin/bash` is the system bash (version 3.x, limited features)
 - **GNU Core Utilities**: Installed via MacPorts (`coreutils`)
-  - GNU tools are prefixed with `g` (e.g., `gls`, `ggrep`, `gdate`)
+  - **`/opt/local/libexec/gnubin` is already on PATH, so the UNPREFIXED names are GNU** — plain
+    `date`, `grep`, `sed`, `ls` are GNU coreutils, not BSD. Measured: BSD-only flags fail there
+    (`date -j` → `invalid option -- 'j'`), and reaching for `gdate` to "get GNU" is a no-op.
+  - The `g`-prefixed names (`gls`, `ggrep`, `gdate`) still resolve, so both spellings work
   - Use GNU versions for advanced features like `--long-options`
 
 ## Language and Tooling Preferences
@@ -625,7 +628,9 @@ left legal.
 
 ### GNU vs BSD Tools
 
-macOS ships BSD tools by default. GNU versions (MacPorts) provide more features:
+macOS ships BSD tools by default, but **this machine already prepends
+`/opt/local/libexec/gnubin`**, so an unprefixed `grep`/`sed`/`date`/`ls` is the GNU one. The table
+is what each side offers, not what you get by default here:
 
 | Tool | BSD | GNU | Key Difference |
 |------|-----|-----|----------------|
@@ -634,4 +639,5 @@ macOS ships BSD tools by default. GNU versions (MacPorts) provide more features:
 | date | `/bin/date` | `gdate` | Better parsing |
 | ls | `/bin/ls` | `gls` | `--color`, `--group-directories-first` |
 
-To use GNU by default: `export PATH="/opt/local/libexec/gnubin:$PATH"`
+Already in effect here: `export PATH="/opt/local/libexec/gnubin:$PATH"` — verify with
+`which date` rather than assuming either way, since a shell that lacks it silently gives you BSD.
