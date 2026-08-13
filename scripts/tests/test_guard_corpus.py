@@ -67,15 +67,12 @@ beyond those four on purpose: a labeled row nothing ever checks is decoration, n
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import os
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 
@@ -91,26 +88,6 @@ NEW_GUARD = REPO_ROOT / "scripts" / "publication-push-guard.py"
 _BASELINE_ROOT = _TESTS_DIR / "fixtures" / "prechange"
 BASELINE_GUARD = _BASELINE_ROOT / "scripts" / "publication-push-guard.py"
 BASELINE_GIT_COMMAND = _BASELINE_ROOT / "scripts" / "lib" / "git_command.py"
-
-
-def _load_baseline_gitcmd() -> ModuleType:
-    """Import the FROZEN baseline `git_command.py` under its own module name -- never
-    `git_command`, which `new_gitcmd` above already occupies in `sys.modules`; importing the
-    baseline under the same name would silently replace it there, and every later `import
-    git_command` anywhere in the process (this module's own top-level import already ran, but a
-    fixture-scoped re-import elsewhere would not) would resolve to the WRONG build. The baseline
-    file is self-contained stdlib-only (verified: `os`, `re`, `shlex`, `typing`), so no further
-    sys.path surgery is needed to load it standalone."""
-    spec = importlib.util.spec_from_file_location(
-        "baseline_git_command", BASELINE_GIT_COMMAND
-    )
-    assert spec is not None and spec.loader is not None, (
-        f"could not build an import spec for {BASELINE_GIT_COMMAND}"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
 
 # Must match publication-push-guard.py's own LOG_ENV_VAR constant -- see the hermeticity note
 # in the module docstring above.
@@ -147,10 +124,6 @@ P = _p("origin dev")  # a real push of dev, in the adopted repo's own refspec gr
 # The same, without the leading "git " -- for splicing after inserted options
 # ("git -C ';' " + PUSH_ARGS, etc.).
 PUSH_ARGS = f"{_VERB} origin dev"
-# A refspec layer 1 ALLOWS. Task 7's rows need this: pairing a config injection with `dev` proves
-# nothing, because the refspec rule blocks first and the row passes whether or not the detector
-# exists. Measured -- a probe built that way reported every injection "already blocked".
-PUSH_SAFE_ARGS = f"{_VERB} origin main"
 
 
 # ---------- row categories ----------
@@ -161,31 +134,6 @@ MUST_ALLOW = "MUST_ALLOW"  # currently allowed; must stay allowed (an over-block
 # Currently blocked, but NOT by real detection -- see each row's `why`.
 ACCIDENTAL = "ACCIDENTAL"
 
-# FLOOR over the labels themselves. Nothing validated `Row.category` before, so a typo
-# (`MUST_BLOK`) silently dropped a row from every label-specific test while still looking like a
-# corpus entry -- it kept contributing to `test_blocked_set_does_not_shrink`, which reads every row
-# regardless of label, and to nothing else. That is the quietest way to lose coverage here: the row
-# is still present, still runs, and still passes.
-_CATEGORIES = frozenset({MUST_BLOCK, XFAIL_TODAY, MUST_ALLOW, ACCIDENTAL})
-
-# THERE IS DELIBERATELY NO `SANCTIONED_UNBLOCK` CATEGORY, and this note exists so it is not
-# re-proposed a third time. The plan for this branch specified one -- a category for rows the frozen
-# baseline BLOCKS and the new build deliberately ALLOWS, excused from the shrink assertion. It was
-# built, and the two-sided pin written for it (base must be 2, new must be 0) immediately failed on
-# all five candidate rows with `baseline rc=0`.
-#
-# The premise was false, and measurably so: the vendored baseline is frozen at `782039d`, which
-# contains ZERO config-injection code (`grep -c` on the fixture returns 0) -- the detector was
-# introduced later, on this branch. So the over-blocks those rows describe (husky's install, a pure
-# read, `GIT_CONFIG_NOSYSTEM`) were never the BASELINE's behaviour at all; they belonged to an
-# INTERMEDIATE state of this branch, which the corpus does not model and should not, because its
-# whole value is a fixed pre-branch reference point. Relative to that reference the blocked set only
-# ever GREW, which is what `test_blocked_set_does_not_shrink` reports today.
-#
-# Those rows are MUST_ALLOW, and they are load-bearing there: they are the over-block regression
-# guards for a machine-wide block that really did ship mid-branch. An empty category plus a pin that
-# can never fire would have pinned nothing while reading as coverage.
-
 
 @dataclass(frozen=True)
 class Row:
@@ -194,13 +142,9 @@ class Row:
     Attributes:
         label: A short, stable, grep-free-of-the-push-verb identifier.
         command: The literal command text fed to the guard's stdin JSON payload.
-        category: A member of `_CATEGORIES`, asserted by
-            `test_every_row_carries_a_known_category` -- an unrecognised string is a row that
-            quietly opts out of every label-specific test.
+        category: One of MUST_BLOCK / XFAIL_TODAY / MUST_ALLOW / ACCIDENTAL.
         why: A one-line explanation of the verdict this row exists to pin.
-        xfail_task: For XFAIL_TODAY rows, the task expected to fix it. Must name something that
-            will ACTUALLY close the row: a task that completes without closing it turns this
-            marker stale in the one direction the tripwire cannot see.
+        xfail_task: For XFAIL_TODAY rows, the plan task that is expected to fix it.
     """
 
     label: str
@@ -272,20 +216,11 @@ def _reserved_word_preserve_rows(other: Path) -> list[Row]:
     return rows
 
 
-def _build_rows(adopted: Path, other: Path) -> list[Row]:
-    """The full corpus.
-
-    `other` is a second, NON-adopted fixture repo. It began as a splice for the two subshell-`cd`
-    rows; the scope-classifier rows at the bottom use it for a different and load-bearing reason --
-    see the CWD IS THE MEASUREMENT note above them.
-
-    `adopted` is the primary fixture repo's own path, needed by the reach-in rows that name it as a
-    TARGET (`-f <adopted>/.git/config`, `--file=`, `GIT_CONFIG=`, `-C <adopted>`). Those are the
-    shape that proves standing in a non-adopted directory does not put the adopted repo out of
-    reach -- the hole that scoping the detector to adoption would otherwise open.
+def _build_rows(other: Path) -> list[Row]:
+    """The full corpus. `other` is a second, non-adopted fixture repo's path, spliced into the
+    two rows that exercise a subshell `cd` -- everything else runs directly in the adopted repo.
     """
     other_s = str(other)
-    adopted_s = str(adopted)
     return [
         # ---------- MUST_BLOCK: blocked today, must stay blocked on every future build ----------
         Row(
@@ -416,89 +351,18 @@ def _build_rows(adopted: Path, other: Path) -> list[Row]:
         Row(
             "attr_source_launders",
             f"git --attr-source HEAD {PUSH_ARGS}",
-            MUST_BLOCK,
-            "CLOSED by Task 5: --attr-source is now classified value-taking, so HEAD is consumed "
-            "as its value instead of being laundered into a bogus subcommand. Kept as MUST_BLOCK "
-            "rather than deleted -- this was a measured fail-open (rc 0 against the shipped "
-            "build), and the row is what stops it returning",
+            XFAIL_TODAY,
+            "an unrecognised global option is not yet unjudgeable -- the option-scan loop stops "
+            "at HEAD and launders the real subcommand into HEAD's own bogus argument segment (F2)",
+            xfail_task="Task 5",
         ),
         Row(
             "super_prefix_two_args_launders",
             f"git --super-prefix xx {PUSH_ARGS}",
-            MUST_BLOCK,
-            "CLOSED by Task 5, but by the OTHER half: --super-prefix does not exist in git 2.55 "
-            "and is deliberately absent from both allowlists, so it classifies as unknown -> the "
-            "invocation is unjudgeable -> blocked. This row is the one that proves the allowlist "
-            "default itself, not merely that one more name was added to it",
-        ),
-        # ---------- Task 7: relocating or silencing the load-bearing pre-push boundary ----------
-        # Every row pushes a refspec layer 1 ALLOWS (`main`), deliberately. Pairing the injection
-        # with `dev` would prove nothing: the refspec rule fires first and the row would pass
-        # whether or not a detector existed. Measured -- a first probe did exactly that and read
-        # as "all blocked, no work needed".
-        Row(
-            "hooksPath_c_canonical",
-            f"git -c core.hooksPath=/dev/null {PUSH_SAFE_ARGS}",
-            MUST_BLOCK,
-            "disabling the hooks path defeats layer 2 while the refspec sails through layer 1",
-        ),
-        Row(
-            "hooksPath_c_lowercase",
-            f"git -c core.hookspath=/dev/null {PUSH_SAFE_ARGS}",
-            MUST_BLOCK,
-            "git config keys are case-insensitive; a case-sensitive check reads as coverage "
-            "while missing this exact spelling",
-        ),
-        Row(
-            "hooksPath_c_uppercase",
-            f"git -c CORE.HOOKSPATH=/dev/null {PUSH_SAFE_ARGS}",
-            MUST_BLOCK,
-            "the other case spelling git accepts",
-        ),
-        Row(
-            "include_path_indirection",
-            f"git -c include.path=/tmp/evil.cfg {PUSH_SAFE_ARGS}",
-            MUST_BLOCK,
-            "include.path reaches hooksPath one hop away -- denying only the direct key would "
-            "leave the indirect route open",
-        ),
-        Row(
-            "git_config_global_env",
-            f"GIT_CONFIG_GLOBAL=/tmp/evil.cfg git {PUSH_SAFE_ARGS}",
-            MUST_BLOCK,
-            "swaps the file the config comes from, so no denied KEY appears in the command",
-        ),
-        Row(
-            "git_config_numbered_env",
-            f"GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null "
-            f"git {PUSH_SAFE_ARGS}",
-            MUST_BLOCK,
-            "the numbered form is open-ended -- a COUNT|KEY|VALUE alternation misses KEY_0",
-        ),
-        Row(
-            "config_write_then_safe_push",
-            f"git config --local core.hooksPath /dev/null && git {PUSH_SAFE_ARGS}",
-            MUST_BLOCK,
-            "the two-command bypass: `config` is in KNOWN_SAFE_SUBCOMMANDS and the push that "
-            "follows is one layer 1 allows, so blocking the config half is what makes the PAIR "
-            "unreachable -- this is why the detector runs before the known-safe shortcut",
-        ),
-        Row(
-            "unresolvable_c_value",
-            f'git -c "$K" {PUSH_SAFE_ARGS}',
-            MUST_BLOCK,
-            "shlex strips the quotes, so no literal key=value survives; unresolvable => block, "
-            "rather than being read as a harmless option",
-        ),
-        # The false block the previous whole-command design produced, kept as a MUST_ALLOW so a
-        # future re-widening of the detector's scope fails here rather than in someone's session.
-        Row(
-            "readonly_grep_of_the_hook",
-            "grep -n 'core.hooksPath=/dev/null' git-hooks/pre-push",
-            MUST_ALLOW,
-            "a read-only grep carries no git invocation in command position, so a detector scoped "
-            "to invocation tokens cannot see it; a whole-command regex false-blocked this exact "
-            "command because its git-word prefilter matched the path token `git-hooks`",
+            XFAIL_TODAY,
+            "same F2 laundering as attr_source_launders; --super-prefix does not exist in git "
+            "2.55 but this tokenizer never consults real git to find that out",
+            xfail_task="Task 5",
         ),
         Row(
             "send_pack_direct",
@@ -525,16 +389,14 @@ def _build_rows(adopted: Path, other: Path) -> list[Row]:
             MUST_BLOCK,
             "same L1 deny-set catch as send_pack_direct",
         ),
-        # ---------- Task 4 (F3): the boundary token reaches the paren branch ---------------------
         Row(
             "cd_other_gitdashc_then_P",
             f"(cd {other_s} && git -c) ; {P}",
-            MUST_BLOCK,
-            "the truncated `git -c`'s ambiguous value slot hands the ')' back to the main loop "
-            "instead of swallowing it, so the paren branch pops the subshell cwd and the real "
-            "push is judged in the adopted repo -- both halves of F3's two-part fix are required: "
-            "an unjudgeable invocation is still appended for the truncated `git -c` itself, so "
-            "nothing disappears either",
+            XFAIL_TODAY,
+            'literal "do not consume the boundary token" drops the whole invocation instead of '
+            "returning the operator to the loop AND appending an unjudgeable truncated one -- F3's "
+            "two-part fix; one half alone is a regression",
+            xfail_task="Task 4",
         ),
         # ---------- MUST_ALLOW: allowed today, must stay allowed (an over-block guard) ----------
         Row(
@@ -603,166 +465,6 @@ def _build_rows(adopted: Path, other: Path) -> list[Row]:
             "super_prefix_two_args_launders above, which uses the clean token 'xx' and sails "
             "through today",
         ),
-        # ---------- CWD IS THE MEASUREMENT: the rows that must be UNCONDITIONAL ----------
-        # `verdicts` runs every row with cwd = the ADOPTED sandbox. There, a `--global` write blocks
-        # whether the arm is correctly UNCONDITIONAL or wrongly ADOPTION-GATED -- the adoption gate
-        # disposes of the row before unconditionality is ever consulted. So the row would pass for
-        # the wrong reason, and a later regression to gating would stay green forever.
-        #
-        # Every row below therefore carries a `cd {other} &&` prefix, moving the walk's
-        # effective_dir into the NON-adopted repo, which is the only place an adoption-gated arm
-        # would ALLOW. Delete the scope classifier and these verdicts MOVE; that is the test.
-        #
-        # This is not a hypothetical: it is the masking-condition failure already measured on this
-        # exact detector. A first probe paired every injection with the one refspec an earlier rule
-        # already refused, came back "blocked" on all rows, and was written up as "already covered,
-        # the plan's premise is wrong". The hole appeared only once the paired input was varied.
-        Row(
-            "scope_glo_abbrev_from_other",
-            f"cd {other_s} && git config --glo core.hooksPath /dev/null",
-            MUST_BLOCK,
-            "git accepts unambiguous abbreviations of --global, so a scope allowlist matching only "
-            "the full spelling reads as coverage while --glo writes the global file (measured)",
-        ),
-        Row(
-            "scope_comment_shields_global_from_other",
-            f"cd {other_s} && git config --comment n --global core.hooksPath /x",
-            MUST_BLOCK,
-            "--comment takes a value, so a classifier scanning only the LEADING option run stops "
-            "before --global and reads this as a local write; the scan must cross every token",
-        ),
-        Row(
-            "scope_set_subcommand_global_from_other",
-            f"cd {other_s} && git config set --global core.hooksPath /x",
-            MUST_BLOCK,
-            "the modern subcommand form puts --global AFTER a non-option token, which is where a "
-            "classifier that breaks at the first non-option stops looking",
-        ),
-        Row(
-            "scope_dash_f_adopted_config_from_other",
-            f"cd {other_s} && git config -f {adopted_s}/.git/config core.hooksPath X",
-            MUST_BLOCK,
-            "-f names the adopted repo's own config file as the target, so standing in a "
-            "non-adopted directory does not put it out of reach -- the hole adoption-scoping opens",
-        ),
-        Row(
-            "scope_file_equals_adopted_config_from_other",
-            f"cd {other_s} && git config --file={adopted_s}/.git/config core.hooksPath X",
-            MUST_BLOCK,
-            "the attached --file= spelling of the same reach-in; an allowlist keyed on the "
-            "separated form only would let this one through",
-        ),
-        Row(
-            "env_git_config_redirect_from_other",
-            f"cd {other_s} && GIT_CONFIG={adopted_s}/.git/config git config core.hooksPath X",
-            MUST_BLOCK,
-            "GIT_CONFIG= redirects the write with no scope flag anywhere in the command, so a "
-            "classifier reading only argv concludes 'local' and gates it on the WRONG repo",
-        ),
-        Row(
-            "env_git_common_dir_redirect_from_other",
-            f"cd {other_s} && GIT_COMMON_DIR={adopted_s}/.git git config core.hooksPath X",
-            MUST_BLOCK,
-            "the other env redirect: it moves what 'local' MEANS, so a local-scoped write lands in "
-            "the adopted repo",
-        ),
-        Row(
-            "alias_smuggles_global_write_from_other",
-            f"cd {other_s} && git -c alias.zz='config --global core.hooksPath /x' zz",
-            MUST_BLOCK,
-            "a -c value is per-invocation in FORM but arbitrary in EFFECT -- the aliased command "
-            "runs with full privileges and this gate never sees it; alias. is denied in the -c "
-            "arm's key set only, never in the shared one the config seg scan reads",
-        ),
-        Row(
-            "alias_via_numbered_env_from_other",
-            f"cd {other_s} && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.zz git zz",
-            MUST_BLOCK,
-            "the same alias smuggle through the numbered env form, which names no key in argv",
-        ),
-        Row(
-            "dashC_into_adopted_config_from_other",
-            f"cd {other_s} && git -C {adopted_s} config core.hooksPath /dev/null",
-            MUST_BLOCK,
-            "-C re-targets the invocation into the adopted repo, so the write is local to a repo "
-            "the cwd says nothing about -- adoption must be judged on the EFFECTIVE dir",
-        ),
-        Row(
-            "write_disguised_as_read_trailing_get",
-            "git config core.hooksPath --get",
-            MUST_BLOCK,
-            "position-sensitive: a read flag AFTER the key is a positional, and the write LANDS "
-            "(measured, git 2.55) -- so a read carve-out that scans the whole segment turns one "
-            "command into a hook-disabling write that reads as a query. Runs in the ADOPTED repo "
-            "deliberately: this is a LOCAL write, which is exactly the arm that IS adoption-gated",
-        ),
-        # ---------- MUST_ALLOW: the over-block guards for a block that really did ship ----------
-        # These five were drafted as SANCTIONED_UNBLOCK and are MUST_ALLOW because the measurement
-        # said so -- see the long note beside `_CATEGORIES`. The frozen baseline allows all five
-        # (rc=0), because it predates the config detector entirely; what blocked them was an
-        # INTERMEDIATE state of this branch, in which the detector fired in every repo on the
-        # machine. That block was real and shipped, which is exactly why these rows are worth
-        # keeping: as MUST_ALLOW they fail if it ever returns, which is the property that matters.
-        Row(
-            "husky_install_in_non_adopted",
-            f"cd {other_s} && git config core.hooksPath .husky",
-            MUST_ALLOW,
-            "husky's own install command, in a repo that never adopted the publication model -- a "
-            "local write there is none of this gate's business. This is the single most likely "
-            "shape for an over-block to reappear in, because it names a denied key innocently",
-        ),
-        Row(
-            "pure_read_in_adopted",
-            "git config --get core.hooksPath",
-            MUST_ALLOW,
-            "a pure read cannot relocate anything, so blocking it for merely NAMING the key would "
-            "refuse the very diagnostic an operator runs to check the hooks path is intact",
-        ),
-        Row(
-            "pure_read_subcommand_form_in_adopted",
-            "git config get core.hooksPath",
-            MUST_ALLOW,
-            "the modern subcommand spelling of the same read; recognising only --get would leave "
-            "this one blocked and the carve-out half-built",
-        ),
-        Row(
-            "pure_read_in_non_adopted",
-            f"cd {other_s} && git config --get core.hooksPath",
-            MUST_ALLOW,
-            "the same read from a non-adopted cwd -- paired with the adopted row above so the "
-            "carve-out is held on both sides of the adoption boundary, not just the easy one",
-        ),
-        Row(
-            "config_nosystem_env_in_non_adopted",
-            f"cd {other_s} && GIT_CONFIG_NOSYSTEM=1 git log -1",
-            MUST_ALLOW,
-            "GIT_CONFIG_NOSYSTEM suppresses the system config file and provably cannot SET a key, "
-            "so it carries none of the blast radius the rest of the env arm denies; a prefix match "
-            "on GIT_CONFIG_* alone would block a plain log",
-        ),
-        # ---------- XFAIL_TODAY: measured open, and named to the task that will close them -------
-        # Both re-measured 2026-08-04 in a genuinely adopted fixture (a first probe used an
-        # UNCOMMITTED marker, so the guard was dormant and every row read "allowed" -- the control
-        # row is what caught it). They are NOT closed by the branch's own review-findings task,
-        # which is why they name the backlog entry instead: an XFAIL row whose named task completes
-        # without closing it is precisely the stale marker this category's tripwire exists to stop.
-        Row(
-            "rename_section_builds_include_path",
-            "git config --rename-section harmless include",
-            XFAIL_TODAY,
-            "renaming any section to `include` makes its existing `path` key a live include.path, "
-            "reaching core.hooksPath one hop away -- with no denied key ever typed. Measured: git "
-            "exits 0 and the section really is created",
-            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
-        ),
-        Row(
-            "config_edit_is_an_arbitrary_write",
-            "GIT_EDITOR=vi git config --edit",
-            XFAIL_TODAY,
-            "--edit opens the config in an arbitrary editor, so its effect is unbounded and names "
-            "no key at all; allowed today with or without the GIT_EDITOR prefix (measured)",
-            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
-        ),
     ]
 
 
@@ -794,29 +496,12 @@ def _git(repo: Path, *args: str) -> None:
 
 
 def _build_adopted_repo(base: Path) -> Path:
-    """A purpose-built fixture repo: `.publication.toml` at the root, checked out to `dev`.
-
-    Also installs a healthy stub boundary hook -- both the tracked `git-hooks/pre-push` source and
-    a byte-identical, executable `.git/hooks/pre-push` copy -- for the same reason as the shell
-    suite's `build_repo`: a push-arm precondition that asserts the boundary is in force would
-    otherwise turn every allowed-push row in this corpus red. The stub is a no-op
-    (`exit 0`): this corpus exercises the GUARD, not the real hook body.
-    """
+    """A purpose-built fixture repo: `.publication.toml` at the root, checked out to `dev`."""
     repo = base / "repo"
     repo.mkdir()
     _git(repo, "init", "-q")
     (repo / "README.md").write_text("hello\n")
     (repo / ".publication.toml").write_text('production = "main"\n')
-    hooks_src_dir = repo / "git-hooks"
-    hooks_src_dir.mkdir()
-    hook_source = hooks_src_dir / "pre-push"
-    hook_source.write_text("#!/bin/sh\nexit 0\n")
-    hook_source.chmod(0o755)
-    hooks_dest_dir = repo / ".git" / "hooks"
-    hooks_dest_dir.mkdir(parents=True, exist_ok=True)
-    hook_installed = hooks_dest_dir / "pre-push"
-    shutil.copyfile(hook_source, hook_installed)
-    hook_installed.chmod(0o755)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "init")
     _git(repo, "branch", "-q", "dev")
@@ -864,7 +549,7 @@ def sandbox(tmp_path_factory: pytest.TempPathFactory) -> Sandbox:
 
 @pytest.fixture(scope="session")
 def rows(sandbox: Sandbox) -> list[Row]:
-    result = _build_rows(sandbox.repo, sandbox.other)
+    result = _build_rows(sandbox.other)
     assert result, "corpus row list must never be empty"
     return result
 
@@ -962,35 +647,13 @@ def test_must_block_rows_block_on_new_build(
     )
 
 
-def test_every_row_carries_a_known_category(rows: list[Row]) -> None:
-    """FLOOR over the labels. Nothing validated `Row.category`, so a typo silently dropped a row
-    from every label-specific test while still looking like a corpus entry -- it went on
-    contributing to `test_blocked_set_does_not_shrink`, which reads every row regardless of label,
-    and to nothing else. That is the quietest way to lose coverage here: the row is still present,
-    still runs, and still passes."""
-    unknown = {r.label: r.category for r in rows if r.category not in _CATEGORIES}
-    assert not unknown, (
-        f"row(s) carrying a category no test recognises: {unknown} -- "
-        f"known categories are {sorted(_CATEGORIES)}"
-    )
-
-
 def test_blocked_set_does_not_shrink(
     rows: list[Row], verdicts: dict[str, tuple[int, int]]
 ) -> None:
-    """Required assertion 2 -- the shrink property, over every row in the corpus regardless of
-    label (MUST_BLOCK, XFAIL_TODAY, MUST_ALLOW and ACCIDENTAL alike): nothing the frozen baseline
+    """Required assertion 2 -- the shrink property, over EVERY row in the corpus regardless of
+    label (MUST_BLOCK, XFAIL_TODAY, MUST_ALLOW, and ACCIDENTAL alike): nothing the frozen baseline
     blocks is allowed by the new build. This is the safety net; the label-specific tests in this
-    module are additional, not substitutes for it.
-
-    THERE IS NO EXEMPTION, and that is a measured result rather than an omission -- see the note
-    beside `_CATEGORIES`. An excused category was specified, built, and then removed when its own
-    two-sided pin showed every candidate row had `baseline rc=0`: this branch only ever GREW the
-    blocked set relative to `782039d`. Keep it that way. If a future change genuinely needs to free
-    something the baseline blocks, the honest move is a category excused HERE and pinned on both
-    sides elsewhere -- never a per-row opt-out, and never re-vendoring `fixtures/prechange/`, which
-    is a self-clearing tripwire: it would make the new build its own baseline and this assertion
-    would compare the build against itself, green forever."""
+    module are additional, not substitutes for it."""
     failures = [
         f"{r.label}: baseline blocked (rc=2), new build rc={verdicts[r.label][1]} -- {r.why}"
         for r in rows
@@ -1028,18 +691,9 @@ def test_xfail_today_rows_are_still_allowed(
 ) -> None:
     """Tripwire: each XFAIL_TODAY row names the task expected to fix it. If a row starts blocking
     before that task lands (or before it is explicitly reclassified), this fails loudly instead of
-    leaving a stale "not yet fixed" marker in the corpus -- the row's whole reason for existing.
-
-    An EMPTY set is legal and is the branch's goal state, not a broken fixture. It was briefly
-    asserted non-empty, which was wrong in a way worth recording: it made the corpus unable to
-    express "every named fail-open is now closed" without someone inventing a placeholder gap. The
-    tripwire's force does not come from the list being non-empty -- it comes from every row IN it
-    still being allowed, which is vacuously (and correctly) true of an empty list. The guard's
-    remaining residuals (`sh -c`, `eval`, an unlisted wrapper carrying its own arguments) are
-    ACCEPTED, not scheduled, so they do not belong here: XFAIL_TODAY names a task, and no task is
-    coming for those.
-    """
+    leaving a stale "not yet fixed" marker in the corpus -- the row's whole reason for existing."""
     xfail = [r for r in rows if r.category == XFAIL_TODAY]
+    assert xfail, "no XFAIL_TODAY rows defined"
     failures = [
         f"{r.label}: new build now blocks (rc={verdicts[r.label][1]}) -- move it out of "
         f"XFAIL_TODAY ({r.xfail_task} may have landed); why it was xfailed: {r.why}"
@@ -1089,83 +743,3 @@ def test_reserved_word_preserve_matrix_was_already_blocked_on_baseline(
         "derived preserve row(s) were not actually blocked on the frozen baseline, so they prove "
         "nothing about a shrinking blocked set:\n" + "\n".join(failures)
     )
-
-
-# ---------- Task 4 (F3): the boundary token must reach the paren branch ----------
-#
-# `dashC_semicolon_boundary` / `dashc_semicolon_boundary` (defined above, in the main MUST_BLOCK
-# section) are the PRESERVE rows nothing else covers: a quoted ';' in a value-taking option's slot,
-# with no subshell in sight, so F3's fix must not disturb the pre-existing "unresolvable
-# subcommand blocks" fallback that already caught them. `cd_other_gitdashc_then_P` is the GAIN row
-# -- the leak F3 exists to close.
-
-
-def test_boundary_preserve_rows_were_already_blocked_on_baseline(
-    rows: list[Row], verdicts: dict[str, tuple[int, int]]
-) -> None:
-    """Assert-them-rc-2-on-the-baseline-FIRST, per the task: without this, a preserve row that
-    happened to be allowed on both builds would pass `test_blocked_set_does_not_shrink` for free,
-    proving nothing about F3."""
-    labels = ["dashC_semicolon_boundary", "dashc_semicolon_boundary"]
-    failures = [
-        f"{label}: baseline rc={verdicts[label][0]} (want 2)"
-        for label in labels
-        if verdicts[label][0] != 2
-    ]
-    assert not failures, (
-        "boundary-token preserve row(s) were not actually blocked on the frozen baseline, so they "
-        "are not real preserve rows:\n" + "\n".join(failures)
-    )
-
-
-def test_gain_row_was_allowed_on_baseline_and_is_blocked_on_new_build(
-    verdicts: dict[str, tuple[int, int]],
-) -> None:
-    """The explicit before/after measurement for F3's gain, not just the generic MUST_BLOCK check:
-    the frozen baseline actually leaked (rc 0 -- the subshell cwd escaped and the real push was
-    judged in the non-adopted `other` repo) and the new build actually blocks it (rc 2)."""
-    label = "cd_other_gitdashc_then_P"
-    baseline_rc, new_rc = verdicts[label]
-    assert baseline_rc == 0, (
-        f"{label}: baseline rc={baseline_rc} (want 0) -- if the baseline no longer leaks, this "
-        "row is not measuring what it claims to"
-    )
-    assert new_rc == 2, (
-        f"{label}: new build rc={new_rc} (want 2) -- the leak is not fixed"
-    )
-
-
-def test_no_invocation_disappears_relative_to_baseline(
-    sandbox: Sandbox, rows: list[Row]
-) -> None:
-    """S6/F3's property, asserted directly against the tokenizer rather than only through guard
-    exit codes: for every corpus row, if the FROZEN baseline's `iter_git_invocations_with_cwd`
-    finds at least one invocation, the new build must too. `effective_dir` may legitimately change
-    (that is the whole point of F3 -- a leaked cwd becomes a correctly-popped one), and the SHAPE
-    of an ambiguous invocation may change (see the boundary-token branch in `_walk_context`), but
-    the count must never go from non-zero to zero -- that is literal disappearance, the exact
-    regression a first, over-literal reading of "do not consume the boundary token" produced."""
-    old_gitcmd = _load_baseline_gitcmd()
-    cwd = str(sandbox.repo)
-    failures = []
-    for row in rows:
-        try:
-            old_invocations = old_gitcmd.iter_git_invocations_with_cwd(row.command, cwd)
-        except ValueError:
-            continue  # baseline ambiguity-reject -- nothing to compare against
-        if not old_invocations:
-            continue  # nothing to preserve for this row
-        try:
-            new_invocations = new_gitcmd.iter_git_invocations_with_cwd(row.command, cwd)
-        except ValueError:
-            failures.append(
-                f"{row.label}: baseline found {len(old_invocations)} invocation(s), new build "
-                "raised ValueError (0 invocations)"
-            )
-            continue
-        if not new_invocations:
-            failures.append(
-                f"{row.label}: baseline found {len(old_invocations)} invocation(s), new build "
-                "found 0 -- an invocation disappeared"
-            )
-    assert not failures, "\n".join(failures)

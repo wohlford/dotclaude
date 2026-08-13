@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.77.2 — 2026-08-03
+- fix(git_command): treat bash reserved words as command boundaries
+
 ## v0.77.1 — 2026-08-07
 - fix(tests): disable git signing in the two fixtures that sign today
 

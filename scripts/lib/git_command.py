@@ -42,6 +42,35 @@ WRAPPERS = {
     "timeout",
 }
 
+# Reserved words that open a new command exactly as a control operator does: `if git push` puts
+# `git` in command position the same way `; git push` does. Consulted ONLY by `_git_starts_command`
+# — the `is_git(...)`-guarded call sites below — and never by the bare `starts_command` calls that
+# recognise `cd`/`pushd`/`popd`. That scoping is load-bearing, not incidental: widening it to cover
+# `cd`/`pushd`/`popd` too was measured to make three EXISTING blocks disappear. A `cd` right after
+# `if`/`while`/`!` would then itself be read as starting a command, cwd tracking would follow it
+# into a directory with no `.publication.toml`, and the guard would go dormant there —
+# `! cd OTHER ; <push>`, `if cd OTHER ; then :; fi ; <push>` and
+# `while cd OTHER ; do break; done ; <push>` all flip BLOCK -> ALLOW under the wider scoping, even
+# though the push invocation is still *detected* (a detection-only property passes while this
+# happens — the property that matters here is that the BLOCKED SET does not shrink).
+#
+# `in` and `;;` are deliberately excluded: both are followed by a *pattern*, not a command, so
+# treating them as boundaries would let `for f in git; do …` manufacture a phantom `git` invocation
+# out of a loop list item. `}`, `fi`, `done`, `esac` are also excluded: each ENDS a block, and bash
+# treats a command placed directly after one — with no `;` or newline between — as a syntax error,
+# so admitting them as boundaries would add no real detection.
+RESERVED_WORDS = frozenset(
+    {"{", "!", "if", "then", "elif", "else", "while", "until", "do", "coproc"}
+)
+
+# `exec` replaces the shell with its argument, so `git` right after it is in command position
+# exactly as after `sudo`/`time`/etc. — but it is kept OUT of the shared `WRAPPERS` set and
+# consulted only by `_git_starts_command`, for the identical reason RESERVED_WORDS is scoped away
+# from `cd`/`pushd`/`popd`: folding it into WRAPPERS was measured to send
+# `exec cd OTHER ; <push>` from BLOCK to ALLOW, because a `cd` right after `exec` would then also
+# start being tracked into a directory with no marker.
+GIT_ONLY_WRAPPERS = frozenset({"exec"})
+
 # Inert marker substituted for each extracted nested context. It must tokenize as an ordinary word
 # and must never look like a git invocation, a control operator, or a redirect. It is INDEXED
 # because the walk needs to recurse into a context at the SOURCE POSITION where it appeared — `cd`
@@ -743,23 +772,52 @@ def is_git(token: str) -> bool:
     return token == "git" or token.endswith("/git")
 
 
-def starts_command(tokens: list[str], idx: int) -> bool:
+def starts_command(
+    tokens: list[str],
+    idx: int,
+    reserved_words: frozenset[str] = frozenset(),
+    extra_wrappers: frozenset[str] = frozenset(),
+) -> bool:
     """True if tokens[idx] is in *command position* — reachable from the input start or a control
     operator by stepping back over only leading `VAR=val` env assignments and known exec-wrappers
     (`sudo`/`time`/`env`/…). A bare word before it (e.g. `echo`) means it is that command's
     argument, so `echo VAR=1 git commit` is NOT mistaken for a commit, while `sudo git commit` and
     `ALLOW_GIT_WRITE=1 git commit` are. (Redirects are stripped globally before this runs, so a
-    leading `2>&1 git commit` also resolves to command position.)"""
+    leading `2>&1 git commit` also resolves to command position.)
+
+    `reserved_words` and `extra_wrappers` are both empty by default, so an unqualified call is
+    byte-for-byte the pre-existing behavior — this is what every `cd`/`pushd`/`popd` call site in
+    this module relies on. `_git_starts_command` is the only caller that passes them; see
+    `RESERVED_WORDS`'s docstring for why that scoping must not widen.
+
+    Args:
+        tokens: The token stream.
+        idx: Index of the token being tested.
+        reserved_words: Words that, like a control operator, themselves mark tokens[idx] as
+            starting a command — checked before wrapper-stepping, so a reserved word ends the walk
+            immediately rather than being stepped over.
+        extra_wrappers: Additional exec-wrappers to step over, on top of the shared `WRAPPERS` set.
+    """
     j = idx - 1
     while j >= 0:
         prev = tokens[j]
-        if is_op(prev):
+        if is_op(prev) or prev in reserved_words:
             return True
-        if ENV_ASSIGN.match(prev) or prev in WRAPPERS:
+        if ENV_ASSIGN.match(prev) or prev in WRAPPERS or prev in extra_wrappers:
             j -= 1
             continue
         return False
     return True
+
+
+def _git_starts_command(tokens: list[str], idx: int) -> bool:
+    """`starts_command`, scoped for recognising a `git` invocation: reserved words (`if`, `!`, …)
+    and `exec` both count as command-position boundaries here. Every `is_git(...)`-guarded call
+    site in this module must call this, not bare `starts_command` — see `RESERVED_WORDS` and
+    `GIT_ONLY_WRAPPERS` for why this scoping must never reach the `cd`/`pushd`/`popd` sites."""
+    return starts_command(
+        tokens, idx, reserved_words=RESERVED_WORDS, extra_wrappers=GIT_ONLY_WRAPPERS
+    )
 
 
 def _resolve_cd(cwd_state: str | None, target: str | None) -> str | None:
@@ -914,7 +972,7 @@ def _walk_context(
             i += 1
             continue
 
-        if is_git(tok) and starts_command(tokens, i):
+        if is_git(tok) and _git_starts_command(tokens, i):
             j = i + 1
             cdir = None
             # Set when a value-taking option's value slot holds an operator-LOOKING token. That is
@@ -1001,7 +1059,7 @@ def _walk_context(
             while (
                 k < n
                 and not is_op(tokens[k])
-                and not (is_git(tokens[k]) and starts_command(tokens, k))
+                and not (is_git(tokens[k]) and _git_starts_command(tokens, k))
             ):
                 seg.append(tokens[k])
                 k += 1

@@ -86,6 +86,50 @@ def test_starts_command_false_after_unknown_word():
     assert not git_command.starts_command(tokens, 1)
 
 
+def test_starts_command_ignores_reserved_words_by_default():
+    """A bare call (no `reserved_words`) is the pre-existing behavior byte-for-byte -- every
+    `cd`/`pushd`/`popd` call site in the walk relies on this, so a reserved word must NOT be a
+    boundary unless the caller opts in."""
+    tokens = ["if", "git", "push"]
+    assert not git_command.starts_command(tokens, 1)
+
+
+def test_starts_command_true_after_reserved_word_when_opted_in():
+    tokens = ["if", "git", "push"]
+    assert git_command.starts_command(
+        tokens, 1, reserved_words=git_command.RESERVED_WORDS
+    )
+    tokens = ["while", "cd", "/x"]
+    assert git_command.starts_command(
+        tokens, 1, reserved_words=git_command.RESERVED_WORDS
+    )
+
+
+def test_starts_command_ignores_extra_wrappers_by_default():
+    tokens = ["exec", "git", "push"]
+    assert not git_command.starts_command(tokens, 1)
+
+
+def test_starts_command_true_after_extra_wrapper_when_opted_in():
+    tokens = ["exec", "git", "push"]
+    assert git_command.starts_command(
+        tokens, 1, extra_wrappers=git_command.GIT_ONLY_WRAPPERS
+    )
+
+
+def test_git_starts_command_recognises_reserved_words_and_exec():
+    for word in git_command.RESERVED_WORDS:
+        tokens = [word, "git", "push"]
+        assert git_command._git_starts_command(tokens, 1), word
+    tokens = ["exec", "git", "push"]
+    assert git_command._git_starts_command(tokens, 1)
+
+
+def test_git_starts_command_still_false_after_unknown_word():
+    tokens = ["echo", "git", "push"]
+    assert not git_command._git_starts_command(tokens, 1)
+
+
 # ---------- iter_git_invocations ----------
 
 
@@ -393,6 +437,87 @@ def test_already_detected_shapes_still_detected():
         'x="$(echo "$(git push origin dev)")"',
     ):
         assert "push" in _subs(command), command
+
+
+# ---------- F1: reserved words + `exec` are command boundaries for a `git` invocation ----------
+
+RESERVED_WORD_AND_EXEC_GAINS = [
+    ("! git push origin dev", "! bang"),
+    ("{ git push origin dev; }", "{ brace group"),
+    ("if true; then git push origin dev; fi", "if/then"),
+    ("while :; do git push origin dev; done", "while/do"),
+    ("until false; do git push origin dev; done", "until/do"),
+    ("for i in 1; do git push origin dev; done", "for/do"),
+    ("if false; then true; else git push origin dev; fi", "else"),
+    ("if false; then true; elif true; then git push origin dev; fi", "elif/then"),
+    ("f() { git push origin dev; }; f", "function body {"),
+    ("exec git push origin dev", "exec wrapper"),
+]
+
+
+@pytest.mark.parametrize(("command", "label"), RESERVED_WORD_AND_EXEC_GAINS)
+def test_reserved_word_and_exec_shapes_are_now_detected(command, label):
+    """F1 + L2's gain set: nine reserved-word shapes plus `exec`, all previously invisible because
+    `starts_command` only stepped back over `VAR=` assignments and `WRAPPERS`."""
+    assert "push" in _subs(command), label
+
+
+def test_for_in_git_does_not_manufacture_a_phantom_invocation():
+    """`in` is deliberately excluded from RESERVED_WORDS (see its docstring): a for-loop's list
+    item is not a command, so `git` right after `in` must stay invisible."""
+    assert _subs("for f in git; do echo $f; done") == []
+
+
+def test_exec_echo_git_is_still_a_phantom():
+    """`exec` only counts as a boundary immediately before `git` itself -- `echo` in between still
+    blocks recognition, exactly as an un-wrapped `echo git push` does."""
+    assert _subs("exec echo git push origin dev") == []
+
+
+# ---------- F1's guard: the reserved-word boundary must not leak into cd/pushd/popd tracking ----
+
+# One shape per RESERVED_WORDS member that places a `cd`/`pushd`/`popd` immediately after the
+# reserved word -- DERIVED from the constant itself, not hand-listed, because hand-listing this
+# exact matrix once covered only 3 of the 10 measured loss shapes (see git_command.RESERVED_WORDS's
+# docstring). Each wraps `body` in the syntax that puts `body` directly after the named word.
+_RESERVED_WORD_WRAP = {
+    "{": lambda body: f"{{ {body}; }}",
+    "!": lambda body: f"! {body}",
+    "if": lambda body: f"if {body}; then :; fi",
+    "then": lambda body: f"if true; then {body}; fi",
+    "elif": lambda body: f"if false; then :; elif {body}; then :; fi",
+    "else": lambda body: f"if false; then :; else {body}; fi",
+    "while": lambda body: f"while {body}; do :; done",
+    "until": lambda body: f"until {body}; do :; done",
+    "do": lambda body: f"while :; do {body}; done",
+    "coproc": lambda body: f"coproc {body}",
+}
+
+
+def test_reserved_word_wrap_shapes_cover_every_member():
+    """FLOOR: if RESERVED_WORDS gains a member with no known wrap shape, this fails loudly instead
+    of the derived matrix below silently under-covering it."""
+    assert set(_RESERVED_WORD_WRAP) == git_command.RESERVED_WORDS
+
+
+def _reserved_word_cd_family_cases():
+    for word in sorted(git_command.RESERVED_WORDS):
+        for cd_cmd in ("cd", "pushd", "popd"):
+            body = "popd" if cd_cmd == "popd" else f"{cd_cmd} /other"
+            command = f"{_RESERVED_WORD_WRAP[word](body)} ; git push origin dev"
+            yield pytest.param(command, id=f"{word}-{cd_cmd}")
+
+
+@pytest.mark.parametrize("command", list(_reserved_word_cd_family_cases()))
+def test_reserved_word_boundary_does_not_enable_cd_tracking(command):
+    """Approach (a): the reserved-word boundary is scoped to `_git_starts_command` only. A
+    `cd`/`pushd`/`popd` immediately after a reserved word must stay UN-tracked, so the push that
+    follows is still judged against the cwd the command started in, not `/other`."""
+    invocations = git_command.iter_git_invocations_with_cwd(command, "/adopted")
+    assert invocations, command
+    assert invocations[-1][0] == "/adopted", (
+        f"cd tracking leaked through a reserved-word boundary: {command}"
+    )
 
 
 def test_protected_baselines_expose_no_push():
