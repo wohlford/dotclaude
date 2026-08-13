@@ -30,6 +30,10 @@ Universal instructions for all projects.
 > force-pushing, or a destructive migration is where the gate you can argue is redundant — *"the suite
 > already passed on an identical tree"* — is the one to actually run. That argument is usually right,
 > which is what makes skipping it a habit, and a skipped gate is indistinguishable from no gate.
+> **And a gate that FAILED is cleared by a re-run only if the subject was pinned and verified
+> unchanged across both runs** — a fixed subject cannot host a non-deterministic defect, so a failure
+> that will not reproduce is then a fact about the instrument. Without that verification, "re-run
+> until green" is laundering; state the stopping rule *before* the re-run, not after reading it.
 
 > **Never state a time of day** ("this morning", "tonight") unless you just read the clock (`date`) —
 > name the trigger or step instead ("the push step", "next session"). Don't echo a time word from
