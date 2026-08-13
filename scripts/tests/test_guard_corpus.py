@@ -594,6 +594,63 @@ def _build_rows(
             "marker present but committed nowhere: refs-based dormancy matches the hook's. Shaped "
             "so BOTH builds allow -- see the note below; the discriminator is the integrity check",
         ),
+        # ---------- D3: an exported/positional config injection sharing a command with git --------
+        Row(
+            "exported_injection_semicolon",
+            f"export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath "
+            f"GIT_CONFIG_VALUE_0=/dev/null; git {_VERB} origin main",
+            MUST_BLOCK,
+            "an export in a separate segment relocates hooksPath for the git that follows",
+        ),
+        Row(
+            "exported_injection_andand",
+            f"export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath "
+            f"GIT_CONFIG_VALUE_0=/dev/null && git {_VERB} origin main",
+            MUST_BLOCK,
+            "same shape joined with && rather than ;",
+        ),
+        Row(
+            "exported_injection_no_inline_assignment",
+            f"GIT_CONFIG_COUNT=1; GIT_CONFIG_KEY_0=core.hooksPath; "
+            f"export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0; git {_VERB} origin main",
+            MUST_BLOCK,
+            "export names an already-assigned var, so shape-matching on `export NAME=value` misses it",
+        ),
+        Row(
+            "exported_injection_set_allexport",
+            f"set -a; GIT_CONFIG_COUNT=1; GIT_CONFIG_KEY_0=core.hooksPath; "
+            f"git {_VERB} origin main",
+            MUST_BLOCK,
+            "set -a exports bare assignments that follow; it assigns nothing itself",
+        ),
+        Row(
+            "assigned_but_never_exported_is_also_blocked",
+            f"GIT_CONFIG_COUNT=1; GIT_CONFIG_KEY_0=core.hooksPath; git {_VERB} origin main",
+            MUST_BLOCK,
+            "DELIBERATE over-block: without `set -a` git never sees these, but the rule cannot "
+            "tell the two apart and the safe direction is to refuse",
+        ),
+        # ---------- T1 (D3): the inverted `GIT_*` allowlist, consulted by BOTH env arms ---------
+        # `GIT_COMMON_DIR` moves where git resolves `hooks/pre-push` (branch design record, finding
+        # F2) exactly like `GIT_DIR`, but the coarse whole-command `GITDIR_RE` above only matches
+        # `GIT_DIR=` -- so before this allowlist, NEITHER env arm denied it at all. Both rows below
+        # use a refspec layer 1 ALLOWS (`origin main`), so a block can only come from the env arm
+        # under test, never from the refspec judgment.
+        Row(
+            "env_git_common_dir_inline_blocks",
+            f"GIT_COMMON_DIR=/tmp/g git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "GIT_COMMON_DIR is `^GIT_`-shaped and not on the allowlist, so the inline env-prefix "
+            "arm now denies it, even though it never matched the old GIT_CONFIG_*-scoped check",
+        ),
+        Row(
+            "env_git_common_dir_exported_blocks",
+            f"export GIT_COMMON_DIR=/tmp/g ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the same name, reaching the git invocation via `export` in a separate segment -- the "
+            "command-scoped arm must deny it too, or fixing only the inline arm leaves this form "
+            "open (the two arms are coupled by `if token in claimed: continue`)",
+        ),
         # ---------- MUST_ALLOW: allowed today, must stay allowed (an over-block guard) ----------
         Row(
             "verbose_negation_is_not_the_bypass_flag",
@@ -648,6 +705,117 @@ def _build_rows(
             "the word 'git' appears only as a bare ARGUMENT to echo, never in command position -- "
             "a phantom-guard row for the prefilter. `exec echo hi` would not exercise this: it "
             "contains no 'git' word at all, so the cheap prefilter answers instead of the subject",
+        ),
+        # ---------- D3 MUST_ALLOW guards: the reason the git-invocation conjunct exists -----------
+        Row(
+            "grep_for_an_export_then_a_safe_command",
+            "grep -n 'export GIT_CONFIG_COUNT=1' scripts/foo && git status",
+            MUST_ALLOW,
+            "the denied name appears only as grep's search text; a whole-command scan false-blocks it",
+        ),
+        Row(
+            "bare_export_with_no_git_invocation",
+            "echo git; export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath",
+            MUST_ALLOW,
+            "a lowercase git WORD with no invocation in command position: this row is what proves "
+            "the no-invocation conjunct does work, and it must not be simplified",
+        ),
+        Row(
+            "export_of_an_unrelated_var_beside_git",
+            f"export EDITOR=vim && git {_VERB} origin main",
+            MUST_ALLOW,
+            "an ordinary export must not be caught by the name-keyed check",
+        ),
+        Row(
+            "denied_name_only_inside_a_quoted_argument",
+            "rg --fixed-strings 'GIT_CONFIG_KEY_0=core.hooksPath' scripts/ && git status",
+            MUST_ALLOW,
+            "the name appears only as a search string, in argument position -- it is NOT an "
+            "assignment, and quote removal makes it look like one",
+        ),
+        Row(
+            "exported_nosystem_is_exempt",
+            "export GIT_CONFIG_NOSYSTEM=1 && git log -1",
+            MUST_ALLOW,
+            "GIT_CONFIG_NOSYSTEM provably cannot set a key; the inline arm already exempts it",
+        ),
+        # ---------- T1 (D3): the allowlist's own MUST_ALLOW guards ----------------------------
+        # Each name below is individually verified boundary-inert (branch design record) -- these
+        # are the over-block regression guards for a deny surface that just grew from
+        # GIT_CONFIG_*-only to every non-allowlisted `^GIT_` name. Inline form for all nine; the
+        # export form is covered separately below for GIT_CONFIG_NOSYSTEM only -- see that row's
+        # `why` for why it is the one name that needs its own export-form row.
+        Row(
+            "env_allow_author_name_inline",
+            f"GIT_AUTHOR_NAME=x git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "GIT_AUTHOR_NAME is on the allowlist -- cleared to reach a git invocation",
+        ),
+        Row(
+            "env_allow_author_email_inline",
+            f"GIT_AUTHOR_EMAIL=x git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "GIT_AUTHOR_EMAIL is on the allowlist -- cleared to reach a git invocation",
+        ),
+        Row(
+            "env_allow_author_date_inline",
+            f"GIT_AUTHOR_DATE=x git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "GIT_AUTHOR_DATE is on the allowlist -- cleared to reach a git invocation",
+        ),
+        Row(
+            "env_allow_committer_name_inline",
+            f"GIT_COMMITTER_NAME=x git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "GIT_COMMITTER_NAME is on the allowlist -- cleared to reach a git invocation",
+        ),
+        Row(
+            "env_allow_committer_email_inline",
+            f"GIT_COMMITTER_EMAIL=x git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "GIT_COMMITTER_EMAIL is on the allowlist -- cleared to reach a git invocation",
+        ),
+        Row(
+            "env_allow_committer_date_inline",
+            f"GIT_COMMITTER_DATE=x git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "GIT_COMMITTER_DATE is on the allowlist -- cleared to reach a git invocation",
+        ),
+        Row(
+            "env_allow_pager_inline",
+            f"GIT_PAGER=cat git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "GIT_PAGER is on the allowlist -- the likeliest bad admission by feel, cleared by "
+            "measurement rather than by argument (branch design record)",
+        ),
+        Row(
+            "env_allow_terminal_prompt_inline",
+            f"GIT_TERMINAL_PROMPT=0 git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "GIT_TERMINAL_PROMPT is on the allowlist -- cleared to reach a git invocation",
+        ),
+        Row(
+            "env_allow_config_nosystem_inline",
+            f"GIT_CONFIG_NOSYSTEM=1 git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "GIT_CONFIG_NOSYSTEM is on the allowlist -- it suppresses the system config file and "
+            "provably cannot set a key",
+        ),
+        Row(
+            "env_allow_config_nosystem_exported",
+            f"export GIT_CONFIG_NOSYSTEM=1 ; git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "the one allowlisted name that ALSO matches the old `^GIT_CONFIG_` prefix deny; both "
+            "of the other NOSYSTEM allow rows are inline, so this is the only row that would catch "
+            "an implementer who left the old prefix-deny check ahead of the allowlist consult in "
+            "the export arm -- that ordering mistake would newly block this exact command",
+        ),
+        Row(
+            "bare_push_to_main_no_env",
+            f"git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "no env prefix at all, on a refspec layer 1 allows -- the allowlist change must not "
+            "touch an invocation that carries no GIT_* assignment whatsoever",
         ),
         # ---------- ACCIDENTAL: blocked today, but NOT by real detection ----------
         Row(
@@ -721,15 +889,24 @@ def _build_rows(
             "env_git_config_redirect_from_other",
             f"cd {other_s} && GIT_CONFIG={adopted_s}/.git/config git config core.hooksPath X",
             MUST_BLOCK,
-            "GIT_CONFIG= redirects the write with no scope flag anywhere in the command, so a "
-            "classifier reading only argv concludes 'local' and gates it on the WRONG repo",
+            "POST-T1: blocked before `sub == config` is even consulted -- GIT_CONFIG is "
+            "`^GIT_`-shaped and not on the allowlist, so the env-prefix arm in "
+            "_config_injection_reason denies it outright, ahead of _config_scope_is_local. "
+            "PRE-T1 this row proved a different mechanism: GIT_CONFIG= redirects the write with "
+            "no scope flag anywhere in the command, so a classifier reading only argv concludes "
+            "'local' and gates it on the WRONG repo -- that is now _config_scope_is_local's OWN "
+            "env loop (_CONFIG_REDIRECT_ENV), which this call site can no longer reach. Not "
+            "deleted: it stays directly unit-tested in test_publication_push_guard.sh, and "
+            "removing it would be a narrowing",
         ),
         Row(
             "env_git_common_dir_redirect_from_other",
             f"cd {other_s} && GIT_COMMON_DIR={adopted_s}/.git git config core.hooksPath X",
             MUST_BLOCK,
-            "the other env redirect: it moves what 'local' MEANS, so a local-scoped write lands in "
-            "the adopted repo",
+            "POST-T1: the same shadowing as env_git_config_redirect_from_other -- GIT_COMMON_DIR "
+            "is denied by the new allowlist arm before _config_scope_is_local's own env loop "
+            "(which used to be what moved what 'local' MEANS for this row) is ever reached; see "
+            "that row's `why` for why the shadowed loop stays rather than being deleted",
         ),
         Row(
             "alias_smuggles_global_write_from_other",
@@ -822,10 +999,14 @@ def _build_rows(
         ),
         Row(
             "config_edit_is_an_arbitrary_write",
-            "GIT_EDITOR=vi git config --edit",
+            "git config --edit",
             XFAIL_TODAY,
             "--edit opens the config in an arbitrary editor, so its effect is unbounded and names "
-            "no key at all; allowed today with or without the GIT_EDITOR prefix (measured)",
+            "no key at all; allowed today. Originally carried a `GIT_EDITOR=vi` prefix that was "
+            "measured not load-bearing -- T1's broadened env-name deny (any non-allowlisted "
+            "`^GIT_` name) now denies GIT_EDITOR outright, which would flip this row to blocked "
+            "for the wrong reason (an env name, not the --edit gap). Dropped so the row keeps "
+            "testing --edit alone",
             "backlog 2026-08-04 HIGH: two git config forms reach include.path",
         ),
     ]
