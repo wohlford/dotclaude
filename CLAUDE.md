@@ -94,11 +94,16 @@ otherwise hand-roll what it already does:
 | `/recast`    | Re-develop a git source repo into a target as a genuine ground-up, proven-per-commit history converging to functional equivalence (never copies the tree, never pushes) |
 <!-- /sync:skills -->
 
-**One non-skill earns a place here for the same reason.** Before hand-writing a mutation harness —
-which the RED→GREEN rule below sends you to do — use `~/.claude/scripts/lib/mutate.py`, supplying
-only the `(label, old, new)` list. Ten were hand-rolled and discarded before it existed, each
+**Non-skills earn a place here on the same test.** Before hand-writing a mutation harness — which
+the RED→GREEN rule below sends you to do — use `~/.claude/scripts/lib/mutate.py`, supplying only
+the `(label, old, new)` list. Ten were hand-rolled and discarded before it existed, each
 re-derivation dropping a different safety property; worst was the unmutated BASELINE, absent from 7
 of 8 — without it an already-red suite scores every mutation CAUGHT and the sweep reads flawless.
+And before backgrounding a check that outruns the tool timeout, use `~/.claude/scripts/run-long.sh`
+rather than a wrapper of your own — it is the shipped remedy for the killed-run and
+graded-the-launch-tree hazards below, and you read its verdict back with `--status`, never from the
+launch. Four wrappers were hand-written in one session before it existed, three byte-equivalent;
+the fourth still let a sweep that had run 4 checks of 15 read as a clean pass.
 
 > Hooks (indexed in README.md) fire per-edit: a multi-step change that passes through an invalid
 > intermediate state (e.g. resolving conflict markers with two Edits) trips transient PostToolUse
