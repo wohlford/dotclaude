@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.77.5 — 2026-08-04
+- fix(publication-push-guard): drop the inert attached -c branch
+
 ## v0.77.4 — 2026-08-04
 - fix(git_command,publication-push-guard): close two measured fail-opens
 
