@@ -60,7 +60,11 @@ the conclusion and its reasoning — never a menu of options for the user to arb
 **Ask the user directly only for:** authorization (anything outward-facing or hard to reverse), risk
 appetite they own (how strict a gate should be, what false-block rate is acceptable), the scope they
 are paying for, and anything where proceeding wrongly would be unsafe or waste substantial work.
-Batch whatever survives — ask once, at a natural checkpoint, not as each item arises.
+Batch whatever survives — ask once, at a natural checkpoint, not as each item arises. **That list is
+what SURVIVES Fable, never what SKIPS it** — judging whether to ask is one of Fable's two jobs, so
+pre-classifying a question as the user's routes around the only check on that classification, which
+is the least trustworthy step since over-asking is the failure mode. Authorization alone is a true
+exception: it is not a question about the merits, so there is nothing for Fable to weigh.
 
 ## Delegating
 

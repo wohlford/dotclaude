@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.75.16 — 2026-08-05
+- docs(CLAUDE.md): make the ask-directly list survive Fable, not skip it
+
 ## v0.75.15 — 2026-08-05
 - docs(CLAUDE.md): run /feature by default and let its triage right-size
 
