@@ -341,6 +341,9 @@ left legal.
   shared set would have RE-OPENED the hole the task existed to close, since that set was consulted at
   more call sites than I had in mind. The implementer declined the literal wording. **Read a
   delegate's push-back as evidence, not insubordination.**
+
+#### The repair you would reach for first makes it worse
+
 - **A surviving mutant's obvious remedy — write a stronger assertion — is the wrong one when the
   code it names cannot change any outcome.** Measured twice in one session, resolving oppositely.
   In one, a branch's verdict was already forced by the check below it, so the survivor was really
@@ -359,6 +362,17 @@ left legal.
   writes tests from the false positive, never from what quietly left. **Ask what stops being
   MATCHED, not whether the noise stopped** — and prove it with a corpus of things that must STILL
   match, run against the old build and the new one.
+- **Upgrading a "could not measure" verdict into a POSITIVE one hands that positive to every case
+  the vague verdict was quietly absorbing.** The mirror of the bullet above: nothing stops being
+  matched here, the same inputs arrive and are simply judged more strongly. A helper reporting
+  failure through ONE sentinel — an empty string, `None`, a bare nonzero — has already erased *why*,
+  so a caller re-reading it as "nothing to measure, therefore fine" asserts fine for its whole
+  preimage. Measured: a resolver returned that sentinel on three conditions — target absent, not a
+  directory, not enterable — and a fix that correctly turned *absent* into a verified pass turned
+  *unmeasurable* into one too, rebuilding the defect it was written to remove; worse than the vague
+  verdict it replaced, which the docs at least told the reader to relay as a coverage gap.
+  **Enumerate the sentinel's preimage before promoting any of it**, and take the discriminator from
+  the source the helper consulted — re-deriving it at the call site copies a rule that then drifts.
 
 #### It answered its own question, not the one you are relying on
 

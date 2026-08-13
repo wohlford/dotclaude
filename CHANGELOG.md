@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.81.11 — 2026-08-07
+- docs(CLAUDE.md): add the widened-verdict hazard and split its group
+
 ## v0.81.10 — 2026-08-07
 - docs(CLAUDE.md): add the shared-harness corroboration hazard
 
