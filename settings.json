@@ -99,6 +99,10 @@
           },
           {
             "type": "command",
+            "command": "$HOME/.claude/scripts/env-claims-check-test.sh"
+          },
+          {
+            "type": "command",
             "command": "$HOME/.claude/scripts/markdownlint-check.sh"
           },
           {
