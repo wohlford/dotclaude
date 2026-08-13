@@ -299,7 +299,11 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
      half-written file. Never explain away a contended run as flakiness: its verdict proves nothing
      either way, so quiesce the writes and re-run rather than re-reading the result.
 2. **Sweep the mechanics — `/audit` (always).** Run `/audit` over the repo before the branch integrates
-   and fix, via `/commit`, every `FAIL` **this branch introduced**. A repo may carry **pre-existing** FAILs the
+   and fix, via `/commit`, every `FAIL` **this branch introduced**. **It is MECHANICAL ONLY: a plain
+   `/audit` does not run the test suite, which is a separate requirement behind `--tests`.** So a
+   plain `RESULT: PASS` is never evidence the suite passed — reading `audit.sh`'s source confirms
+   the wrong belief here, since its pytest call sits inside the opt-in branch and looks
+   unconditional. Only the run's own enumeration of the checks it performed settles it. A repo may carry **pre-existing** FAILs the
    change never touched (generated content, a lint rule adopted after the fact): report those and
    leave them — do not loop chasing a clean sweep this branch cannot deliver, and never widen the
    change's scope to fix them here. **Decide which bucket a FAIL is in mechanically, never by

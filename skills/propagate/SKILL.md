@@ -540,7 +540,9 @@ session, which is why the tooling below is in the repo.
 
    **A brick is proven only by `RESULT: PASS rc=0`**, `audit.sh`'s last line of stdout; `FAIL`,
    `ERROR`, `INCOMPLETE`, an unanticipated status, and an **absent** line are each a failure to
-   prove — an allowlist. **The absent one is to watch**, since a killed sweep prints a prefix of
+   prove — an allowlist. **What that PASS proves is MECHANICAL ONLY** — the per-brick sweep runs
+   without `--tests`, so it never executed the test suite; the suite is proven once, at the tip, by
+   step 5's convergence run. Never cite a per-brick PASS as suite evidence. **The absent one is to watch**, since a killed sweep prints a prefix of
    `PASS` lines and no summary, so every cheap instrument reads it as clean. The engine enforces
    this, records the audit's exit status *inside* the artifact it writes, and additionally fails
    closed when the verdict and the exit status disagree. Never infer the verdict from the absence

@@ -1,6 +1,6 @@
 ---
 name: audit
-description: Run the mechanical compliance sweep — linters, format, link, exec-bit, and config-validity checks over a repo's tracked files; repos exclude generated paths via .auditignore
+description: Run the mechanical compliance sweep — linters, format, link, exec-bit, and config-validity checks over a repo's tracked files; repos exclude generated paths via .auditignore. Mechanical only — the test suite is a SEPARATE requirement and runs only under --tests, so a plain PASS is never evidence the suite passed
 ---
 
 # /audit — Mechanical Compliance Sweep
