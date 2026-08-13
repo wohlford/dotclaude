@@ -13,8 +13,8 @@ set -uo pipefail
 # blank lines ignored) excludes matching paths from the five text-content checks
 # (format-trailing-ws, format-crlf, format-final-newline, format-tabs, md-links) only — it
 # can never silence a code/config check (shellcheck, ruff, markdownlint, exec-bit, json,
-# toml, sync-docs, mutation-anchors, tests, hermetic, hermetic-outside). No file present, or a
-# present-but-empty file, sweeps unchanged.
+# toml, sync-docs, mutation-anchors, pre-push-installed, tests, hermetic, hermetic-outside).
+# No file present, or a present-but-empty file, sweeps unchanged.
 #
 # Exit codes:
 #   0 — sweep completed, zero FAILs
@@ -54,6 +54,18 @@ skip_count=0
 # on the normal path rather than emitting a second one.
 audit_phase=init
 audit_reported=no
+
+# Also read by audit_on_exit(), and global for the same reason as the two above: a `local` in
+# main() would be invisible to the trap. This one is a cleanup handle rather than sweep state —
+# the temp file the outside-the-scope hermeticity check dates its `-newer` comparison against.
+# Its live window brackets the suite-running phase, the one that executes arbitrary repo code
+# and therefore the likeliest point for an operator to interrupt the sweep; while the only `rm`
+# sat on main()'s normal path, an interrupt in exactly that window leaked the file.
+#
+# Deliberately NO `check_*` function name in this comment: the name-parity suite counts those
+# literals across the whole file and declares an exact occurrence count, so naming one here
+# breaks a mutation target two files away. Measured — it did.
+hermetic_marker=""
 
 usage() {
   printf 'Usage: audit.sh [--scope <path>] [--tests]\n' >&2
@@ -98,6 +110,11 @@ audit_result_line() { # status rc -> the single machine-readable terminal verdic
 # where the process died 128+n). The STATUS is still INCOMPLETE, which never clears the
 # allowlist, so this cannot be mistaken for a passing sweep.
 audit_on_exit() { # exit-status
+  # ABOVE the early return, not below it. On the normal path a verdict has already been printed,
+  # so the next line returns — cleanup placed after it would run only on the paths that have
+  # already cleaned up, and never on the interrupted ones it exists for. main() disowns the
+  # handle when it removes the file itself, so this is a backstop and not a second owner.
+  [[ -n "$hermetic_marker" ]] && rm -f "$hermetic_marker"
   [[ "$audit_reported" == yes ]] && return
   if [[ "$audit_phase" == init && "$1" -eq 2 ]]; then
     audit_result_line ERROR "$1"
@@ -245,6 +262,17 @@ pick_newest_version() {
   local stripped
   stripped="$(sed 's/^v//')"
   printf '%s\n' "$stripped" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 | sed 's/^/v/'
+}
+
+# Reads stdin, prints a hex sha256 digest. macOS ships no `sha256sum` by default; `shasum`
+# is the portable fallback (same BSD/GNU split every other tool-lookup in this file routes
+# around). Used only by check_pre_push_installed.
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    shasum -a 256 | awk '{print $1}'
+  fi
 }
 
 # ---------- checks ----------
@@ -601,8 +629,8 @@ check_mutation_anchors() {
 # suites fit under 50 and THREE do not, so the third is truncated and a fourth is never even NAMED
 # (names live only in the per-suite headers). Every failing suite is therefore always named, and
 # only its excerpt is bounded.
-TESTS_ARTIFACT_DIR=""
-TESTS_ARTIFACT_TRIED=false
+tests_artifact_root=""
+tests_artifact_tried=false
 TESTS_EXCERPT_MAX=20
 
 # Deliberately GENEROUS, and deliberately NOT load-bearing. The complete output is preserved in the
@@ -615,19 +643,19 @@ TESTS_FAILURE_RE='FAIL|ERROR|Traceback|AssertionError|^E[[:space:]]|fatal:|[0-9]
 # FAILURE, so a passing sweep — the overwhelming majority — writes nothing at all: a default output
 # path would otherwise make every run of this tool a writer of real state.
 #
-# It SETS TESTS_ARTIFACT_DIR and returns only a status — it must never echo the path for a caller
+# It SETS tests_artifact_root and returns only a status — it must never echo the path for a caller
 # to capture with `$( )`. Measured: doing that ran every assignment inside a command-substitution
 # SUBSHELL, so the memoisation never took effect (a fresh directory per failing suite) and the
 # parent's global stayed empty, making the report claim the artifact was unavailable while the
 # files sat on disk. The `while … done <<< "$list"` loop below is a here-string, not a pipe, so the
 # loop body does run in the current shell and these assignments survive it.
-tests_artifact_dir() { # scope -> sets TESTS_ARTIFACT_DIR; nonzero when unavailable
+tests_artifact_dir() { # scope -> sets tests_artifact_root; nonzero when unavailable
   local scope="$1" base base_phys scope_phys
-  if [[ "$TESTS_ARTIFACT_TRIED" == true ]]; then
-    [[ -n "$TESTS_ARTIFACT_DIR" ]] || return 1
+  if [[ "$tests_artifact_tried" == true ]]; then
+    [[ -n "$tests_artifact_root" ]] || return 1
     return 0
   fi
-  TESTS_ARTIFACT_TRIED=true
+  tests_artifact_tried=true
   base="${TMPDIR:-/tmp}"
   # BOTH sides physical. A containment test with one side logical and the other resolved can never
   # match, so the guard would silently never fire — the measured trap this file already documents
@@ -639,8 +667,8 @@ tests_artifact_dir() { # scope -> sets TESTS_ARTIFACT_DIR; nonzero when unavaila
   if [[ "$base_phys" == "$scope_phys" || "$base_phys" == "$scope_phys"/* ]]; then
     return 1
   fi
-  TESTS_ARTIFACT_DIR="$(mktemp -d "$base/audit-tests-XXXXXX" 2>/dev/null)" || TESTS_ARTIFACT_DIR=""
-  [[ -n "$TESTS_ARTIFACT_DIR" ]] || return 1
+  tests_artifact_root="$(mktemp -d "$base/audit-tests-XXXXXX" 2>/dev/null)" || tests_artifact_root=""
+  [[ -n "$tests_artifact_root" ]] || return 1
   return 0
 }
 
@@ -653,11 +681,11 @@ tests_artifact_write() { # scope label output
   # name — so a bare write silently destroys the first suite's output, which is precisely the
   # loss this whole check exists to prevent, and it would do so while the report still claimed
   # every failing suite's text was preserved. Suffix instead, and give up rather than spin.
-  target="$TESTS_ARTIFACT_DIR/$safe.log"
+  target="$tests_artifact_root/$safe.log"
   n=2
   while [[ -e "$target" ]]; do
     [[ "$n" -gt 99 ]] && return 1
-    target="$TESTS_ARTIFACT_DIR/$safe-$n.log"
+    target="$tests_artifact_root/$safe-$n.log"
     n=$((n + 1))
   done
   printf '%s\n' "$out" > "$target" 2>/dev/null || return 1
@@ -686,6 +714,108 @@ tests_excerpt() { # output
     printf '%s\n' "$out" | tail -n "$TESTS_EXCERPT_MAX"
   fi
   return 0
+}
+
+# Registration, not liveness (S2 of the push-enforcement design). This asserts the
+# `git-hooks/pre-push` boundary is actually the file `.git/hooks/pre-push` — or a linked
+# worktree's shared equivalent — will run: by RESOLVED PATH, never by reading
+# `core.hooksPath`, which cannot see a `-c` or `GIT_CONFIG_*` override. Whether the hook
+# actually BLOCKS a real push is answered only by scripts/tests/test_pre_push_hook.sh, which
+# performs one; this check cannot see that and does not claim to.
+#
+# Static and unconditional, like exec-bit and mutation-anchors: this reads no repo code and
+# needs no --tests gate. Never scoped by .auditignore — a repo cannot hide a missing or
+# stale push boundary any more than it can hide a broken tracked .json.
+check_pre_push_installed() {
+  local scope="$1" ref marker_found=false
+
+  # Same dormancy predicate as the hook itself: armed iff SOME refs/heads/* branch carries a
+  # tracked .publication.toml, checked by branch rather than by one hardcoded name — a check
+  # keyed on a single branch would disagree with a hook that is not, and would itself become
+  # a `git branch -m` away from going quiet.
+  while IFS= read -r ref; do
+    [[ -z "$ref" ]] && continue
+    if git -C "$scope" cat-file -e "${ref}:.publication.toml" 2>/dev/null; then
+      marker_found=true
+      break
+    fi
+  done < <(git -C "$scope" for-each-ref --format='%(refname)' refs/heads/ 2>/dev/null)
+
+  if [[ "$marker_found" == false ]]; then
+    verdict_skip pre-push-installed 'repo not adopted -- no refs/heads/* branch carries .publication.toml'
+    return
+  fi
+
+  # Marker present but refs/heads/main unresolvable is the hook's own BLOCK case; mirrored
+  # here as a FAIL rather than skipped past.
+  if ! git -C "$scope" rev-parse --quiet --verify refs/heads/main >/dev/null 2>&1; then
+    verdict_fail pre-push-installed 'armed (a branch carries .publication.toml) but refs/heads/main does not resolve'
+    return
+  fi
+
+  # Source preference: the CHECKED-OUT worktree copy when present -- this is what catches
+  # "edited the hook, forgot to re-install" -- else the committed blob on refs/heads/dev.
+  local source_kind source_sha
+  if [[ -f "$scope/git-hooks/pre-push" ]]; then
+    source_kind="the worktree git-hooks/pre-push"
+    source_sha="$(sha256_hex < "$scope/git-hooks/pre-push" 2>/dev/null)"
+  elif git -C "$scope" cat-file -e 'refs/heads/dev:git-hooks/pre-push' 2>/dev/null; then
+    source_kind='refs/heads/dev:git-hooks/pre-push'
+    source_sha="$(git -C "$scope" cat-file blob 'refs/heads/dev:git-hooks/pre-push' 2>/dev/null | sha256_hex)"
+  else
+    # A discovery matching nothing must not report success: neither source existing in an
+    # adopted repo is a FAIL, never a SKIP.
+    verdict_fail pre-push-installed 'no pre-push source found -- neither worktree git-hooks/pre-push nor refs/heads/dev:git-hooks/pre-push'
+    return
+  fi
+
+  # `--path-format=absolute --git-path hooks`, NOT the bare form -- the bare form is
+  # RELATIVE (.git/hooks from the root, ../.git/hooks from a subdir), so a naive comparison
+  # against an absolute scope could never match. Resolved by asking git, never by
+  # hand-constructing "$scope/.git/hooks": that is what makes a linked worktree resolve to
+  # the MAIN repo's hooks dir here automatically, rather than FAILing on a path that (for a
+  # worktree) is not even a directory. Re-resolved with `cd -P` on both the scope (before
+  # asking) and the answer (after) because `--path-format=absolute` returns the PHYSICAL
+  # path while main() resolves `$scope` with a logical `pwd` -- under a symlinked TMPDIR the
+  # two would otherwise never agree.
+  local scope_phys hooks_dir dest
+  scope_phys="$(cd -P "$scope" 2>/dev/null && pwd)" || scope_phys="$scope"
+  hooks_dir="$(cd "$scope_phys" 2>/dev/null \
+    && git rev-parse --path-format=absolute --git-path hooks 2>/dev/null)"
+  if [[ -n "$hooks_dir" && -d "$hooks_dir" ]]; then
+    hooks_dir="$(cd -P "$hooks_dir" 2>/dev/null && pwd)" || true
+  fi
+  if [[ -z "$hooks_dir" ]]; then
+    verdict_fail pre-push-installed 'could not resolve the git hooks directory'
+    return
+  fi
+  dest="$hooks_dir/pre-push"
+
+  if [[ ! -e "$dest" ]]; then
+    verdict_fail pre-push-installed "not installed -- $dest does not exist"
+    return
+  fi
+  if [[ -L "$dest" ]]; then
+    verdict_fail pre-push-installed "$dest is a symlink -- must be a regular copy (see scripts/install-git-hooks.sh)"
+    return
+  fi
+  if [[ ! -f "$dest" ]]; then
+    verdict_fail pre-push-installed "$dest is not a regular file"
+    return
+  fi
+  if [[ ! -x "$dest" ]]; then
+    verdict_fail pre-push-installed "$dest is not executable -- git silently ignores a non-executable pre-push hook"
+    return
+  fi
+
+  local dest_sha
+  dest_sha="$(sha256_hex < "$dest" 2>/dev/null)"
+  if [[ -z "$source_sha" || "$dest_sha" != "$source_sha" ]]; then
+    verdict_fail pre-push-installed "$dest does not match $source_kind (sha256 mismatch) -- re-run scripts/install-git-hooks.sh"
+    return
+  fi
+
+  verdict_pass pre-push-installed
 }
 
 check_tests() {
@@ -720,8 +850,8 @@ check_tests() {
   if [[ -n "$detail" ]]; then
     verdict_fail tests 'test suite failure(s)'
     # Printed BEFORE the detail: it is the one line whose loss would make the rest pointless.
-    if [[ -n "$TESTS_ARTIFACT_DIR" ]]; then
-      printf '  full output: %s\n' "$TESTS_ARTIFACT_DIR"
+    if [[ -n "$tests_artifact_root" ]]; then
+      printf '  full output: %s\n' "$tests_artifact_root"
     else
       printf '  full output: (unavailable — could not create an artifact directory)\n'
     fi
@@ -882,7 +1012,7 @@ EOF
 main() {
   local scope="" run_tests=false auditignore="" ignore="" invalid_detail="" ignore_count=0 g
   local hermetic_before="" hermetic_status=0
-  local hermetic_root="" hermetic_marker="" hermetic_out_before="" hermetic_out_status=1
+  local hermetic_root="" hermetic_out_before="" hermetic_out_status=1
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -957,6 +1087,7 @@ EOF
   check_toml "$scope"
   check_sync_docs "$scope"
   check_mutation_anchors "$scope"
+  check_pre_push_installed "$scope"
   if [[ "$run_tests" == true ]]; then
     # Snapshot BEFORE the only checks that execute repo code, and hand both the snapshot
     # and its status to check_hermetic — a failed read must not be able to compare equal.
@@ -980,7 +1111,13 @@ EOF
     check_hermetic "$scope" "$hermetic_before" "$hermetic_status"
     check_hermetic_outside "$scope" "$hermetic_root" "$hermetic_out_before" \
       "$hermetic_out_status" "$hermetic_marker"
-    [[ -n "$hermetic_marker" ]] && rm -f "$hermetic_marker"
+    # Removed here rather than left to the trap, so the file's lifetime ends with the check that
+    # needed it. Clearing the handle keeps ownership single: a non-empty hermetic_marker means a
+    # file we created is still on disk, which is exactly what the EXIT trap's backstop tests.
+    if [[ -n "$hermetic_marker" ]]; then
+      rm -f "$hermetic_marker"
+      hermetic_marker=""
+    fi
   fi
 
   printf '%d passed, %d failed, %d skipped\n' "$pass_count" "$fail_count" "$skip_count"

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.76.0 — 2026-08-05
+- feat(pre-push): add the git-native publication boundary and its check
+
 ## v0.75.17 — 2026-08-04
 - test(publication-push-guard): add a frozen-baseline regression corpus
 

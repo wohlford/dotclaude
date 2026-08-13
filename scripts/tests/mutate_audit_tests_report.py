@@ -39,25 +39,25 @@ LIVE_RE = (
     "^E[[:space:]]|fatal:|[0-9]+ (failed|error)'"
 )
 
-LIVE_PATH_FIRST = """    if [[ -n "$TESTS_ARTIFACT_DIR" ]]; then
-      printf '  full output: %s\\n' "$TESTS_ARTIFACT_DIR"
+LIVE_PATH_FIRST = """    if [[ -n "$tests_artifact_root" ]]; then
+      printf '  full output: %s\\n' "$tests_artifact_root"
     else
       printf '  full output: (unavailable — could not create an artifact directory)\\n'
     fi
     printf '%s\\n' "${detail%$'\\n'}" | sed 's/^/  /'"""
 
 MUTATED_PATH_LAST = """    printf '%s\\n' "${detail%$'\\n'}" | sed 's/^/  /'
-    if [[ -n "$TESTS_ARTIFACT_DIR" ]]; then
-      printf '  full output: %s\\n' "$TESTS_ARTIFACT_DIR"
+    if [[ -n "$tests_artifact_root" ]]; then
+      printf '  full output: %s\\n' "$tests_artifact_root"
     else
       printf '  full output: (unavailable — could not create an artifact directory)\\n'
     fi"""
 
-LIVE_DECOLLIDE = """  target="$TESTS_ARTIFACT_DIR/$safe.log"
+LIVE_DECOLLIDE = """  target="$tests_artifact_root/$safe.log"
   n=2
   while [[ -e "$target" ]]; do
     [[ "$n" -gt 99 ]] && return 1
-    target="$TESTS_ARTIFACT_DIR/$safe-$n.log"
+    target="$tests_artifact_root/$safe-$n.log"
     n=$((n + 1))
   done"""
 
@@ -81,7 +81,7 @@ MUTATIONS = [
     mutate.Mutation(
         "the de-collision loop is removed, so one suite's log silently clobbers another's",
         LIVE_DECOLLIDE,
-        '  target="$TESTS_ARTIFACT_DIR/$safe.log"',
+        '  target="$tests_artifact_root/$safe.log"',
     ),
     mutate.Mutation(
         "the artifact path is printed AFTER the detail, where a downstream cap eats it first",

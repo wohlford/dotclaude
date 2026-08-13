@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Script: pre-push
+# Purpose: Git-native boundary — the ONLY thing that runs at the actual push machinery,
+#   after the pre-execution, best-effort `publication-push-guard.py` PreToolUse layer has
+#   already had its say. Installed by ../scripts/install-git-hooks.sh to .git/hooks/pre-push
+#   (or the main repo's .git/hooks in a linked worktree — hooks are never per-worktree).
+#
+# CONTRACT: a ref may be pushed only when the object it points at is already reachable from
+# refs/heads/main, evaluated with replacement objects disabled. A deletion publishes nothing
+# and is exempt.
+#
+# Dormant unless SOME branch under refs/heads/ carries a tracked `.publication.toml` — this
+# is checked by branch, never by one hardcoded name, so disarming the hook is not a
+# `git branch -m` away. Armed but refs/heads/main unresolvable ⇒ BLOCK: an unevaluable
+# allowlist must refuse, never fall open.
+#
+# ALLOW_PUSH is layer 1's override, never this one's — this hook does not read it. This hook
+# does have a residual, and the refusal messages deliberately DO NOT name it. Layer 1 is a
+# PreToolUse hook over an agent's proposed commands, so it sees the very command an agent would
+# copy out of a printed remedy — a gate that prints its own bypass is handing it to the reader
+# most likely to use it mechanically. The residual is an operator action taken by hand, in a
+# terminal where no PreToolUse hook applies, and the messages say that much without naming it.
+#
+# Usage: git invokes this itself. argv is `<remote-name> <remote-url>`; stdin carries one
+#   line per ref being pushed: `<local-ref> <local-sha> <remote-ref> <remote-sha>`. A
+#   deletion arrives as local-ref=(delete) with an all-zero local-sha -- the null OID's width
+#   is object-format-dependent (40 hex digits under sha1, 64 under sha256), so it is matched
+#   width-agnostically below rather than against one hardcoded width. An annotated tag's local
+#   sha is the TAG OBJECT, not the commit it points at.
+#
+# NOTE: no `-e`. Every stdin line must be judged and every line must be drained before this
+# exits — exiting on the first refusal would leave git writing to a closed pipe, and a
+# nonzero exit here aborts the WHOLE push (pre-push runs before any object transfer, so
+# --atomic changes nothing). That is the same sweep-runner shape STYLE.md carves an `-e`
+# exemption for: one bad ref must not cut the read of the rest short.
+
+readonly MAIN_REF='refs/heads/main'
+
+# merge-base honours refs/replace/* while pack-objects (what actually transfers) does not —
+# without this, a replace ref can make this hook's answer disagree with what the push really
+# sends. Exported once, globally, so every git call below inherits it rather than needing a
+# per-command prefix that is easy to forget on the next edit.
+export GIT_NO_REPLACE_OBJECTS=1
+
+# Active iff SOME ref under refs/heads/ carries a tracked .publication.toml — enumerated by
+# branch and tested with a fully-qualified `<ref>:.publication.toml` path so a same-named tag
+# can never shadow the lookup. Keying on one hardcoded branch name was rejected for a
+# stronger reason than tag shadowing: it would make disarming the hook a rename away, while
+# every private object stayed reachable.
+is_dormant() { # -> 0 (true) if dormant, 1 (false) if armed
+  local ref
+  while IFS= read -r ref; do
+    [[ -z "$ref" ]] && continue
+    if git cat-file -e "${ref}:.publication.toml" 2>/dev/null; then
+      return 1
+    fi
+  done < <(git for-each-ref --format='%(refname)' refs/heads/ 2>/dev/null)
+  return 0
+}
+
+if is_dormant; then
+  cat >/dev/null   # drain stdin regardless — git always writes it
+  exit 0
+fi
+
+if ! git rev-parse --quiet --verify "$MAIN_REF" >/dev/null 2>&1; then
+  cat >/dev/null
+  printf 'pre-push: refusing every ref -- %s does not resolve locally.\n' "$MAIN_REF" >&2
+  printf 'pre-push: ALLOW_PUSH will not help; this hook never reads it.\n' >&2
+  printf 'pre-push: publish through the repo promote path; a deliberate exception is an operator action, by hand in their own terminal.\n' >&2
+  exit 1
+fi
+
+blocked=0
+messages=""
+
+# shellcheck disable=SC2034  # remote_sha is part of the stdin line shape, unused here
+while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+  [[ -z "$local_ref" ]] && continue
+
+  # Zero-sha FIRST, before any rev-parse: `merge-base --is-ancestor <all-zero> refs/heads/main`
+  # exits 128, not 1, so a rule reading "non-zero means block" refuses EVERY deletion. A
+  # deletion publishes nothing and is always allowed. Width-agnostic on purpose: the null OID
+  # is 40 hex digits under sha1 but 64 under sha256, so a fixed-width comparison silently stops
+  # exempting deletions in a sha256 repo. No real object OID is ever all zeros, and `^0+$`
+  # cannot match an empty string either, so this cannot wrongly exempt anything.
+  if [[ "$local_sha" =~ ^0+$ ]]; then
+    continue
+  fi
+
+  # Peel explicitly: an annotated tag's local sha is the TAG OBJECT, not a commit, and
+  # `^{commit}` on anything that cannot resolve to one is a named refusal here rather than a
+  # behavior this hook silently relies on downstream.
+  commit_sha="$(git rev-parse --quiet --verify "${local_sha}^{commit}" 2>/dev/null)"
+  if [[ -z "$commit_sha" ]]; then
+    blocked=1
+    messages="${messages}pre-push: refusing ${remote_ref} -- ${local_sha} does not peel to a commit. ALLOW_PUSH will not help.
+"
+    continue
+  fi
+
+  if git merge-base --is-ancestor "$commit_sha" "$MAIN_REF" 2>/dev/null; then
+    continue
+  fi
+
+  blocked=1
+  messages="${messages}pre-push: refusing ${remote_ref} (${local_ref}) -- not reachable from ${MAIN_REF}. ALLOW_PUSH will not help; publish through the repo promote path, or take it by hand in your own terminal.
+"
+done
+
+if [[ "$blocked" -ne 0 ]]; then
+  printf '%s' "$messages" >&2
+  exit 1
+fi
+
+exit 0

@@ -64,14 +64,15 @@ The user may optionally provide:
    and do not attempt a fix unless asked. An `INCOMPLETE` or missing verdict is a reason
    to re-run deliberately, not to assume the sweep would have passed.
 
-The sweep runs 16 checks: `format-trailing-ws`, `format-crlf`, `format-final-newline`,
+The sweep runs 17 checks: `format-trailing-ws`, `format-crlf`, `format-final-newline`,
 `format-tabs` (formatting); `shellcheck`, `ruff` (linters); `markdownlint` (opt-in, see Rules);
 `md-links` (relative link/anchor validity); `exec-bit` (tracked shebang files must be
 executable); `json`, `toml` (config validity); `sync-docs` (index-table drift);
 `mutation-anchors` (every mutation campaign's anchor still resolves exactly once in the file it
-mutates); `tests` (shell suites + pytest); `hermetic` (the suite left the working tree as it
-found it); and `hermetic-outside` (the suite wrote nothing under the Claude config root). The
-last three run only with `--tests`.
+mutates); `pre-push-installed` (adopted repos: the tracked `git-hooks/pre-push` is installed at
+the resolved hooks path, executable, and matches its source); `tests` (shell suites + pytest);
+`hermetic` (the suite left the working tree as it found it); and `hermetic-outside` (the suite
+wrote nothing under the Claude config root). The last three run only with `--tests`.
 
 ### Hermeticity — what a suite run leaves behind
 
@@ -95,6 +96,17 @@ to the other's instrument:
 Run non-interactively that is exact; run alongside a live session that also writes there, a `FAIL`
 may name that session's work. It never fails the other way: nothing turns a real write into a `PASS`.
 
+**Not every hermeticity `FAIL` is pollution, and the reason text after the em dash says which.**
+Only `the suite changed the working tree` and `the suite wrote outside the scope, under <root>`
+mean the suite wrote. The rest report that the sweep could not measure, or that its watch had been
+weakened — hunting for a dirty tree will find nothing. **Do not use the indented block as the
+signal:** four of the five print one, and on an instrument failure it carries the tool's own error
+text rather than offending paths. `hermetic` emits `could not read the working tree BEFORE the
+suite ran` and its `AFTER` twin (both ends are guarded: a symmetric failure would compare equal and
+read as a clean pass). `hermetic-outside` emits `could not snapshot the config root BEFORE the
+suite ran`, `watched 0 files under <root> — the probe measured nothing`, or `a protected path was
+moved onto the churn exemption list`. Repair the instrument, then re-run.
+
 ### .auditignore
 
 A `<scope>/.auditignore` file is an opt-in exclusion mechanism: one **git pathspec glob** per
@@ -104,9 +116,10 @@ becomes a `:(exclude)` pathspec — this mirrors the repo's own `.markdownlint-c
 
 It scopes ONLY the five text-content checks: `format-trailing-ws`, `format-crlf`,
 `format-final-newline`, `format-tabs`, `md-links`. Code/config checks (`shellcheck`, `ruff`,
-`markdownlint`, `exec-bit`, `json`, `toml`, `sync-docs`, `mutation-anchors`, `tests`,
-`hermetic`, `hermetic-outside`) are deliberately never scoped by it — a repo cannot hide a broken tracked
-`.json`, a non-executable shebang file, or an artifact its own suite dropped from the audit.
+`markdownlint`, `exec-bit`, `json`, `toml`, `sync-docs`, `mutation-anchors`,
+`pre-push-installed`, `tests`, `hermetic`, `hermetic-outside`) are deliberately never scoped by
+it — a repo cannot hide a broken tracked `.json`, a non-executable shebang file, or an
+artifact its own suite dropped from the audit.
 
 An absent `.auditignore` is fully backward compatible — behavior is identical to before it
 existed. A present-but-empty file (or one containing only comments/blank lines) behaves exactly
@@ -150,6 +163,11 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   is a coverage gap, not a clean bill of health.
 - `markdownlint` only runs in repos opted in via `.markdownlint-cli2.jsonc` — opting in is a
   per-repo decision this skill reports, never makes.
+- `pre-push-installed` only runs in adopted repos (any `refs/heads/*` branch carrying a
+  tracked `.publication.toml`) — `SKIP` elsewhere. It answers registration only: whether the
+  hook that would enforce the push boundary is actually installed, executable, and current.
+  It says nothing about whether that hook actually blocks a push — that is
+  `scripts/tests/test_pre_push_hook.sh`'s job, not this sweep's.
 - Never run `/audit` as a substitute for `/vet` when skills or agents were edited — the sweep
   checks mechanics only; it has no judgment about content or structure.
 - **A clean verdict on a killed run is structurally impossible, not merely unlikely.**
@@ -178,8 +196,8 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   non-zero, so `&&` chains still short-circuit. Under `nohup`, SIGHUP is ignored before
   the script starts and so cannot be trapped at all: a HUP then has no effect whatever —
   the run continues to completion and emits a normal verdict.
-- **`checks=<pass>/<fail>/<skip>` counts emitted verdict lines, not the 16 named checks.**
-  Two things make the totals differ from 16: an invalid `.auditignore` pattern adds a
-  `FAIL auditignore` that is not one of the 16, and without `--tests` none of `tests`,
-  `hermetic`, or `hermetic-outside` emits a line at all — so a static sweep totals 13 and a
-  full one 16. Compare counts only across runs invoked with the same flags.
+- **`checks=<pass>/<fail>/<skip>` counts emitted verdict lines, not the 17 named checks.**
+  Two things make the totals differ from 17: an invalid `.auditignore` pattern adds a
+  `FAIL auditignore` that is not one of the 17, and without `--tests` none of `tests`,
+  `hermetic`, or `hermetic-outside` emits a line at all — so a static sweep totals 14 and a
+  full one 17. Compare counts only across runs invoked with the same flags.
