@@ -588,15 +588,118 @@ check_mutation_anchors() {
   fi
 }
 
+# ---------- the tests check's reporting ----------
+#
+# `tests` deliberately does NOT route its detail through print_offenders. For the content checks
+# the offender is a list of offending FILES: the first 50 are representative and the rest are the
+# same defect, so the cap is right there and is unchanged. Here the "offender" is another tool's
+# entire stdout, whose interesting lines are the FAILURES — and suites print passes as they go, so
+# a head-cap reliably keeps the useless half. Measured twice, the second time at the last gate
+# before an irreversible publish; neither failure reproduced, so both diagnoses are unrecoverable.
+#
+# A per-suite budget under a global cap does not fix it either: at ~21 lines per suite, TWO failing
+# suites fit under 50 and THREE do not, so the third is truncated and a fourth is never even NAMED
+# (names live only in the per-suite headers). Every failing suite is therefore always named, and
+# only its excerpt is bounded.
+TESTS_ARTIFACT_DIR=""
+TESTS_ARTIFACT_TRIED=false
+TESTS_EXCERPT_MAX=20
+
+# Deliberately GENEROUS, and deliberately NOT load-bearing. The complete output is preserved in the
+# artifact, so a line wrongly KEPT costs one line of noise while a line wrongly DROPPED costs
+# nothing. That asymmetry is the whole point: narrowing a matcher to suppress noise is precisely how
+# true positives get dropped silently, and here it cannot happen.
+TESTS_FAILURE_RE='FAIL|ERROR|Traceback|AssertionError|^E[[:space:]]|fatal:|[0-9]+ (failed|error)'
+
+# Lazily create the directory holding failing suites' complete output. Created only on the first
+# FAILURE, so a passing sweep — the overwhelming majority — writes nothing at all: a default output
+# path would otherwise make every run of this tool a writer of real state.
+#
+# It SETS TESTS_ARTIFACT_DIR and returns only a status — it must never echo the path for a caller
+# to capture with `$( )`. Measured: doing that ran every assignment inside a command-substitution
+# SUBSHELL, so the memoisation never took effect (a fresh directory per failing suite) and the
+# parent's global stayed empty, making the report claim the artifact was unavailable while the
+# files sat on disk. The `while … done <<< "$list"` loop below is a here-string, not a pipe, so the
+# loop body does run in the current shell and these assignments survive it.
+tests_artifact_dir() { # scope -> sets TESTS_ARTIFACT_DIR; nonzero when unavailable
+  local scope="$1" base base_phys scope_phys
+  if [[ "$TESTS_ARTIFACT_TRIED" == true ]]; then
+    [[ -n "$TESTS_ARTIFACT_DIR" ]] || return 1
+    return 0
+  fi
+  TESTS_ARTIFACT_TRIED=true
+  base="${TMPDIR:-/tmp}"
+  # BOTH sides physical. A containment test with one side logical and the other resolved can never
+  # match, so the guard would silently never fire — the measured trap this file already documents
+  # for the hermetic root. If the temp root lies inside the scope, writing there would trip
+  # `hermetic` with a message blaming the SUITE for a write the engine itself made, sending the
+  # reader to debug the wrong component; skip the artifact instead.
+  scope_phys="$(cd -P "$scope" 2>/dev/null && pwd)" || scope_phys="$scope"
+  base_phys="$(cd -P "$base" 2>/dev/null && pwd)" || base_phys="$base"
+  if [[ "$base_phys" == "$scope_phys" || "$base_phys" == "$scope_phys"/* ]]; then
+    return 1
+  fi
+  TESTS_ARTIFACT_DIR="$(mktemp -d "$base/audit-tests-XXXXXX" 2>/dev/null)" || TESTS_ARTIFACT_DIR=""
+  [[ -n "$TESTS_ARTIFACT_DIR" ]] || return 1
+  return 0
+}
+
+tests_artifact_write() { # scope label output
+  local scope="$1" label="$2" out="$3" safe target n
+  tests_artifact_dir "$scope" || return 1
+  # `printf '%s'`, never `echo`: echo's trailing newline would become a trailing `_`.
+  safe="$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '_')"
+  # NEVER overwrite. `tr` is many-to-one — `test_a b.sh` and `test_a_b.sh` sanitise to the same
+  # name — so a bare write silently destroys the first suite's output, which is precisely the
+  # loss this whole check exists to prevent, and it would do so while the report still claimed
+  # every failing suite's text was preserved. Suffix instead, and give up rather than spin.
+  target="$TESTS_ARTIFACT_DIR/$safe.log"
+  n=2
+  while [[ -e "$target" ]]; do
+    [[ "$n" -gt 99 ]] && return 1
+    target="$TESTS_ARTIFACT_DIR/$safe-$n.log"
+    n=$((n + 1))
+  done
+  printf '%s\n' "$out" > "$target" 2>/dev/null || return 1
+  return 0
+}
+
+# Never returns empty for a failing suite: a bare header would say a suite failed while showing
+# nothing about it. `sed -n '1,Np'` rather than `head -n N` so nothing upstream can take SIGPIPE.
+tests_excerpt() { # output
+  local out="$1" matched n
+  if [[ -z "$out" ]]; then
+    printf '(suite produced no output)\n'
+    return 0
+  fi
+  matched="$(printf '%s\n' "$out" | grep -E "$TESTS_FAILURE_RE" 2>/dev/null)"
+  if [[ -n "$matched" ]]; then
+    n="$(printf '%s\n' "$matched" | wc -l | tr -d ' ')"
+    printf '%s\n' "$matched" | sed -n "1,${TESTS_EXCERPT_MAX}p"
+    # Mark truncation. Silently cutting would make a partial excerpt read exactly like a complete
+    # one, which is the shape this whole change exists to remove.
+    if [[ "$n" -gt "$TESTS_EXCERPT_MAX" ]]; then
+      printf '(… %d more matching lines in the artifact)\n' "$((n - TESTS_EXCERPT_MAX))"
+    fi
+  else
+    printf '(no failure-shaped line; last %d lines)\n' "$TESTS_EXCERPT_MAX"
+    printf '%s\n' "$out" | tail -n "$TESTS_EXCERPT_MAX"
+  fi
+  return 0
+}
+
 check_tests() {
-  local scope="$1" ran=false detail="" sh_list py_list t out rc
+  local scope="$1" ran=false detail="" sh_list py_list t out rc note
   sh_list="$(git -C "$scope" ls-files -- 'scripts/tests/test_*.sh' 2>/dev/null)"
   while IFS= read -r t; do
     [[ -z "$t" ]] && continue
     ran=true
     out="$("$scope/$t" 2>&1)"; rc=$?
     if [[ "$rc" -ne 0 ]]; then
-      detail="${detail}${t} exited ${rc}:"$'\n'"${out}"$'\n'
+      # Per-suite, not per-run: the directory existing does not mean THIS suite's write landed,
+      # and claiming preservation that did not happen is worse than admitting it did not.
+      if tests_artifact_write "$scope" "$t" "$out"; then note=""; else note=' (full output NOT preserved)'; fi
+      detail="${detail}${t} exited ${rc}:${note}"$'\n'"$(tests_excerpt "$out")"$'\n'
     fi
   done <<< "$sh_list"
 
@@ -605,7 +708,8 @@ check_tests() {
     ran=true
     out="$(cd "$scope" && python3 -m pytest -q 2>&1)"; rc=$?
     if [[ "$rc" -ne 0 ]]; then
-      detail="${detail}pytest exited ${rc}:"$'\n'"${out}"$'\n'
+      if tests_artifact_write "$scope" pytest "$out"; then note=""; else note=' (full output NOT preserved)'; fi
+      detail="${detail}pytest exited ${rc}:${note}"$'\n'"$(tests_excerpt "$out")"$'\n'
     fi
   fi
 
@@ -615,7 +719,13 @@ check_tests() {
   fi
   if [[ -n "$detail" ]]; then
     verdict_fail tests 'test suite failure(s)'
-    print_offenders "$detail"
+    # Printed BEFORE the detail: it is the one line whose loss would make the rest pointless.
+    if [[ -n "$TESTS_ARTIFACT_DIR" ]]; then
+      printf '  full output: %s\n' "$TESTS_ARTIFACT_DIR"
+    else
+      printf '  full output: (unavailable — could not create an artifact directory)\n'
+    fi
+    printf '%s\n' "${detail%$'\n'}" | sed 's/^/  /'
   else
     verdict_pass tests
   fi

@@ -13,6 +13,16 @@ engine="$here/../../skills/audit/audit.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+# Every mktemp below this line — the suite's own, the engine's hermetic marker, and (since the
+# tests check began preserving failing suites' full output) the engine's artifact directories —
+# lands under $tmp and dies with the trap above. Without this the suite makes the ENGINE write
+# into the operator's real temp root, roughly one directory per failing fixture and ~36 across a
+# mutation campaign: this repo's own "a default output path makes every run a writer of real
+# state" hazard, rebuilt inside its own test suite. It sits outside every fixture's scope
+# directory, so the outside-the-scope assertion in 15g still means something.
+export TMPDIR="$tmp/enginetmp"
+mkdir -p "$TMPDIR"
+
 pass=0
 fail=0
 
@@ -343,6 +353,314 @@ chmod +x "$r15/scripts/tests/test_pass.sh"
 commit_all "$r15" flip
 run_engine "$r15" --tests
 assert_has 'FAIL tests' '15c: --tests with a failing suite -> FAIL tests'
+
+# artifact_file_has DIR NEEDLE1 NEEDLE2 -> 0 if ONE file under DIR holds BOTH needles.
+# Deliberately per-file rather than `grep -r`: a recursive match is satisfied when two
+# different files each hold one needle, which is exactly the half-preserved case 15g exists
+# to reject.
+artifact_file_has() {
+  local d="$1" n1="$2" n3="$3" f
+  for f in "$d"/*; do
+    [[ -f "$f" ]] || continue
+    if grep -q -- "$n1" "$f" 2>/dev/null && grep -q -- "$n3" "$f" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ============================================================================
+# 15d-15n. --tests: the failing row must survive the offender cap
+#
+# Measured twice (2026-08-01 and 2026-08-04, the second at the last gate before an
+# irreversible publish): a suite printing 66 PASS rows and one FAIL row had the FAIL row
+# cut by print_offenders' 50-line cap, which keeps the HEAD. For a list of offending FILES
+# the head is representative — the rest are the same defect. For another tool's stdout the
+# interesting lines are the FAILURES, and suites print passes as they go, so the cap
+# reliably kept the useless half and the diagnosis was unrecoverable both times.
+#
+# 15e exists to reject the tempting narrow fix: keeping the TAIL instead of the head fails
+# the mirrored shape, and these suites do continue after a failure rather than exiting on
+# the first one. 15h pins the case where nothing matches at all, since a filter that
+# distils to nothing reports success loudest of all.
+# ============================================================================
+
+# --- 15d: the failure sits PAST the cap (the exact measured shape) ---
+r15d="$tmp/r15d_late"
+mkrepo "$r15d"
+mkdir -p "$r15d/scripts/tests"
+cat > "$r15d/scripts/tests/test_late.sh" <<'EOF'
+#!/usr/bin/env bash
+for ((i = 1; i <= 60; i++)); do printf 'PASS  row %d\n' "$i"; done
+printf 'FAIL  the-row-that-matters\n'
+exit 1
+EOF
+chmod +x "$r15d/scripts/tests/test_late.sh"
+commit_all "$r15d" late
+run_engine "$r15d" --tests
+assert_has 'the-row-that-matters' '15d: a FAIL row past line 50 survives the offender cap'
+
+# --- 15e: the failure sits EARLY, with the passes after it (a tail-only fix fails here) ---
+r15e="$tmp/r15e_early"
+mkrepo "$r15e"
+mkdir -p "$r15e/scripts/tests"
+cat > "$r15e/scripts/tests/test_early.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'PASS  row 0\n'
+printf 'FAIL  the-early-row\n'
+for ((i = 1; i <= 60; i++)); do printf 'PASS  row %d\n' "$i"; done
+exit 1
+EOF
+chmod +x "$r15e/scripts/tests/test_early.sh"
+commit_all "$r15e" early
+run_engine "$r15e" --tests
+assert_has 'the-early-row' '15e: a FAIL row before 60 passes survives (not merely a tail keep)'
+
+# --- 15f: every failing suite is represented, not just the first ---
+r15f="$tmp/r15f_two"
+mkrepo "$r15f"
+mkdir -p "$r15f/scripts/tests"
+cat > "$r15f/scripts/tests/test_aaa.sh" <<'EOF'
+#!/usr/bin/env bash
+for ((i = 1; i <= 60; i++)); do printf 'PASS  row %d\n' "$i"; done
+printf 'FAIL  first-suite-row\n'
+exit 1
+EOF
+cat > "$r15f/scripts/tests/test_zzz.sh" <<'EOF'
+#!/usr/bin/env bash
+for ((i = 1; i <= 60; i++)); do printf 'PASS  row %d\n' "$i"; done
+printf 'FAIL  second-suite-row\n'
+exit 1
+EOF
+chmod +x "$r15f/scripts/tests/test_aaa.sh" "$r15f/scripts/tests/test_zzz.sh"
+commit_all "$r15f" two
+run_engine "$r15f" --tests
+assert_has 'first-suite-row' '15f: with two failing suites, the first suite row survives'
+assert_has 'second-suite-row' '15f: with two failing suites, the second suite row survives'
+
+# --- 15g: the full output is preserved in an artifact, OUTSIDE the scope ---
+artifact="$(printf '%s\n' "$OUT" | sed -n 's/.*full output: \(.*\)$/\1/p' | head -1)"
+if [[ -n "$artifact" && -d "$artifact" ]]; then
+  pass_line '15g: a full-output artifact directory is named in the report'
+  case "$artifact" in
+    "$r15f"/*) fail_line '15g: the artifact must NOT be written inside the scope' ;;
+    *) pass_line '15g: the artifact lies outside the scope (clean-tree precondition)' ;;
+  esac
+  # PER-SUITE, not a `grep -r` over the directory: one recursive grep is satisfied by EITHER
+  # suite's log, so an implementation that preserves only the first failing suite would pass.
+  # Each suite's own log must hold its own distinctive row AND a row the inline excerpt filters
+  # out — that pairing is what proves the file is complete rather than merely present.
+  if artifact_file_has "$artifact" 'first-suite-row' 'PASS  row 42'; then
+    pass_line '15g: suite one has its OWN complete log (distinctive row + a filtered-out row)'
+  else
+    fail_line '15g: suite one has its OWN complete log (distinctive row + a filtered-out row)'
+  fi
+  if artifact_file_has "$artifact" 'second-suite-row' 'PASS  row 42'; then
+    pass_line '15g: suite two has its OWN complete log (distinctive row + a filtered-out row)'
+  else
+    fail_line '15g: suite two has its OWN complete log (distinctive row + a filtered-out row)'
+  fi
+else
+  fail_line '15g: a full-output artifact directory is named in the report'
+  fail_line '15g: the artifact lies outside the scope (clean-tree precondition)'
+  fail_line '15g: suite one has its OWN complete log (distinctive row + a filtered-out row)'
+  fail_line '15g: suite two has its OWN complete log (distinctive row + a filtered-out row)'
+fi
+
+# --- 15h: a failing suite with NO failure-shaped line still reports something readable ---
+r15h="$tmp/r15h_silent"
+mkrepo "$r15h"
+mkdir -p "$r15h/scripts/tests"
+cat > "$r15h/scripts/tests/test_silent.sh" <<'EOF'
+#!/usr/bin/env bash
+for ((i = 1; i <= 60; i++)); do printf 'PASS  row %d\n' "$i"; done
+printf 'the-last-thing-it-said\n'
+exit 3
+EOF
+chmod +x "$r15h/scripts/tests/test_silent.sh"
+commit_all "$r15h" silent
+run_engine "$r15h" --tests
+assert_has 'FAIL tests' '15h: a suite failing with no failure-shaped line -> FAIL tests'
+assert_has 'the-last-thing-it-said' '15h: with nothing matched, the tail is shown rather than nothing'
+
+# --- 15i: PRESERVE — the verdict is unchanged across all three outcomes ---
+# The reporting change must not move the gate. FAIL iff some suite exited non-zero, SKIP iff
+# none ran, PASS otherwise. 15b/15c already cover PASS and FAIL; this adds SKIP, and pins that
+# a PASSING run says nothing about an artifact.
+r15i="$tmp/r15i_skip"
+mkrepo "$r15i"
+printf 'placeholder\n' > "$r15i/README.md"
+commit_all "$r15i" noSuites
+run_engine "$r15i" --tests
+assert_has 'SKIP tests' '15i: a repo with no suites at all -> SKIP tests'
+assert_not_has 'full output:' '15i: a run with no failing suite names no artifact'
+
+run_engine "$r15" --tests   # r15's suite currently exits 1 (set by 15c)
+assert_has 'FAIL tests' '15i: the failing-suite verdict is still FAIL'
+
+# --- 15j: PRESERVE — a passing run creates NO artifact ---
+# A fresh, EMPTY, per-row TMPDIR asserted empty afterward. Deliberately not a count of
+# `audit-tests-*` under the shared temp root: that passes 0->0 if the implementation names its
+# directory anything else (nothing else pins the prefix), and it races every other writer —
+# equal counts are not equal sets.
+r15j="$tmp/r15j_clean"
+mkrepo "$r15j"
+mkdir -p "$r15j/scripts/tests"
+printf '#!/usr/bin/env bash\nprintf "PASS  fine\\n"\nexit 0\n' > "$r15j/scripts/tests/test_ok.sh"
+chmod +x "$r15j/scripts/tests/test_ok.sh"
+commit_all "$r15j" clean
+j_tmp="$tmp/r15j_tmpdir"
+rm -rf "$j_tmp"; mkdir -p "$j_tmp"
+OUT="$(TMPDIR="$j_tmp" "$engine" --scope "$r15j" --tests 2>&1)"
+RC=$?
+assert_has 'PASS tests' '15j: the passing-suite verdict is still PASS'
+check_eq "$(find "$j_tmp" -mindepth 1 | wc -l | tr -d ' ')" '0' \
+  '15j: a run with no failing suite writes nothing to TMPDIR'
+
+# --- 15k: the artifact directory cannot be created ---
+# Gated on the engine's bash being >= 5.1. Below that a here-string materialises a temp file, so
+# an unwritable TMPDIR breaks `done <<< "$sh_list"` (audit.sh:601), `ran` stays false, and the
+# engine emits SKIP tests — the row would fail for a reason it does not name. Spiked on bash
+# 5.3.15: behaves as intended, with hermetic-outside legitimately degrading to SKIP.
+# Nothing here asserts on hermetic/hermetic-outside for exactly that reason.
+k_ver="$(env bash --version | sed -n '1s/.*version \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p')"
+k_major="${k_ver%% *}"
+k_minor="${k_ver##* }"
+k_major="${k_major:-0}"
+k_minor="${k_minor:-0}"
+if [[ "$k_major" -gt 5 || ( "$k_major" -eq 5 && "$k_minor" -ge 1 ) ]]; then
+  r15k="$tmp/r15k_nodir"
+  mkrepo "$r15k"
+  mkdir -p "$r15k/scripts/tests"
+  cat > "$r15k/scripts/tests/test_k.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'FAIL  k-row-must-survive\n'
+exit 1
+EOF
+  chmod +x "$r15k/scripts/tests/test_k.sh"
+  commit_all "$r15k" nodir
+  k_ro="$tmp/r15k_readonly"
+  rm -rf "$k_ro"; mkdir -p "$k_ro"; chmod 500 "$k_ro"
+  OUT="$(TMPDIR="$k_ro" "$engine" --scope "$r15k" --tests 2>&1)"
+  RC=$?
+  chmod 700 "$k_ro"
+  # PRESERVE half — true before and after the fix.
+  assert_has 'FAIL tests' '15k: an uncreatable artifact dir does not change the verdict'
+  assert_has 'k-row-must-survive' '15k: the excerpt still prints without an artifact'
+  # RED half — the loud degradation only exists after the fix.
+  assert_has 'unavailable' '15k: the report says the full output is unavailable, rather than going quiet'
+else
+  pass_line "15k: SKIPPED — engine bash ${k_major}.${k_minor} < 5.1 makes this fixture unreliable"
+fi
+
+# --- 15l: THREE failing suites — the aggregate bound, not the per-suite one ---
+# This is the row that catches the defect the first design walked back into: a per-suite budget
+# of 21 lines fits two suites under a 50-line cap (which is why 15f passed and HID it) but cuts
+# the third, and never even NAMES a fourth. A bound that is correct per item and a bound that is
+# correct in aggregate are different claims, and a two-item fixture cannot tell them apart.
+r15l="$tmp/r15l_three"
+mkrepo "$r15l"
+mkdir -p "$r15l/scripts/tests"
+for n in one two three; do
+  cat > "$r15l/scripts/tests/test_${n}.sh" <<EOF
+#!/usr/bin/env bash
+for ((i = 1; i <= 60; i++)); do printf 'PASS  row %d\n' "\$i"; done
+printf 'FAIL  marker-${n}\n'
+exit 1
+EOF
+  chmod +x "$r15l/scripts/tests/test_${n}.sh"
+done
+commit_all "$r15l" three
+run_engine "$r15l" --tests
+assert_has 'marker-one'   '15l: with three failing suites, suite ONE row survives'
+assert_has 'marker-two'   '15l: with three failing suites, suite TWO row survives'
+assert_has 'marker-three' '15l: with three failing suites, suite THREE row survives'
+assert_has 'test_three.sh' '15l: the third suite is NAMED (headers are the only place names appear)'
+
+# The path line must PRECEDE the per-suite detail. This check owns a real property even though
+# the tests block now has no cap of its own: the remaining truncation risk is a DOWNSTREAM
+# reader's (the agent harness caps tool output; the publish driver reads per-brick output back
+# through a cap), and a path line printed last is the first thing such a cap discards — which
+# would put the complete output back out of reach, the whole defect this change exists to fix.
+l_path_ln="$(printf '%s\n' "$OUT" | grep -n 'full output:' | head -1 | cut -d: -f1)"
+l_first_hdr="$(printf '%s\n' "$OUT" | grep -n 'test_one.sh exited' | head -1 | cut -d: -f1)"
+if [[ -n "$l_path_ln" && -n "$l_first_hdr" && "$l_path_ln" -lt "$l_first_hdr" ]]; then
+  pass_line '15l: the artifact path precedes the detail (so a downstream cap keeps it)'
+else
+  fail_line '15l: the artifact path precedes the detail (so a downstream cap keeps it)'
+fi
+
+# --- 15m: a failure shape that is not `FAIL` ---
+# Every other fixture's failure row begins `FAIL `, so narrowing the pattern to `^FAIL` alone
+# would be undetectable. Placed EARLY with passes after it, so a tail keep cannot rescue it.
+# This is also the only coverage anywhere for the pytest-shaped alternates of the matcher.
+r15m="$tmp/r15m_trace"
+mkrepo "$r15m"
+mkdir -p "$r15m/scripts/tests"
+cat > "$r15m/scripts/tests/test_trace.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'Traceback (most recent call last):\n'
+printf '  File "x.py", line 1, in <module>\n'
+for ((i = 1; i <= 60; i++)); do printf 'PASS  row %d\n' "$i"; done
+exit 1
+EOF
+chmod +x "$r15m/scripts/tests/test_trace.sh"
+commit_all "$r15m" trace
+run_engine "$r15m" --tests
+assert_has 'Traceback' '15m: a non-FAIL failure shape is still surfaced inline'
+
+# --- 15n: a failing suite that produced NO output at all ---
+# 15c's own fixture is literally `exit 1` with no stdout: no matches, and the tail of nothing is
+# nothing, so the header would otherwise print bare.
+r15n="$tmp/r15n_silent"
+mkrepo "$r15n"
+mkdir -p "$r15n/scripts/tests"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$r15n/scripts/tests/test_mute.sh"
+chmod +x "$r15n/scripts/tests/test_mute.sh"
+commit_all "$r15n" mute
+run_engine "$r15n" --tests
+assert_has 'FAIL tests' '15n: a silent failing suite still -> FAIL tests'
+assert_has 'no output' '15n: a silent failing suite reports that, rather than a bare header'
+
+# --- 15o: two suite names that SANITISE to the same filename ---
+# `tr -c 'A-Za-z0-9._-' '_'` maps `test_coll a.sh` and `test_coll_a.sh` onto one log name, so a
+# naive write silently clobbers the first with the second — losing exactly the complete output
+# this change exists to preserve, while the report still claims the directory holds every failing
+# suite's text. Near-theoretical (names come from a `git ls-files` glob) but cheap to close, and
+# a silent loss is the one failure mode this whole change is against.
+r15o="$tmp/r15o_collide"
+mkrepo "$r15o"
+mkdir -p "$r15o/scripts/tests"
+for pair in 'coll a:collide-spaced' 'coll_a:collide-underscore'; do
+  o_file="${pair%%:*}"; o_row="${pair##*:}"
+  cat > "$r15o/scripts/tests/test_${o_file}.sh" <<EOF
+#!/usr/bin/env bash
+for ((i = 1; i <= 60; i++)); do printf 'PASS  row %d\n' "\$i"; done
+printf 'FAIL  ${o_row}\n'
+exit 1
+EOF
+  chmod +x "$r15o/scripts/tests/test_${o_file}.sh"
+done
+commit_all "$r15o" collide
+run_engine "$r15o" --tests
+assert_has 'collide-spaced'     '15o: the spaced-name suite row survives inline'
+assert_has 'collide-underscore' '15o: the underscored-name suite row survives inline'
+o_art="$(printf '%s\n' "$OUT" | sed -n 's/.*full output: \(.*\)$/\1/p' | head -1)"
+if [[ -n "$o_art" && -d "$o_art" ]]; then
+  if artifact_file_has "$o_art" 'collide-spaced' 'PASS  row 42'; then
+    pass_line '15o: the spaced-name suite keeps its OWN complete log despite the collision'
+  else
+    fail_line '15o: the spaced-name suite keeps its OWN complete log despite the collision'
+  fi
+  if artifact_file_has "$o_art" 'collide-underscore' 'PASS  row 42'; then
+    pass_line '15o: the underscored-name suite keeps its OWN complete log despite the collision'
+  else
+    fail_line '15o: the underscored-name suite keeps its OWN complete log despite the collision'
+  fi
+else
+  fail_line '15o: the spaced-name suite keeps its OWN complete log despite the collision'
+  fail_line '15o: the underscored-name suite keeps its OWN complete log despite the collision'
+fi
 
 # ============================================================================
 # 16. BSD-safe newest-version picker (used by the markdownlint node-bin fallback)

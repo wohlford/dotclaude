@@ -55,7 +55,10 @@ The user may optionally provide:
    from its status — read the line, not the harness's report of the exit code.
 4. Summarize: counts (passed/failed/skipped) and which checks FAILed, if any.
 5. On any verdict other than `RESULT: PASS rc=0`, say plainly that the sweep did not
-   clear and point the caller at the relevant output — the offender lines for `FAIL`, the
+   clear and point the caller at the relevant output — the offender lines for `FAIL` (and for
+   `FAIL tests`, the `full output:` directory, which holds each failing suite's complete text;
+   relay it verbatim, since it may read `(unavailable — …)` rather than a path, and a path that
+   does resolve is temp-rooted and may be aged out by the time anyone opens it), the
    stderr synopsis and the flags actually passed for `ERROR`, and the fact that the counts
    are only a prefix for `INCOMPLETE` or an absent line. **Do not retry automatically**,
    and do not attempt a fix unless asked. An `INCOMPLETE` or missing verdict is a reason
@@ -125,8 +128,24 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
 
 - **Read-only** — never auto-fix a FAIL without the caller asking; `/audit` only runs the sweep
   and reports.
-- Offender output is capped at 50 lines per check (global to every check, not an `.auditignore`
-  feature), ending with `… more (run the underlying tool for the full list)` when more exist.
+- Offender output is capped at 50 lines per check (not an `.auditignore` feature), ending with
+  `… more (run the underlying tool for the full list)` when more exist. **`tests` is the one
+  exception, deliberately.** Every other check's offender buffer is pre-filtered to violations —
+  nothing that passed is in it — so the first 50 are representative and the rest are more of the
+  same. `tests` is the one buffer that is not: it holds another tool's *entire* stdout, mostly
+  passes, whose interesting lines are the FAILURES — and suites print passes as they go, so a
+  head-cap there reliably keeps the useless half.
+- **`FAIL tests` therefore preserves the complete output** of each failing suite in a temporary
+  directory, reported once as `full output: <dir>` **before** the per-suite excerpts, and shows a
+  bounded excerpt of failure-shaped lines inline (falling back to the tail, and marking its own
+  truncation, so a partial excerpt never reads as complete). Every failing suite is always named;
+  only its excerpt is bounded. The directory is created only when a suite actually fails, and never
+  inside the scope — **if it could not be created the line reads `(unavailable — …)` instead of a
+  path**, so treat `full output:` as a path only after checking. Preservation is reported per
+  suite, not per run: a suite whose own write failed is marked `(full output NOT preserved)` on its
+  header, so the directory existing is never taken as proof that every suite's text is in it. **These artifacts are not
+  durable** either: they live under the system temp root and are aged out, so a path read from an
+  old transcript may be gone.
 - A tool that isn't installed surfaces as `SKIP`, not a silent pass — always relay `SKIP`s; each
   is a coverage gap, not a clean bill of health.
 - `markdownlint` only runs in repos opted in via `.markdownlint-cli2.jsonc` — opting in is a
