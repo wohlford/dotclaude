@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.75.10 — 2026-08-04
+- docs(CLAUDE.md): warn that a small-N fixture hides a threshold
+
 ## v0.75.9 — 2026-08-04
 - fix(audit): stop the offender cap discarding test failures
 

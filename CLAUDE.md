@@ -314,15 +314,6 @@ left legal.
   heredoc form the repo's own commit skill prescribes — the plain form passed, an apostrophe-free
   heredoc passed, so only the combination failed and nothing had ever run it. Ask whether the tool
   reached a verdict before believing the verdict.
-- **A suite you wrote for your own fix confirms what you thought of — not that the fix is safe.**
-  Ten assertions written for one change, three of them PRESERVE rows verified green *before* it, all
-  passed while that fix silently removed a live catch from a fail-closed gate; the regression sat in
-  the one shape nobody had listed, and the author is the last person able to list it. What found it
-  was a PROPERTY quantified over inputs nobody chose — *may only insert escapes*, *is idempotent*,
-  *4000 random inputs*, *the blocked thing stays blocked*. The repair was to shrink the change until
-  the property held: touch only what is already broken, so everything that works today comes out
-  byte-identical. **When a change's safety is a claim about ALL inputs, assert the claim, not a
-  handful of witnesses to it.**
 - **A tool that answers one question per item has not answered how the items COMPOSE — and an
   ordered plan asserts exactly that.** Measured: a planner judged all 27 changes correctly on its only
   question (does this one merge into an earlier one?), then ordered the resulting units by each unit's
@@ -333,6 +324,25 @@ left legal.
   end-of-run comparison, after every unit was built. **Do not fix it by REORDERING** — that is one
   more composition claim nobody checked. Drop the merge; an unmerged unit costs tidiness, a
   misordered one costs the run.
+- **A suite you wrote for your own fix confirms what you thought of — not that the fix is safe.**
+  Ten assertions written for one change, three of them PRESERVE rows verified green *before* it, all
+  passed while that fix silently removed a live catch from a fail-closed gate; the regression sat in
+  the one shape nobody had listed, and the author is the last person able to list it. What found it
+  was a PROPERTY quantified over inputs nobody chose — *may only insert escapes*, *is idempotent*,
+  *4000 random inputs*, *the blocked thing stays blocked*. The repair was to shrink the change until
+  the property held: touch only what is already broken, so everything that works today comes out
+  byte-identical. **When a change's safety is a claim about ALL inputs, assert the claim, not a
+  handful of witnesses to it.**
+- **A fixture built at the smallest N that exercises the code cannot see a threshold crossed at
+  N+1 — and it reads as proof of the general case.** Measured: a report bounded each item's excerpt
+  to 21 lines beneath a 50-line total cap, so a TWO-item fixture (42 lines) passed while three
+  items (63) silently truncated the third and never named a fourth. Every per-item bound was
+  correct; nothing tested the sum, and the passing two-item row is what stopped anyone looking.
+  Ask what the property quantifies over — each item, or their total — and build at the smallest N
+  where those two readings DIVERGE, never at the smallest N that runs the code. **The catch is
+  that N is only computable once you know the bound**, and the binding one is often not yours: a
+  downstream reader's cap, a buffer, a rate limit. When you cannot name the number, that is the
+  finding — say the limit is unknown rather than picking a fixture size that makes it invisible.
 
 #### The check itself writes — what it leaves behind is the hazard
 
