@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.88.2 — 2026-08-14
+- docs(CLAUDE.md): say a whole-sequence check does not validate the parts
+
 ## v0.88.1 — 2026-08-12
 - docs(CLAUDE.md): add the lossy-converter extraction hazard
 

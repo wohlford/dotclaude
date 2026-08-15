@@ -491,7 +491,10 @@ left legal.
   forward but leaves position early — safe only when a unit's file set is disjoint from every unit it
   jumps over, which nothing checked because it was never the question. Four of six proposed merges
   were unsafe, one silently fatal: a final state short of the target, catchable only by the
-  end-of-run comparison, after every unit was built. **Do not fix it by REORDERING** — that is one
+  end-of-run comparison, after every unit was built. **That comparison is no backstop** — measured
+  since: it returned a clean converged verdict while 7 of 9 merges were each invalid, only the end
+  state right. Per-unit validity and overall convergence are different questions; ask both.
+  **Do not fix it by REORDERING** — that is one
   more composition claim nobody checked. Drop the merge; an unmerged unit costs tidiness, a
   misordered one costs the run.
 - **A fixture built at the smallest N that exercises the code cannot see a threshold crossed at
