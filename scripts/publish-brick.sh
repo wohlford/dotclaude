@@ -15,11 +15,13 @@ set -uo pipefail
 # refs/published/main (step 7) stay foreground, human-authorized, and out of this script.
 #
 # MATERIALISATION. A brick's file set is the UNION of its constituents' files; its content is
-# the ENDPOINT commit's, the endpoint being the last constituent. So the brick is exactly
-# `git checkout <endpoint> -- <files>` — which handles a NON-CONTIGUOUS fold with no scratch
-# branch and no patch application, and cannot half-apply the way a conflicting cherry-pick or
-# `git apply` can. Its precondition is that no constituent DELETES or RENAMES a path, because a
-# checkout cannot express either; that is asserted up front rather than assumed.
+# the ENDPOINT commit's, the endpoint being the last constituent. The file set is partitioned by
+# presence AT THE ENDPOINT: a path present there is checked out (`git checkout <endpoint> --
+# <files>`), which handles a NON-CONTIGUOUS fold with no scratch branch and no patch application,
+# and cannot half-apply the way a conflicting cherry-pick or `git apply` can; a path absent there
+# was deleted by the constituent set and is removed with `git rm`. Its precondition is that no
+# constituent RENAMES or COPIES a path, because neither checkout nor rm can express those; that
+# is asserted up front rather than assumed.
 #
 # TWO SHAPE ASSERTIONS, because one of them is the half that catches an overreach:
 #   A. every brick file is byte-identical to the endpoint — the materialisation reached far enough
@@ -154,12 +156,13 @@ assert_applicable() {
       || fail_brick "constituent $c is not a commit in $scope"
     git -C "$scope" merge-base --is-ancestor "$c" "$WORKING_BRANCH" 2>/dev/null \
       || fail_brick "constituent $c is not an ancestor of $WORKING_BRANCH — bricks come from $WORKING_BRANCH"
-    # Clear by ALLOWLIST: A(dd), M(odify), T(ype change) survive a checkout; D, R, C, U and
-    # anything unanticipated do not.
-    bad="$(git -C "$scope" show --name-status --format= "$c" | awk 'NF && $1 !~ /^[AMT]$/')"
+    # Clear by ALLOWLIST: A(dd), M(odify), T(ype change) survive a checkout, D(elete) survives
+    # a `git rm`; R, C, U and anything unanticipated do not — materialisation cannot express a
+    # rename or a copy.
+    bad="$(git -C "$scope" show --name-status --format= "$c" | awk 'NF && $1 !~ /^[AMTD]$/')"
     if [ -n "$bad" ]; then
       printf '  %s\n' "$bad"
-      fail_brick "constituent $c deletes, renames or copies a path — materialisation cannot express that"
+      fail_brick "constituent $c renames or copies a path — materialisation cannot express that"
     fi
     if [ "$c" != "$endpoint" ]; then
       git -C "$scope" merge-base --is-ancestor "$c" "$endpoint" 2>/dev/null \
@@ -199,6 +202,7 @@ run_audit() { # artifact-path
 
 main() {
   local c date_str changed f sig signing head_subject artifact
+  local checkout_files=() rm_files=()
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -276,11 +280,37 @@ main() {
     printf '  file: %s\n' "$f"
   done < "$files_list"
 
-  # ---------- materialise ----------
-  if ! git -C "$scope" checkout "$endpoint" -- "${files[@]}"; then
+  # ---------- materialise: split the file set by presence at the endpoint ----------
+  # A path present at the endpoint is checked out; a path absent there was deleted by the
+  # constituent set and is removed with `git rm`. The rm-vs-skip choice is read from presence
+  # AT HEAD, decided BEFORE invoking `git rm` — never from `git rm`'s own exit status. rc=128
+  # also covers an index lock or a corrupt index, so promoting that code to mean "this is the
+  # added-and-deleted case" would hand a SKIP to that whole preimage. A path added and then
+  # deleted within this brick's own span is absent at HEAD too, so `git rm` has nothing to
+  # remove there — that is the one legitimate SKIP. Any other `git rm` failure stays fatal.
+  for f in "${files[@]}"; do
+    if git -C "$scope" cat-file -e "$endpoint:$f" 2>/dev/null; then
+      checkout_files[${#checkout_files[@]}]="$f"
+    elif git -C "$scope" cat-file -e "HEAD:$f" 2>/dev/null; then
+      rm_files[${#rm_files[@]}]="$f"
+    else
+      printf '  skip: %s (added and deleted within this brick — nothing to remove)\n' "$f"
+    fi
+  done
+
+  # Set before either arm runs: `git checkout <endpoint> -- <mixed set>` is measured to error
+  # AND partially apply, so a failure partway through must still be treated as having written
+  # to the worktree, or rollback_worktree's own guard (`[ "$materialised" = yes ]`) would skip
+  # restoring what already landed.
+  materialised=yes
+  if [ "${#checkout_files[@]}" -gt 0 ] \
+    && ! git -C "$scope" checkout "$endpoint" -- "${checkout_files[@]}"; then
     fail_brick "could not materialise the brick from $endpoint"
   fi
-  materialised=yes
+  if [ "${#rm_files[@]}" -gt 0 ] \
+    && ! git -C "$scope" rm -q -- "${rm_files[@]}"; then
+    fail_brick "could not remove a deleted path from the brick"
+  fi
 
   # ---------- shape A: the brick's files ARE the endpoint's ----------
   # `git diff` has no --pathspec-from-file, so the pathspecs are passed as arguments.
@@ -311,7 +341,10 @@ EOF
   fi
 
   # ---------- commit ----------
-  if ! git -C "$scope" add -- "${files[@]}"; then
+  # `git rm` above already staged its own arm; staging it again with `git add` on a path that
+  # no longer exists in the worktree fatals (rc=128, "did not match any files"). Only the
+  # checkout arm still needs staging.
+  if [ "${#checkout_files[@]}" -gt 0 ] && ! git -C "$scope" add -- "${checkout_files[@]}"; then
     fail_brick 'could not stage the brick'
   fi
   [ "$changelog_written" = yes ] && git -C "$scope" add -- CHANGELOG.md

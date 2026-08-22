@@ -28,11 +28,15 @@ every brick regardless of validity, so running it would manufacture false findin
 Every check is resolved from the MATERIALISED clone's own copy, matching exactly what
 `publish-brick.sh` would run at that tree (see its own header comment on "which copy of what").
 
-**A brick whose constituents delete or rename a path is UNMEASURABLE, never guessed at** — a
-`git checkout` cannot express either. Because materialisation is cumulative, an unmaterialisable
-brick leaves the tree wrong for every brick after it too, so every later brick is reported
-TAINTED rather than judged: presenting a verdict for a brick built on a wrong tree would be a
-false finding, not a real one.
+**A brick whose constituents rename or copy a path is UNMEASURABLE, never guessed at** — neither
+a `git checkout` nor a `git rm` can express either. A DELETE is measurable: the file set is
+partitioned by presence at the endpoint, and a path absent there is removed with `git rm -f`
+(`-f` because this clone is cumulative and deliberately never committed between bricks — a path
+an earlier brick touched sits staged-but-uncommitted when a later brick deletes it, and a plain
+`git rm` refuses that; `publish-brick.sh` needs no `-f` because it commits per brick). Because
+materialisation is cumulative, an unmaterialisable brick leaves the tree wrong for every brick
+after it too, so every later brick is reported TAINTED rather than judged: presenting a verdict
+for a brick built on a wrong tree would be a false finding, not a real one.
 
 **This is a prediction, not a clearance.** It never mutates the plan, never touches `--scope`
 (it clones into `--artifact-dir` and works only there), and its terminal line is never read as
@@ -482,7 +486,7 @@ def rehearse(
                     continue
                 parts = line.split("\t")
                 status, paths = parts[0], parts[1:]
-                if status in ("A", "M", "T"):
+                if status in ("A", "M", "T", "D"):
                     touched.update(paths)
                 else:
                     bad_rows.append((c, status, paths))
@@ -490,8 +494,8 @@ def rehearse(
         if inspect_failed or bad_rows:
             for c, status, paths in bad_rows:
                 emit(
-                    f"  UNMEASURABLE: constituent {c} {status} {' -> '.join(paths)} — a "
-                    "checkout cannot express a delete, rename or copy"
+                    f"  UNMEASURABLE: constituent {c} {status} {' -> '.join(paths)} — "
+                    "materialisation cannot express a rename or a copy"
                 )
             unmeasurable_bricks += 1
             tainted = True
@@ -508,14 +512,59 @@ def rehearse(
             emit("")
             continue
 
-        checkout_proc = run(
-            ["git", "-C", str(clone_dir), "checkout", endpoint, "--", *files]
-        )
-        if checkout_proc.returncode != 0:
-            emit(
-                f"  UNMEASURABLE: could not materialise from {endpoint}: "
-                f"{checkout_proc.stderr.strip()}"
+        # Partition by presence at the endpoint, the same split publish-brick.sh makes: a path
+        # present there is checked out, a path absent there was deleted and is removed with
+        # `git rm`. See the module docstring for why the rehearsal's `git rm` needs `-f` where
+        # the engine's does not.
+        checkout_files: list[str] = []
+        rm_files: list[str] = []
+        for f in files:
+            present = run(
+                ["git", "-C", str(clone_dir), "cat-file", "-e", f"{endpoint}:{f}"]
             )
+            if present.returncode == 0:
+                checkout_files.append(f)
+            else:
+                rm_files.append(f)
+
+        materialise_failed = False
+        if checkout_files:
+            checkout_proc = run(
+                [
+                    "git",
+                    "-C",
+                    str(clone_dir),
+                    "checkout",
+                    endpoint,
+                    "--",
+                    *checkout_files,
+                ]
+            )
+            if checkout_proc.returncode != 0:
+                emit(
+                    f"  UNMEASURABLE: could not materialise from {endpoint}: "
+                    f"{checkout_proc.stderr.strip()}"
+                )
+                materialise_failed = True
+
+        if rm_files and not materialise_failed:
+            # `-f` is required HERE, and only here: this clone is cumulative and deliberately
+            # never committed between bricks, so a path an earlier brick touched still carries a
+            # staged-but-uncommitted diff when a later brick deletes it, and a plain `git rm`
+            # refuses that ("has changes staged in the index", rc=1). `publish-brick.sh` needs
+            # no `-f` because it commits per brick, leaving a clean index for the next one — do
+            # not "fix" this back to match it.
+            rm_proc = run(
+                ["git", "-C", str(clone_dir), "rm", "-f", "-q", "--", *rm_files]
+            )
+            if rm_proc.returncode != 0:
+                emit(
+                    f"  UNMEASURABLE: could not remove a deleted path from {endpoint}: "
+                    f"{rm_proc.stderr.strip()}"
+                )
+                materialise_failed = True
+
+        if materialise_failed:
             unmeasurable_bricks += 1
             tainted = True
             emit("  brick verdict: UNMEASURABLE")

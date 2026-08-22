@@ -649,10 +649,19 @@ def test_row3b_scope_files_and_refs_are_byte_identical_after_a_normal_run(
     )
 
 
-# ---------- Row 4 — a delete is UNMEASURABLE and taints every later brick ----------
+# ---------- Row 4 — a delete is MEASURED and does not taint the following brick ----------
 
 
-def test_row4_a_delete_is_unmeasurable_and_taints_every_later_brick(root: Path) -> None:
+def test_row4_a_delete_is_measured_and_does_not_taint_the_following_brick(
+    root: Path,
+) -> None:
+    """INVERTED (plan Task 4): a `D`-status constituent used to be refused as UNMEASURABLE,
+    which tainted every later brick. The fixture (delete todelete.txt, then a later brick adds
+    other.txt) is UNCHANGED — only the expectations are. The inversion moves TWO bricks:
+    v0.1.0 (the delete itself) goes from UNMEASURABLE to MEASURED, and v0.2.0 (the innocent
+    follower) goes from TAINTED to UNTAINTED — the taint was the row's original point, so both
+    are asserted explicitly rather than just the terminal RESULT line.
+    """
     scope = root / "r4-scope"
     init_repo(scope)
     write(scope / "scripts" / "todelete.txt", "content\n")
@@ -674,29 +683,32 @@ def test_row4_a_delete_is_unmeasurable_and_taints_every_later_brick(root: Path) 
     )
     proc = run_tool(plan, scope, base, root / "r4-artifacts")
 
-    assert proc.returncode != 0, proc.stdout + proc.stderr
-    assert "RESULT: PASS" not in proc.stdout, proc.stdout
     assert "Traceback" not in (proc.stdout + proc.stderr), (
-        "a delete must be REFUSED, never crash the rehearsal:\n"
+        "a delete must be MEASURED, never crash the rehearsal:\n"
         + proc.stdout
         + proc.stderr
     )
 
     blocks = brick_blocks(proc.stdout, ["v0.1.0", "v0.2.0"])
-    assert "UNMEASURABLE" in blocks["v0.1.0"], (
-        "a checkout cannot express a delete — this must be reported UNMEASURABLE, never "
-        f"guessed at:\n{blocks['v0.1.0']}"
+    assert "UNMEASURABLE" not in blocks["v0.1.0"], (
+        "a checkout expressing a delete via `git rm` is now MEASURABLE — it must not read "
+        f"UNMEASURABLE:\n{blocks['v0.1.0']}"
     )
-    assert "TAINTED" in blocks["v0.2.0"], (
-        "materialisation is cumulative: a refused delete leaves the file behind, so v0.2.0's "
-        "checks grade a tree the real apply would never produce — it must read TAINTED, not "
-        f"a clean verdict for an innocent follower:\n{blocks['v0.2.0']}"
+    assert "PASS" in blocks["v0.1.0"], blocks["v0.1.0"]
+    assert "TAINTED" not in blocks["v0.2.0"], (
+        "the delete is applied, not refused, so materialisation is no longer wrong for a "
+        f"later brick — v0.2.0 must not read TAINTED:\n{blocks['v0.2.0']}"
     )
-    assert "PASS" not in blocks["v0.2.0"], (
-        f"a tainted brick must never present as a finding:\n{blocks['v0.2.0']}"
+    assert "PASS" in blocks["v0.2.0"], (
+        f"the innocent follower must present as a clean finding:\n{blocks['v0.2.0']}"
     )
-    assert re.search(r"unmeasurable=1\b", proc.stdout), proc.stdout
-    assert re.search(r"tainted=1\b", proc.stdout), proc.stdout
+    assert re.search(r"unmeasurable=0\b", proc.stdout), proc.stdout
+    assert re.search(r"tainted=0\b", proc.stdout), proc.stdout
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert re.search(
+        r"RESULT: PASS rc=0 bricks=2 failed=0 skipped=\d+ unmeasurable=0 tainted=0",
+        proc.stdout,
+    ), proc.stdout
 
 
 # ---------- Row 5 — two independent failing bricks, both reported (no halt) ----------
@@ -876,15 +888,17 @@ def test_row7_ruff_and_markdownlint_are_gated_on_the_commit_range_touching_confi
     assert "markdownlint" not in block_clean, proc_clean.stdout + proc_clean.stderr
 
 
-# ---------- Row 8 — an unmeasurable/tainted brick is INDETERMINATE ----------
+# ---------- Row 8 — a lone delete-only brick is MEASURED, not INDETERMINATE ----------
 
 
-def test_row8_an_unmeasurable_brick_reports_INDETERMINATE_not_pass_or_fail(
+def test_row8_a_lone_delete_only_brick_is_measured_not_indeterminate(
     root: Path,
 ) -> None:
-    """Isolated from row 4 on purpose: a single brick, deleting a path, with no LATER brick to
-    taint. Nothing here is a FAIL (no check disproved anything) and nothing is a clean PASS
-    (a whole brick went unrehearsed) — the terminal status must be the third value.
+    """INVERTED (plan Task 4). Isolated from row 4 on purpose: a single brick, deleting a
+    path, with no LATER brick to taint — this used to be the row proving an UNMEASURABLE
+    brick with nothing else to fail reports the third value, INDETERMINATE, rather than PASS
+    or FAIL. Now that a delete is measurable, the SAME fixture (delete-only brick, nothing
+    after it) must report a clean PASS instead: there is no longer anything left unrehearsed.
     """
     scope = root / "r8-scope"
     init_repo(scope)
@@ -896,14 +910,13 @@ def test_row8_an_unmeasurable_brick_reports_INDETERMINATE_not_pass_or_fail(
     plan = plan_file(root / "r8-plan.txt", ("v0.1.0", a, "chore: remove todelete.txt"))
     proc = run_tool(plan, scope, base, root / "r8-artifacts")
 
-    assert "RESULT: INDETERMINATE" in proc.stdout, (
-        "a single UNMEASURABLE brick, with nothing else to fail, must not aggregate as a "
-        "clean PASS — and it is not a FAIL either, since nothing was proven false:\n"
-        + proc.stdout
-        + proc.stderr
+    assert "RESULT: PASS" in proc.stdout, (
+        "a delete-only brick is now MEASURABLE — with nothing left unrehearsed, this must "
+        f"report a clean PASS, not INDETERMINATE:\n{proc.stdout}{proc.stderr}"
     )
-    assert "RESULT: PASS" not in proc.stdout, proc.stdout
+    assert "RESULT: INDETERMINATE" not in proc.stdout, proc.stdout
     assert "RESULT: FAIL" not in proc.stdout, proc.stdout
+    assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
 # ---------- Row 9 — --base must resolve even when it is not the clone's local branch ----------
@@ -1125,4 +1138,72 @@ def test_row12_no_base_and_no_header_refuses_rather_than_defaulting(root: Path) 
     assert "--base" in combined and "header" in combined, (
         "the refusal must explain that NEITHER --base nor a range header was available:\n"
         + combined
+    )
+
+
+# ---------- Row 13 — cross-brick modify-then-delete needs `git rm -f` (plan Task 4) ----------
+
+
+def test_row13_cross_brick_modify_then_delete_needs_git_rm_dash_f(root: Path) -> None:
+    """NEW (plan Task 4), not an inversion of an existing row. Mirrors the real range's shape:
+    `16f3b69` modifies `agents/security-reviewer.md`, `8504a2c` deletes it, and the planner
+    puts them in SEPARATE bricks — exactly the publish this whole change exists to unblock.
+
+    The rehearsal's clone is cumulative and UNCOMMITTED between bricks (fact 5 in the plan):
+    brick N's checkout leaves the path staged with a diff against HEAD, still uncommitted when
+    brick N+1 runs. A naive `git rm` (no `-f`) on that path then refuses with rc=1 ('has
+    changes staged in the index'), which is OUTSIDE the "skip on rm's rc=128" rule and would
+    be neither skipped nor understood — so a naive implementation must go RED here even though
+    it might pass row 4 (whose lone delete brick never collides with a prior brick's staged
+    change). `git rm -f` is correct and safe ONLY because this clone is throwaway and never
+    committed to.
+    """
+    scope = root / "r13-scope"
+    init_repo(scope)
+    write(scope / "target.txt", "orig\n")
+    base = commit_all(scope, "chore: base")
+
+    write(scope / "target.txt", "modified\n")
+    a = commit_all(scope, "feat: modify target.txt")
+    assert touched_paths(scope, a) == ["target.txt"]
+
+    _git(scope, "rm", "-q", "target.txt")
+    b = commit_all(scope, "feat: drop target.txt")
+    assert touched_paths(scope, b) == ["target.txt"]
+
+    plan = plan_file(
+        root / "r13-plan.txt",
+        ("v0.1.0", a, "feat: modify target.txt"),
+        ("v0.2.0", b, "feat: drop target.txt"),
+    )
+    artifact_dir = root / "r13-artifacts"
+    proc = run_tool(plan, scope, base, artifact_dir)
+
+    assert "Traceback" not in (proc.stdout + proc.stderr), (
+        "a cumulative modify-then-delete must be REHEARSED, never crash:\n"
+        + proc.stdout
+        + proc.stderr
+    )
+
+    blocks = brick_blocks(proc.stdout, ["v0.1.0", "v0.2.0"])
+    assert "UNMEASURABLE" not in blocks["v0.1.0"], blocks["v0.1.0"]
+    assert "PASS" in blocks["v0.1.0"], blocks["v0.1.0"]
+    assert "UNMEASURABLE" not in blocks["v0.2.0"], (
+        "brick N+1 deletes a path brick N just modified, in this cumulative uncommitted "
+        "clone — a naive `git rm` (no -f) refuses it ('has changes staged in the index', "
+        "rc=1) and that refusal must not be read as UNMEASURABLE:\n" + blocks["v0.2.0"]
+    )
+    assert "TAINTED" not in blocks["v0.2.0"], blocks["v0.2.0"]
+    assert "PASS" in blocks["v0.2.0"], blocks["v0.2.0"]
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert re.search(
+        r"RESULT: PASS rc=0 bricks=2 failed=0 skipped=\d+ unmeasurable=0 tainted=0",
+        proc.stdout,
+    ), proc.stdout
+
+    clone_dir = artifact_dir.resolve() / "clone"
+    assert not (clone_dir / "target.txt").exists(), (
+        "the endpoint deletes target.txt — it must not survive materialisation in the "
+        f"cumulative clone:\n{sorted(p.name for p in clone_dir.iterdir())}"
     )

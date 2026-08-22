@@ -155,15 +155,87 @@ out="$(cd "$r" && bash "$engine" v0.2.0 "$(sha_of "$r" dev~2)" 'feat(a): x' 2>&1
 check_eq "$rc" 2 'refuses a non-adopted repo with a usage error'
 check_has "$out" '.publication.toml' 'non-adopted names the missing marker'
 
-# a constituent that DELETES a file: `git checkout <endpoint> -- <files>` cannot express it
+# a constituent that DELETES a file: the engine must express it, not refuse it. INVERTED from
+# the former "refuses a constituent that deletes a file" rows; see plan Task 1.
+#
+# THE PRIOR BRICK IS LOAD-BEARING, not scene-setting. `mk` builds `main` as an orphan carrying
+# dev~3's tree, where b.txt does not yet exist — so a deleting brick applied straight onto that
+# main finds b.txt absent at HEAD and takes the engine's SKIP arm, never its `git rm` arm. The
+# rows below then pass while the branch they exist to cover is never executed, and the
+# "absent from main" assertion is vacuous because the path was never there. Measured: with the
+# rm arm deliberately disabled, this fixture stayed green.
+# Landing b.txt on main first mirrors production — the real range MODIFIES
+# agents/security-reviewer.md in one brick and DELETES it in a later one, and that file IS
+# present at main's tip — so the delete genuinely has something to remove.
 r="$tmproot/del"; mk "$r"
+c3="$(sha_of "$r" dev~1)"
+prior_out="$(cd "$r" && bash "$engine" v0.1.5 "$c3" 'feat(b): add b' 2>&1)" \
+  || { printf 'FIXTURE BROKEN: could not land b.txt on main:\n%s\n' "$prior_out"; exit 1; }
+git -C "$r" cat-file -e main:b.txt 2>/dev/null \
+  || { printf 'FIXTURE BROKEN: b.txt is not on main, so the delete would take the SKIP arm\n'; exit 1; }
 git -C "$r" checkout -q dev && git -C "$r" rm -q b.txt && git -C "$r" commit -qm 'c5 drop b'
 del="$(sha_of "$r" dev)"; git -C "$r" checkout -q main
 out="$(cd "$r" && bash "$engine" v0.2.0 "$del" 'feat(b): drop b' 2>&1)"; rc=$?
-check_eq "$rc" 1 'refuses a constituent that deletes a file'
-check_has "$out" 'delet' 'deletion refusal says what it found'
-check_eq "$(git -C "$r" status --porcelain | wc -l | tr -d ' ')" 0 'deletion refusal leaves the tree clean'
-check_eq "$(git -C "$r" rev-list --count main)" 1 'deletion refusal created no commit'
+check_eq "$rc" 0 'a deleting constituent builds the brick'
+check_has "$out" 'RESULT: PASS rc=0 brick=v0.2.0' 'deleting brick prints the PASS verdict line'
+if git -C "$r" cat-file -e main:b.txt 2>/dev/null; then
+  fail_line 'deletion brick: deleted path is REMOVED from main (it was present before)'
+else
+  pass_line 'deletion brick: deleted path is REMOVED from main (it was present before)'
+fi
+check_eq "$(git -C "$r" rev-list --count main)" 3 'deletion brick created a commit'
+
+# a MIXED delete+modify constituent — the real brick 8504a2c is M,M,D. The 'del' fixture above
+# deletes its ONLY file, so "the surviving path has the endpoint's content" cannot be asserted
+# there; this row is the one that would catch a split that handles the delete arm but skips
+# the checkout arm.
+# Same prior-brick requirement as the 'del' fixture above, and for the same reason: without
+# b.txt on main the delete arm is never reached and this row silently degrades to a
+# modify-only test wearing a delete-and-modify name.
+r="$tmproot/mixed"; mk "$r"
+c3="$(sha_of "$r" dev~1)"
+prior_out="$(cd "$r" && bash "$engine" v0.1.5 "$c3" 'feat(b): add b' 2>&1)" \
+  || { printf 'FIXTURE BROKEN: could not land b.txt on main:\n%s\n' "$prior_out"; exit 1; }
+git -C "$r" cat-file -e main:b.txt 2>/dev/null \
+  || { printf 'FIXTURE BROKEN: b.txt is not on main, so the delete would take the SKIP arm\n'; exit 1; }
+git -C "$r" checkout -q dev
+printf '9\n' > "$r/a.txt"
+git -C "$r" rm -q b.txt
+git -C "$r" commit -qam 'c5 bump a and drop b'
+mixed="$(sha_of "$r" dev)"; git -C "$r" checkout -q main
+out="$(cd "$r" && bash "$engine" v0.2.0 "$mixed" 'feat(ab): bump a, drop b' 2>&1)"; rc=$?
+check_eq "$rc" 0 'a mixed delete+modify constituent builds the brick'
+check_has "$out" 'RESULT: PASS rc=0 brick=v0.2.0' 'mixed brick prints the PASS verdict line'
+if git -C "$r" cat-file -e main:b.txt 2>/dev/null; then
+  fail_line 'mixed brick: deleted path is REMOVED from main (it was present before)'
+else
+  pass_line 'mixed brick: deleted path is REMOVED from main (it was present before)'
+fi
+check_eq "$(git -C "$r" show main:a.txt)" '9' 'mixed brick: surviving path has the endpoint content'
+check_eq "$(git -C "$r" rev-list --count main)" 3 'mixed brick created a commit'
+
+# ---------- allowlist corpus: what must STILL be refused (Task 2) ----------
+# R, C, U and a truly unanticipated status cannot be produced by any commit `git show
+# --name-status` will emit, so they are UNFIXTURABLE through real commits (unlike D above,
+# which is). Test assert_applicable's awk predicate directly, EXTRACTED from the engine file
+# rather than hand-copied, so this corpus tracks whatever the implementation actually contains
+# instead of a second, driftable spelling of the same intent.
+# shellcheck disable=SC2016  # the literal '$1' must reach grep unexpanded
+awk_line="$(grep -m1 '\$1 !~' "$engine")"
+awk_prog="$(printf '%s' "$awk_line" | sed -n "s/.*awk '\\([^']*\\)'.*/\\1/p")"
+if [ -z "$awk_prog" ]; then
+  fail_line 'allowlist corpus: could not extract the awk predicate from the engine'
+else
+  pass_line 'allowlist corpus: extracted the awk predicate from the engine'
+  bad="$(printf 'R100\told.txt\tnew.txt\n' | awk "$awk_prog")"
+  check_has "$bad" 'R100' 'allowlist predicate still flags a RENAME status as bad'
+  bad="$(printf 'C50\told.txt\tnew.txt\n' | awk "$awk_prog")"
+  check_has "$bad" 'C50' 'allowlist predicate still flags a COPY status as bad'
+  bad="$(printf 'U\tconflict.txt\n' | awk "$awk_prog")"
+  check_has "$bad" 'U' 'allowlist predicate still flags an UNMERGED status as bad'
+  bad="$(printf 'X\tfile.txt\n' | awk "$awk_prog")"
+  check_has "$bad" 'X' 'allowlist predicate still flags an unanticipated status as bad'
+fi
 
 # a constituent that RENAMES
 r="$tmproot/ren"; mk "$r"
