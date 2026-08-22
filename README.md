@@ -12,7 +12,15 @@ cd dotclaude
 ./install.sh
 ```
 
-`install.sh` symlinks the tracked files and directories (`CLAUDE.md`, `CONTRIBUTING.md`, `STYLE.md`, `templates.md`, `workflows.md`, `README.md`, `LICENSE`, `skills/`, `agents/`, `scripts/`) into `~/.claude`, backing up anything already present. `settings.json` is intentionally **not** linked — Claude Code rewrites it at runtime, so manage it manually. Restart Claude Code after installing (or after pulling updates) to reload the configuration.
+`install.sh` symlinks this repo's tracked root entries into `~/.claude`. The membership is **derived, not hand-listed** — everything tracked at the root except a declared exclusion list (the dotfiles, `ruff.toml`, and `git-hooks/`, which are consumed by tooling running inside this repo rather than by Claude Code). So a document added here appears in `~/.claude` on the next run, with no list to update. Anything already present is backed up first, and backups are stripped of their exec bit.
+
+`settings.json` **is** linked. Claude Code rewrites it at runtime, and the live clone marks it `skip-worktree` so those rewrites never surface as repository changes.
+
+The installer records which clone owns the farm in `~/.claude/.installed-from`. That marker lives only in the target — it is never tracked here and is never a farm member — and it is what lets a later run tell "this farm belongs to another clone" from "this is a first install", whether the managed paths are symlinks or ordinary files.
+
+Two flags: `--check` reports drift and changes nothing (non-zero exit when the farm has drifted); `--rewire` authorizes repointing a farm that another clone owns, and updates the marker. The script refuses to run from inside `~/.claude` itself — running a stray copy from there would relink every managed path to itself.
+
+Restart Claude Code after installing (or after pulling updates) to reload the configuration.
 
 Wondering how the pieces fit — what takes effect where, and what owns what? See [ARCHITECTURE.md](ARCHITECTURE.md).
 

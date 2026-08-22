@@ -52,21 +52,22 @@ public `main` — layers on top of this for repos that adopt it; see
 [`publication-model.md`](publication-model.md).)
 
 ```text
-  dotclaude-staging  ──/propagate──▶  origin (GitHub)  ──▶  dotclaude (live)
-  (tracked working copy)                                    symlinked into ~/.claude
+  dotclaude-dev  ──/propagate──▶  dotclaude (live)  ──▶  symlinked into ~/.claude
+  (tracked working copy)     local by default; --push also publishes to origin
 ```
 
-- **`dotclaude-staging`** — the tracked working copy. All development happens here.
+- **`dotclaude-dev`** — the tracked working copy. All development happens here.
 - **`dotclaude` (live)** — a separate clone whose `skills/`, `agents/`, `scripts/`, and the standards
   docs are **symlinked into `~/.claude`** (see [`install.sh`](install.sh)). This is what Claude Code
   actually loads.
-- **[`/propagate`](skills/propagate/SKILL.md)** pushes committed work from staging to `origin`, then
-  fast-forwards the live clone from `origin`. So an edit is: commit in staging → `/propagate` → restart
-  Claude to reload. Nothing goes live until propagated.
+- **[`/propagate`](skills/propagate/SKILL.md)** promotes committed work from the dev clone to the live
+  clone **locally by default** — no network. `--push` additionally publishes to `origin`. So an edit is:
+  commit in the dev clone → `/propagate` → restart Claude to reload. Nothing goes live until promoted.
 
-**Why `settings.json` is not symlinked:** Claude Code rewrites it at runtime (model, enabled plugins).
-`install.sh` deliberately omits it, and in the live clone it is marked `skip-worktree` so those runtime
-rewrites never show up as git changes. `/propagate` has a park/restore dance for it.
+**Why `settings.json` needs special handling:** it IS symlinked like the rest, but Claude Code rewrites
+it at runtime (model, enabled plugins). Those writes land in the live clone through the link, where it is
+marked `skip-worktree` so they never surface as repository changes. `/propagate` has a park/restore dance
+for it.
 
 ## Source-of-truth map
 

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.88.6 — 2026-08-20
+- docs(install): describe derived membership and correct settings.json
+
 ## v0.88.5 — 2026-08-20
 - fix(install): derive farm membership and refuse self-install
 
