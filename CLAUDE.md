@@ -264,6 +264,19 @@ left legal.
   back to back, which replicates the machine's state as readily as the subject's. Measure each
   side's RATE before believing the gap.
 
+- **Two runs that DISAGREE may have been two different instruments — one that discovers its
+  configuration from the WORKING DIRECTORY varies silently, even when you named each target by
+  ABSOLUTE PATH.** The third leg of the two above: here both subjects were pinned AND the
+  instrument was deterministic, and each side still answered a different question. Measured: one
+  file, byte-identical by digest across three repositories, read clean in two and returned three
+  findings in the third — the checker had resolved its ruleset from the directory the shell sat
+  in, not from the file it was handed. The absolute path is what made the working directory feel
+  irrelevant, and the fake clean side pointed the investigation away from a defect that in fact
+  reproduced everywhere. Note what does NOT rescue you: each side is perfectly reproducible, so
+  **the remedy directly above — measure each side's RATE — returns the same wrong answer twenty
+  times.** Re-run each side from inside its own subject, or make the tool report the configuration
+  it actually loaded.
+
 #### It ran and could never have failed
 
 - **A regression test that never reaches the defect passes for free — watch it FAIL before you trust
