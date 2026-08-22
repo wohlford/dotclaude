@@ -289,6 +289,13 @@ left legal.
   **But a RED proves only that SOMETHING failed, not that your named subject did** — a row titled for
   one guard fired off a *different* assertion that raised first, so deleting the guard it named left
   the suite green (measured). Mutate what a row names; if the suite holds, the row is not testing it.
+- **A test that supplies the option's own DEFAULT cannot tell whether the option is read at all.**
+  Measured by mutation: five separate "parse the flag, then discard its value" mutants ALL SURVIVED
+  a green suite, because every test invoked the script with the value the script would have chosen
+  anyway. The worst asserted *"the reload command must be carried through, not silently dropped"*
+  while grepping for that default — and it was the one assertion that would have caught a real
+  defect shipping in that exact field. Pass a value that DIFFERS from the default, assert on that
+  distinctive value, then delete the option's plumbing and watch the row go red.
 - **When every row of a probe shares a condition some EARLIER rule already decides, the sheet
   answers a question it never asked — and reads as "no work needed".** Not the reached-the-subject
   hazard above: the probe does reach it, and a rule upstream of the mechanism then disposes of every
@@ -372,7 +379,7 @@ left legal.
   a genuinely sparse document also produces, but by confirming one specific passage you can see with
   your own eyes survived the conversion.
 
-#### The signal you read belongs to something else
+#### The exit status you read is not the verdict
 
 - **A pipeline's exit status is the LAST command's.** `some-check | tail -20` reports `tail`'s success
   however the check exited — so a run that "completed (exit code 0)" can have proven nothing, and a
@@ -384,6 +391,20 @@ left legal.
   diagnostic `echo` appended after an assertion discards the verdict it was meant to report, and the
   check reports the *echo's* success. Capture `rc=$?` on the very next line, then `exit "$rc"`. The
   harness will otherwise announce "completed (exit code 0)" for a run that was killed.
+- **`set -o pipefail` makes an early-exiting READER report its PRODUCER's death as the pipeline's
+  verdict — so the remedy in the bullet above becomes a defect one line later.** `grep -q` exits at
+  the first match, the producer is then killed by SIGPIPE (141), and `pipefail` returns 141 for a
+  pipeline whose grep MATCHED: `printf '%s' "$hay" | grep -qF "$needle"` is false precisely when the
+  needle is PRESENT. Measured in shipped code — a trust-store guard reported an anchor ABSENT while
+  the same run validated a certificate chain against that very bundle; `PIPESTATUS=[141,0]`, and
+  40/40 false FAILs at a 26KB payload against 0/40 for the pipe-free form. It is SIZE-DEPENDENT, so
+  it hides from its own regression test: the identical code reproduced 0/50 at 1.2KB, where the
+  producer finishes before the reader exits. Use `case "$var" in *needle*)` or a `<<<` herestring —
+  anything with no live producer to signal. `grep -q`, `grep -m1` and `head` carry it; `tr`, `wc`
+  and `grep -c` consume their input and do not.
+
+#### The signal you read belongs to something else
+
 - **Equal COUNTS are not equal sets** — two collections can match in size while differing in both
   directions at once. Measured: a runtime config and the commit it was restored from each held 24
   hook entries, which a tally reads as agreement, while the runtime carried a machine-local extra
