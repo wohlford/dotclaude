@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.91.3 — 2026-08-21
+- docs(CLAUDE.md): add the loud-vs-silent hazard and split its group
+
 ## v0.91.2 — 2026-08-21
 - fix(publish): comment the fold plan's per-commit diagnostics
 

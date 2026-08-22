@@ -296,6 +296,9 @@ left legal.
   while grepping for that default — and it was the one assertion that would have caught a real
   defect shipping in that exact field. Pass a value that DIFFERS from the default, assert on that
   distinctive value, then delete the option's plumbing and watch the row go red.
+
+#### Every row got the same verdict, whatever it contained
+
 - **When every row of a probe shares a condition some EARLIER rule already decides, the sheet
   answers a question it never asked — and reads as "no work needed".** Not the reached-the-subject
   hazard above: the probe does reach it, and a rule upstream of the mechanism then disposes of every
@@ -314,6 +317,18 @@ left legal.
   relative ones. Nothing could ever match, so every item read as absent and every item took the
   exemption, on files the change was actively editing. It ran on each item and returned a verdict
   each time, so *did it reach the subject* clears it.
+- **One defect can have a LOUD shape and a SILENT one, and a fixture carrying BOTH exercises only
+  the loud one.** Reading aborts at the first thing that raises, so every row dies from the
+  identical exception and the silent shape — the one that CORRUPTS rather than stops — is never
+  reached. Measured: a text collision that raised loudly when it occurred mid-line, and at
+  end-of-line parsed cleanly while fabricating an extra entry and inflating a count; the combined
+  fixture went red three times for one reason, and the silent half was pinned only by an ad-hoc
+  check nobody would ever re-run. **Give the silent shape its OWN fixture**, where nothing raises.
+  Then note what that fixture's *did not raise* row looks like: **green before AND after the fix —
+  normally the signature of a vacuous test, and here the CONTROL** proving the failure is silent.
+  The discriminator is what the row CLAIMS: one claiming to pin the change is condemned by staying
+  green, while one asserting a property the change does not alter is green by construction — and it
+  earns its keep only by licensing sibling assertions that DO move.
 
 #### Right verdict, then the world moved under it
 
@@ -344,7 +359,9 @@ left legal.
   that had ALREADY happened — so the advice was not merely stale, it counselled acting inside a
   window that no longer existed. **Re-derive any state you are about to act or advise on from the
   source that owns it**; a record's own status line is never that source, and the older the record
-  the more authoritative it reads.
+  the more authoritative it reads. **Write-side too: clear a status the moment its condition
+  clears** — the one moment nobody thinks to. Measured: a record still saying BLOCKED sent the
+  operator to redo finished work; stale *blocked* survives because it reads as caution.
 
 #### Right verdict, wrong population or parameters
 
