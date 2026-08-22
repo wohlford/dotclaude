@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.90.0 — 2026-08-21
+- feat(agents)!: remove the security-reviewer agent
+
 ## v0.89.0 — 2026-08-21
 - feat(feature)!: remove the security-review gate from the pipeline
 
