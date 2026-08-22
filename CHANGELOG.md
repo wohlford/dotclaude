@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.88.5 — 2026-08-20
+- fix(install): derive farm membership and refuse self-install
+
 ## v0.88.4 — 2026-08-20
 - docs(CLAUDE.md): add the pipefail SIGPIPE and default-value test hazards
 
