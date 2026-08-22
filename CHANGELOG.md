@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.88.8 — 2026-08-20
+- fix(feature): split a finding's verdict from its suggested repair
+
 ## v0.88.7 — 2026-08-20
 - docs(CLAUDE.md): add the weaker-predicate hazard and split its group
 

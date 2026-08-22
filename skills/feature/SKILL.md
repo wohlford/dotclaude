@@ -453,6 +453,16 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
      re-derives its slice set from the current diff**, so a fold that grows the footprint grows the
      review.
 
+   - **A finding's VERDICT and its suggested DIRECTION do not carry the same confidence — verify
+     the direction before applying it.** This holds for a finding from **either** reviewer; the
+     grounding is merely *checkable* for the fallback, which holds `Read, Grep, Glob`, so it cannot
+     run anything and a direction it proposes has never been run against live state. Confirm the
+     direction against the code path it names, and against what the change is documented to do,
+     before running any command it proposes. Measured on one change — three verdicts reproduced
+     exactly as described, all three directions wrong, two of them harmful enough to damage a live
+     system. **This governs HOW you fold, never WHETHER:** the finding's disposition is unchanged
+     and stays under the restated rule above.
+
    - **The report carries the gate's decisions, not just its verdict.** Name which reviewer actually
      ran — builtin or fallback — so no summary implies the builtin passed when it never executed;
      **each round's commit**, so the number of rounds is countable from something other than the
