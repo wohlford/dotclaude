@@ -315,7 +315,7 @@ left legal.
   exemption, on files the change was actively editing. It ran on each item and returned a verdict
   each time, so *did it reach the subject* clears it.
 
-#### Right verdict, wrong inputs — stale tool or tree, wrong population or parameters
+#### Right verdict, then the world moved under it
 
 - **A checker that resolves its helpers relative to itself grades your branch with the OLD tools.**
   So a change *to* the tooling is judged by the copy it replaces — the verdict is **true**, just
@@ -334,6 +334,20 @@ left legal.
   **The run may even predate your SESSION** — a backgrounded job survives the exit while the waiter
   that would have notified you does not, so the next session edits inside a window it cannot see and
   reads the failure as pollution rather than its own doing. Look for a live run before editing.
+- **A STORED STATUS is a measurement carrying a timestamp, not a standing fact — re-derive it
+  before you relay it.** A note recording that something is *not yet done* was true when written and
+  reads exactly like a live reading, so nothing about it looks stale; and unlike a stale tool or
+  tree, no run is involved that you might think to repeat. Measured twice in one session, both
+  stated to the operator as current fact, both one command from being checked: a count of
+  outstanding items, quoted across several turns from a six-day-old note, was wrong by more than
+  half; and an item recorded as *still open, decide before the irreversible step* described a step
+  that had ALREADY happened — so the advice was not merely stale, it counselled acting inside a
+  window that no longer existed. **Re-derive any state you are about to act or advise on from the
+  source that owns it**; a record's own status line is never that source, and the older the record
+  the more authoritative it reads.
+
+#### Right verdict, wrong population or parameters
+
 - **A tool that IGNORES an argument it cannot parse answers with its OWN defaults, and the run looks
   normal.** Neither refusal nor crash: the wrong-shaped input is discarded unread and the tool falls
   back to what it discovers for itself, so the verdict is **true** about a configuration you never
@@ -471,7 +485,7 @@ left legal.
   run next passes.** Not the narrowing hazard: nothing stops being matched here, and every answer it
   gives is still right; it just never finishes giving one. An alternation whose branches can split
   one token more than one way costs `k` parses per repetition and `k**n` over `n` of them, and a
-  backtracking engine memoises nothing. Measured: a fold that widened one option group ran 0.05s,
+  backtracking engine memoises nothing. Measured: a change that widened one option group ran 0.05s,
   0.48s, 4.4s, 31s at n=5..8 on a single crafted line — reachable from any file the scan reads.
   Note what CLEARS it and should not: *prove the corpus still
   matches* passes flawlessly, because the match SET only grew. Nor is the repair to narrow back — an
@@ -594,7 +608,10 @@ left legal.
   was added or removed. Found by chance, one paragraph below the edit. The near-miss is the
   instructive part: a rename earlier the same session DID get a reference grep, but for the renamed
   HEADING and across OTHER files. **Grep for the words you REMOVED, inside the file you edited** —
-  the mirror of the check you thought to run is the one you will not think of.
+  the mirror of the check you thought to run is the one you will not think of. **And that grep is
+  not delegable** — measured since: two model reviewers briefed to find exactly this both passed a
+  sentence a deletion had orphaned, one reporting *no dangling references*. A reviewer reads for
+  sense and finds some; only the removed word finds the wreckage.
 - **A DEFAULT output path makes every run of a tool a writer of real state.** Measured twice, in
   opposite directions, neither found by review. **Outward:** a diagnostic log defaulted to the
   operator's own log directory, and long-standing suite rows reach exactly that branch, so **12

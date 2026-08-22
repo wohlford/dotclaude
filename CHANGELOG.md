@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.90.1 — 2026-08-21
+- docs(CLAUDE.md): add the stored-status hazard and split its group
+
 ## v0.90.0 — 2026-08-21
 - feat(agents)!: remove the security-reviewer agent
 
