@@ -32,9 +32,9 @@ only when stakes warrant it → execute → integrate.
 the design half ends in a presentation, not an approval gate, though authorization gates are a
 separate question and still apply — then
 `subagent-driven-development` runs it task-by-task — a fresh subagent per task with per-task and
-whole-branch reviews. When triage flagged security — which means the full lane — `/security-review` (or
-a fallback reviewer when it yields no valid verdict) must clear the diff before the branch integrates, or
-integration stops. Then, per whether `.publication.toml` marks the repo as adopted: a **non-adopted**
+whole-branch reviews. When triage flagged security — which means the full lane — that scrutiny is
+bought in the **design half** (spec, spike, diverse-model review of the plan); no separate security
+gate runs before the branch integrates. Then, per whether `.publication.toml` marks the repo as adopted: a **non-adopted**
 repo tags each task commit as today and `finishing-a-development-branch` verifies the suite passes and
 merges the branch to its base; an **adopted** repo commits each task untagged (`--no-tag`, versioning
 is `main`-only) and re-derives the gate-passed result onto `dev` as clean bricks instead of merging

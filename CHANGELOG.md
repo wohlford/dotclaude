@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.89.0 — 2026-08-21
+- feat(feature)!: remove the security-review gate from the pipeline
+
 ## v0.88.8 — 2026-08-20
 - fix(feature): split a finding's verdict from its suggested repair
 
