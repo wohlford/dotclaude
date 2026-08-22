@@ -45,8 +45,13 @@ SUBJECT_NAME = "CLAUDE.md"
 # exempted "/" with the stated reason "the filesystem root, used illustratively", which was
 # simply not true of any occurrence in the file. Requiring one character after the slash drops
 # the artifact and keeps all NINE real path claims — measured. (Nine PATHS, not nine table
-# entries: the table has 14 entries, of which 9 target a path discovery can see. 9 covered + 7
-# exempt = the 16 paths the verdict reports.)
+# entries: the table has 14 entries, of which 9 target a path discovery can see. 9 covered + 8
+# exempt = the 17 paths the verdict reports.)
+#
+# That arithmetic is a MEASUREMENT with a date, not a standing fact: it moves whenever the subject
+# gains a backticked absolute path or this file gains an exemption. Re-derive it from a run rather
+# than trusting it — the counts above were re-read from `RESULT: … paths=17 exempt=8` after the
+# `/etc/getssl` exemption below was added, not adjusted by hand.
 #
 # Residual, unfixable lexically: `foo`/bar/`baz` still yields a phantom `/bar/`. That FAILs
 # loudly as unaccounted rather than passing silently, which is the right direction.
@@ -56,6 +61,12 @@ PATH_PATTERN = re.compile(r"`(/[^`\s]+)`")
 EXPLICIT_EXEMPTIONS = {
     "/tmp": "named as a destination NOT to use, not as an asserted fact",
     "/private/tmp": "named as a destination NOT to use, not as an asserted fact",
+    # Part of a hazard narrative about ANOTHER host's layout — the search order a third-party
+    # client uses to find its config — not an assertion about this machine. A table entry would
+    # be the wrong instrument here: it would assert the path EXISTS locally, and it does not
+    # (verified absent when this exemption was added). The distinction the table draws is
+    # "claims about this environment", and a path can be documented without being claimed.
+    "/etc/getssl": "another host's config location in a documented search order, not a local fact",
 }
 
 

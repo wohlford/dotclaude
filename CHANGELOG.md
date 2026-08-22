@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.90.2 — 2026-08-21
+- docs(CLAUDE.md): add the wrong-location and no-op-early-return hazards
+
 ## v0.90.1 — 2026-08-21
 - docs(CLAUDE.md): add the stored-status hazard and split its group
 

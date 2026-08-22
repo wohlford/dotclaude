@@ -366,6 +366,17 @@ left legal.
   count against the working tree and name what the predicate excluded; **do not just switch to a
   filesystem glob**, which then grades artifacts the commit will never contain.
 
+- **A checker that hard-codes ONE location, where the tool it checks SEARCHES A LIST, grades a
+  directory nobody is using — and reports "not configured yet", which is exactly what stops anyone
+  looking.** Measured twice in one session, one level apart. A guard over a client's root-sourced
+  config tree hard-coded `~/.getssl`; the client searches `/etc/getssl`, two directories beside its
+  own binary, then `$HOME/.getssl`, and takes the FIRST holding a config — so on a host configured
+  at `/etc/getssl` the guard found nothing, verdicted PASS-WITH-GAPS, and never looked at the tree
+  actually sourced as root. Resolving the same list fixed it; the same shape then reappeared one
+  level DOWN, because a documented key *inside the file just resolved* relocates the per-domain
+  configs elsewhere again. **Resolve the subject the way the tool resolves it — including keys the
+  tool reads out of the file you resolved** — and make "found nothing" name WHERE it looked.
+
 #### Your matcher matched text you did not mean — or missed text you did
 
 - **Multi-line literal checks are a case for Python.** `grep -F` treats an embedded newline as
@@ -416,6 +427,17 @@ left legal.
   producer finishes before the reader exits. Use `case "$var" in *needle*)` or a `<<<` herestring —
   anything with no live producer to signal. `grep -q`, `grep -m1` and `head` carry it; `tr`, `wc`
   and `grep -c` consume their input and do not.
+
+- **A helper that returns 0 for a GOOD verdict makes `cmd || exit 1` a no-op, and the early return
+  then falls through into code that was never meant to run.** Measured: a check script's
+  not-yet-configured branch ended `pr_summary … || exit 1`, intending to stop there. That helper
+  returns 0 for PASS *and* for PASS-WITH-GAPS, so on a healthy run the `||` arm never fired and
+  execution continued into rows that read a path which did not exist, reporting it as `owned by ,
+  not by root`. It had only ever appeared to work because an earlier draft of that branch measured
+  NOTHING, so the zero-denominator rule failed the run and exited 1 — **the structure was wrong the
+  whole time and a wrong verdict was hiding it**, and fixing the first defect is what exposed the
+  second. Terminate explicitly (`pr_summary; exit $?`), and treat an early-return branch as unproven
+  until you have watched it take the PASSING path.
 
 #### The signal you read belongs to something else
 
