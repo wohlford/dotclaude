@@ -12,7 +12,9 @@ The fixture below is the smallest repo exercising all three arms at once, plus t
 motivated the rule: several commits touching the SAME file that must stay separate bricks.
 """
 
+import importlib.util
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +22,7 @@ from pathlib import Path
 import pytest
 
 TOOL = Path(__file__).resolve().parent.parent / "publish-fold-plan.py"
+DRIVE_TOOL = Path(__file__).resolve().parent.parent / "publish-drive.py"
 
 
 class Sandbox(os.PathLike):
@@ -524,3 +527,229 @@ def test_the_two_residual_annotations_are_genuinely_different_text(
     assert positive_annotation.strip()
     assert zero_annotation.strip()
     assert positive_annotation != zero_annotation
+
+
+# ---------- evidence collides with parse_plan's own grammar (2026-08-21 plan, Task 1) ----------
+#
+# `publish-fold-plan.py`'s own evidence — the removed source lines it prints as proof of a
+# verdict — can itself contain the substring "publish-brick.sh", because a commit that edits
+# publish-brick.sh removes lines quoting its own filename. `parse_plan` (loaded from
+# publish-drive.py, the same hardened parser both real consumers use) then misreads that
+# evidence as an invocation. The defect has TWO shapes, verified directly against parse_plan
+# and NOT re-derived from the plan's prose:
+#
+#   mid-line    -> the engine name sits inside a longer quoted token, so no shlex word ENDS
+#                  with "publish-brick.sh"; idx is None, args is empty, and parse_plan raises
+#                  "names publish-brick.sh but has 0 argument(s), need at least 3".
+#   end-of-line -> the engine name IS the tail of its quoted token, so idx is found and the
+#                  evidence's own trailing " added by <sha7>" supplies exactly 3 words
+#                  ("added", "by", "<sha7>") — parsing with NO error into a PHANTOM BRICK
+#                  {'version': 'added', 'endpoint': 'by', 'subject': '<sha7>'}, silently
+#                  inflating the count. Nothing loud catches this; only count-equality does.
+
+
+def load_parse_plan():
+    """Load `parse_plan` from publish-drive.py by path, exactly as publish-rehearse.py does
+    (`load_publish_drive`, scripts/publish-rehearse.py:101) — the same hardened parser both
+    real consumers (`publish-drive.py` and `publish-rehearse.py`) use, not a hand-rolled second
+    copy that could drift from it."""
+    spec = importlib.util.spec_from_file_location("publish_drive", DRIVE_TOOL)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.parse_plan
+
+
+def bricks_from_verdict(out):
+    """The `bricks=N` the planner's own terminal RESULT line reports."""
+    verdict_line = out.strip().splitlines()[-1]
+    m = re.search(r"bricks=(\d+)", verdict_line)
+    assert m, f"no bricks=N in verdict line: {verdict_line!r}"
+    return int(m.group(1))
+
+
+@pytest.fixture
+def evidence_collision_repo(tmp_path):
+    """dev: c1(add a) -> c2(add script.sh, two lines naming the engine) -> c3(remove both
+    lines, folding into c2) -> c4(add b, unrelated). watermark at c1.
+
+    c2's script.sh carries the engine name in BOTH shapes; c3 removes both lines in one commit,
+    so the rendered plan's FOLD-arm evidence for c3 (`{path}: {line!r} added by {sha7}`)
+    contains both shapes at once:
+      mid-line:    script.sh: 'fail_brick "constituent $c invokes publish-brick.sh with bad
+                   args"' added by <c2 sha7>
+      end-of-line: script.sh: 'echo about to run publish-brick.sh' added by <c2 sha7>
+
+    Two proposed bricks: {c2, c3} folded, and {c4} alone — the minimum needed for Task 2's
+    single-invocation mutation, which requires at least two.
+    """
+    d = tmp_path / "ec"
+    d.mkdir()
+    git(d, "init", "-q", "-b", "dev", ".")
+    git(d, "config", "user.email", "test@test.invalid")
+    git(d, "config", "user.name", "test")
+    git(d, "config", "commit.gpgsign", "false")
+    git(d, "config", "tag.gpgsign", "false")
+    (d / ".publication.toml").write_text('production = "dev"\n')
+    c1 = commit(d, "feat(a): add a", **{"a.txt": "alpha\n"})
+    c2 = commit(
+        d,
+        "feat(s): add script",
+        **{
+            "script.sh": (
+                "#!/bin/bash\n"
+                'fail_brick "constituent $c invokes publish-brick.sh with bad args"\n'
+                "echo about to run publish-brick.sh\n"
+                "echo done\n"
+            )
+        },
+    )
+    c3 = commit(
+        d, "fix(s): tighten script", **{"script.sh": "#!/bin/bash\necho done\n"}
+    )
+    c4 = commit(d, "feat(b): add b", **{"b.txt": "beta\n"})
+
+    git(d, "checkout", "-q", "--orphan", "main")
+    git(d, "rm", "-rq", "--cached", ".")
+    git(d, "clean", "-fdq")
+    git(d, "checkout", "-q", c1, "--", ".")
+    (d / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## v0.1.0 — 2026-01-01\n- feat(a): add a\n"
+    )
+    git(d, "add", "-A")
+    git(d, "commit", "-qm", "feat(a): add a")
+    git(d, "tag", "-a", "v0.1.0", "-m", "feat(a): add a")
+    git(d, "update-ref", "refs/published/main", c1)
+    git(d, "checkout", "-q", "dev")
+    box = Sandbox(d)
+    box.shas = {"c1": c1, "c2": c2, "c3": c3, "c4": c4}
+    return box
+
+
+def test_the_plan_parses_despite_evidence_naming_the_engine(evidence_collision_repo):
+    """`parse_plan(plan_text)` must not raise merely because its own evidence text mentions
+    the engine's own filename. Currently it does, via the mid-line shape."""
+    out = run(evidence_collision_repo).stdout
+    parse_plan = load_parse_plan()
+    parse_plan(out)  # must not raise
+
+
+def test_parsed_brick_count_matches_the_planners_own_verdict(evidence_collision_repo):
+    """The count parse_plan yields must equal the `bricks=N` the planner itself reports (spec
+    D4) — the falsifiable guard that points at the dangerous direction: a wrong fix that still
+    collides fails loudly and costs nothing, but a wrong fix that over-prefixes silently drops
+    a brick and yields a shorter plan that reads complete."""
+    out = run(evidence_collision_repo).stdout
+    parse_plan = load_parse_plan()
+    bricks = parse_plan(out)
+    assert len(bricks) == bricks_from_verdict(out)
+
+
+def test_parsed_brick_count_matches_the_hand_declared_fixture_size(
+    evidence_collision_repo,
+):
+    """Derivation alone (the row above) cannot catch a shared upstream fault: if `assemble()`
+    itself dropped a brick, `bricks=N` and the parse count would agree and that row would pass
+    for free. This hand-declared floor (2: {c2+c3} folded, {c4} alone) closes that gap — the
+    repo's derive-plus-declared-floor rule."""
+    out = run(evidence_collision_repo).stdout
+    parse_plan = load_parse_plan()
+    bricks = parse_plan(out)
+    assert len(bricks) == 2
+
+
+# ---------- the SILENT shape alone: parses clean, count inflated (permanent suite row) ----------
+#
+# The combined fixture above cannot show row-1-passes-while-2/3-fail: the mid-line shape's raise
+# always fires somewhere in the plan text, aborting the whole parse before a caller can observe
+# what the end-of-line shape did silently along the way. That discrimination needs its OWN
+# fixture, carrying ONLY the end-of-line shape — nothing raises, so a regression that reintroduces
+# just the silent half would otherwise be invisible to every row above (all of which are also
+# green once nothing raises) and visible only to the count rows below.
+
+
+@pytest.fixture
+def phantom_only_repo(tmp_path):
+    """dev: c1(add a) -> c2(add script.sh, ONE line ending in the engine name, no mid-line
+    occurrence anywhere in range) -> c3(remove that line, folding into c2) -> c4(add b,
+    unrelated). watermark at c1.
+
+    Two proposed bricks: {c2, c3} folded, and {c4} alone. c3's FOLD-arm evidence is exactly:
+      script.sh: 'echo about to run publish-brick.sh' added by <c2 sha7>
+    which parses with NO error — the quoted token IS the word ending in "publish-brick.sh", and
+    the evidence's own trailing " added by <sha7>" supplies exactly 3 words. Verified directly
+    against parse_plan on the real plan for this fixture: parses to 3 bricks (true count 2),
+    the extra one being {"version": "added", "endpoint": "by", "subject": "<c2 sha7>"}.
+    """
+    d = tmp_path / "po"
+    d.mkdir()
+    git(d, "init", "-q", "-b", "dev", ".")
+    git(d, "config", "user.email", "test@test.invalid")
+    git(d, "config", "user.name", "test")
+    git(d, "config", "commit.gpgsign", "false")
+    git(d, "config", "tag.gpgsign", "false")
+    (d / ".publication.toml").write_text('production = "dev"\n')
+    c1 = commit(d, "feat(a): add a", **{"a.txt": "alpha\n"})
+    c2 = commit(
+        d,
+        "feat(s): add script",
+        **{"script.sh": "#!/bin/bash\necho about to run publish-brick.sh\necho done\n"},
+    )
+    c3 = commit(
+        d, "fix(s): tighten script", **{"script.sh": "#!/bin/bash\necho done\n"}
+    )
+    c4 = commit(d, "feat(b): add b", **{"b.txt": "beta\n"})
+
+    git(d, "checkout", "-q", "--orphan", "main")
+    git(d, "rm", "-rq", "--cached", ".")
+    git(d, "clean", "-fdq")
+    git(d, "checkout", "-q", c1, "--", ".")
+    (d / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## v0.1.0 — 2026-01-01\n- feat(a): add a\n"
+    )
+    git(d, "add", "-A")
+    git(d, "commit", "-qm", "feat(a): add a")
+    git(d, "tag", "-a", "v0.1.0", "-m", "feat(a): add a")
+    git(d, "update-ref", "refs/published/main", c1)
+    git(d, "checkout", "-q", "dev")
+    box = Sandbox(d)
+    box.shas = {"c1": c1, "c2": c2, "c3": c3, "c4": c4}
+    return box
+
+
+def test_the_silent_shape_alone_does_not_raise(phantom_only_repo):
+    """Pins the SILENT half in isolation: with no mid-line occurrence anywhere in range,
+    nothing raises. Expected GREEN both before and after Task 2's fix — this row is the control
+    proving the failure is silent, not a redundant restatement of row 1 above: it isolates the
+    end-of-line shape from the mid-line shape that otherwise masks it, and a green result here
+    is what makes the RED count rows below meaningful (a raise here would mean they were
+    testing an error path, not a silent one)."""
+    out = run(phantom_only_repo).stdout
+    parse_plan = load_parse_plan()
+    parse_plan(out)  # must not raise, and does not today either
+
+
+def test_the_silent_shape_inflates_the_count_past_the_planners_own_verdict(
+    phantom_only_repo,
+):
+    """Pins the SILENT half where the mid-line shape's row above cannot: parsing succeeds, so
+    only a count check can see the phantom brick the end-of-line shape adds. Not redundant with
+    the combined fixture's equivalent row — that one dies from the mid-line raise before this
+    comparison is ever reached; this is the only row in the suite that actually performs the
+    comparison against the silent shape."""
+    out = run(phantom_only_repo).stdout
+    parse_plan = load_parse_plan()
+    bricks = parse_plan(out)
+    assert len(bricks) == bricks_from_verdict(out)
+
+
+def test_the_silent_shape_inflates_the_count_past_the_hand_declared_fixture_size(
+    phantom_only_repo,
+):
+    """Same declared-floor rationale as the combined fixture's equivalent row: derivation alone
+    (the row above) cannot catch a shared upstream fault in `assemble()`. This hand-declared
+    floor (2: {c2+c3} folded, {c4} alone) is the only assertion in the suite that is NOT
+    derived from the tool's own output for the silent-shape-only case."""
+    out = run(phantom_only_repo).stdout
+    parse_plan = load_parse_plan()
+    bricks = parse_plan(out)
+    assert len(bricks) == 2

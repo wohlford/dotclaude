@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.91.2 — 2026-08-21
+- fix(publish): comment the fold plan's per-commit diagnostics
+
 ## v0.91.1 — 2026-08-21
 - fix(publish): express deletions when materialising a brick
 

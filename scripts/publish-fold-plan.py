@@ -404,10 +404,16 @@ def report(
         head = item["verdict"]
         if item["target"]:
             head = f"{head} {item['target'][:7]}"
-        print(f"[{n}] {item['sha'][:7]}  {item['subject']}")
-        print(f"    -> {head} — {item['detail']}")
+        # Prefixed with `# ` so `parse_plan`'s existing comment-skip (it checks the
+        # stripped line before shlex-splitting) covers this whole diagnostic block: any of
+        # these three sites can embed arbitrary text — a commit subject, removed source, or
+        # evidence — that happens to name `publish-brick.sh` and would otherwise misparse as
+        # an invocation. Render-site prefixing, not per-producer, catches all three known
+        # producers (:217-228, :247-248, :381) and any future one in one place.
+        print(f"# [{n}] {item['sha'][:7]}  {item['subject']}")
+        print(f"    # -> {head} — {item['detail']}")
         for line in item["evidence"]:
-            print(f"       {line}")
+            print(f"       # {line}")
 
     bricks = assemble(results)
     version = base_version(scope, args.published)
