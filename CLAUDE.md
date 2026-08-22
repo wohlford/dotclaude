@@ -487,6 +487,31 @@ left legal.
   heredoc form the repo's own commit skill prescribes — the plain form passed, an apostrophe-free
   heredoc passed, so only the combination failed and nothing had ever run it. Ask whether the tool
   reached a verdict before believing the verdict.
+- **A tool's DEFAULT MODE can be narrower than its name, its call site, and even its source imply —
+  so its PASS answers a smaller question than the one you are relying on.** Measured: a sweep
+  reported 14 checks passing by default and 17 under the flag that adds the test suite and its
+  pollution checks, and a gate was nearly cleared by citing the plain PASS as evidence the suite
+  had passed. Note what CONFIRMS the wrong belief — the source carries an unmistakable call to the
+  test runner that reads as unconditional until you notice it sits inside the opt-in branch, so
+  checking the code is the natural move and it agrees with you. Only the run's own ENUMERATION of
+  the checks it performed settles it: a missing row is the sole artifact that names what did not
+  happen. Distinct from reaching for the wrong instrument — this is the right one, in a mode you
+  never asked for.
+- **Two readings of ONE question, and the WEAKER one guards the mutating path's verdict — so a tool
+  blesses the state its own read-only mode calls broken.** Both readings run and each is truthful
+  about the question it asks; the strict one is simply the one you never consult before acting.
+  Measured: a read-only mode asked whether a managed path resolved to its EXACT source, while the
+  post-action pass asked only whether it resolved SOMEWHERE INSIDE the source tree. Repointed at a
+  different file inside that tree, the documented repair command reported `PASS … unverified=0`,
+  exit 0, and left it wrong — while the read-only mode on the byte-identical state reported drift
+  and FAIL. Note what does NOT rescue you: the neighbouring remedy, read the run's own ENUMERATION
+  of what it checked, answers `verified=16` — true and useless. The suite missed it too, carrying
+  rows for a dangling target and for one resolving OUTSIDE the tree, both of which the weak
+  predicate also rejects. **Derive both readings from ONE predicate**; their disagreement is the
+  only cheap detector, so two spellings of one intent is itself the defect.
+
+#### You verified what you had in mind — the gap is what you did not
+
 - **A suite you wrote for your own fix confirms what you thought of — not that the fix is safe.**
   Ten assertions written for one change, three of them PRESERVE rows verified green *before* it, all
   passed while that fix silently removed a live catch from a fail-closed gate; the regression sat in
@@ -505,16 +530,6 @@ left legal.
   probe of the real input settled it, allowed before and after. **Ask what makes a rule FIRE before
   reasoning about what it does when it fires.** What nearly hid it: the plan then asserted the
   block, so a compliant implementer would have written a passing test around the false premise.
-- **A tool's DEFAULT MODE can be narrower than its name, its call site, and even its source imply —
-  so its PASS answers a smaller question than the one you are relying on.** Measured: a sweep
-  reported 14 checks passing by default and 17 under the flag that adds the test suite and its
-  pollution checks, and a gate was nearly cleared by citing the plain PASS as evidence the suite
-  had passed. Note what CONFIRMS the wrong belief — the source carries an unmistakable call to the
-  test runner that reads as unconditional until you notice it sits inside the opt-in branch, so
-  checking the code is the natural move and it agrees with you. Only the run's own ENUMERATION of
-  the checks it performed settles it: a missing row is the sole artifact that names what did not
-  happen. Distinct from reaching for the wrong instrument — this is the right one, in a mode you
-  never asked for.
 
 #### It answered about the PARTS; your claim is about the WHOLE
 
@@ -581,9 +596,9 @@ left legal.
   HEADING and across OTHER files. **Grep for the words you REMOVED, inside the file you edited** —
   the mirror of the check you thought to run is the one you will not think of.
 - **A DEFAULT output path makes every run of a tool a writer of real state.** Measured twice, in
-  opposite directions, neither found by review. **Outward:** a diagnostic log defaulted to
-  `~/.claude/logs/`, and long-standing suite rows reach exactly that branch, so **12 synthetic
-  records** accumulated in the operator's real log across four runs — invisible to lint, to every
+  opposite directions, neither found by review. **Outward:** a diagnostic log defaulted to the
+  operator's own log directory, and long-standing suite rows reach exactly that branch, so **12
+  synthetic records** accumulated in that real log across four runs — invisible to lint, to every
   assertion, and *structurally* to the repo audit, which only ever scans inside the repo. **Inward:**
   a documented command wrote its artifact to the repo root, where it fails the **next** step's own
   clean-tree precondition — a workflow blocking itself on a file its own documentation told the

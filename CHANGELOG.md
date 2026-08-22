@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.88.7 — 2026-08-20
+- docs(CLAUDE.md): add the weaker-predicate hazard and split its group
+
 ## v0.88.6 — 2026-08-20
 - docs(install): describe derived membership and correct settings.json
 
