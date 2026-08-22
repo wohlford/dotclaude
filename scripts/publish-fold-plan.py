@@ -42,8 +42,12 @@ sync-docs index entry in one brick; a shebang file and its exec bit in one brick
 modelled here — they are a reason to merge two proposed bricks by hand before running them.
 Nor is per-brick VALIDITY: convergence constrains the FINAL tree only, so a surviving fold can
 still leave an intermediate brick that fails its own `/audit` (a regenerated index naming a
-file that brick has not added yet). That failure is loud and stops the run at step 3; the one
-closed here is the silent one.
+file that brick has not added yet). `publish-rehearse.py` is the instrument for that gap: it
+materialises each proposed brick cumulatively and runs the cross-file checks that can fail there
+(`sync-docs`, `md-links`, `mutation-anchors`, `env-claims`, and conditionally `ruff`/`markdownlint`).
+**Its residual:** it covers only the checks it runs at each brick, never the test suite, and it is
+not a substitute for the apply-time audit, which remains authoritative — a rehearsal PASS is a
+prediction, never a clearance.
 
 Usage: publish-fold-plan.py [--scope <path>] [--watermark <ref>] [--published <ref>]
                             [--working <ref>]
@@ -444,9 +448,17 @@ def report(
             print(f"  would not converge: {path}", file=sys.stderr)
         return 1
 
+    if folds:
+        residual_note = f" — {folds} multi-member unit(s) UNVALIDATED for per-brick validity until rehearsed"
+    else:
+        residual_note = (
+            " — no multi-member unit exists, so intermediate over-reach is structurally"
+            " impossible here"
+        )
     print(
         f"\nRESULT: PASS rc=0 commits={len(results)} bricks={len(bricks)} "
         f"folds={folds} undecided={undecided} dropped={len(dropped)} converges=yes"
+        f"{residual_note}"
     )
     return 0
 

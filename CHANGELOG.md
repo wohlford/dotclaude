@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.91.0 — 2026-08-21
+- feat(publish): add plan-time per-brick rehearsal
+
 ## v0.90.2 — 2026-08-21
 - docs(CLAUDE.md): add the wrong-location and no-op-early-return hazards
 

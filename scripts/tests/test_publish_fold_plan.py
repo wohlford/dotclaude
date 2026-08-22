@@ -463,3 +463,64 @@ def test_a_removed_blank_line_is_reported_as_UNDECIDED_not_guessed(tmp_path):
     assert "undecided=1" in out
     assert "folds=0" in out, "a blank line must never be enough to justify a fold"
     assert "bricks=2" in out, "an undecided commit defaults to its own brick"
+
+
+# ---------- Task 4: the verdict line states RESIDUAL, never clearance ----------
+
+
+@pytest.fixture
+def zero_fold_repo(tmp_path):
+    """dev: base -> add-two; watermark at base. Every commit removes nothing, so no
+    multi-member unit is ever proposed and folds=0."""
+    d = tmp_path / "zf"
+    d.mkdir()
+    git(d, "init", "-q", "-b", "dev", ".")
+    git(d, "config", "user.email", "test@test.invalid")
+    git(d, "config", "user.name", "test")
+    git(d, "config", "commit.gpgsign", "false")
+    git(d, "config", "tag.gpgsign", "false")
+    (d / ".publication.toml").write_text('production = "dev"\n')
+    base = commit(d, "feat(doc): start", **{"doc.md": "one\n"})
+    commit(d, "docs(doc): add two", **{"doc.md": "one\ntwo\n"})
+    git(d, "update-ref", "refs/published/main", base)
+    git(d, "branch", "main", base)
+    return d
+
+
+def test_folds_zero_verdict_states_structural_impossibility(zero_fold_repo):
+    """`folds=0` must be annotated as no multi-member unit existing at all — the class of
+    intermediate over-reach this whole task is about cannot arise, not merely 'nothing failed'."""
+    out = run(zero_fold_repo).stdout
+    assert "folds=0" in out
+    verdict_line = out.strip().splitlines()[-1]
+    assert verdict_line.startswith("RESULT: PASS rc=0")
+    assert "structurally" in verdict_line and "impossible" in verdict_line
+
+
+def test_folds_positive_verdict_states_unvalidated_until_rehearsed(repo):
+    """`folds=1` must be annotated as UNVALIDATED for per-brick validity until rehearsed —
+    a claim of residual risk, never a claim that the fold is fine."""
+    out = run(repo).stdout
+    assert "folds=1" in out
+    verdict_line = out.strip().splitlines()[-1]
+    assert verdict_line.startswith("RESULT: PASS rc=0")
+    assert "UNVALIDATED" in verdict_line
+    assert "rehearsed" in verdict_line
+    # Must not be the folds=0 wording.
+    assert "structurally" not in verdict_line and "impossible" not in verdict_line
+
+
+def test_the_two_residual_annotations_are_genuinely_different_text(
+    repo, zero_fold_repo
+):
+    """A constant annotation string would satisfy the two tests above independently — this
+    test fails on that mutant by comparing the actual annotation text, not just presence."""
+    positive_line = run(repo).stdout.strip().splitlines()[-1]
+    zero_line = run(zero_fold_repo).stdout.strip().splitlines()[-1]
+
+    positive_annotation = positive_line.split("converges=yes", 1)[1]
+    zero_annotation = zero_line.split("converges=yes", 1)[1]
+
+    assert positive_annotation.strip()
+    assert zero_annotation.strip()
+    assert positive_annotation != zero_annotation

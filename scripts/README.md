@@ -41,6 +41,7 @@ for how the index below stays in sync.
 | `publish-drive.py`               | Drive publish-brick.sh once per brick over a reviewed plan, halting on the first failure                                       |
 | `publish-fold-plan.py`           | Propose brick boundaries for the publish path by classifying what each commit removes                                          |
 | `publish-preflight.sh`           | Verify /propagate's publish start-invariant before any brick is applied, tagged, or pushed                                     |
+| `publish-rehearse.py`            | Predict, per brick, which /audit checks a fold plan would fail once actually applied                                           |
 | `push-guard.py`                  | PreToolUse hook — block `git push` unless the push segment leads with an ALLOW_PUSH=1 override                                 |
 | `recast-commit-gate.py`          | PreToolUse hook — run the recast suite before a commit that touches recast source                                              |
 | `recast-test.sh`                 | PostToolUse hook — run the matching recast test file when a recast source changes                                              |
