@@ -698,6 +698,29 @@ case "$m_parse" in
   *) printf 'PASS  parse ambiguity must not be labelled a guard bug\n'; pass=$((pass + 1)) ;;
 esac
 
+# The refusal is the DELIVERABLE, not the explain tool. Measured 2026-08-24: five subagents hit this
+# refusal in one session; NONE went looking for a diagnostic; all switched tools inside the turn. A
+# standalone tool therefore has a measured invocation rate of zero, so the position has to travel in
+# the artifact that is guaranteed to reach the blocked caller -- this message.
+assert_contains "$m_parse" 'at line ' \
+  'the refusal LOCATES the construct, not just its category'
+assert_contains "$m_parse" 'explain-git-command.py' \
+  'the refusal names the tool that shows more'
+
+# ...and it must stay a REFUSAL. A message that reads like a diagnosis invites an override aimed at
+# a gate that never judged anything. These two phrases are this guard's own; push-guard has
+# different wording and is asserted separately in its own suite.
+assert_contains "$m_parse" 'failing closed' \
+  'the refusal still says it is failing closed'
+assert_contains "$m_parse" 'no push was identified' \
+  'the refusal still says no push was identified'
+
+# A heredoc is the measured shape. The advisory names the one fix that is safe for BOTH halves of
+# the measured class: quoting the delimiter makes the body literal, so bash expands nothing.
+m_heredoc="$(stderr_of "$REPO" "$(printf 'git status <<EOF\na ` stray\nEOF\n')")"
+assert_contains "$m_heredoc" 'delimiter' \
+  'a heredoc ambiguity advises on the delimiter, the fix for the whole measured class'
+
 # From a SURVIVING mutant: the suite asserted that an unexpanded -C with a real push still BLOCKS,
 # but nothing asserted it keeps the alarming wording -- so flipping `sub == "push"` to False at
 # that site changed nothing any row could see. Verdict rows cannot catch a de-alarmed message.

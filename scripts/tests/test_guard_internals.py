@@ -81,3 +81,121 @@ def test_empty_string_root_is_refused_with_the_root_unresolved_reason(monkeypatc
     assert _ROOT_UNRESOLVED_SUBSTRING in result.reason, (
         f"refused, but not for the root-unresolved reason -- got: {result.reason!r}"
     )
+
+
+def test_describe_ambiguity_is_non_raising_for_every_poisoned_shape() -> None:
+    """A broken diagnostic must degrade to "", never raise.
+
+    This is the pin for the review's BLOCKER, and the reason it matters is the hook contract, not
+    tidiness: `describe_ambiguity` is called from INSIDE the `except` block that emits each guard's
+    refusal, and per `scripts/HOOKS.md` only exit 2 blocks -- any other nonzero exit is treated as
+    noise rather than a veto. An exception escaping here exits 1, so the guarded command RUNS. A
+    diagnostic that can unblock is strictly worse than no diagnostic.
+
+    Every shape below is reachable: a non-ambiguity cause (the depth, length, internal-marker and
+    reserved-marker raise sites, plus shlex's own errors, none of which carry attributes); a None
+    cause; and a position that has drifted out of range of the prepared text.
+    """
+    import importlib.util as _ilu
+
+    spec = _ilu.spec_from_file_location(
+        "git_command", REPO_ROOT / "scripts" / "lib" / "git_command.py"
+    )
+    gitcmd = _ilu.module_from_spec(spec)
+    sys.modules["git_command"] = gitcmd
+    spec.loader.exec_module(gitcmd)
+
+    class _Poison:
+        """Attribute access itself raises -- the nastiest shape a getattr-based reader can meet."""
+
+        def __getattr__(self, name: str):
+            raise RuntimeError(f"poisoned attribute {name}")
+
+    poisoned = [
+        None,
+        ValueError("plain, carries nothing"),
+        gitcmd.ParseAmbiguity("cat", text="abc", pos=None),
+        gitcmd.ParseAmbiguity("cat", text="abc", pos=999),
+        gitcmd.ParseAmbiguity("cat", text="abc", pos=-1),
+        gitcmd.ParseAmbiguity("cat", text="", pos=0),
+        gitcmd.ParseAmbiguity("cat", text=None, pos=1),
+        gitcmd.ParseAmbiguity("cat", text="abc", pos="not an int"),
+        _Poison(),
+    ]
+    for exc in poisoned:
+        out = gitcmd.describe_ambiguity(exc)
+        assert isinstance(out, str), f"{exc!r} returned a non-string {out!r}"
+        assert out == "", f"{exc!r} produced a clause it should not have: {out!r}"
+
+
+def test_describe_ambiguity_locates_a_real_opener() -> None:
+    """The other half: when a position IS available it must point at the OPENER.
+
+    A wrong position is the one way this change is worse than the category alone -- it "works" and
+    mis-teaches, so nothing flags it. Measured for exactly this reason: `_first_unmatched_quote`
+    was the originally-proposed source and points into a backtick body on prose-with-apostrophes,
+    which is the measured heredoc class.
+    """
+    import importlib.util as _ilu
+
+    spec = _ilu.spec_from_file_location(
+        "git_command", REPO_ROOT / "scripts" / "lib" / "git_command.py"
+    )
+    gitcmd = _ilu.module_from_spec(spec)
+    sys.modules["git_command"] = gitcmd
+    spec.loader.exec_module(gitcmd)
+
+    cmd = 'git status "a ` stray"'
+    try:
+        list(gitcmd.iter_git_invocations_detailed(cmd, "/tmp"))
+        raise AssertionError("expected an ambiguity for an odd backtick count")
+    except gitcmd.ParseAmbiguity as exc:
+        assert exc.text[exc.pos] == "`", (
+            f"pos {exc.pos} points at {exc.text[exc.pos]!r}, not the opening backtick"
+        )
+        clause = gitcmd.describe_ambiguity(exc)
+        assert "col " in clause and "search for the excerpt" in clause, clause
+
+
+def test_parse_ambiguity_str_is_byte_identical_to_the_bare_message() -> None:
+    """`str()` must equal EXACTLY what a bare ValueError said before the subclass existed.
+
+    This is the load-bearing property of the whole change: every consumer catches bare
+    `except ValueError`, so the subclass is inert ONLY while its message is unchanged. A caller
+    that greps the message -- and the guards interpolate it verbatim into their refusals -- sees a
+    different string the moment this drifts.
+
+    EXACT equality, not `in`. A mutation prepending text to the message survived the entire suite
+    because every other assertion here matches by substring, and the original category is still a
+    substring of a prefixed one. Substring matching cannot see this class of change at all.
+
+    The three strings below are the messages `dev` raised at these sites before `ParseAmbiguity`
+    was introduced; they are the contract, not a restatement of the implementation.
+    """
+    import importlib.util as _ilu
+
+    spec = _ilu.spec_from_file_location(
+        "git_command", REPO_ROOT / "scripts" / "lib" / "git_command.py"
+    )
+    gitcmd = _ilu.module_from_spec(spec)
+    sys.modules["git_command"] = gitcmd
+    spec.loader.exec_module(gitcmd)
+
+    expected = {
+        'git status "a ` stray"': "unterminated backtick substitution",
+        'git status "a $( stray"': "unterminated command substitution",
+        'git status "unclosed': "unbalanced quote",
+    }
+    for cmd, message in expected.items():
+        try:
+            list(gitcmd.iter_git_invocations_detailed(cmd, "/tmp"))
+            raise AssertionError(f"expected an ambiguity for {cmd!r}")
+        except gitcmd.ParseAmbiguity as exc:
+            assert str(exc) == message, (
+                f"{cmd!r}: str() is {str(exc)!r}, must be EXACTLY {message!r} -- "
+                "the subclass stops being inert the moment this drifts"
+            )
+            assert exc.args == (message,), (
+                f"{cmd!r}: args are {exc.args!r}; a single-element tuple of the bare message is "
+                "what keeps str() identical"
+            )

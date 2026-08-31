@@ -62,6 +62,25 @@ BLOCK_MESSAGE = (
     "ALLOW_PUSH=1 (e.g. ALLOW_PUSH=1 git push ...) to authorize it."
 )
 
+
+def _ambiguity_detail(exc: BaseException | None) -> str:
+    """The shared location clause plus THIS guard's path to the explain tool, or "" on any failure.
+
+    Non-raising by contract — see the call site: a raise here would exit 1 and unblock the command.
+    The location logic lives in the tokenizer so both guards share one implementation rather than
+    two that can drift; only the tool path is per-caller, resolved from this file because a
+    repo-relative string resolves to nothing from the deployed config farm.
+    """
+    try:
+        clause = gitcmd.describe_ambiguity(exc)
+        if not clause:
+            return ""
+        tool = Path(__file__).resolve().parent / "explain-git-command.py"
+        return f"{clause} For the full parse, run: python3 {tool} -"
+    except Exception:  # noqa: BLE001 - deliberate: a broken diagnostic must never unblock
+        return ""
+
+
 AMBIGUOUS_MESSAGE = (
     "blocked by push-guard: this command mentions git but could not be parsed unambiguously, "
     "so it is refused rather than allowed unchecked. Simplify the quoting and retry. "
@@ -188,7 +207,7 @@ def main() -> int:
     blocked = False
     try:
         blocked = _has_unauthorized_push(command)
-    except ValueError:
+    except ValueError as exc:
         # D1: "I could not parse it" must stop meaning "there is no push here" -- that swallow was
         # the same fail-open class as the nested-context bypasses this change closes. Bounded by
         # has_git_word so the blast radius stays push-shaped: an unparseable command with no git
@@ -198,7 +217,23 @@ def main() -> int:
         # so the broad handler would otherwise win and D1 would silently not happen while every
         # test still passed.
         if gitcmd.has_git_word(command):
-            print(AMBIGUOUS_MESSAGE, file=sys.stderr)
+            # `exc` itself, NOT exc.__cause__: this guard catches the tokenizer's exception
+            # UNWRAPPED, so there is no cause to unwrap. (The publication guard re-wraps and
+            # therefore reads __cause__ — same feature, two mechanisms, and conflating them
+            # silently produces no detail here.)
+            #
+            # _ambiguity_detail is contractually non-raising. It has to be: an exception raised
+            # inside THIS except block is not caught by the sibling `except Exception` below, so it
+            # would propagate and exit 1 — which HOOKS.md treats as noise rather than a veto, i.e.
+            # the command would RUN. The block must never depend on the diagnostic succeeding.
+            # Name the CATEGORY too. The constant is a fixed string that never interpolated
+            # the exception, so until now this guard discarded even WHICH construct stopped
+            # the tokenizer — the reader got "could not be parsed" and nothing else.
+            print(
+                f"{AMBIGUOUS_MESSAGE} The tokenizer stopped at: {exc}."
+                f"{_ambiguity_detail(exc)}",
+                file=sys.stderr,
+            )
             return 2
         return 0
     except Exception:  # noqa: BLE001 - deliberate: any OTHER crash must still fail OPEN

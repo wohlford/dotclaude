@@ -38,6 +38,34 @@ assert 'git add -A && git push' 2 'push in a compound segment'
 assert 'ALLOW_PUSH=1 git add -A && git push' 2 'override on the WRONG segment -> push still blocked'
 assert 'ALLOW_PUSH=1 git fetch && git push' 2 'override scoped to fetch -> push blocked'
 assert 'git push; ALLOW_PUSH=1 true' 2 'override after the push -> blocked'
+
+# --- the ambiguity refusal must locate the construct (Task 2, U3) ---
+# `run` deliberately discards stderr, so this needs its own capturing helper.
+stderr_of_pg() { # command -> the guard's stderr ONLY
+  # shellcheck disable=SC2069  # the order is deliberate and the suggested fix would break it
+  # `2>&1 >/dev/null` binds stderr to the pipe FIRST, then sends stdout to /dev/null -- which is
+  # how you capture stderr alone. shellcheck flags it because the common MISTAKE is writing this
+  # when `>/dev/null 2>&1` was meant. Measured both: this order captures the message, the
+  # suggested order captures an empty string, which would make every row below pass vacuously.
+  printf '%s' "$(python3 -c 'import json,sys;print(json.dumps({"tool_input":{"command":sys.argv[1]}}))' "$1")" \
+    | python3 "$guard" 2>&1 >/dev/null
+}
+contains_pg() { # haystack needle label
+  if printf '%s' "$1" | grep -qF -- "$2"; then
+    printf 'PASS  %s\n' "$3"; pass=$((pass + 1))
+  else
+    printf 'FAIL  %s (missing: %s)\n' "$3" "$2"; fail=$((fail + 1))
+  fi
+}
+pg_amb="$(stderr_of_pg 'git status "a ` stray backtick"')"
+contains_pg "$pg_amb" 'unterminated backtick substitution' \
+  'push-guard names the CATEGORY it discards today'
+contains_pg "$pg_amb" 'at line ' \
+  'push-guard LOCATES the construct'
+contains_pg "$pg_amb" 'explain-git-command.py' \
+  'push-guard names the tool that shows more'
+contains_pg "$pg_amb" 'refused rather than allowed unchecked' \
+  'push-guard still says it refused rather than allowed -- its OWN anchor phrase'
 assert 'git status; git push' 2 'semicolon-separated push'
 assert 'git subtree push origin main' 2 'git subtree push (subcommand+arg match)'
 

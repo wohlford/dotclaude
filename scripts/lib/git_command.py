@@ -126,6 +126,98 @@ def classify_global_opt(opt: str) -> str:
 ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
+class ParseAmbiguity(ValueError):
+    """A construct this tokenizer cannot read unambiguously, carrying WHERE it gave up.
+
+    `str()` is BYTE-IDENTICAL to the bare `ValueError` message this replaced. That is the whole
+    safety property: every consumer catches bare `except ValueError`, so behaviour is unchanged and
+    the position is purely additive — a reader that wants it opts in via `isinstance`, and one that
+    does not is unaffected.
+
+    `pos` indexes the PREPARED, per-context text the scanner was reading, NOT the user's original
+    command. Earlier passes insert escapes, delete comment spans and fold continuations, and at
+    `depth > 0` the text is an extracted context body. Anything rendering `pos` must say so, and
+    should present the EXCERPT as the locator rather than the offset — an offset the reader cannot
+    find in their own text is worse than none, because it mis-teaches.
+
+    Not every ambiguity carries a position, and that is deliberate. Depth-exceeded, length-exceeded
+    and internal-marker errors keep raising plain `ValueError`: for those the CATEGORY is the whole
+    answer and a caret would be decoration. `shlex` also raises its own `ValueError` through this
+    module (`No escaped character`, `No closing quotation`), which likewise carries nothing. Any
+    consumer must therefore treat position data as optional and degrade to the category alone.
+    """
+
+    def __init__(
+        self,
+        category: str,
+        *,
+        text: str = "",
+        pos: int | None = None,
+        depth: int = 0,
+    ) -> None:
+        # Single positional arg to super() is what pins str() to the category.
+        super().__init__(category)
+        self.category = category
+        self.text = text
+        self.pos = pos
+        self.depth = depth
+
+
+def describe_ambiguity(exc: BaseException | None) -> str:
+    """A human-locatable clause for a `ParseAmbiguity`, or "" for anything without a position.
+
+    CONTRACTUALLY NON-RAISING, and that is load-bearing rather than defensive habit. Both push
+    guards call this from INSIDE the `except` block that emits their refusal, and per
+    `scripts/HOOKS.md` only exit 2 blocks — any other nonzero exit is noise, not a veto. An
+    exception escaping here would exit 1 and the guarded command would RUN. Every failure therefore
+    degrades to "", the refusal is emitted unchanged, and the block is never contingent on the
+    diagnostic succeeding. A diagnostic that can unblock is strictly worse than no diagnostic.
+
+    Returns "" for: a None cause; a plain `ValueError` (the depth, length, internal-marker and
+    reserved-marker sites, plus `shlex`'s own errors, none of which carry attributes); a `pos`
+    that is None or out of range after prepared-text drift.
+
+    The offsets are into the PREPARED, per-context text — earlier passes insert escapes, delete
+    comment spans and fold continuations, and at depth > 0 the text is an extracted context body.
+    The clause therefore offers the EXCERPT as the locator and states the caveat inline: an offset
+    a reader cannot find in their own command mis-teaches, which is the one way adding a position
+    could be worse than the category alone.
+
+    It deliberately does NOT name a tool: the path differs per caller and resolving it here would
+    hardcode one caller's layout into the shared tokenizer.
+    """
+    try:
+        text = getattr(exc, "text", None)
+        pos = getattr(exc, "pos", None)
+        if not isinstance(text, str) or not isinstance(pos, int):
+            return ""
+        if not 0 <= pos < len(text):
+            return ""
+        nl = text.rfind("\n", 0, pos)
+        line = text.count("\n", 0, pos) + 1
+        col = pos - (nl + 1) + 1
+        end = text.find("\n", pos)
+        excerpt = text[nl + 1 :] if end == -1 else text[nl + 1 : end]
+        if len(excerpt) > 120:
+            excerpt = excerpt[:117] + "..."
+        depth = getattr(exc, "depth", 0)
+        where = "the command" if not depth else f"an extracted context (depth {depth})"
+        clause = (
+            f" The construct opens at line {line}, col {col} of {where}, in: {excerpt!r}"
+            f" (offsets are into the text AFTER comment-stripping and escape-masking, so search"
+            f" for the excerpt rather than the offset)."
+        )
+        if "<<" in text:
+            clause += (
+                " This command contains a heredoc: if its delimiter is UNQUOTED, bash really does"
+                " expand backticks and $( ) inside the body, so this refusal is protecting you."
+                " Quoting the delimiter makes the body literal and removes the ambiguity."
+            )
+        return clause
+    except Exception:  # noqa: BLE001 - deliberate: a broken diagnostic must never unblock
+        return ""
+
+
 class InvocationTokens(NamedTuple):
     """The tokens a consumer needs to judge an invocation's CONFIGURATION, not just its subcommand.
 
@@ -667,7 +759,9 @@ def _scan_to_unbalanced_paren(text: str, start: int) -> tuple[str, int]:
                 return text[start:i], i + 1
         at_word_start = ch in " \t\n;&|("
         i += 1
-    raise ValueError("unterminated command substitution")
+    raise ParseAmbiguity(
+        "unterminated command substitution", text=text, pos=max(start - 2, 0)
+    )
 
 
 def _unescape_backquote_body(body: str) -> str:
@@ -725,7 +819,9 @@ def _scan_to_backtick(text: str, start: int) -> tuple[str, int]:
         if text[i] == "`":
             return _unescape_backquote_body(text[start:i]), i + 1
         i += 1
-    raise ValueError("unterminated backtick substitution")
+    raise ParseAmbiguity(
+        "unterminated backtick substitution", text=text, pos=max(start - 1, 0)
+    )
 
 
 def split_command_contexts(
@@ -773,6 +869,12 @@ def split_command_contexts(
     contexts: list[CommandContext] = []
     i, n = 0, len(text)
     quote: str | None = None
+    # Initialised even though the raise below is only reachable with `quote` set, which
+    # today always assigns this too. That coupling is an invariant nobody enforces: a second
+    # `quote = ch` site added later would make this an UnboundLocalError INSIDE a
+    # fail-closed tokenizer, and a crash here exits 1, which the hook contract treats as
+    # noise rather than a veto — i.e. the guarded command runs. -1 degrades to no position.
+    quote_at = -1
     while i < n:
         ch = text[i]
         if quote == "'":
@@ -808,12 +910,13 @@ def split_command_contexts(
             continue
         if quote is None and ch in "'\"":
             quote = ch
+            quote_at = i
         elif quote == '"' and ch == '"':
             quote = None
         out.append(ch)
         i += 1
     if quote is not None:
-        raise ValueError("unbalanced quote")
+        raise ParseAmbiguity("unbalanced quote", text=text, pos=quote_at)
     return "".join(out), contexts
 
 

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.92.0 — 2026-08-24
+- feat(guards): locate the construct that stopped the tokenizer
+
 ## v0.91.8 — 2026-08-24
 - fix(audit): report only failing ruff invocations, bounded per file
 

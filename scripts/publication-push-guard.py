@@ -189,6 +189,32 @@ class Block(NamedTuple):
     boundary_unverifiable: bool = False
 
 
+def _ambiguity_detail(exc: BaseException | None) -> str:
+    """The shared location clause, plus THIS guard's path to the explain tool.
+
+    The location logic lives in the tokenizer (`describe_ambiguity`) so both guards share one
+    non-raising implementation rather than two that can drift; the tool path is per-caller and is
+    resolved from this file, since a repo-relative string resolves to nothing from the deployed
+    config farm.
+    """
+    try:
+        # Import lazily, exactly as `_find_block_reason` does — this guard deliberately keeps
+        # `git_command` out of module scope so an ImportError is caught and BLOCKS rather than
+        # crashing at load. By the time this runs the module is already imported (a ParseAmbiguity
+        # came from it), so this is a cache hit; and if it somehow is not, the except below
+        # degrades to "" rather than letting an ImportError escape the block-emitting handler.
+        sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+        import git_command as gitcmd  # noqa: E402
+
+        clause = gitcmd.describe_ambiguity(exc)
+        if not clause:
+            return ""
+        tool = Path(__file__).resolve().parent / "explain-git-command.py"
+        return f"{clause} For the full parse, run: python3 {tool} -"
+    except Exception:  # noqa: BLE001 - deliberate: a broken diagnostic must never unblock
+        return ""
+
+
 class AmbiguousCommand(ValueError):
     """The WALK could not parse the command — designed ambiguity, not a fault in this guard.
 
@@ -1615,7 +1641,10 @@ def main() -> int:
         print(
             f"{PREFIX} refusing a git command it could not parse unambiguously "
             f"({exc}); failing closed. This is not a policy decision about a push — no push was "
-            f"identified, because the command could not be read. Fix the quoting and re-run.",
+            f"identified, because the command could not be read. Fix the quoting and re-run."
+            # __cause__, not exc: the raise site flattens the message with str(exc) but preserves
+            # the original via `from exc`. Verified end to end before this was written.
+            f"{_ambiguity_detail(exc.__cause__)}",
             file=sys.stderr,
         )
         return 2
