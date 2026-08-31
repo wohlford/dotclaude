@@ -51,7 +51,7 @@ stderr_of_pg() { # command -> the guard's stderr ONLY
     | python3 "$guard" 2>&1 >/dev/null
 }
 contains_pg() { # haystack needle label
-  if printf '%s' "$1" | grep -qF -- "$2"; then
+  if grep -qF -- "$2" <<<"$1"; then
     printf 'PASS  %s\n' "$3"; pass=$((pass + 1))
   else
     printf 'FAIL  %s (missing: %s)\n' "$3" "$2"; fail=$((fail + 1))

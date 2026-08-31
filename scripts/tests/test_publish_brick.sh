@@ -36,7 +36,7 @@ check_eq() { # got want label
 }
 
 check_has() { # haystack needle label
-  if printf '%s' "$1" | grep -qF -- "$2"; then
+  if grep -qF -- "$2" <<<"$1"; then
     pass_line "$3"
   else
     fail_line "$3 (missing [$2])"
@@ -44,7 +44,7 @@ check_has() { # haystack needle label
 }
 
 check_lacks() { # haystack needle label
-  if printf '%s' "$1" | grep -qF -- "$2"; then
+  if grep -qF -- "$2" <<<"$1"; then
     fail_line "$3 (unexpectedly present: [$2])"
   else
     pass_line "$3"

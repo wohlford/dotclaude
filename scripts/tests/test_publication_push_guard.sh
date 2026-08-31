@@ -134,7 +134,7 @@ forced_error_guard() { # label -> sets FE_DIR, FE_GUARD, FE_LOG
 }
 
 assert_contains() { # haystack needle label
-  if printf '%s' "$1" | grep -qF -- "$2"; then
+  if grep -qF -- "$2" <<<"$1"; then
     printf 'PASS  %s\n' "$3"
     pass=$((pass + 1))
   else
@@ -144,7 +144,7 @@ assert_contains() { # haystack needle label
 }
 
 assert_not_contains() { # haystack needle label
-  if printf '%s' "$1" | grep -qF -- "$2"; then
+  if grep -qF -- "$2" <<<"$1"; then
     printf 'FAIL  %s (unexpectedly found: %s)\n' "$3" "$2"
     fail=$((fail + 1))
   else
