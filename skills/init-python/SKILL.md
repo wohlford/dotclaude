@@ -25,6 +25,20 @@ The user may optionally provide:
 
 1. Read `~/.claude/templates.md` for the full Python module template
 2. Customize the template:
+   - Set the `# Script:` / `# Purpose:` / `# Usage:` header block first — it sits above the
+     docstring in the file, so customizing it first keeps this list in file order. `# Script:`
+     gets the target filename. `# Purpose:` gets the user's description (or the same placeholder
+     the docstring uses) as ONE line — sync-docs' extractor drops a continuation onto the next
+     comment line silently, so keep it single-line even when the docstring below is longer.
+     `# Usage:` gets the invocation shape, and **which shape depends on step 4's entry-point
+     decision — settle that first**: an entry-point module keeps its shebang and takes the
+     command-line form (`name.py [options] <arguments>`), while an import-only module has its
+     shebang removed and should carry the import form (`from name import thing`) instead.
+     Leaving a command-line `# Usage:` on a module step 4 strips of its shebang ships a header
+     that contradicts itself.
+     The header and the docstring serve different readers — sync-docs builds the
+     `scripts/README.md` index table from the `# Purpose:` header alone, never from the docstring
+     below it — so keep both.
    - Set the module docstring to the user's description (or a placeholder)
    - Add requested classes/functions as stubs with docstrings and type hints
    - Add specified imports (maintaining stdlib > third-party > local order). Installing the packages

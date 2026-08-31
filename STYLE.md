@@ -127,6 +127,30 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ## Python
 
+### Required Header
+
+A module that lives in an indexed `scripts/` directory carries the same header block as a shell
+script, above the docstring:
+
+```python
+#!/usr/bin/env python3
+# Script: name.py
+# Purpose: Brief description
+# Usage: name.py [options] <arguments>
+"""Brief module description."""
+```
+
+`# Purpose:` must be **one physical line, within the first 10 lines of the file**. Both bounds are
+what `sync-docs` reads: its extractor scans only that window and matches a single line, so a header
+placed lower is invisible and a sentence wrapped onto the next comment line is silently truncated —
+in either case the generated `scripts/README.md` row is wrong rather than absent, which is why the
+`script-headers` sweep member enforces this rather than leaving it to review. Elaboration belongs
+below a bare `#` separator line, or in the docstring. The header and the docstring serve different
+readers: the index table is built from `# Purpose:` alone.
+
+For an import-only module, drop the shebang (per the shebang/exec-bit rule) and write `# Usage:` in
+the import form instead of the command-line form.
+
 ### Key Rules
 
 - **Indentation: 4 spaces** (PEP 8)

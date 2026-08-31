@@ -3,17 +3,24 @@ set -uo pipefail
 
 # Script: audit.sh
 # Purpose: Read-only mechanical compliance sweep over a target git repo's tracked files
-#   Two checks deliberately also see UNTRACKED, unignored files, each for a reason given at its
-#   own definition: `hermetic` (a run that writes to the tree is a finding wherever it lands)
-#   and `mutation-anchors` (a campaign is untracked precisely when it is new). Every other
-#   check is tracked-only, so an untracked violation stays invisible to the sweep.
+#   Four checks also see UNTRACKED, unignored files. Two do so deliberately, each for a reason
+#   given at its own definition: `hermetic` (a run that writes to the tree is a finding wherever
+#   it lands) and `mutation-anchors` (a campaign is untracked precisely when it is new). Two more
+#   do so incidentally, as a side effect of how their underlying tool discovers its population:
+#   `script-headers` (`ScriptsHandler.discover` -> `repo_root.glob("scripts/*.sh")`,
+#   skills/sync-docs/handlers.py) and `sync-docs` (every handler it dispatches to discovers the
+#   same way) both glob the filesystem rather than call `git ls-files`, so an untracked file
+#   matching a handler's glob is discovered and folded in exactly like a tracked one — measured:
+#   an untracked scripts/*.sh drops both into `script-headers`' `missing …` output and into
+#   `sync-docs`' rendered scripts/README.md table as drift. Every other check is tracked-only,
+#   so an untracked violation stays invisible to the sweep.
 # Usage: audit.sh [--scope <path>] [--tests]
 #
 # A `.auditignore` at the scope root (opt-in, one glob pathspec per line, `#` comments and
 # blank lines ignored) excludes matching paths from the five text-content checks
 # (format-trailing-ws, format-crlf, format-final-newline, format-tabs, md-links) only — it
 # can never silence a code/config check (shellcheck, ruff, markdownlint, env-claims, exec-bit,
-# json, toml, sync-docs, mutation-anchors, pre-push-installed, tests, hermetic,
+# json, toml, sync-docs, script-headers, mutation-anchors, pre-push-installed, tests, hermetic,
 # hermetic-outside).
 # No file present, or a present-but-empty file, sweeps unchanged.
 #
@@ -702,6 +709,57 @@ check_sync_docs() {
   fi
 }
 
+# A precondition on sync-docs' INPUT, not a change to sync-docs itself: it never touches
+# sync_docs.py's rc contract or reporting path. A drift-time diagnostic inside the extractor
+# structurally cannot see this defect (a wrapped header ships a wrong row today with no drift
+# pending, and fires only once someone next edits that file's first Purpose line), so this
+# checks the header text directly. OPT-IN BY SCOPE, exactly like check_env_claims above: the
+# checker is resolved from the AUDITED REPO, and this member SKIPs outright — never FAILs —
+# when the scope has never adopted the `<!-- sync:scripts -->` convention at all.
+check_script_headers() {
+  local scope="$1" checker
+  checker="$scope/scripts/script-header-check.py"
+  if [[ ! -f "$checker" ]]; then
+    verdict_skip script-headers 'scope does not ship scripts/script-header-check.py'
+    return
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    verdict_skip script-headers 'python3 not found'
+    return
+  fi
+  # Looser than a literal `<!-- sync:scripts -->`: the marker grammar (markers.py's OPEN_RE)
+  # allows a directive after the handler name and tolerates missing interior whitespace, so
+  # `<!-- sync:scripts sort=name -->` and `<!--sync:scripts-->` are both legal markers that a
+  # literal grep would silently miss — and `ScriptsHandler.supported` (cols/extract/sort) makes
+  # a directive an expected shape, not an exotic one. Mirrors check_sync_docs' own `<!-- sync:`
+  # grep above, narrowed to the `scripts` handler specifically via a trailing
+  # [[:space:]] (a directive follows) or `-` (the `-->` closer starts immediately) rather than
+  # `\b`: measured — this git build's `-E` does not honour `\b` in `grep`/`git grep`, so a
+  # pattern ending `scripts\b` silently matches NOTHING and would have re-created the exact
+  # silent-SKIP defect this fix exists to close.
+  local hits
+  hits="$(git -C "$scope" grep -lE '<!--[[:space:]]*sync:scripts([[:space:]-]|$)' -- '*.md' 2>/dev/null)"
+  if [[ -z "$hits" ]]; then
+    verdict_skip script-headers 'no sync:scripts marker in scope'
+    return
+  fi
+  local out rc
+  # PYTHONDONTWRITEBYTECODE=1: unlike every other checker this sweep shells out to, this one
+  # resolves and imports FROM the audited scope (sync_docs_dir = scope/skills/sync-docs, per
+  # script-header-check.py's own `import handlers` et al.), so an ordinary invocation writes
+  # `.pyc` files under `<scope>/skills/sync-docs/__pycache__` — the sweep's first member to
+  # write into the scope it claims to only read. Benign in a repo that gitignores
+  # `__pycache__/`, real in one that does not.
+  out="$(PYTHONDONTWRITEBYTECODE=1 python3 "$checker" --scope "$scope" 2>&1)"; rc=$?
+  case "$rc" in
+    0) verdict_pass script-headers ;;
+    1) verdict_fail script-headers 'script header(s) unreadable by sync-docs'
+       print_offenders "$out" ;;
+    *) verdict_fail script-headers 'unprovable: the checker could not reach a verdict (instrument failure)'
+       print_offenders "$out" ;;
+  esac
+}
+
 # A mutation campaign's `old` string is a reference into another file that nothing maintains,
 # so it goes stale silently: whoever refactors a subject is the last person to think of
 # re-pointing its campaign, and a campaign whose anchor no longer resolves ERRORs rather than
@@ -1385,6 +1443,7 @@ EOF
   check_json "$scope"
   check_toml "$scope"
   check_sync_docs "$scope"
+  check_script_headers "$scope"
   check_mutation_anchors "$scope"
   check_pre_push_installed "$scope"
   if [[ "$run_tests" == true ]]; then

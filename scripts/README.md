@@ -26,7 +26,7 @@ for how the index below stays in sync.
 | `git-timing-guard.sh`            | PreToolUse hook — block PUBLISHING outside a configured time window                                                            |
 | `guard-secrets-test.sh`          | PostToolUse hook — run the guard-secrets test suite when the guard changes                                                     |
 | `guard-secrets.sh`               | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem)                                                  |
-| `install-git-hooks.sh`           | Install this repo's tracked ../git-hooks/pre-push into the resolved git hooks                                                  |
+| `install-git-hooks.sh`           | Install this repo's tracked ../git-hooks/pre-push into the resolved git hooks directory, copying it rather than symlinking     |
 | `markdownlint-check-test.sh`     | PostToolUse hook — run the markdownlint-check test suite when the lint hook changes                                            |
 | `markdownlint-check.sh`          | PostToolUse hook — run markdownlint-cli2 on edited markdown in opted-in repos                                                  |
 | `md-links-check-test.sh`         | PostToolUse hook — run the md-links-check test suite when the checker changes                                                  |
@@ -35,7 +35,7 @@ for how the index below stays in sync.
 | `memory-index-check.py`          | PostToolUse hook — flag a memory-index entry grown into topic-file content                                                     |
 | `mutation-anchors-check-test.sh` | PostToolUse hook — run the mutation-anchors-check test suite when the checker changes                                          |
 | `mutation-anchors-check.py`      | Assert every mutation campaign's `old` anchor still resolves exactly once in its subject                                       |
-| `propagate-postcheck.sh`         | Verify /propagate's LOCAL promote landed correctly, choosing the postcondition branch                                          |
+| `propagate-postcheck.sh`         | Verify /propagate's LOCAL promote landed and, where configured, that the boundary hook and config farm are current             |
 | `prose-diff.py`                  | Verify a restructuring is lossless by diffing word or line multisets in both directions                                        |
 | `publication-push-guard-test.sh` | PostToolUse hook — run the publication-push-guard suite when the guard, its suite, or the shared git_command tokenizer changes |
 | `publication-push-guard.py`      | PreToolUse hook — fail-closed dev-block keeping `dev` private in a repo that adopted the dev/main publication model            |
@@ -49,6 +49,7 @@ for how the index below stays in sync.
 | `recast-test.sh`                 | PostToolUse hook — run the matching recast test file when a recast source changes                                              |
 | `ruff-check.sh`                  | PostToolUse hook — run ruff lint+format check on edited Python in ruff projects                                                |
 | `run-long.sh`                    | Launch a long job in the background and record its real exit status inside the artifact                                        |
+| `script-header-check.py`         | Verify every scripts/ file carries a Purpose header sync-docs' extractor can read whole                                        |
 | `settings-hooks-check.py`        | Verify a promoted runtime settings.json kept every hook registration the commit added                                          |
 | `shellcheck-check.sh`            | PostToolUse hook — run shellcheck on edited shell scripts                                                                      |
 | `style-check-test.sh`            | PostToolUse hook — run the style-check test suite when style-check changes                                                     |

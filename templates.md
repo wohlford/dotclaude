@@ -109,6 +109,9 @@ main "$@"
 
 ```python
 #!/usr/bin/env python3
+# Script: example_processor.py
+# Purpose: Process data with validation and error handling
+# Usage: example_processor.py [options] <input-file>
 """Brief module description.
 
 Longer description explaining purpose and usage.

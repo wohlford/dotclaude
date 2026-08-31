@@ -6,7 +6,11 @@ description: Run the mechanical compliance sweep — linters, format, link, exec
 # /audit — Mechanical Compliance Sweep
 
 One command for the mechanical half of a repo audit: deterministic tools (linters, formatters,
-link/exec-bit/config checks) run over the target repo's tracked files, each reported as
+link/exec-bit/config checks) run over the target repo's tracked files — with four exceptions that
+also see UNTRACKED, unignored files: `hermetic` and `mutation-anchors` deliberately, `sync-docs`
+and `script-headers` incidentally, because the tools behind them discover by filesystem glob
+rather than from the index (`audit.sh`'s own header gives the reason for each). So a `FAIL` can
+name a file you have not staged yet. Each check is reported as
 `PASS`/`FAIL`/`SKIP`, exiting 0 clean, 1 on any finding, 2 on usage error. Every run it exits
 from itself ends with a machine-readable `RESULT:` line carrying its own exit code. Read-only
 and advisory — it never edits and never blocks. Complements `/vet` (dispatched model reviewers,
@@ -64,12 +68,14 @@ The user may optionally provide:
    and do not attempt a fix unless asked. An `INCOMPLETE` or missing verdict is a reason
    to re-run deliberately, not to assume the sweep would have passed.
 
-The sweep runs 18 checks: `format-trailing-ws`, `format-crlf`, `format-final-newline`,
+The sweep runs 19 checks: `format-trailing-ws`, `format-crlf`, `format-final-newline`,
 `format-tabs` (formatting); `shellcheck`, `ruff` (linters); `markdownlint` (opt-in, see Rules);
 `md-links` (relative link/anchor validity); `env-claims` (opt-in, see Rules; CLAUDE.md's
 documented environment claims still hold on this machine);
 `exec-bit` (tracked shebang files must be executable);
 `json`, `toml` (config validity); `sync-docs` (index-table drift);
+`script-headers` (opt-in, see Rules; every scripts-index script's bound `# Purpose:` header reads
+as one self-contained line);
 `mutation-anchors` (every mutation campaign's anchor still resolves exactly once in the file it
 mutates); `pre-push-installed` (adopted repos: the tracked `git-hooks/pre-push` is installed at
 the resolved hooks path, executable, and matches its source); `tests` (shell suites + pytest);
@@ -134,10 +140,10 @@ becomes a `:(exclude)` pathspec — this mirrors the repo's own `.markdownlint-c
 
 It scopes ONLY the five text-content checks: `format-trailing-ws`, `format-crlf`,
 `format-final-newline`, `format-tabs`, `md-links`. Code/config checks (`shellcheck`, `ruff`,
-`markdownlint`, `env-claims`, `exec-bit`, `json`, `toml`, `sync-docs`, `mutation-anchors`,
-`pre-push-installed`, `tests`, `hermetic`, `hermetic-outside`) are deliberately never scoped by
-it — a repo cannot hide a broken tracked `.json`, a non-executable shebang file, or an
-artifact its own suite dropped from the audit.
+`markdownlint`, `env-claims`, `exec-bit`, `json`, `toml`, `sync-docs`, `script-headers`,
+`mutation-anchors`, `pre-push-installed`, `tests`, `hermetic`, `hermetic-outside`) are
+deliberately never scoped by it — a repo cannot hide a broken tracked `.json`, a non-executable
+shebang file, or an artifact its own suite dropped from the audit.
 
 An absent `.auditignore` is fully backward compatible — behavior is identical to before it
 existed. A present-but-empty file (or one containing only comments/blank lines) behaves exactly
@@ -168,11 +174,12 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
 - **Everywhere else the cap is a known, UNFIXED defect — never read a capped FAIL as complete.**
   `toml`, `json`, `shellcheck` and `md-links` emit several lines per offender, so a flat cap drops
   whole files (measured: six invalid `.toml`, four named, two never named at all). `markdownlint`,
-  `sync-docs` and `env-claims` pipe a whole tool's stdout, preamble and summary included.
+  `sync-docs`, `env-claims` and `script-headers` pipe a whole tool's stdout, preamble and summary
+  included.
   **`mutation-anchors` has `ruff`'s exact shape but has not crossed yet**: it prints a
   `campaign: <file>` line for EVERY campaign, passing or failing, so its padding grows with the
-  campaign COUNT rather than with the findings. Measured today: 15 campaigns, so 15 padding lines
-  precede any finding and 35 of the cap remain — it does not yet hide anything. It starts to at
+  campaign COUNT rather than with the findings. Measured today: 18 campaigns, so 18 padding lines
+  precede any finding and 32 of the cap remain — it does not yet hide anything. It starts to at
   ~50 campaigns, and nothing signals the crossing. This list is deliberately explicit: three
   earlier drafts stated a rule quantified over "every other check" and were wrong each time.
 - **The two exceptions, and why each is one.** `tests` holds another tool's *entire* stdout, mostly
@@ -214,6 +221,22 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   other repo against the wrong document. It also `SKIP`s when `python3` is absent, and when the
   documented environment is not present on the machine — that last one is what stops a clone of a
   published repo reporting a false `FAIL` for claims that were only ever true elsewhere.
+- `script-headers` only runs where the audited repo ships both
+  `scripts/script-header-check.py` and a `<!-- sync:scripts -->` marker — `SKIP` elsewhere,
+  which is the expected verdict in a repo that has not adopted the scripts-index convention.
+  It also `SKIP`s when `python3` is absent — a missing *interpreter* reads as `SKIP`, unlike the
+  missing *runner* the general rule above calls unprovable, and `env-claims` draws the same line.
+  It reports three failure shapes, and the offender line names which: **`missing`** (no
+  `# Purpose:` line at all), **`out-of-window`** (one exists, but past the first 10 lines, which
+  is all `BashHeaderExtractor` reads), and **`wrapped`** (the header continues onto the next
+  comment line, which the extractor silently drops — so the generated row truncates mid-clause).
+  It discovers by filesystem glob, so it sees **untracked** scripts too. A checker that cannot
+  reach a verdict (exit code 2 or higher) reports `FAIL … unprovable` — an instrument failure,
+  never a finding, the same distinction `env-claims` draws. Coverage is the **scripts index only** (`ScriptsHandler`'s
+  `scripts/*.sh` / `scripts/*.py` population) — the same `BashHeaderExtractor` also feeds the
+  hooks table, which this check does not read. Complete today by overlap, not by construction:
+  every registered hook resolves inside `scripts/*.{sh,py}`, but a hook registered from
+  `scripts/lib/` or `skills/*/` would sit outside the scripts index and go unchecked.
 - `pre-push-installed` only runs in adopted repos (any `refs/heads/*` branch carrying a
   tracked `.publication.toml`) — `SKIP` elsewhere. It answers registration only: whether the
   hook that would enforce the push boundary is actually installed, executable, and current.
@@ -258,8 +281,8 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   non-zero, so `&&` chains still short-circuit. Under `nohup`, SIGHUP is ignored before
   the script starts and so cannot be trapped at all: a HUP then has no effect whatever —
   the run continues to completion and emits a normal verdict.
-- **`checks=<pass>/<fail>/<skip>` counts emitted verdict lines, not the 18 named checks.**
-  Two things make the totals differ from 18: an invalid `.auditignore` pattern adds a
-  `FAIL auditignore` that is not one of the 18, and without `--tests` none of `tests`,
-  `hermetic`, or `hermetic-outside` emits a line at all — so a static sweep totals 15 and a
-  full one 18. Compare counts only across runs invoked with the same flags.
+- **`checks=<pass>/<fail>/<skip>` counts emitted verdict lines, not the 19 named checks.**
+  Two things make the totals differ from 19: an invalid `.auditignore` pattern adds a
+  `FAIL auditignore` that is not one of the 19, and without `--tests` none of `tests`,
+  `hermetic`, or `hermetic-outside` emits a line at all — so a static sweep totals 16 and a
+  full one 19. Compare counts only across runs invoked with the same flags.

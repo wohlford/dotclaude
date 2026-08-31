@@ -12,6 +12,11 @@ import re
 from pathlib import Path
 from typing import Any, Protocol
 
+# How many leading lines BashHeaderExtractor reads looking for `# Script:` / `# Purpose:`.
+# A named constant so a consumer (script-header-check.py) can reference the same window
+# rather than hand-copying the literal, which would drift silently if this ever changes.
+HEADER_WINDOW_LINES = 10
+
 
 class Extractor(Protocol):
     """Protocol for extractors: a name plus extract(path) -> partial field dict."""
@@ -224,7 +229,7 @@ class BashHeaderExtractor:
 
     def extract(self, path: Path) -> dict[str, Any]:
         text = path.read_text(encoding="utf-8", errors="replace")
-        lines = text.splitlines()[:10]
+        lines = text.splitlines()[:HEADER_WINDOW_LINES]
         result: dict[str, Any] = {}
         for ln in lines:
             m = re.match(r"^#\s*Script:\s*(.+)$", ln)

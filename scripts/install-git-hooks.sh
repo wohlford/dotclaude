@@ -2,15 +2,15 @@
 set -euo pipefail
 
 # Script: install-git-hooks.sh
-# Purpose: Install this repo's tracked ../git-hooks/pre-push into the resolved git hooks
-#   directory (.git/hooks in a normal clone; the MAIN repo's .git/hooks under a linked
-#   worktree — hooks are never per-worktree). COPIES the file; never symlinks it. Two
-#   measured silent fail-open states rule out a symlink: git ignores a non-executable hook
-#   with only a `hint:` line and lets the push through, and it ignores a dangling symlink
-#   the same way — and a symlink pointing back into git-hooks/ would reintroduce the branch
-#   dependence this design exists to avoid (core.hooksPath resolves against the checked-out
-#   working tree, so an in-tree hooks dir goes inactive on whatever branch the publish path
-#   checks out to push).
+# Purpose: Install this repo's tracked ../git-hooks/pre-push into the resolved git hooks directory, copying it rather than symlinking
+#
+# The resolved directory is .git/hooks in a normal clone, or the MAIN repo's .git/hooks under a
+# linked worktree — hooks are never per-worktree. Two measured silent fail-open states rule out
+# a symlink: git ignores a non-executable hook with only a `hint:` line and lets the push
+# through, and it ignores a dangling symlink the same way — and a symlink pointing back into
+# git-hooks/ would reintroduce the branch dependence this design exists to avoid
+# (core.hooksPath resolves against the checked-out working tree, so an in-tree hooks dir goes
+# inactive on whatever branch the publish path checks out to push).
 # Usage: ./scripts/install-git-hooks.sh [--force | --force-if-ours]
 #   --force  overwrite a pre-existing .git/hooks/pre-push even if it differs from the
 #            tracked source (still refuses a symlink outright; see Rules below).

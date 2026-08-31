@@ -480,7 +480,7 @@ check_case "GREEN: real audit.sh and SKILL.md agree" \
 # ---------------------------------------------------------------------------
 stale_count="$sandbox/stale-count-skill.md"
 mutate "$audit_skill" "$stale_count" \
-  'The sweep runs 18 checks:' 'The sweep runs 14 checks:'
+  'The sweep runs 19 checks:' 'The sweep runs 14 checks:'
 check_case "RED: stale 'runs 14 checks' is caught" \
   "$audit_sh" "$stale_count" 1 "skill-runs-count"
 
@@ -501,7 +501,7 @@ check_case "RED: hermetic-outside dropped while hermetic remains" \
   "$audit_sh" "$prefix_trap" 1 "skill-name-list"
 
 # ---------------------------------------------------------------------------
-# 4. RED -- fail-closed on a NEW check. Add a 19th check to audit.sh and leave
+# 4. RED -- fail-closed on a NEW check. Add a 20th check to audit.sh and leave
 #    every doc untouched: this is the forward direction of the measured drift,
 #    and it must fire on all four sites at once rather than one of them.
 # ---------------------------------------------------------------------------
@@ -519,7 +519,7 @@ mutate "$added_check" "$added_check.2" \
 
 check_sync_docs() {'
 mv "$added_check.2" "$added_check"
-check_case "RED: a 19th check with no doc update fires on every count site" \
+check_case "RED: a 20th check with no doc update fires on every count site" \
   "$added_check" "$audit_skill" 1 \
   "skill-runs-count" "skill-name-list" "skill-named-total" \
   "skill-differ-from" "skill-static-total" "skill-full-total" \
@@ -527,17 +527,19 @@ check_case "RED: a 19th check with no doc update fires on every count site" \
 
 # ---------------------------------------------------------------------------
 # 5. RED -- the static total drifts on a DIFFERENT axis from the named count.
-#    Moving a check inside the --tests gate leaves 18 named but makes the
-#    static sweep 14, so the two numbers must be asserted independently.
+#    Moving a check inside the --tests gate leaves 19 named but makes the
+#    static sweep 15, so the two numbers must be asserted independently.
 # ---------------------------------------------------------------------------
 regated="$sandbox/regated-audit.sh"
 # shellcheck disable=SC2016  # "$scope"/"$run_tests" are literal audit.sh source
 mutate "$audit_sh" "$regated" \
   '  check_sync_docs "$scope"
+  check_script_headers "$scope"
   check_mutation_anchors "$scope"
   check_pre_push_installed "$scope"
   if [[ "$run_tests" == true ]]; then' \
-  '  check_mutation_anchors "$scope"
+  '  check_script_headers "$scope"
+  check_mutation_anchors "$scope"
   check_pre_push_installed "$scope"
   if [[ "$run_tests" == true ]]; then
     check_sync_docs "$scope"'
@@ -557,8 +559,8 @@ reworded="$sandbox/reworded-skill.md"
 # checker an unmutated copy. The checker itself is immune (it flattens
 # whitespace before matching); it was the fixture that had to learn this.
 mutate "$audit_skill" "$reworded" \
-  'so a static sweep totals 15 and a
-  full one 18.' \
+  'so a static sweep totals 16 and a
+  full one 19.' \
   'so the totals depend on which flags you passed.'
 check_case "RED: a reworded claim is reported unfindable, not skipped" \
   "$audit_sh" "$reworded" 1 "skill-sweep-totals"
@@ -596,7 +598,7 @@ check_case "RED: a check newly given \$ignore contradicts both scoped sites" \
 #    assertion fired first and the floor was never consulted -- a mutation
 #    deleting the floor survived the whole suite while this row stayed green.
 #    Renaming the verdict token AND the function together keeps every internal
-#    assertion satisfied, so the derived set is a coherent 18 that simply no
+#    assertion satisfied, so the derived set is a coherent 19 that simply no
 #    longer contains `hermetic-outside`. Only the floor can object.
 # ---------------------------------------------------------------------------
 floor_reached="$sandbox/floor-reached-audit.sh"

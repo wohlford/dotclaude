@@ -2,12 +2,13 @@
 set -uo pipefail
 
 # Script: propagate-postcheck.sh
-# Purpose: Verify /propagate's LOCAL promote landed correctly, choosing the postcondition branch
-#          itself instead of leaving that to the operator. Also asserts, unconditionally on an
-#          adopted repo, that the pre-push boundary hook installed at .git/hooks/pre-push is
-#          current — the fast-forward alone cannot have updated it (see pre-push-installed) —
-#          and, where the scope ships an install.sh, that every CURRENT config-farm member still
-#          links to it, which the fast-forward likewise cannot have done (see farm-current).
+# Purpose: Verify /propagate's LOCAL promote landed and, where configured, that the boundary hook and config farm are current
+#
+# Chooses the postcondition branch itself instead of leaving that to the operator. Also asserts,
+# unconditionally on an adopted repo, that the pre-push boundary hook installed at
+# .git/hooks/pre-push is current — the fast-forward alone cannot have updated it (see
+# pre-push-installed) — and, where the scope ships an install.sh, that every CURRENT config-farm
+# member still links to it, which the fast-forward likewise cannot have done (see farm-current).
 # Usage: propagate-postcheck.sh --scope <live> --before-sha <sha256> [--ref <ref>] [--before-head <commit>]
 #
 # Scope: this script verifies; it changes nothing. It runs AFTER the fast-forward, so every
