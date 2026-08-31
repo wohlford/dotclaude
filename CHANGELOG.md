@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.98.7 — 2026-08-30
+- docs(CLAUDE.md): add the same-bytes and crashed-child hazards
+
 ## v0.98.6 — 2026-08-28
 - fix(markdownlint): herestring the config suite comparators
 

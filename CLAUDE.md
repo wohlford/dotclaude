@@ -106,7 +106,12 @@ launch. Four wrappers were hand-written in one session before it existed, three 
 the fourth still let a sweep that had run 4 checks of 15 read as a clean pass. Give it `--expect
 '<verdict regex>'` at LAUNCH too — the pattern is recorded INTO the artifact, so a run that
 finished having executed nothing reports INDETERMINATE instead of a truthful, useless `DONE rc=0`.
-Measured: exactly that happened, and only an absent verdict line caught it.
+Measured: exactly that happened, and only an absent verdict line caught it. **Match the verdict's
+SHAPE, never its passing VALUE** — the natural thing to write is the answer you want, and that
+converts a real failure into an INDETERMINATE. Measured: `--expect 'RESULT: PASS rc=0'` over a
+run that reached a genuine `RESULT: FAIL rc=1` reported INDETERMINATE, and the FAIL stayed
+invisible until the artifact was read by hand; `RESULT: (PASS|FAIL|ERROR|INCOMPLETE) rc=[0-9]+`
+is the form that reports it.
 
 > Hooks (indexed in README.md) fire per-edit: a multi-step change that passes through an invalid
 > intermediate state (e.g. resolving conflict markers with two Edits) trips transient PostToolUse
@@ -276,6 +281,17 @@ left legal.
   **the remedy directly above — measure each side's RATE — returns the same wrong answer twenty
   times.** Re-run each side from inside its own subject, or make the tool report the configuration
   it actually loaded.
+
+- **When both sides are provably the SAME BYTES, a disagreement is about the INSTRUMENT — and that
+  is cheaper to establish than either side's RATE.** The remedy two bullets up assumes you cannot
+  rule out a subject difference; when you can, no rate is needed at all. Measured: a suite failed
+  inside a full sweep and passed when run alone, and `git rev-parse <ref>:<path>` showed the test
+  file AND the code under test were byte-identical blobs on both sides — so no outcome difference
+  could be about the subject, and one isolated run per side (59/0 each) settled in two minutes what
+  twenty runs would have. Its own failure mode: identical bytes prove the SUBJECT identical, never
+  the ENVIRONMENT, so this tells you the instrument varied without telling you on which axis — and
+  it says nothing about whether the instrument is RIGHT, since both sides can agree and both be
+  wrong.
 
 #### It ran and could never have failed
 
@@ -504,6 +520,17 @@ left legal.
   default, then **CROSS-CHECK the count against an independent count over the whole file** — a
   truncated read looks exactly like a shorter file. **That count is blind to WHICH entries are
   missing**, so it tells you to re-read, never what you lost.
+
+- **A child that DIED before running renders its death in the vocabulary of the thing under test,
+  so an infrastructure failure reads as a substantive finding.** A harness comparing an expected
+  exit code against what it got prints a domain sentence — `want 2, got 0` — whatever killed the
+  child, so a crashed interpreter is indistinguishable from a gate that reached the wrong verdict,
+  and the natural response is to go debug the gate. Measured: an audit's suite emitted ~12 such
+  rows, while interleaved in the same log — and absent from the summary — sat `Fatal Python error:
+  init_import_site` and `Could not find platform independent libraries`; the interpreter was
+  failing to START under the sweep's concurrent load, so the gate never ran once. Grep the FULL log
+  for startup-shaped errors before believing any row phrased in the subject's own terms, since the
+  summary is exactly where they will not appear.
 
 #### The fix it prescribes is not the defect it found
 
