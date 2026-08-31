@@ -252,6 +252,93 @@ def _verdict(
     )
 
 
+def _pct(part: float, whole: float) -> int:
+    """Whole-number percent. Only ever called where `whole` is a cap that actually applied."""
+    return round(100.0 * part / whole) if whole else 0
+
+
+def _headroom_line(
+    completed,
+    timedout_labels,
+    limit: float,
+    baseline_elapsed: float,
+    baseline_limit: float,
+    override,
+) -> str:
+    """How close the slowest row came to its cap — one line, always prefixed `HEADROOM: `.
+
+    RETROSPECTIVE by design, and the framing is the honest one: nobody reads a green campaign's
+    report, so this warns no one in time. What it buys is that when a cap DOES bite, the PREVIOUS
+    run's artifact already holds the answer. Measured 2026-08-09: a campaign returned
+    `ERROR … timedout=1` on a pre-existing row after its suite grew 80 -> 108 rows, and diagnosis
+    cost a full re-run plus an isolated single-row probe (CAUGHT at 1351.0s against a 26.9s
+    baseline). The run BEFORE it had a slowest row at 628.5s of a 900s cap — 70%, recorded
+    nowhere. The line lands in the report's last few lines — `restored:` and then `RESULT:`
+    follow it — so a short `tail` of an artifact carries it without a grep.
+
+    Every state shares the `HEADROOM: ` prefix so ONE grep finds it whatever happened, and the
+    three states are not cosmetic:
+
+    * A timed-out row has NO elapsed — `run_suite` returns None and the `_Run` carrying `elapsed`
+      is never built — so it contributes nothing to a "slowest completed" figure. On the one run
+      that matters most, a naive implementation would therefore print a reassuring percentage
+      beside an actual failure. `exhausted` LEADS instead, the timed-out rows are named, and the
+      completed rows follow explicitly marked secondary.
+    * Rows that ran but none COMPLETED get prose. Never `0%`, which is indistinguishable from a
+      fast healthy run, and never a division. Reachable when every row was NOT APPLIED — which
+      has `timedout == 0`, so it must not say "exhausted" either.
+    * The normal state names the row's LABEL, not just a number. A campaign where every row is
+      caught fast has enormous headroom and says nothing; the figure is only meaningful against
+      the row it belongs to, and without the label it invites raising the cap when the answer may
+      be that one row is pathological.
+
+    `derived=` appears only when an override is in force, and asserts NOTHING. There is no
+    threshold and no warning severity here: the runner sees one run and cannot compute a trend.
+    But TIMEOUT_MULTIPLIER is calibrated from a measured worst case rather than taste, so
+    printing what the cap WOULD have been makes "this row survives only because of the override"
+    legible without the runner claiming a judgement it cannot support. On the run before the
+    incident that reads 628.5s against `max(60, 20x26.9)` = 538s — exceeded, one run early.
+
+    The baseline's own cap rides along because it is the one guaranteed to erode:
+    BASELINE_TIMEOUT_SECONDS is FLAT, while the per-mutant cap DERIVES from the baseline and so
+    rescales as a suite grows. The existing `BASELINE green` line prints the baseline's elapsed
+    and the MUTANT limit — never the limit the baseline itself ran under.
+    """
+    derived = ""
+    if override is not None:
+        derived = f" derived={derive_timeout(baseline_elapsed, None):.0f}s"
+    base = (
+        f" baseline={baseline_elapsed:.1f}s/{baseline_limit:.0f}s"
+        f" ({_pct(baseline_elapsed, baseline_limit)}%)"
+    )
+    slowest = max(completed, key=lambda row: row[1]) if completed else None
+
+    if timedout_labels:
+        named = ", ".join(repr(label) for label in timedout_labels)
+        if slowest is None:
+            secondary = "no row completed, so no completed-row figure exists"
+        else:
+            secondary = (
+                f"slowest completed={slowest[1]:.1f}s used={_pct(slowest[1], limit)}% "
+                f"row={slowest[0]!r}"
+            )
+        return (
+            f"HEADROOM: exhausted cap={limit:.0f}s{derived}{base}"
+            f" — {len(timedout_labels)} row(s) consumed the whole cap: {named}"
+            f" (secondary: {secondary})"
+        )
+    if slowest is None:
+        return (
+            f"HEADROOM: not measured cap={limit:.0f}s{derived}{base}"
+            " — rows ran but none completed a suite run (all NOT APPLIED), so there is no"
+            " percentage to report"
+        )
+    return (
+        f"HEADROOM: slowest={slowest[1]:.1f}s cap={limit:.0f}s"
+        f" used={_pct(slowest[1], limit)}%{derived}{base} row={slowest[0]!r}"
+    )
+
+
 def _stream(line: str) -> None:
     """Write one progress line to stdout and FLUSH it.
 
@@ -435,11 +522,18 @@ def run(
 
     outcomes = []
     caught = survived = timedout = 0
+    # Per-row elapsed, RETAINED rather than only streamed, because `_headroom_line` reads it. The
+    # two lists are disjoint and neither holds a NOT APPLIED row: such a row never runs the suite
+    # at all, which is why "none completed" is a state of its own rather than a zero.
+    completed, timedout_labels = [], []
 
     try:
-        baseline = run_suite(
-            timeout if timeout is not None else BASELINE_TIMEOUT_SECONDS
-        )
+        # Hoisted so the cap the baseline RAN under and the cap the report PRINTS are one value.
+        # Two spellings of one intent is itself the defect: this repo has measured a tool whose
+        # post-action pass blessed the state its own read-only mode called broken, because each
+        # side had re-derived the same rule slightly differently.
+        baseline_limit = timeout if timeout is not None else BASELINE_TIMEOUT_SECONDS
+        baseline = run_suite(baseline_limit)
         if baseline is None:
             lines.append(
                 "ERROR  the baseline timed out — the suite never finishes even UNMUTATED, so "
@@ -495,6 +589,7 @@ def run(
                     )
                 )
                 timedout += 1
+                timedout_labels.append(m.label)
             elif run.noticed:
                 tail = (run.stdout.strip().split("\n") or [""])[-1]
                 outcomes.append(Outcome(m.label, CAUGHT, tail[:96]))
@@ -506,7 +601,13 @@ def run(
                 survived += 1
             # Per-mutation elapsed, not just the outcome: a 297s outlier in a 14-row campaign
             # took three investigations to find, and one timed line would have shown it first.
-            took = run.elapsed if run is not None else limit
+            # A timed-out row has no elapsed to show, so the streamed figure falls back to the
+            # cap it was killed at — which is a LOWER bound, and the reason `_headroom_line`
+            # refuses to turn that row into a percentage.
+            took = limit
+            if run is not None:
+                completed.append((m.label, run.elapsed))
+                took = run.elapsed
             emit(f"[{n}/{total}] {outcomes[-1].status:9s} {m.label}  {took:.1f}s")
     finally:
         subject.write_text(original)
@@ -527,6 +628,18 @@ def run(
         lines.append(f"{o.status:9s} {o.label}")
         if o.detail:
             lines.append(f"          {o.detail}")
+
+    # Emitted HERE — after the outcome loop, before the restore check — so BOTH post-loop reports
+    # carry it: the normal one and the restore-failure ERROR alike. Appending it just before the
+    # final `_report` instead would silently drop the line from the restore-failure path, which is
+    # the report a reader has most reason to grep. The pre-loop early returns (stale backup, empty
+    # mutation list, backup-write failure, baseline timeout, baseline red) legitimately do not emit
+    # it: they have no rows, and the baseline paths have no `limit` computed at all.
+    lines.append(
+        _headroom_line(
+            completed, timedout_labels, limit, baseline.elapsed, baseline_limit, timeout
+        )
+    )
 
     after = _sha256(subject)
     if after != before:

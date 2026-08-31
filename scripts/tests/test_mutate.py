@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -990,6 +991,234 @@ def test_the_derived_timeout_scales_off_the_MEASURED_baseline(baseline, want, wh
 
 def test_an_explicit_timeout_overrides_the_derivation():
     assert mutate.derive_timeout(17.0, 5) == 5
+
+
+# ---------- P11: HEADROOM — how close the slowest row came to the cap ----------
+
+# A per-mutant TIMEOUT is INDETERMINATE, so it carries the whole campaign to ERROR and reads like
+# a defect in the change under test. Measured 2026-08-09: a campaign returned `ERROR … timedout=1`
+# on a pre-existing row after its suite grew 80 -> 108 rows, and diagnosing it cost a full re-run
+# plus an isolated single-row probe. The run BEFORE it had a slowest row at 628.5s of a 900s cap —
+# 70%, recorded nowhere. The value of this line is RETROSPECTIVE: it collapses that diagnosis to
+# one grep of the previous artifact. Nobody reads a green campaign's report, and claiming
+# otherwise would be the overclaim this section is written against.
+
+# Manufactures the elapsed spread the figure is read from. Every mutant runs the SAME suite, so
+# real per-row elapsed differs only by noise — a fixture that relied on that difference would be a
+# timing flake in waiting, green or red by luck. This gives one NAMED row a genuine 2s delay,
+# better than an order of magnitude clear of the sub-100ms the other rows run in. `-F --` because
+# the marker is DERIVED from a Mutation's `new`: a renamed row could carry a leading `-` or a
+# regex metacharacter, and as a BRE those silently never match, so the delay would stop happening
+# and the row would go green on noise.
+SUITE_SLOW_ON_MARKER_SRC = """#!/usr/bin/env bash
+if grep -qF -- '{marker}' "$1"; then sleep 2; fi
+if grep -q 'GUARD = True' "$1"; then
+  printf 'PASS  guard intact\\n'
+  exit 0
+fi
+printf 'FAIL  guard missing\\n'
+exit 1
+"""
+
+
+def _headroom(report) -> str:
+    """The one `HEADROOM: ` line, or raise.
+
+    Scoped to a line, and matched on the PREFIX every state shares: the whole point of the shared
+    prefix is that one grep finds the line whatever happened, so a test that searched the whole
+    report would pass with the line deleted and some other line mentioning the word.
+    """
+    found = [ln for ln in report.text.split("\n") if ln.startswith("HEADROOM: ")]
+    assert len(found) == 1, f"expected exactly one HEADROOM line, got {found}"
+    return found[0]
+
+
+def test_the_headroom_line_does_not_displace_the_verdict(bed):
+    """The spike's decisive finding: three rows assert the verdict is LAST and a mutation pins it.
+
+    So the figure goes on its own line immediately BEFORE the verdict. Appending it after would
+    break all four at once — which is why the emission site is not a matter of taste here.
+    """
+    _, subject, suite = bed
+    report = mutate.run(subject, suite(), [DROP_GUARD], timeout=30)
+    lines = report.text.split("\n")
+    assert lines[-1] == report.verdict
+    assert _headroom(report) in lines[:-1]
+
+
+def test_the_RESULT_line_is_BYTE_IDENTICAL_beside_the_headroom_line(bed):
+    """Campaigns are launched through `run-long.sh --expect '<regex>'`, matched against this line.
+
+    The patterns are supplied per invocation and are not stored in-repo, so there is no corpus to
+    satisfy — and that cuts both ways: any future prefix-anchored pattern must keep matching, so
+    the safe move is not to touch the line at all. Pinned against a LITERAL rather than left to
+    inspection: a reformat that reads fine to a human is exactly what stops a pattern matching.
+    """
+    _, subject, suite = bed
+    report = mutate.run(subject, suite(), [DROP_GUARD], timeout=30)
+    assert report.verdict == "RESULT: PASS rc=0 caught=1 survived=0 timedout=0 total=1"
+    assert re.match(r"RESULT: (PASS|FAIL) rc=[0-9]+ caught=", report.verdict), (
+        "the prefix-anchored --expect shape these campaigns are actually launched with"
+    )
+
+
+@pytest.mark.parametrize("slow", [DROP_GUARD, RAISE_LIMIT], ids=lambda m: m.label)
+def test_the_headroom_figure_MOVES_with_whichever_row_is_slowest(bed, slow):
+    """A figure that cannot change is not reading anything.
+
+    Both parametrisations run the same two mutations against the same suite; only WHICH row is
+    delayed differs. Asserting the LABEL rather than a percentage is deliberate — the percentage
+    is the same in both, so a percentage assertion would pass against a hard-coded constant.
+    """
+    _, subject, suite = bed
+    cmd = suite(SUITE_SLOW_ON_MARKER_SRC.format(marker=slow.new), "slow.sh")
+    report = mutate.run(subject, cmd, [DROP_GUARD, RAISE_LIMIT], timeout=30)
+    assert report.timedout == 0, report.text
+    line = _headroom(report)
+    assert line.startswith("HEADROOM: slowest="), line
+    other = RAISE_LIMIT if slow is DROP_GUARD else DROP_GUARD
+    assert repr(slow.label) in line, line
+    assert repr(other.label) not in line, (
+        "the fast row was named as the slowest — a min/max inversion reads exactly like this: "
+        + line
+    )
+
+
+def test_the_DERIVED_cap_is_printed_only_when_an_override_is_in_force(bed):
+    """`derived=` asserts nothing; it makes "this row survives only because of the override" legible.
+
+    The override here (30s) is deliberately NOT the value the derivation would produce (60s, the
+    floor), so the assertion can tell which number reached the line. A test supplying the option's
+    own default cannot tell whether the option is read at all.
+    """
+    _, subject, suite = bed
+    overridden = _headroom(mutate.run(subject, suite(), [DROP_GUARD], timeout=30))
+    assert "cap=30s" in overridden, overridden
+    assert " derived=60s" in overridden, overridden
+
+    plain = _headroom(mutate.run(subject, suite(), [DROP_GUARD]))
+    assert "derived=" not in plain, (
+        "with no override there is nothing to compare against: " + plain
+    )
+    assert "cap=60s" in plain, plain
+
+
+def test_the_BASELINE_cap_is_reported_too(bed):
+    """`BASELINE_TIMEOUT_SECONDS` is FLAT and printed nowhere else.
+
+    The existing `BASELINE green` line shows the baseline's elapsed and the MUTANT limit — never
+    the limit the baseline itself ran under. The per-mutant cap DERIVES from the baseline, so it
+    rescales as a suite grows; the flat one does not, which makes it the cap guaranteed to erode
+    by exactly the mechanism that caused the measured incident (a suite going 80 -> 108 rows).
+    """
+    _, subject, suite = bed
+    plain = _headroom(mutate.run(subject, suite(), [DROP_GUARD]))
+    assert f"/{mutate.BASELINE_TIMEOUT_SECONDS:.0f}s" in plain, plain
+    # An override replaces the baseline's cap as well as the mutants', and the line must follow
+    # the value the baseline ACTUALLY ran under rather than restating the constant.
+    overridden = _headroom(mutate.run(subject, suite(), [DROP_GUARD], timeout=30))
+    assert "baseline=" in overridden and "/30s" in overridden, overridden
+
+
+def test_a_timed_out_row_makes_the_line_LEAD_with_exhausted(bed):
+    """The case the whole design turns on: a timed-out row has NO elapsed.
+
+    `run_suite` returns None on `TimeoutExpired` and the `_Run` carrying `elapsed` is never built,
+    so the row contributes nothing to a "slowest completed" figure — while being known to have
+    consumed at least the cap. A naive implementation prints a reassuring percentage beside an
+    actual failure on the one run that matters most.
+
+    Asserted on the PREFIX, not on "exhausted" appearing somewhere: a substring test is satisfied
+    by a line leading `used=12%` and mentioning exhaustion afterwards, which is exactly the
+    reassuring shape this forbids.
+    """
+    _, subject, suite = bed
+    cmd = suite(SUITE_HANGS_ON_MUTANT_SRC, "hang.sh")
+    report = mutate.run(subject, cmd, [DROP_GUARD, RAISE_LIMIT], timeout=2)
+    assert report.timedout == 1, report.text
+    assert report.survived == 1, (
+        "precondition: one row must COMPLETE, or this cannot distinguish a leading percentage "
+        "from the absence of one:\n" + report.text
+    )
+    line = _headroom(report)
+    assert line.startswith("HEADROOM: exhausted"), line
+    assert repr(DROP_GUARD.label) in line, "the timed-out row must be named: " + line
+    assert "secondary" in line, (
+        "the completed row's figure must be marked secondary, never left to lead: "
+        + line
+    )
+    assert line.index("secondary") > line.index(repr(DROP_GUARD.label)), line
+
+
+def test_every_row_timing_out_still_leads_with_exhausted_and_never_divides(bed):
+    """No completed row at all — so there is nothing to be secondary, and still nothing to divide.
+
+    The suite that hangs on EVERY run cannot serve here: `timeout` caps the baseline too, so it
+    would time out first and the campaign would ERROR before any row ran. The hangs-on-mutant
+    suite gives a fast baseline and a single row with nowhere to go but the cap.
+    """
+    _, subject, suite = bed
+    cmd = suite(SUITE_HANGS_ON_MUTANT_SRC, "hang.sh")
+    report = mutate.run(subject, cmd, [DROP_GUARD], timeout=2)
+    assert report.timedout == 1, report.text
+    assert report.caught == report.survived == 0, (
+        "precondition: no row completed at all:\n" + report.text
+    )
+    line = _headroom(report)
+    assert line.startswith("HEADROOM: exhausted"), line
+    assert "used=" not in line, (
+        "nothing completed, so no percentage may appear: " + line
+    )
+
+
+def test_rows_that_never_APPLIED_report_plainly_rather_than_zero_percent(bed):
+    """`timedout == 0` here, so this must NOT say "exhausted" — and 0% would be a lie either way.
+
+    A mutation whose anchor does not match exactly once never runs the suite at all, so the
+    campaign measured nothing. `0%` is indistinguishable from a fast healthy run, which is the
+    reading that stops anyone looking.
+    """
+    _, subject, suite = bed
+    report = mutate.run(
+        subject,
+        suite(),
+        [
+            mutate.Mutation("absent anchor", "NOT PRESENT ANYWHERE", "XXX"),
+            mutate.Mutation("ambiguous anchor", "= ", "XXX"),
+        ],
+        timeout=30,
+    )
+    assert (report.timedout, report.survived) == (0, 2), report.text
+    line = _headroom(report)
+    assert line.startswith("HEADROOM: not measured"), line
+    assert "exhausted" not in line, (
+        "nothing timed out, so the exhausted wording would misattribute the cause: "
+        + line
+    )
+    assert "used=" not in line and "slowest=" not in line, (
+        "no row completed, so there is no figure to divide: " + line
+    )
+
+
+def test_the_restore_FAILURE_report_carries_the_line_too(bed, monkeypatch):
+    """Emitted before the restore check, so BOTH post-loop reports carry it.
+
+    An implementation that appended just before the final `_report` would silently drop the line
+    from this path — the ERROR report, which is the one a reader has most reason to grep.
+    """
+    _, subject, suite = bed
+    real = mutate.Path.write_text
+
+    def clobber(self, data, *a, **kw):
+        return real(self, data if data != SUBJECT_SRC else "CLOBBERED\n", *a, **kw)
+
+    monkeypatch.setattr(mutate.Path, "write_text", clobber)
+    report = mutate.run(subject, suite(), [DROP_GUARD], timeout=30)
+    monkeypatch.undo()
+    subject.write_text(SUBJECT_SRC)
+    assert report.status == "ERROR", "precondition: the restore really did fail"
+    line = _headroom(report)
+    assert line.startswith("HEADROOM: slowest="), line
 
 
 # ---------- the module's own gates ----------

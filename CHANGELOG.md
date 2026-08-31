@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.97.0 — 2026-08-25
+- feat(mutate): record timeout headroom in the campaign report
+
 ## v0.96.0 — 2026-08-24
 - feat(debrief): resume an interrupted run from a per-run step ledger
 

@@ -181,6 +181,56 @@ MUTATIONS = [
         "    if override is not None:\n        return override",
         "    if False:\n        return override",
     ),
+    # ---- HEADROOM. A per-mutant TIMEOUT is INDETERMINATE and carries the whole campaign to
+    # ERROR, reading like a defect in the change under test. The line's value is RETROSPECTIVE:
+    # when a cap bites, the PREVIOUS run's artifact already holds the answer. Measured 2026-08-09,
+    # diagnosis cost a full re-run plus an isolated single-row probe.
+    mutate.Mutation(
+        "the headroom line names no ROW, so a reader cannot tell whether to raise the cap or "
+        "look at one pathological row",
+        '        f" used={_pct(slowest[1], limit)}%{derived}{base} row={slowest[0]!r}"',
+        '        f" used={_pct(slowest[1], limit)}%{derived}{base}"',
+    ),
+    mutate.Mutation(
+        "the slowest row is computed as the FASTEST, so the figure reports the row with the "
+        "most headroom — reassuring, and about the wrong row",
+        "    slowest = max(completed, key=lambda row: row[1]) if completed else None",
+        "    slowest = min(completed, key=lambda row: row[1]) if completed else None",
+    ),
+    mutate.Mutation(
+        "a run that TIMED OUT reports an ordinary percentage, so a completed row's headroom "
+        "leads the line on the one run where the cap actually bit",
+        "    if timedout_labels:\n        named = ",
+        "    if False:\n        named = ",
+    ),
+    mutate.Mutation(
+        "the headroom line is emitted AFTER the verdict instead of before it, displacing the "
+        "last line every consumer reads",
+        'text="\\n".join([*lines, verdict]),',
+        'text="\\n".join(\n'
+        '            [ln for ln in lines if not ln.startswith("HEADROOM: ")]\n'
+        "            + [verdict]\n"
+        '            + [ln for ln in lines if ln.startswith("HEADROOM: ")]\n'
+        "        ),",
+    ),
+    mutate.Mutation(
+        "the DERIVED cap is never printed, so a row surviving only because of an override is "
+        "indistinguishable from one with real headroom",
+        "    if override is not None:\n        derived = ",
+        "    if False:\n        derived = ",
+    ),
+    mutate.Mutation(
+        "no headroom line is emitted at all",
+        "    lines.append(\n        _headroom_line(",
+        "    (\n        _headroom_line(",
+    ),
+    mutate.Mutation(
+        "the headroom line is dropped from the restore-FAILURE report — the one a reader has "
+        "most reason to grep",
+        '        lines += [\n            f"ERROR  subject NOT restored',
+        "        lines.pop()\n"
+        '        lines += [\n            f"ERROR  subject NOT restored',
+    ),
     mutate.Mutation(
         "only the direct child is killed, orphaning whatever the suite backgrounded",
         "        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)",
