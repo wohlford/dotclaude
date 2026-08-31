@@ -652,6 +652,20 @@ left legal.
   reasoning about what it does when it fires.** What nearly hid it: the plan then asserted the
   block, so a compliant implementer would have written a passing test around the false premise.
 
+- **An impact check driven by RECALL enumerates the subset you remember, and answers truthfully
+  about it — so a reassuring blast radius is merely the one you already believed.** Measured:
+  *what consumes this working tree* was answered from a memory file recording `~/.claude/skills`
+  and `~/.claude/scripts` as symlinks into the repo. Both true, and the record silently INCOMPLETE
+  — the real figure is **16 links**, the whole live configuration, `CLAUDE.md`, `STYLE.md`,
+  `settings.json` and `workflows.md` among them. So `git reset --keep`, which reads as pure ref
+  bookkeeping, was a filesystem write to the file the harness loads as global instructions, and it
+  removed three hazard bullets from live config with nothing said in git's output. Enumerate
+  consumers from the FILESYSTEM, never from recall. Its own failure mode: that enumeration fails in
+  the SAFE-LOOKING direction when the root is itself a symlink — `find ~/.claude -maxdepth 1 -type
+  l` prints one line, the root, reading as *almost nothing is linked*; only the trailing slash,
+  `find ~/.claude/ …`, descends and returns all 16 — so the declared-FLOOR rule under **Building a
+  check that holds** is what catches it, with 1 standing in for that rule's zero.
+
 #### It answered about the PARTS; your claim is about the WHOLE
 
 - **A tool that answers one question per item has not answered how the items COMPOSE — and an
