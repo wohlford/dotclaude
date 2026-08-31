@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.91.4 — 2026-08-22
+- fix(debrief): bound step 0's backlog read and cross-check the count
+
 ## v0.91.3 — 2026-08-21
 - docs(CLAUDE.md): add the loud-vs-silent hazard and split its group
 

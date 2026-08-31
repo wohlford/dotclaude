@@ -39,10 +39,42 @@ those remain manual steps for the user.
 
 ### Process
 
-0. **Follow up on open deferrals.** Read `BACKLOG.md` in this session's memory directory (skip
-   silently if it doesn't exist) and report every open (`- [ ]`) entry with its age. Choose
-   a disposition for each **without pausing** — default to **keep**, and depart from it only on
-   positive evidence from *this* session (drop when something demonstrably overtook the entry,
+0. **Follow up on open deferrals.** `BACKLOG.md` lives in this session's memory directory; skip
+   step 0 silently if it does not exist. Otherwise read its **open section** — bounded, per the next
+   paragraph — then **cross-check the count**, and only once that agrees report every open (`- [ ]`)
+   entry with its age. The bound and the cross-check come first on purpose: a report built on a
+   truncated read is wrong in the one direction nobody notices.
+
+   **Bound that read explicitly — a DEFAULT read silently drops the OLDEST open entries.** The
+   closed half is roughly two-thirds of the file and step 0 never acts on it, while the open half
+   *alone* already exceeds the Read tool's 2000-line default. Measured 2026-08-22: a single default
+   `Read` saw **75 of 84** open entries and dropped **9** without a word. Because `add` inserts at
+   the TOP of the open section, the entries a truncated read loses are the oldest — exactly the ones
+   most in need of triage — and one of those nine was already stamped `promoted`, so it had been
+   called up and then went unseen. Read only up to the boundary:
+
+   ```bash
+   B=<the session memory directory>/BACKLOG.md
+   [ -f "$B" ] || exit 0            # no backlog yet — skip step 0 silently, per above
+   awk '/^## Closed/{exit} {print}' "$B"
+   ```
+
+   It excludes the `## Closed` line itself, and prints the whole file rather than erroring if that
+   heading is ever absent.
+
+   **Then CROSS-CHECK the count before triaging.** The number of open entries you are about to
+   report must equal `grep -c '^- \[ \]' "$B"` over the WHOLE file. This is the load-bearing half: a
+   truncated read looks exactly like a shorter backlog, so the count is the only thing that tells the
+   two apart, whatever mechanism a future step 0 reaches for.
+
+   On a mismatch, say so and re-read **once**. **If it still disagrees, stop — report the discrepancy
+   in the step-7 hand-off as an unverifiable backlog and triage nothing.** State that stopping rule
+   before the re-read, not after reading its result: a persistent mismatch is a malformed file (a
+   `- [ ]`-shaped line inside a closed entry's body will do it), not a flaky read, and triaging
+   either list would be guessing which one is real.
+
+   Choose a disposition for each **without pausing** — default to **keep**, and depart from it only
+   on positive evidence from *this* session (drop when something demonstrably overtook the entry,
    promote when the session made it the clear next job). State each entry's disposition and why in
    the step-7 hand-off. Each disposition writes something different back to `BACKLOG.md`:
    - **keep** — still wanted, just not now. Leave the entry untouched.
