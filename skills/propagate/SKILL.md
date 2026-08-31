@@ -85,6 +85,34 @@ test -f "$(git rev-parse --show-toplevel)/.publication.toml"
    changes the user wants live, tell them to `/commit` first. When a branch name was supplied,
    first verify it exists (`git rev-parse --verify <branch>`; if not, report and stop) — the
    clean-tree check still applies to this working copy, which is what gets fetched from.
+
+   **Then stamp the invocation clock — both arms, here, because both arms traverse this step.**
+   The two irreversible pushes below each print how long ago `/propagate` was invoked, and that
+   number has to come from a baseline captured before anything ran:
+
+   ```bash
+   t0="${TMPDIR:-/tmp}/propagate-t0.${CLAUDE_CODE_SESSION_ID:-nosession}"
+   date +%s > "$t0"
+   printf 'invocation clock: %s   (baseline: %s)\n' "$(date '+%F %T %Z')" "$t0"
+   ```
+
+   **A FILE, not a shell variable, and the path is DERIVED rather than remembered.** Shell state
+   does not survive between tool calls — only the working directory does — and the publish path is
+   many separate calls over hours, so a `t0` held in a variable leaves the push site with nothing to
+   subtract from. It would then print an elapsed figure it never measured, carrying the authority of
+   an automated reading directly before an irreversible act: the exact defect this exists to close,
+   reintroduced one level up. Re-deriving the identical one-line expression at each push site is
+   what makes the file findable with nothing carried between calls; the session id keys it so two
+   concurrent sessions cannot read each other's baseline; and it lands in the session's scratch
+   location rather than anywhere under either repo, so it can never trip a clean-tree precondition
+   further down. Do not hardcode a path here — the expression above is machine-independent.
+
+   **This is a PROMPT, not a gate.** Its whole job is to put the wall clock in front of the operator
+   at the moment the decision is actually made. Measured 2026-08-13: a publish was authorized at one
+   hour, the build ran three hours, and the push landed inside a window the operator excludes for
+   public publishing — the authorization flag stays set however long the work took, and nothing
+   objected. **Do not "improve" this into a cutoff:** which hours are acceptable is the operator's
+   call and varies by what is being published, and a hard block would refuse work it cannot judge.
 3. **Resolve production** from the symlink; capture the dev repo root:
 
    ```bash
@@ -108,7 +136,27 @@ test -f "$(git rev-parse --show-toplevel)/.publication.toml"
      for this arm. Promote production separately with a plain (no-flag) `/propagate` from `dev`.
    - **Non-adopted repo, `--push`:** publish then promote. Pushing is explicit-only (the
      push-guard blocks a bare `git push`); the `--push` flag IS the authorization, so lead the
-     command with the override:
+     command with the override.
+
+     **First read the clock — this is one of the two irreversible sites.** One command, and the
+     subtraction happens in the shell, never in the model:
+
+     ```bash
+     t0="${TMPDIR:-/tmp}/propagate-t0.${CLAUDE_CODE_SESSION_ID:-nosession}"
+     if [ -r "$t0" ]; then
+       printf 'wall clock: %s   elapsed since invocation: %d min\n' \
+         "$(date '+%F %T %Z')" "$(( ($(date +%s) - $(cat "$t0")) / 60 ))"
+     else
+       printf 'wall clock: %s   elapsed since invocation: UNKNOWN (no baseline at %s)\n' \
+         "$(date '+%F %T %Z')" "$t0"
+     fi
+     ```
+
+     Report both numbers to the user with the push. A missing baseline reads **UNKNOWN**, never
+     zero — zero would assert the push is happening the instant it was authorized, which is the one
+     claim a missing file cannot support. This surfaces a fact and blocks nothing: authorization
+     given some hours ago is still authorization, and whether this hour suits a public push is the
+     operator's judgment, not this skill's.
 
      ```bash
      ALLOW_PUSH=1 git push origin "$branch" --follow-tags
@@ -600,7 +648,29 @@ session, which is why the tooling below is in the repo.
    `ERROR`; on `INCOMPLETE` or a missing line, re-run to completion and read the new verdict, never
    conclude either way from the truncated one.
 
-6. **Push `main`.** Publish with a **plain `git push`**, led by the required override:
+6. **Push `main`.** Publish with a **plain `git push`**, led by the required override.
+
+   **Read the clock first — this is the second irreversible site, and the one where the gap is
+   widest.** Step 2's re-derivation and step 5's tip suite run in the foreground for hours, so the
+   authorization that started this run can be a great deal older than it feels. One command; the
+   shell does the arithmetic:
+
+   ```bash
+   t0="${TMPDIR:-/tmp}/propagate-t0.${CLAUDE_CODE_SESSION_ID:-nosession}"
+   if [ -r "$t0" ]; then
+     printf 'wall clock: %s   elapsed since invocation: %d min\n' \
+       "$(date '+%F %T %Z')" "$(( ($(date +%s) - $(cat "$t0")) / 60 ))"
+   else
+     printf 'wall clock: %s   elapsed since invocation: UNKNOWN (no baseline at %s)\n' \
+       "$(date '+%F %T %Z')" "$t0"
+   fi
+   ```
+
+   Report both numbers with the push. A missing baseline reads **UNKNOWN**, never zero. Like the
+   non-adopted site above this is a **prompt, not a gate** — it exists because the flag stays set
+   however long the build ran, and a three-hour build can carry a push out of the window the
+   operator meant it to happen in. Surface it and let the operator decide; do not turn it into a
+   refusal.
 
    ```bash
    ALLOW_PUSH=1 git push origin main --follow-tags

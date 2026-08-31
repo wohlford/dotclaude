@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.94.0 — 2026-08-24
+- feat(propagate): show the clock before both irreversible pushes
+
 ## v0.93.0 — 2026-08-24
 - feat(explain-git-command): show where the tokenizer gave up
 
