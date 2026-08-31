@@ -384,6 +384,58 @@ check_shellcheck() {
   fi
 }
 
+# Per-failing-file excerpt bound for the ruff report. The NAMING is deliberately unbounded: every
+# failing file is always named and only its excerpt is clipped.
+#
+# Sized against `--output-format concise`, which `check_ruff` passes for exactly this reason.
+# Measured (ruff 0.16.3): a two-line file with three findings prints 46 lines in the DEFAULT format
+# and 5 concise. At 46 lines a 12-line excerpt kept only the FIRST finding and dropped the rest
+# behind the truncation notice — re-creating, one level down, the very hiding this check was fixed
+# to stop. Concise puts one finding per line, so 12 covers ~10 findings per file.
+#
+# A line wrongly KEPT costs one line of noise; a line wrongly DROPPED costs a diagnosis — and the
+# full output is one `ruff` re-run away, which the truncation notice spells out verbatim.
+RUFF_EXCERPT_MAX=12
+
+# Aggregate EXCERPT budget across all failing invocations. Deliberately NOT a hard cap on output:
+# past saturation every further failing invocation still contributes its two header lines, so the
+# total stays O(N) — measured 429 / 550 / 590 lines at 30 / 70 / 80 failing files. That overshoot is
+# the point. Naming every failing unit beats bounding the total, which is the same trade the `tests`
+# check makes; a hard cap would drop whole files, which is the defect being fixed. Per-file bounding alone is NOT enough: measured on 86
+# tracked .py files all failing both sub-tools, the detail reached 1,737 lines / 49 KB against the
+# old flat cap's 68. This skill's own SKILL.md has an agent run audit.sh, surface its stdout and key
+# on the LAST line — so an upstream output cap would eat every check after `ruff` AND the RESULT:
+# line, reintroducing at the AGGREGATE level exactly the "a truncated output keeps the wrong half"
+# defect this change removes per-file.
+#
+# Past the budget every remaining failing file is still NAMED and only its excerpt is dropped, which
+# is the invariant this check advertises. Note `ruff format --check` is deliberately NOT switched to
+# --output-format concise: that would bound the volume (17 lines -> 2) by discarding the diff, which
+# is the only part of a formatting finding that says what to change.
+RUFF_EXCERPT_BUDGET=400
+
+ruff_block() { # sub-tool file output [header-only] -> a labelled block, indented for the report
+  local tool="$1" file="$2" body="$3" header_only="${4:-0}" n
+  printf '  %s %s:\n' "$tool" "$file"
+  if [[ "$header_only" -eq 1 ]]; then
+    printf '    … excerpt omitted (aggregate budget) — run: %s '"'"'%s'"'"'\n' "$tool" "$file"
+    return
+  fi
+  # A failing invocation CAN be silent — a `cd "$scope"` failure is not captured by a `2>&1` that
+  # binds to ruff alone — so never guard the label on non-empty output, or the FAIL names no file.
+  if [[ -z "$body" ]]; then
+    printf '    (no output)\n'
+    return
+  fi
+  n="$(printf '%s\n' "$body" | wc -l | tr -d ' ')"
+  if [[ "$n" -gt "$RUFF_EXCERPT_MAX" ]]; then
+    printf '%s\n' "$body" | sed -n "1,${RUFF_EXCERPT_MAX}p" | sed 's/^/    /'
+    printf '    … %s more line(s) — run: %s '"'"'%s'"'"'\n' "$((n - RUFF_EXCERPT_MAX))" "$tool" "$file"
+  else
+    printf '%s\n' "$body" | sed 's/^/    /'
+  fi
+}
+
 check_ruff() {
   local scope="$1" files
   files="$(git -C "$scope" ls-files -- '*.py' 2>/dev/null)"
@@ -392,27 +444,70 @@ check_ruff() {
     return
   fi
   if ! command -v ruff >/dev/null 2>&1; then
+    # Only PRESENCE is probed, not version. `check_ruff` passes --output-format, which a ruff
+    # predating that flag rejects with rc 2 — every file then yields a usage-error block and the
+    # check FAILs repo-wide. Loud and fail-closed rather than silent, but the FAIL text
+    # ("reported findings") misattributes the cause, so look here first if every file fails at once.
     verdict_skip ruff 'ruff not found'
     return
   fi
-  local f detail1="" detail2="" out rc1=0 rc2=0
+  local f detail="" out rc rc1=0 rc2=0 emitted=0 omitted=0 block
+  # Collect ONLY from an invocation that FAILED. BOTH sub-tools print on SUCCESS — `ruff check`
+  # says `All checks passed!`, `ruff format --check` says `1 file already formatted` — so
+  # collecting unconditionally accumulated one padding line per file. Measured on this repo: 86
+  # tracked .py files produced 86 padding lines against print_offenders' 50-line cap, which made
+  # the real failure (always concatenated after) STRUCTURALLY unprintable — and the 50 lines that
+  # did print were indistinguishable from a clean run, so the FAIL block read as reassuring.
+  #
+  # What stops being collected is EXACTLY output from an invocation whose exit status was 0. The
+  # verdict is driven only by rc1/rc2, and this block is reached only in the FAIL arm, so no
+  # OFFENDER can be lost. Residual, stated rather than left to be rediscovered: rc-0 runs can also
+  # carry stderr warnings, and those are dropped too.
+  #
+  # Shape copied from check_md_links below — collect on failure, label with the file — rather than
+  # invented here.
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    out="$(cd "$scope" && ruff check "$f" 2>&1)" || rc1=$?
-    if [[ -n "$out" ]]; then
-      detail1="${detail1}${out}"$'\n'
+    out="$(cd "$scope" && ruff check --output-format concise "$f" 2>&1)"; rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      rc1="$rc"
+      if [[ "$emitted" -ge "$RUFF_EXCERPT_BUDGET" ]]; then
+        block="$(ruff_block 'ruff check' "$f" "$out" 1)"
+        omitted=$((omitted + 1))
+      else
+        block="$(ruff_block 'ruff check' "$f" "$out")"
+      fi
+      detail="${detail}${block}"$'\n'
+      emitted=$((emitted + $(printf '%s\n' "$block" | wc -l | tr -d ' ')))
     fi
   done <<< "$files"
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    out="$(cd "$scope" && ruff format --check "$f" 2>&1)" || rc2=$?
-    if [[ -n "$out" ]]; then
-      detail2="${detail2}${out}"$'\n'
+    out="$(cd "$scope" && ruff format --check "$f" 2>&1)"; rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      rc2="$rc"
+      if [[ "$emitted" -ge "$RUFF_EXCERPT_BUDGET" ]]; then
+        block="$(ruff_block 'ruff format --check' "$f" "$out" 1)"
+        omitted=$((omitted + 1))
+      else
+        block="$(ruff_block 'ruff format --check' "$f" "$out")"
+      fi
+      detail="${detail}${block}"$'\n'
+      emitted=$((emitted + $(printf '%s\n' "$block" | wc -l | tr -d ' ')))
     fi
   done <<< "$files"
   if [[ "$rc1" -ne 0 || "$rc2" -ne 0 ]]; then
     verdict_fail ruff 'ruff check/format reported findings'
-    print_offenders "${detail1}"$'\n'"${detail2}"
+    # Deliberately NOT print_offenders. Its flat 50-line cap is right for like-for-like offenders
+    # whose every line self-names (the format-* checks), but a ruff diagnostic names its file ONCE
+    # per BLOCK rather than once per line, so a flat cap silently drops whole FILES. Measured under
+    # --output-format concise (4-line blocks): 14 failing files exhaust 50 lines and the last is
+    # never named. ruff_block bounds each file's EXCERPT instead and
+    # always names the file — the same split the `tests` check makes, for the same reason.
+    if [[ "$omitted" -gt 0 ]]; then
+      detail="${detail}  … ${omitted} further failing invocation(s) reported header-only"$'\n'
+    fi
+    printf '%s' "$detail"
   else
     verdict_pass ruff
   fi

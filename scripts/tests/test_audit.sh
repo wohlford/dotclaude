@@ -245,6 +245,289 @@ else
 fi
 
 # ============================================================================
+# 7b. R1/R2 (spec 2026-08-23-audit-ruff-offender-output) — check_ruff's FAIL
+#     block: a ruff-format failure survives the shared 50-line cap despite 55
+#     preceding clean files, and no success padding ("All checks passed!" /
+#     "1 file already formatted") leaks into the FAIL block.
+#     N >= 50 total .py files: at that size the check-loop's success output
+#     alone fills the cap, so burial is independent of where the failing
+#     file sorts (below 50 it would depend on sort position — a fixture that
+#     passes for the wrong reason).
+# ============================================================================
+if command -v ruff >/dev/null 2>&1; then
+  r7b="$tmp/r7b_ruff_format_buried"
+  mkrepo "$r7b"
+  i=1
+  while [[ "$i" -le 55 ]]; do
+    printf 'x = 1\n' > "$r7b/$(printf 'clean%03d.py' "$i")"
+    i=$((i + 1))
+  done
+  printf 'x=1\n' > "$r7b/fmt_fail.py"
+  commit_all "$r7b" seed
+  run_engine "$r7b"
+  assert_has 'FAIL ruff' 'r7b: 55 clean .py + 1 format-dirty -> FAIL ruff'
+  assert_has 'unformatted: File would be reformatted' \
+    'r7b (R1): the format failure survives the cap despite 55 preceding clean check results'
+  assert_has 'fmt_fail.py' 'r7b (R1): the failing file is named in the FAIL block'
+  assert_not_has 'All checks passed!' \
+    'r7b (R2): ruff-check success padding does not leak into the FAIL block'
+  assert_not_has '1 file already formatted' \
+    'r7b (R2): ruff-format success padding does not leak into the FAIL block'
+  # R5 — SUB-TOOL ATTRIBUTION, the one thing the per-file header uniquely decides. Added after a
+  # mutation campaign found `drop-per-file-label` SURVIVING: ruff's own diagnostics carry the
+  # filename (`--> fmt_fail.py:1:2`), so the naming assertions above pass with the header deleted.
+  # Neither sub-tool's output names WHICH sub-tool produced it — measured — so this is the
+  # assertion the header can actually fail. The original defect report asked for exactly this
+  # ("label it: ruff check / ruff format"), and without it a reader cannot tell a lint finding from
+  # a formatting one.
+  assert_has 'ruff format --check fmt_fail.py:' \
+    'r7b (R5): the FAIL block attributes the failure to the ruff format sub-tool by name'
+else
+  printf 'skip - ruff not installed in this test environment\n'
+fi
+
+# ============================================================================
+# 7c. R3 — a ruff-check (lint) failure is still reported once the collection
+#     is trimmed to real output only: the check loop's half of the fix does
+#     not regress alongside the format loop's half. Same 55-clean-file scale
+#     as 7b, mirrored onto the check loop.
+# ============================================================================
+if command -v ruff >/dev/null 2>&1; then
+  r7c="$tmp/r7c_ruff_check_buried"
+  mkrepo "$r7c"
+  i=1
+  while [[ "$i" -le 55 ]]; do
+    printf 'x = 1\n' > "$r7c/$(printf 'clean%03d.py' "$i")"
+    i=$((i + 1))
+  done
+  printf 'import os\n\n\ndef f() -> None:\n    pass\n' > "$r7c/zchk_fail.py"
+  commit_all "$r7c" seed
+  run_engine "$r7c"
+  assert_has 'FAIL ruff' 'r7c: 55 clean .py + 1 lint-dirty -> FAIL ruff'
+  assert_has 'F401' 'r7c (R3): the check (lint) failure is still reported'
+  assert_has 'zchk_fail.py' 'r7c (R3): the failing file is named in the FAIL block'
+  assert_not_has 'All checks passed!' \
+    'r7c (R2 cross-check): ruff-check success padding absent from the check-loop FAIL block too'
+  assert_has 'ruff check zchk_fail.py:' \
+    'r7c (R5): the FAIL block attributes the failure to the ruff check sub-tool by name'
+else
+  printf 'skip - ruff not installed in this test environment\n'
+fi
+
+# ============================================================================
+# 7d. R4 — every failing FILE is named even once several real failures
+#     compete for the shared 50-line cap, atop 55 clean files that bury them
+#     entirely under the unfixed code. N is DERIVED from a MEASURED per-file
+#     line count (ruff check's own output on one real violation), never
+#     hardcoded -- the ~13-line figure this spec was measured against is
+#     ruff-version dependent (older ruff printed a one-line "Would
+#     reformat:"). Failing files are named to sort AFTER the clean files
+#     (zzbad* > clean*) so the unfixed code's padding precedes -- and
+#     buries -- all of them, giving this row a genuine RED.
+# ============================================================================
+if command -v ruff >/dev/null 2>&1; then
+  r7d="$tmp/r7d_ruff_naming"
+  mkrepo "$r7d"
+  i=1
+  while [[ "$i" -le 55 ]]; do
+    printf 'x = 1\n' > "$r7d/$(printf 'clean%03d.py' "$i")"
+    i=$((i + 1))
+  done
+
+  r7d_probe="$tmp/r7d_probe"
+  mkdir -p "$r7d_probe"
+  printf 'import os\n\n\ndef f() -> None:\n    pass\n' > "$r7d_probe/probe.py"
+  # MUST mirror check_ruff's own invocation, --output-format included. This probe is a hand-made
+  # copy of it, so it drifts the moment that flag changes — and a drifted probe derives N from the
+  # wrong block size, silently making this row too small to discriminate anything.
+  r7d_probe_out="$(cd "$r7d_probe" && ruff check --output-format concise probe.py 2>&1)"
+  r7d_probe_lines="$(printf '%s\n' "$r7d_probe_out" | wc -l | tr -d ' ')"
+  r7d_block=$((r7d_probe_lines + 1))          # +1 for the "ruff check <f>:" header line
+  # The DISCRIMINATING N, not merely a working one. At (49/block)+1 the flat-cap and
+  # bounded-excerpt printers name the SAME number of files (measured: 4 named either way),
+  # so the row stayed green under a mutant reverting to print_offenders — the exact defect
+  # check_ruff's own comment cites. +2 crosses the threshold: the last file's header lands
+  # past line 50, so only the bounded-excerpt printer names it.
+  r7d_n=$(( (50 / r7d_block) + 2 ))
+
+  i=1
+  while [[ "$i" -le "$r7d_n" ]]; do
+    printf 'import os\n\n\ndef f() -> None:\n    pass\n' \
+      > "$r7d/$(printf 'zzbad%03d.py' "$i")"
+    i=$((i + 1))
+  done
+  commit_all "$r7d" seed
+  run_engine "$r7d"
+  assert_has 'FAIL ruff' "r7d: measured $r7d_probe_lines lines/failure -> $r7d_n lint-dirty files -> FAIL ruff"
+  i=1
+  while [[ "$i" -le "$r7d_n" ]]; do
+    assert_has "$(printf 'ruff check zzbad%03d.py:' "$i")" \
+      "r7d (R4): file $i of $r7d_n is named BY ITS SUB-TOOL HEADER despite the shared cap"
+    i=$((i + 1))
+  done
+else
+  printf 'skip - ruff not installed in this test environment\n'
+fi
+
+# ============================================================================
+# 7f. The EXCERPT BOUND itself. Added after a review found that a mutant setting
+#     RUFF_EXCERPT_MAX to anything in 1..11 survived every other row: r7b/r7c
+#     assert line 1 of their sub-tool's output, which any nonzero bound keeps.
+#     What the bound actually decides is whether a file's FULL finding list
+#     survives, so that is what this pins -- three distinct codes in one file,
+#     all of which must appear. Under --output-format concise a finding is one
+#     line, so this also fails if that flag is ever dropped from check_ruff.
+# ============================================================================
+if command -v ruff >/dev/null 2>&1; then
+  r7f="$tmp/r7f_excerpt_bound"
+  mkrepo "$r7f"
+  printf 'import sys\nimport os\nx=1\n' > "$r7f/multi.py"
+  commit_all "$r7f" seed
+  run_engine "$r7f"
+  assert_has 'FAIL ruff' 'r7f: a file with several findings -> FAIL ruff'
+  assert_has 'I001' 'r7f: the FIRST finding is reported'
+  # These two are the DISCRIMINATORS. An earlier version asserted 'I001' and 'F401', which sit on
+  # output lines 1 and 2 -- so a mutant shrinking the bound to 2 kept both and the row passed. A
+  # bound is only pinned by an assertion on something that falls PAST it.
+  #
+  # WHICH BLOCK BINDS, measured (ruff 0.16.3), because it is not the obvious one: the `ruff check`
+  # concise block is 5 lines and its third finding (multi.py:2:8) discriminates bounds 1-2 only.
+  # The `ruff format --check` block is 10 lines and is what decides the rest -- the truncation
+  # notice fires for every bound below 10. So the effective margin is 12 - 10 = TWO lines, and a
+  # ruff release whose format diagnostic grows by three would turn this row spuriously RED. If that
+  # happens the row is stale, not the code: re-measure both blocks and re-size, do not just raise
+  # the bound.
+  assert_has 'multi.py:2:8' \
+    'r7f: the THIRD finding — past a shrunken bound — is present'
+  assert_not_has 'more line(s)' \
+    'r7f: a 5-line block against a 12-line bound is NOT truncated'
+else
+  printf 'skip - ruff not installed in this test environment\n'
+fi
+
+# ============================================================================
+# 7h. The AGGREGATE budget (RUFF_EXCERPT_BUDGET). Per-file bounding alone let the
+#     detail reach 1,737 lines / 49 KB on an 86-file repo — 33x the old flat
+#     cap — which matters because SKILL.md has an agent read this stdout and key
+#     on the LAST line, so an upstream cap would eat the RESULT: line itself.
+#     Pinned rather than trusted: bounds that go untested are exactly what this
+#     branch has already been caught on twice. ~15 lines/file across both
+#     sub-tools (measured 19: a 1+5 check block and a 1+12 format block), so 30 crosses 400. Asserts BOTH halves of the stated
+#     invariant: the degradation is announced, and every file is still NAMED.
+# ============================================================================
+if command -v ruff >/dev/null 2>&1; then
+  r7h="$tmp/r7h_aggregate_budget"
+  mkrepo "$r7h"
+  i=1
+  while [[ "$i" -le 30 ]]; do
+    printf 'import os\nimport sys\nx=1\ny  =  2\n' > "$r7h/$(printf 'big%03d.py' "$i")"
+    i=$((i + 1))
+  done
+  commit_all "$r7h" seed
+  run_engine "$r7h"
+  assert_has 'FAIL ruff' 'r7h: 30 failing files -> FAIL ruff'
+  assert_has 'reported header-only' \
+    'r7h: crossing the budget is ANNOUNCED, never a silent truncation'
+  # THE discriminator. Without it this row is vacuous: a mutant that parses ruff_block's
+  # header_only parameter and then ignores it (header_only=0) erases the budget's entire effect
+  # -- detail 429 -> 572 lines -- while every other assertion here stays GREEN, because the notice
+  # is driven by the `omitted` counter and the file name by the unconditional header. That is the
+  # measured "a test that supplies the option's own default cannot tell whether it is read" shape.
+  assert_has 'excerpt omitted (aggregate budget)' \
+    'r7h: a degraded block SAYS its excerpt was dropped — the only string the budget decides'
+  # Must be the FORMAT loop. At N=30 the check loop totals ~180 lines and never crosses the budget,
+  # so a `ruff check ...` assertion here would sit on the normal path and pin nothing new.
+  assert_has 'ruff format --check big030.py:' \
+    'r7h: the LAST file is still NAMED in the loop that DID degrade'
+  # The COUNT itself, derived from OUT rather than hand-copied. Round 4 found this notice counting
+  # blocks while saying "file(s)" (at 80 failing files it claimed 93); that was reworded to
+  # "invocation(s)" and NOT pinned, so `omitted + 1` -> `+ 2` survived every row above. Deriving
+  # the expected value means no constant to go stale and no coupling to a ruff version.
+  r7h_degraded="$(printf '%s\n' "$OUT" | grep -c 'excerpt omitted (aggregate budget)' || true)"
+  r7h_claimed="$(printf '%s\n' "$OUT" | sed -n 's/.*… \([0-9][0-9]*\) further failing invocation.*/\1/p' | head -1)"
+  check_eq "$r7h_claimed" "$r7h_degraded" \
+    'r7h: the notice COUNTS what it claims — N equals the degraded blocks actually emitted'
+else
+  printf 'skip - ruff not installed in this test environment\n'
+fi
+
+# ============================================================================
+# 7g. "Every failing file is always NAMED" — the invariant check_ruff states as
+#     load-bearing and SKILL.md promotes to the shared rule of both offender
+#     exceptions. A review found it pinned by NOTHING. Two distinct mutants live
+#     here and an earlier version of this comment conflated them: guarding the
+#     label on a non-empty BODY drops the `(no output)` marker (caught by the
+#     third row below), while guarding the HEADER itself drops the file's name
+#     (caught by the second). Both are the fail-silent shape this check exists
+#     to remove; neither is the other.
+#     Reachable for real: ruff killed by a signal, or the `cd "$scope"` failure
+#     the code comment cites (its 2>&1 binds to ruff, not to cd).
+#     Needs no real ruff — the stub IS the tool, so this row runs everywhere.
+# ============================================================================
+r7g="$tmp/r7g_silent_failure"
+mkrepo "$r7g"
+printf 'x = 1\n' > "$r7g/quiet.py"
+commit_all "$r7g" seed
+r7g_stub="$tmp/r7g_stub"
+mkdir -p "$r7g_stub"
+printf '#!/bin/sh\nexit 1\n' > "$r7g_stub/ruff"
+chmod +x "$r7g_stub/ruff"
+r7g_old_path="$PATH"
+PATH="$r7g_stub:$PATH"
+run_engine "$r7g"
+PATH="$r7g_old_path"
+assert_has 'FAIL ruff' 'r7g: a sub-tool failing SILENTLY still fails the check'
+assert_has 'ruff check quiet.py:' 'r7g: ...and the failing file is still NAMED'
+assert_has '(no output)' 'r7g: ...with the empty body explicit, never an unexplained blank'
+
+# ============================================================================
+# 7e. Task 3 (spec 2026-08-23-audit-ruff-offender-output) — verdict-preservation
+#     property: the FAIL/PASS verdict is unchanged across the full rc1 x rc2
+#     truth table (all-clean -> PASS; check-only -> FAIL; format-only -> FAIL;
+#     both -> FAIL). Asserts the CHECK-LEVEL 'FAIL ruff'/'PASS ruff' line, not
+#     merely the overall exit code. The format-only cell's fixture ('x=1', no
+#     spaces) is deliberately LINT-CLEAN -- confirmed by ruff itself ('x = 1'
+#     spaced is too) -- so that cell proves something about the format half
+#     specifically, rather than a check failure riding along un-asserted.
+# ============================================================================
+if command -v ruff >/dev/null 2>&1; then
+  # all-clean: rc1=0, rc2=0 -> PASS
+  r7e1="$tmp/r7e1_all_clean"
+  mkrepo "$r7e1"
+  printf 'x = 1\n' > "$r7e1/clean.py"
+  commit_all "$r7e1" seed
+  run_engine "$r7e1"
+  assert_has 'PASS ruff' '7e1: rc1=0 rc2=0 -> PASS ruff'
+  assert_not_has 'FAIL ruff' '7e1: rc1=0 rc2=0 -> no FAIL ruff'
+
+  # check-only failure: rc1!=0, rc2=0 -> FAIL
+  r7e2="$tmp/r7e2_check_only"
+  mkrepo "$r7e2"
+  printf 'import os\n\n\ndef f() -> None:\n    pass\n' > "$r7e2/bad.py"
+  commit_all "$r7e2" seed
+  run_engine "$r7e2"
+  assert_has 'FAIL ruff' '7e2: rc1!=0 rc2=0 (check-only failure) -> FAIL ruff'
+
+  # format-only failure: rc1=0, rc2!=0 -> FAIL. Fixture is lint-clean (ruff check passes).
+  r7e3="$tmp/r7e3_format_only"
+  mkrepo "$r7e3"
+  printf 'x=1\n' > "$r7e3/bad.py"
+  commit_all "$r7e3" seed
+  run_engine "$r7e3"
+  assert_has 'FAIL ruff' '7e3: rc1=0 rc2!=0 (format-only failure) -> FAIL ruff'
+
+  # both failing: rc1!=0, rc2!=0 -> FAIL
+  r7e4="$tmp/r7e4_both"
+  mkrepo "$r7e4"
+  printf 'import os\ndef f():pass\n' > "$r7e4/bad.py"
+  commit_all "$r7e4" seed
+  run_engine "$r7e4"
+  assert_has 'FAIL ruff' '7e4: rc1!=0 rc2!=0 (both failing) -> FAIL ruff'
+else
+  printf 'skip - ruff not installed in this test environment\n'
+fi
+
+# ============================================================================
 # 8. .md relative link to a missing file -> FAIL md-links
 # ============================================================================
 r8="$tmp/r8_md_links"

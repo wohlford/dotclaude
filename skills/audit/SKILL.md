@@ -160,12 +160,35 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
 - **Read-only** — never auto-fix a FAIL without the caller asking; `/audit` only runs the sweep
   and reports.
 - Offender output is capped at 50 lines per check (not an `.auditignore` feature), ending with
-  `… more (run the underlying tool for the full list)` when more exist. **`tests` is the one
-  exception, deliberately.** Every other check's offender buffer is pre-filtered to violations —
-  nothing that passed is in it — so the first 50 are representative and the rest are more of the
-  same. `tests` is the one buffer that is not: it holds another tool's *entire* stdout, mostly
+  `… more (run the underlying tool for the full list)` when more exist. **`tests` and `ruff` do
+  NOT use that cap** — see the next bullet for what each does instead, and why.
+- **The flat cap is correct only where one offender is one self-naming line.** That is
+  `format-trailing-ws`, `format-crlf`, `format-final-newline`, `format-tabs` and `exec-bit`: the
+  first 50 are representative, the rest are more of the same, and no file is lost entirely.
+- **Everywhere else the cap is a known, UNFIXED defect — never read a capped FAIL as complete.**
+  `toml`, `json`, `shellcheck` and `md-links` emit several lines per offender, so a flat cap drops
+  whole files (measured: six invalid `.toml`, four named, two never named at all). `markdownlint`,
+  `sync-docs` and `env-claims` pipe a whole tool's stdout, preamble and summary included.
+  **`mutation-anchors` has `ruff`'s exact shape but has not crossed yet**: it prints a
+  `campaign: <file>` line for EVERY campaign, passing or failing, so its padding grows with the
+  campaign COUNT rather than with the findings. Measured today: 15 campaigns, so 15 padding lines
+  precede any finding and 35 of the cap remain — it does not yet hide anything. It starts to at
+  ~50 campaigns, and nothing signals the crossing. This list is deliberately explicit: three
+  earlier drafts stated a rule quantified over "every other check" and were wrong each time.
+- **The two exceptions, and why each is one.** `tests` holds another tool's *entire* stdout, mostly
   passes, whose interesting lines are the FAILURES — and suites print passes as they go, so a
-  head-cap there reliably keeps the useless half.
+  head-cap there reliably keeps the useless half. `ruff` had the same shape, and was measured
+  failing the same way: both its sub-tools print on success (`All checks passed!`, `1 file already
+  formatted`), so once the repo held more `.py` files than the cap has lines, the success padding
+  alone filled it and the real failure became *structurally* unprintable — while the 50 lines that
+  did print looked exactly like a clean run.
+  It now collects only from invocations that FAILED and emits a per-file, per-sub-tool header with
+  a bounded excerpt, so its block ends with `… N more line(s) — run: …` rather than the shared
+  notice above. Past an aggregate excerpt budget a block degrades to its header plus
+  `… excerpt omitted (aggregate budget) — run: …`, and the detail closes by naming how many
+  invocations were degraded — so a saturated run says so rather than truncating silently. Both exceptions share one rule: **every failing unit is always named; only its
+  excerpt is bounded** — a flat cap would drop whole files, since a ruff diagnostic names its file
+  once per block rather than once per line.
 - **`FAIL tests` therefore preserves the complete output** of each failing suite in a temporary
   directory, reported once as `full output: <dir>` **before** the per-suite excerpts, and shows a
   bounded excerpt of failure-shaped lines inline (falling back to the tail, and marking its own
