@@ -314,6 +314,93 @@ test -f "$(git rev-parse --show-toplevel)/.publication.toml"
    distinguishes them and names the remedy that applies. On a non-adopted repo it does not, because
    the boundary is dormant there and the postcheck skips accordingly.
 
+   **Then refresh the config farm — same converged point, same guard shape.** The fast-forward moves
+   file CONTENT through links that already exist; it cannot create a link that does not. `~/.claude`
+   is a farm of symlinks that only `install.sh` writes, so a promote that adds a **root** entry
+   leaves that entry absent from the live configuration until a human runs the installer by hand.
+   The directory members (`skills/`, `agents/`, `scripts/`) hide this — everything inside them flows
+   through the existing link on the fast-forward — so the gap opens only when root MEMBERSHIP
+   changes, which is exactly the silent-drift class that once left a tracked document no session
+   could reach.
+
+   ```bash
+   if [ -f "$live/install.sh" ]; then
+     farm_out="$(mktemp -d)/farm-install.txt"
+     if "$live/install.sh" --check > "$farm_out" 2>&1; then
+       grep -E '^RESULT:' "$farm_out"           # already current — nothing to install
+     elif ! grep -q '^RESULT:' "$farm_out"; then
+       # REFUSED BEFORE CHECKING, not drift: the installer probes realpath and mv -T
+       # before it parses flags, so a read-only --check can die having graded nothing.
+       # Do NOT fall through to the mutating run — it refuses at the same prerequisite,
+       # so a second invocation buys nothing and the run loses the explicit NOT-drift
+       # framing. (The raw refuse: line WOULD still surface below; what falling through
+       # costs is the label telling you it is a toolchain problem, not farm drift.)
+       echo 'farm: install.sh refused before checking — no verdict; NOT drift. Stop and report.'
+       grep -E '^(refuse|ERROR)|not supported|unbound variable' "$farm_out" || tail -3 "$farm_out"
+     else
+       grep -E '^(DRIFT|RESULT):' "$farm_out"   # name the members BEFORE anything moves
+       { "$live/install.sh" 2>&1; printf 'INSTALL_EXIT_STATUS=%d\n' "$?"; } > "$farm_out"
+       # Report these VERBATIM. Do NOT "simplify" the catch into a gate on skipped= or
+       # verified=: measured in a sandbox HOME, a run that moved operator data aside
+       # reported linked=16 skipped=0 verified=16 unverified=0 with rc=0, so BOTH
+       # counters read clean on the one case this exists to catch. The backed up line
+       # is the only signal that fires.
+       grep -E 'backed up|repairing dangling|^SKIPPED:|^RESULT:|^INSTALL_EXIT_STATUS=|^refuse' "$farm_out"
+     fi
+     printf 'installer output: %s\n' "$farm_out"
+   fi
+   ```
+
+   **Read-only `--check` first, because a clean farm needs no mutation at all.** A managed path
+   holding anything other than its own live link is drift by the installer's own predicate, so a
+   clean pre-check means there is nothing to do and the mutating run is skipped entirely — and a
+   dirty one names the affected members, using the tool's own membership derivation rather than a
+   re-implementation, *before* anything is moved.
+
+   **A bare run REPLACES real content at a managed path — say so, do not let the operator believe it
+   only repairs links.** Where a managed path holds a real FILE or DIRECTORY, the installer backs it
+   up (`<path>.<stamp>.bak`, exec bit stripped; a directory is copied, then removed), links over it,
+   and reports `RESULT: PASS`. Measured: the original content was intact in the `.bak`, and the run
+   was indistinguishable by exit status or by any counter from one that merely re-linked. That is
+   why the catch keys on the line and never on the numbers.
+
+   **Stop and report on any `backed up` line, and on any verdict that is not `RESULT: PASS`** — an
+   **absent** `RESULT:` line included. The installer runs several setup guards at top level *before*
+   it parses flags: the `realpath` and `mv -T` coreutils probes, the self-install guard, the
+   repo-toplevel guard, and the membership FLOOR assertion. Any one of them can die with no verdict
+   at all, so do not assume coreutils — read the `refuse:` line and fix what it names.
+
+   That case is *refused before checking*, not drift, and the block above makes the distinction
+   itself rather than leaving it to the reader. Falling through to the mutating run would buy
+   nothing: measured, it refuses at the identical prerequisite, so nothing is touched — 0 backups —
+   and the run merely loses the explicit NOT-drift label. The block also exits **0** either way,
+   since its last command is the `printf`. Read the block's OUTPUT, never its exit status.
+
+   **A `SKIPPED:` member needs no separate rule** — measured, it cannot verify, so it already
+   carries the run to `RESULT: FAIL`. But read WHICH cause it names before reaching for a remedy,
+   because there are two and they share nothing: a managed link resolving OUTSIDE the source root
+   (which the installer refuses to repoint without `--rewire`), **or** a tracked member whose SOURCE
+   FILE is missing from `$live`'s worktree — an incomplete checkout, an interrupted removal, a
+   half-finished rebase — which `--rewire` would not touch and must not be used on.
+
+   **Production's OWN post-merge copy**, for the same reason the hook re-install uses
+   `$live/scripts/` — and load-bearing a second way here: `--check` compares every managed link
+   against its own `SCRIPT_DIR` and never consults the marker. Run from the DEV clone that
+   `/propagate` executes in, it reports 16 DRIFT lines and `RESULT: FAIL` against a perfectly
+   healthy farm, while production's copy reports `RESULT: PASS` at the same instant. The `RESULT:`
+   line names `source=` — read it back and confirm it is production's path, which is stronger than
+   trusting the path you handed it.
+
+   **Guarded exactly as the hook re-install is, and for the same reason.** Step 5 is shared by
+   adopted and non-adopted repos alike; a source shipping no `install.sh` must promote cleanly and
+   entirely unchanged, per **Publication model awareness** above.
+
+   **One-time, on the first promote after this step itself ships** — the same race as
+   `pre-push-installed` below: this call lives in the skill BODY, read from production's *pre-merge*
+   copy when `/propagate` is invoked, so on that one promote the old body runs and the farm is not
+   refreshed. That is the change landing, not a broken promote; run `"$live/install.sh"` once by hand
+   and every later promote refreshes before it reports.
+
    **Then verify the promote left no dead gate — always, both arms.** The postcondition BRANCHES on
    whether `settings.json` was in the incoming range, and *choosing that branch by hand* is the step
    this repo measured going wrong: the strict arm was four separate commands with no single verdict
@@ -353,6 +440,18 @@ test -f "$(git rev-parse --show-toplevel)/.publication.toml"
      first). Note this check is deliberately stricter than `/audit`'s same-named one, which falls
      back to the committed blob when the worktree source is absent; here a missing tracked source
      is a FAIL.
+   - `farm-current` — **every CURRENT config-farm member links correctly**, via
+     `"$scope"/install.sh --check`. Deliberately one-directional: `--check` iterates the current
+     derived membership, so a member this promote REMOVED leaves a stale dangling link the row
+     reads clean over. It is the same script the install above just used, so treat it as a
+     re-sample rather than an independent verdict — its value is that it **fires even when the
+     install never ran** (a forgotten call, a mis-taken guard, the one-time landing race). It
+     SKIPs where the scope ships no `install.sh`. Its failure branches are separated so the
+     message names the actual cause rather than defaulting to drift; three worth knowing before
+     you read one are drift ("out of date"), a run that **reached no verdict** (refused BEFORE
+     checking — a toolchain problem, never a drift report), and a verdict whose `source=` names a
+     tree that is not the promoted one (a wrong-copy invocation, whose PASS and FAIL are equally
+     about the wrong repo).
 
    **One-time, on the first promote after the re-install step itself ships.** `/propagate`'s own
    body is read when it is INVOKED — from production's pre-merge copy — while the postcheck is

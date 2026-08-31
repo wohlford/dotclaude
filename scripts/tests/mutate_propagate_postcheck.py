@@ -156,6 +156,112 @@ MUTATIONS = [
         '  elif hook_is_a_tracked_version "$scope" "$hook_dest"; then',
         "  elif false; then",
     ),
+    mutate.Mutation(
+        "the farm check runs THIS copy's installer, which grades its own tree, not the promoted one",
+        '  farm_installer="$scope/$FARM_INSTALLER"',
+        '  farm_installer="$script_dir/../$FARM_INSTALLER"',
+    ),
+    mutate.Mutation(
+        "the farm row is skipped exactly when a farm exists, so the check never runs",
+        '  if [[ ! -f "$farm_installer" ]]; then',
+        '  if [[ -f "$farm_installer" ]]; then',
+    ),
+    mutate.Mutation(
+        "an absent RESULT: line is read as drift, so a toolchain refusal reads as a broken promote",
+        '    if [[ -z "$farm_verdict" ]]; then',
+        '    if [[ -z "$farm_verdict" ]] && false; then',
+    ),
+    mutate.Mutation(
+        "the echoed source= stops being asserted, so a verdict about ANOTHER repo clears the row",
+        '    elif [[ "$farm_source" != "$scope_phys" ]]; then',
+        "    elif false; then",
+    ),
+    mutate.Mutation(
+        "the farm allowlist widens to any RESULT line, so a drift report reads as clean",
+        "    elif [[ \"$farm_verdict\" == 'RESULT: PASS'* ]]; then",
+        "    elif [[ \"$farm_verdict\" == 'RESULT: '* ]]; then",
+    ),
+    mutate.Mutation(
+        "the installer's drift output is not attached, so the operator is not told WHICH member",
+        "      while IFS= read -r line; do\n"
+        "        printf '  %s\\n' \"$line\"\n"
+        '        case "$line" in\n'
+        "          'DRIFT: '*)\n"
+        "            printf '    %s\\n' \\\n"
+        '              "$(farm_drift_label "$line" "$farm_before" "$farm_undet" "$base")"\n'
+        "            ;;\n"
+        "        esac\n"
+        '      done <<<"$farm_out"',
+        "      :",
+    ),
+    # ---- the drift classification (part 3) ----
+    mutate.Mutation(
+        "the classification is never attached, so a drift failure reads the same whether this "
+        "promote caused it or tripped over one that predates it",
+        '        case "$line" in\n'
+        "          'DRIFT: '*)\n"
+        "            printf '    %s\\n' \\\n"
+        '              "$(farm_drift_label "$line" "$farm_before" "$farm_undet" "$base")"\n'
+        "            ;;\n"
+        "        esac",
+        "        :",
+    ),
+    mutate.Mutation(
+        "the membership test is inverted, so every label names the opposite cell",
+        '  if grep -qxF -- "$name" <<<"$names"; then',
+        '  if ! grep -qxF -- "$name" <<<"$names"; then',
+    ),
+    mutate.Mutation(
+        "membership is matched as a REGEX, so a dotted name matches an unrelated root entry",
+        '  if grep -qxF -- "$name" <<<"$names"; then',
+        '  if grep -qx -- "$name" <<<"$names"; then',
+    ),
+    mutate.Mutation(
+        "shape detection collapses to one branch, so a live foreign link is read as a missing one",
+        "    *' (resolved to '*) shape=resolved ;;",
+        "    *' (resolved to '*) shape=missing ;;",
+    ),
+    mutate.Mutation(
+        "an unrecognised DRIFT shape falls through into a cell instead of reporting UNDETERMINED",
+        "    *)\n      # An allowlist on the SHAPE:",
+        "    *) shape=missing ;;\n"
+        "    'never happens')\n"
+        "      # An allowlist on the SHAPE:",
+    ),
+    mutate.Mutation(
+        "an UNDETERMINED reason is discarded and a label is produced anyway — the whole preimage "
+        "of 'could not measure' silently acquires a positive verdict",
+        '  if [[ -n "$reason" ]]; then',
+        "  if false; then",
+    ),
+    mutate.Mutation(
+        "the install.sh-changed guard is removed, so a moved EXCLUDE list still yields a label",
+        '      elif [[ -n "$farm_diff" ]]; then',
+        "      elif false; then",
+    ),
+    mutate.Mutation(
+        "a pre-merge HEAD the range row REFUSED still decides labels here",
+        '      if [[ "$base_ok" != yes ]]; then',
+        "      if false; then",
+    ),
+    mutate.Mutation(
+        "an unlistable before-tree is read as an EMPTY one, so every drifting member reads as new",
+        '      elif ! farm_before="$(git -C "$scope" ls-tree --name-only "$base" 2>/dev/null)"; then',
+        '      elif farm_before="$(git -C "$scope" ls-tree --name-only "$base" 2>/dev/null)"'
+        " && false; then",
+    ),
+    mutate.Mutation(
+        "an uncomputable install.sh diff reads as 'unchanged', so the guard silently stops firing",
+        '      elif ! farm_diff="$(git -C "$scope" diff --name-only "$base" "$farm_after" '
+        '-- "$FARM_INSTALLER" 2>/dev/null)"; then',
+        '      elif farm_diff="$(git -C "$scope" diff --name-only "$base" "$farm_after" '
+        '-- "$FARM_INSTALLER" 2>/dev/null)" && false; then',
+    ),
+    mutate.Mutation(
+        "base_ok is set unconditionally, so the range row's refusal never reaches the classifier",
+        "  base_ok=no",
+        "  base_ok=yes",
+    ),
 ]
 
 

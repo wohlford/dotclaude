@@ -5,7 +5,9 @@ set -uo pipefail
 # Purpose: Verify /propagate's LOCAL promote landed correctly, choosing the postcondition branch
 #          itself instead of leaving that to the operator. Also asserts, unconditionally on an
 #          adopted repo, that the pre-push boundary hook installed at .git/hooks/pre-push is
-#          current — the fast-forward alone cannot have updated it (see pre-push-installed).
+#          current — the fast-forward alone cannot have updated it (see pre-push-installed) —
+#          and, where the scope ships an install.sh, that every CURRENT config-farm member still
+#          links to it, which the fast-forward likewise cannot have done (see farm-current).
 # Usage: propagate-postcheck.sh --scope <live> --before-sha <sha256> [--ref <ref>] [--before-head <commit>]
 #
 # Scope: this script verifies; it changes nothing. It runs AFTER the fast-forward, so every
@@ -83,6 +85,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 readonly SETTINGS=settings.json
 readonly TRACKED_HOOK=git-hooks/pre-push
 readonly INSTALLER=scripts/install-git-hooks.sh
+readonly FARM_INSTALLER=install.sh
 
 pass_count=0
 fail_count=0
@@ -158,10 +161,88 @@ hook_is_a_tracked_version() { # scope path
   grep -qx "$blob" <<<"$members"
 }
 
+# farm_drift_label DRIFT-LINE BEFORE-NAMES UNDETERMINED-REASON BEFORE-REF -> one line saying how
+# THIS promote relates to that drift line.
+#
+# A DRIFT line says the farm disagrees with the tree; it does not say whether this promote caused
+# the disagreement. The obvious instrument -- run `--check` before the install too and diff the
+# two reports -- cannot answer it: install.sh REFUSES a foreign link rather than repointing it,
+# so a foreign link is foreign BEFORE the install every single time. That baseline answers yes
+# for every input, which is a check that cannot move.
+#
+# A promote genuinely causes a foreign-link conflict in exactly ONE way: the merge adds a root
+# member whose path already held a link of the operator's own. The link pre-existed; the CONFLICT
+# is new, because the path only became managed now. So the discriminator is MEMBERSHIP AT TWO
+# COMMITS, not link state at two times -- crossed with which of `--check`'s two DRIFT shapes fired:
+#
+#                              | NOT a root entry before | WAS a root entry before
+#   `resolved to X, want Y`    | INTRODUCED              | PRE-EXISTING
+#   `missing or not a live...` | EXPECTED                | REGRESSED
+#
+# install.sh's EXCLUDE list is deliberately NOT copied here, and does not need to be: a name
+# reaching this function was named by the installer, so it is a member NOW, and EXCLUDE is a
+# constant within one copy of that script -- presence in the before-tree therefore settles it. A
+# hand-made copy of another file's list is a drift this repo has already measured.
+#
+# DIAGNOSIS, never a gate: every branch here only prints. The caller's PASS/FAIL is decided
+# before this runs and is untouched by which label comes back -- a drift failure stays a failure
+# whatever caused it, and an UNDETERMINED one must not become a pass.
+farm_drift_label() { # drift-line before-names undetermined-reason before-ref
+  local line="$1" names="$2" reason="$3" ref="$4" name shape
+
+  name="${line#DRIFT: }"
+  name="${name%% (*}"
+
+  case "$line" in
+    *' (resolved to '*) shape=resolved ;;
+    *' (missing or not a live symlink at '*) shape=missing ;;
+    *)
+      # An allowlist on the SHAPE: a line the installer emits in some third form is not silently
+      # sorted into one of the four cells, because the cell depends on the shape.
+      printf 'UNDETERMINED: %s -- this DRIFT line is in neither shape this classifier reads, so which cell it belongs to is unknown\n' \
+        "$name"
+      return 0
+      ;;
+  esac
+
+  # Reported, never resolved into a label. Whatever the reason, the preimage of "could not
+  # measure" contains cases from BOTH columns, so promoting any of it to a positive verdict
+  # would hand that verdict to the rest.
+  if [[ -n "$reason" ]]; then
+    printf 'UNDETERMINED: %s -- %s\n' "$name" "$reason"
+    return 0
+  fi
+
+  # A HERESTRING, never `printf | grep -qx`: this file runs under `set -o pipefail`, where
+  # `grep -q` exiting at its first match SIGPIPEs the producer and the pipeline reports 141 on
+  # exactly the inputs that DO match. `-F` because a member name carries dots.
+  if grep -qxF -- "$name" <<<"$names"; then
+    case "$shape" in
+      resolved)
+        printf 'PRE-EXISTING: %s was already a root entry at %s, so this promote neither created that link nor made the path managed -- it is an excursion of your own\n' \
+          "$name" "${ref:0:12}" ;;
+      *)
+        printf 'REGRESSED: %s was already a root entry at %s, so a link that existed has since been removed or written over\n' \
+          "$name" "${ref:0:12}" ;;
+    esac
+  else
+    case "$shape" in
+      resolved)
+        printf 'INTRODUCED: %s was NOT a root entry at %s, so this promote made that path managed and collided with a link already sitting there -- decide what that link is before replacing it\n' \
+          "$name" "${ref:0:12}" ;;
+      *)
+        printf 'EXPECTED: %s was NOT a root entry at %s, so this promote added it and no link exists there yet -- usually nothing but %s is needed, but --check cannot tell an EMPTY path from one holding a real file or directory, and for the latter the installer will BACK IT UP and link over it\n' \
+          "$name" "${ref:0:12}" "$FARM_INSTALLER" ;;
+    esac
+  fi
+}
+
 main() {
   local scope="" before_sha="" ref=FETCH_HEAD before_head="" head_src=ORIG_HEAD
-  local head_sha ref_sha base changed in_range helper out rc identity_note got
+  local head_sha ref_sha base base_ok changed in_range helper out rc identity_note got
   local adopted hook_ref hook_dir hook_dest
+  local farm_installer farm_out farm_rc farm_verdict farm_source scope_phys line
+  local farm_after farm_before farm_undet farm_diff
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -224,6 +305,12 @@ main() {
   fi
   base="$(git -C "$scope" rev-parse --verify -q "${before_head:-HEAD_UNSET}^{commit}" 2>/dev/null)" || base=""
 
+  # `base_ok` records that this script BELIEVES the pre-merge HEAD, and is set in exactly one
+  # place so that farm-current's classification below cannot disagree with the range row about
+  # the same commit. Re-deriving the predicate at the other call site would copy a rule that then
+  # drifts; one-directional, like `in_range`.
+  base_ok=no
+
   if [[ -z "$base" ]]; then
     verdict_fail range \
       "no usable pre-merge HEAD ($head_src unset or unresolvable) — pass --before-head; treating the branch as UNDETERMINED, so byte-identity is required below"
@@ -231,6 +318,7 @@ main() {
     verdict_fail range \
       "the given pre-merge HEAD ${base:0:12} is not an ancestor of HEAD — refusing to believe it; treating the branch as UNDETERMINED"
   else
+    base_ok=yes
     changed="$(git -C "$scope" diff --name-only "$base" "${ref_sha:-$head_sha}" 2>/dev/null)"
     if printf '%s\n' "$changed" | grep -qx "$SETTINGS"; then
       in_range=yes
@@ -368,6 +456,140 @@ main() {
     # installed was never a version of this hook, and deciding what it is comes first.
     verdict_fail pre-push-installed \
       "$hook_dest matches NO tracked version of $TRACKED_HOOK -- it was not installed from this repo; inspect it before replacing it"
+  fi
+
+  # ---------- farm-current ----------
+  # The live config farm is the set of symlinks from $HOME/.claude into the production repo. A
+  # fast-forward cannot create or repoint one: only install.sh does. Ordinary file content
+  # reaches the farm through the EXISTING links, so the gap only opens when ROOT MEMBERSHIP
+  # changes -- a newly tracked root entry is absent from the live config until something runs
+  # the installer. This row is the re-sample that fires even when that action never ran: a
+  # forgotten call, a mis-taken guard, or the one-time landing race where the pre-merge skill
+  # body did not yet carry it.
+  #
+  # ONE-DIRECTIONAL, and the row NAME is shorthand for the claim rather than the claim itself:
+  # `--check` iterates the CURRENT derived membership only, so what is asserted here is that
+  # EVERY CURRENT MEMBER LINKS CORRECTLY -- not that the farm as a whole is current. A member
+  # the promote REMOVED leaves a stale dangling link that neither the install nor the check ever
+  # looks at, and this row reads clean over it (measured).
+  #
+  # PRODUCTION'S OWN COPY, never this working copy: `--check` compares every managed link
+  # against its own SCRIPT_DIR and never consults the install marker, so the dev clone's copy
+  # reports a DRIFT line per member and RESULT: FAIL against a perfectly healthy farm (measured
+  # at one instant against the live farm: dev rc=1 with 16 DRIFT lines, production rc=0 with
+  # none). That is the same which-copy-produced-the-verdict hazard the hooks helper path is
+  # printed for above -- and here the tool NAMES the tree it graded in `source=`, so the row
+  # echoes that back and asserts it, rather than trusting the path it handed over. Resolve both
+  # sides physically: the installer's SCRIPT_DIR is `pwd -P`, so a logically-spelled scope could
+  # never compare equal and the assertion would fire on every healthy promote.
+  #
+  # On the DRIFT path each reported line is additionally CLASSIFIED -- pre-existing, introduced,
+  # expected, regressed, or undetermined -- so the operator can tell in one read whether this
+  # promote caused the condition or merely tripped over one that predates it. See
+  # farm_drift_label above for the discriminator and why the obvious one cannot work. It is
+  # diagnosis attached to the failure, not a second gate: the verdict is the same either way.
+  #
+  # Read-only, like everything else here: `--check` mutates nothing under the config root.
+  farm_installer="$scope/$FARM_INSTALLER"
+  if [[ ! -f "$farm_installer" ]]; then
+    verdict_skip farm-current \
+      "$scope ships no $FARM_INSTALLER -- there is no config farm for this repo to be current about"
+  else
+    farm_out="$("$farm_installer" --check 2>&1)"; farm_rc=$?
+
+    # Keep only the LAST `RESULT:` line and ignore every other line. The installer emits WARN:
+    # lines about untracked and config-shaped root entries even under --check, because those run
+    # ahead of flag parsing; they do not reach its verdict (measured: WARNs alongside
+    # RESULT: PASS, rc=0), so they are not findings. A while-read rather than `grep | tail`:
+    # this file runs under `set -o pipefail`, where an early-exiting reader turns its producer's
+    # SIGPIPE into the pipeline's status.
+    farm_verdict=""
+    while IFS= read -r line; do
+      case "$line" in
+        'RESULT: '*) farm_verdict="$line" ;;
+      esac
+    done <<<"$farm_out"
+
+    case "$farm_verdict" in
+      *source=*)
+        farm_source="${farm_verdict#*source=}"
+        farm_source="${farm_source%%[) ]*}"
+        ;;
+      *) farm_source="" ;;
+    esac
+    scope_phys="$(cd -P "$scope" 2>/dev/null && pwd -P)" || scope_phys=""
+
+    if [[ -z "$farm_verdict" ]]; then
+      # REFUSED BEFORE CHECKING -- not drift. install.sh requires realpath, probes `mv -T` and
+      # resolves $HOME at top level, all ahead of flag parsing, so a pure report can die with
+      # ZERO `RESULT:` lines (measured: `refuse: mv -T not supported by this mv` with coreutils
+      # off PATH, `HOME: unbound variable` with HOME unset). An absent verdict line means the
+      # tool never reported on the farm at all; calling that drift would diagnose a toolchain
+      # problem as a broken promote, and on such a machine every adopted promote would FAIL
+      # forever for the wrong reason.
+      verdict_fail farm-current \
+        "$FARM_INSTALLER --check reached no verdict (rc=$farm_rc, no RESULT: line) -- it refused BEFORE checking the farm, so this is NOT a drift report; fix what it refuses over, then re-run $scope/$FARM_INSTALLER --check"
+      printf '%s\n' "$farm_out" | sed 's/^/  /'
+    elif [[ -z "$farm_source" ]]; then
+      verdict_fail farm-current \
+        "$FARM_INSTALLER --check named no source= in its verdict -- nothing confirms which tree it graded"
+      printf '%s\n' "$farm_out" | sed 's/^/  /'
+    elif [[ -z "$scope_phys" ]]; then
+      verdict_fail farm-current "could not physically resolve $scope to compare against source=$farm_source"
+    elif [[ "$farm_source" != "$scope_phys" ]]; then
+      # A wrong-copy invocation, whatever its verdict: the run graded a tree that is not the one
+      # this promote landed in (a symlinked or copied installer does exactly this). Its PASS and
+      # its FAIL are equally about the wrong subject. Any DRIFT lines here are attached RAW and
+      # deliberately unclassified: the classification below reads membership in the PROMOTED
+      # repo, which is not the repo these lines are about.
+      verdict_fail farm-current \
+        "$FARM_INSTALLER --check graded $farm_source, not the promoted tree $scope_phys -- the verdict is about a different repo"
+      printf '%s\n' "$farm_out" | sed 's/^/  /'
+    elif [[ "$farm_verdict" == 'RESULT: PASS'* ]]; then
+      # Allowlist, as with hooks-registered: anything not anticipated here reads as not-clean.
+      verdict_pass farm-current
+      printf '  every CURRENT farm member links to %s (a member REMOVED by this promote is outside what --check iterates)\n' \
+        "$farm_source"
+    else
+      # DRIFT. The verdict is decided HERE and is final; everything below only annotates the
+      # attached output, so no classification -- UNDETERMINED included -- can move a FAIL to a
+      # PASS or the reverse.
+      verdict_fail farm-current \
+        "$FARM_INSTALLER --check found the farm out of date (rc=$farm_rc) -- run $FARM_INSTALLER in $scope"
+
+      # Membership at the before-commit, read ONCE for every DRIFT line. Lazily, in this branch
+      # only: a clean farm has nothing to classify and must not pay for a git read.
+      farm_after="${ref_sha:-$head_sha}"
+      farm_before=""
+      farm_undet=""
+      if [[ "$base_ok" != yes ]]; then
+        farm_undet="the pre-merge HEAD is unusable (see the range row above), so membership at the before-commit cannot be read at all"
+      elif ! farm_before="$(git -C "$scope" ls-tree --name-only "$base" 2>/dev/null)"; then
+        # Reachable: a commit object can be present and readable (so it resolves, and answers
+        # merge-base) while its TREE is not -- a partial clone with no network, or a damaged
+        # object store. An empty listing with rc 0 is a different thing and is believed.
+        farm_undet="git ls-tree could not list the root of ${base:0:12}, so no name's membership before is derivable"
+        farm_before=""
+      elif ! farm_diff="$(git -C "$scope" diff --name-only "$base" "$farm_after" -- "$FARM_INSTALLER" 2>/dev/null)"; then
+        farm_undet="whether $FARM_INSTALLER changed over ${base:0:12}..${farm_after:0:12} could not be determined, so its EXCLUDE list may have moved under the before-tree reading"
+      elif [[ -n "$farm_diff" ]]; then
+        # The one case the two-commit discriminator genuinely cannot cover: EXCLUDE lives in
+        # install.sh, so if install.sh moved in the range, a name's presence in the before-tree
+        # no longer decides whether it was a MEMBER then.
+        farm_undet="$FARM_INSTALLER itself changed over ${base:0:12}..${farm_after:0:12}, so its EXCLUDE list may have moved and presence in the before-tree no longer settles membership"
+      fi
+
+      # A while-read, not `grep | sed`, for the same pipefail reason the verdict scan above gives.
+      while IFS= read -r line; do
+        printf '  %s\n' "$line"
+        case "$line" in
+          'DRIFT: '*)
+            printf '    %s\n' \
+              "$(farm_drift_label "$line" "$farm_before" "$farm_undet" "$base")"
+            ;;
+        esac
+      done <<<"$farm_out"
+    fi
   fi
 
   if [[ "$fail_count" -eq 0 ]]; then
