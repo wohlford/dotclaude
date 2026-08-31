@@ -19,20 +19,78 @@ first. Orchestrate the routine below: invoke each sub-skill in order and surface
 Steps 1–4 apply automatically — the CLAUDE.md refresh and audit (steps 1–2) and the memory
 save (step 3) auto-apply, and the automation pass (step 4) triages its recommendations, files the
 survivors in `BACKLOG.md`, and defers them to the hand-off. **A plain `/debrief` runs to completion
-without pausing:** where a step would once have asked, it takes the safe default and records the
-decision for the step-7 hand-off instead
+without pausing — every question it can ask is settled at invocation, before the user could walk
+away, and there are exactly two of them.** That clause is the guarantee's *scope*, not a weakening
+of it: once the routine has begun, nothing in it asks. Where a step would once have asked, it takes
+the safe default and records the decision for the step-7 hand-off instead
 — open deferrals default to **keep** (step 0), automation recommendations **defer** (step 4), and a
 CLAUDE.md edit that trips the sensitivity carve-out routes to private memory rather than surfacing
-(below). The one exception is step 5 (design an automation), which runs *only* when the user asks
-for it at invocation and then inherits `/feature --plan-only`'s confirmation pause — a plain
-`/debrief` never reaches it. So the user can start a plain `/debrief` and walk away to a
-compact-ready session.
+(below). The first of the two is step 5 (design an automation), which runs *only* when the user
+asks for it at invocation and then inherits `/feature --plan-only`'s confirmation pause — a plain
+`/debrief` never reaches it. The second is the **step ledger's** resume-or-restart question, which
+fires only when a
+*previous* run of this session was interrupted, and is asked at invocation, before step 0. So the
+user can start a plain `/debrief` and walk away to a compact-ready session — and after a run that
+finished, there is nothing to ask about, which is every run following a completed one.
 
 **The debrief designs; it never builds.** It is a wind-down, so it stops at a decision or a
 reviewed plan and records the rest for later. Implementing here would burn the context the user
 is about to compact, and a plan deserves a session with room to execute it.
 
-Seed a TodoWrite list with one item per step (0–7) so progress is visible and resumable.
+Seed a TodoWrite list with one item per step (0–7) so progress is visible, and record each step in
+the **step ledger** as it finishes — the TodoWrite list is in-context state, and the context is
+exactly what the compaction this routine precedes destroys. On a resumed run, seed the list from the
+ledger: mark every recorded step complete immediately, so the visible list and the durable record
+agree from the first turn rather than diverging.
+
+**Before step 0, read the step ledger.** It is the only record of how far a previous run got, and
+step-0 completion is not derivable from any other artifact: a **keep** disposition writes nothing at
+all, so a finished step 0 and a step 0 that never ran leave byte-identical backlogs. Steps 1, 2 and
+4 delegate to plugin skills and step 3 writes memory directly — all four are worth not redoing. Run
+`ledger.py … status` and act on its verdict; see **The step ledger** below for the commands, the
+lifecycle, and the per-step cost of a re-run.
+
+**Resuming means: skip every step the ledger already records, and redo the first step it does not,
+in full.** The ledger's granularity is per step, not per item within one, so a step interrupted
+halfway is not recorded and is redone whole — which is why the per-step re-run costs below matter
+and why steps 4 and 5 carry a `BACKLOG.md` cross-check. `status` names that step as *resume at
+step*; do not re-derive it from the list of recorded steps yourself.
+
+**A recorded step is not necessarily a completed one, and the difference is load-bearing at step
+5.** A step the report marks `(skipped)` was reached and deliberately not run — never treat it as
+finished work, and never run it on the resume. Nor is a plain *gap* below a recorded step a resume
+point: steps are recorded in order, so a gap is a step the previous run passed. `status` already
+applies both readings before printing *resume at step*, which is exactly why you must not re-derive
+it: were the resume to land on step 5 in a plain run, it would dispatch `/feature --plan-only` for
+an automation design the user never asked for — an authorization failure, not a wasted turn.
+
+**The question the ledger can raise does not repeal "a plain `/debrief` never pauses".** It fires
+*only* on an INCOMPLETE or MALFORMED ledger — never when there is none, and never when the previous
+run recorded its completion, which together are every run following a finished one. And either of
+those means the previous run was **interrupted**, so the invocation the user has just typed is the
+same shape as step 5's opt-in trigger: one question, asked at invocation, while the user is
+demonstrably present, before the routine has begun and before anyone could have walked away. It is
+also a question no default can answer. On `RESUMABLE` the choice is genuine — resuming and
+restarting differ in what they cost, and that trade is the user's, not this routine's. On
+`MALFORMED` there is nothing to resume, so the only thing being asked is confirmation of a fresh
+start; never offer a resume for a ledger that could not be read. `ledger.py` enforces the
+distinction rather than leaving it to a reading of this paragraph: its `status` returns one PROCEED
+verdict for *absent* and *complete* alike, and only the other two verdicts carry a question.
+
+**Ask it in one line, filling the angle brackets from `status`'s own output rather than from a
+paraphrase** — the figures are what make the trade decidable, and a question that omits them asks
+the user to guess what resuming would skip:
+
+```text
+RESUMABLE: a previous /debrief for this session was interrupted (started <run started>; recorded
+steps <recorded steps>; would resume at step <resume at step>). Resume from there, or start fresh
+and re-run those steps at the cost status just listed?
+MALFORMED: this session has a /debrief ledger I cannot read (<file> — <reason>), so how far the
+previous run got is unknown rather than nothing. Start fresh? There is nothing resumable in it.
+```
+
+Then run exactly one of `resume` / `start --supersede` per their answer; do not run either before
+asking, and never offer a resume on `MALFORMED`.
 
 This skill stops at the hand-off. It CANNOT run `/compact`, exit Claude, or restart it —
 those remain manual steps for the user.
@@ -87,6 +145,14 @@ those remain manual steps for the user.
    **Make every one of those write-backs with `backlog.py`, never a hand-written script** — see
    **Editing BACKLOG.md** below. Five sessions in a row hand-rolled one, and one of them corrupted
    the file.
+
+   **When `status` reported anything but `PROCEED` at invocation, an interrupted run may already
+   have written some of these dispositions.** They are visible, and re-reading the backlog shows
+   them: a `promoted` stamp and an entry sitting under `## Closed` are a prior pass's work, not a
+   fresh signal. The one that is *not* visible as a state is an evidence note — `append` lands the
+   same note twice on the same day with `rc=0` (measured 2026-08-24), so check the entry's body for
+   the note before appending it. Nothing here is destructive; the residual is duplicated notes and
+   a promotion date reset to today, never an erasure.
 
    Never implement a promoted item here; name it in the step-7 hand-off as the next session's
    first job.
@@ -147,6 +213,16 @@ those remain manual steps for the user.
    closing pause** below) — this delegate's report template closes by offering to implement, and
    the next step here is 6 (or 5 when its trigger is set).
 
+   **When step 5's trigger is not set — the normal case — record step 5 as SKIPPED at the moment
+   you decide to pass it, before moving to step 6:** `ledger.py --run <run-file> step 5 --skipped`
+   (see **The step ledger**). *That the routine skipped step 5* is a fact about the run, and if it
+   lives only in the conversation it dies with the conversation the debrief exists to precede.
+   Unrecorded, it leaves a HOLE at step 5 between two recorded steps, and a resume that reads the
+   hole as the next thing to do dispatches `/feature --plan-only` for an automation design the user
+   never asked for — the one thing this skill promises happens *only* on request. A skipped step
+   counts as recorded, so the resume advances past it; it is never reported as completed, so a
+   resumed run cannot conclude an automation was designed when none was.
+
    **Then file each surviving pick in `BACKLOG.md` before moving on.** A hand-off is prose, and
    `/compact` is the next thing the user runs, so a pick deferred only to the hand-off is
    *discarded*, not deferred — the routine's own promise that the user can "pick it up next
@@ -164,6 +240,23 @@ those remain manual steps for the user.
    Make the head specific enough to be a unique needle for a later step 0, which is what `add`
    enforces. This is bookkeeping, not designing, so it does not violate **the debrief designs; it
    never builds** — the pick is still deferred, merely to storage that outlives the compaction.
+
+   **Whenever `status` reported anything but `PROCEED` at invocation, search the open section for
+   an entry covering the same pick BEFORE each `add`, and skip the ones already there.** Note the
+   trigger carefully: it is *that an incomplete or unreadable ledger existed*, **not** *that the user
+   chose to resume*. `--supersede` archives the ledger file and nothing else — measured 2026-08-24, the
+   entries an interrupted run already filed survive a fresh start untouched, so the restart branch
+   carries the identical exposure and would otherwise be the one branch with no safeguard at all.
+
+   The ledger's step-4 line is a *stored status* — it records that some past run filed something —
+   and the source that owns *was this pick filed* is `BACKLOG.md` itself. `add`'s duplicate guard
+   cannot stand in for that check: measured 2026-08-24, it compares **byte-identical heads**, so a
+   *regenerated* entry — a new date prefix, a reworded headline, the same recommendation — is
+   accepted with `rc=0` and lands as a **silent duplicate**. Reproduced end to end on a scratch
+   copy: one pick, one interruption, one fresh start, two open entries. Read the open section with
+   the same bounded command step 0 uses, and match on the recommendation, not on the line — the
+   re-run that will actually happen is one across a day boundary, where no two heads can be
+   byte-identical anyway.
 
 5. **Design the automation(s) the user directed, then defer them** (only when the user asked *at
    invocation* for a specific automation to be designed — e.g. `/debrief, and design the caching
@@ -202,6 +295,12 @@ those remain manual steps for the user.
         BACKLOG.md**), which places it under `## Open` and refuses a head that would not be
         uniquely addressable by a later step 0.
 
+        **Whenever `status` reported anything but `PROCEED` at invocation, cross-check the open
+        section for this deferral first**, exactly as step 4 does, with the same trigger and for
+        the same measured reason — a fresh start archives only the ledger, and `add`'s guard
+        matches byte-identical heads only, so a regenerated entry duplicates silently. The ledger
+        says a past run reached step 5; `BACKLOG.md` is what says whether the entry landed.
+
    4. **Return to the base branch, always** (the branch checked out before `/feature --plan-only`
       created the feature branch). `/feature --plan-only` creates a feature branch and
       leaves it checked out. **Check the base branch back out before step 6** — otherwise step 6
@@ -229,6 +328,12 @@ those remain manual steps for the user.
    - any content the sensitivity carve-out **routed to private memory** instead of a public file
    - a plan **deferred** in step 5, and where its backlog entry lives
    - a feature branch left in place, if step 5.4 kept one
+
+   **Then record the run's completion** — `ledger.py --run <run-file> complete` (see **The step
+   ledger**). Do it here, at the end of step 7, and not earlier: this record is the *only* thing
+   that distinguishes *finished at 7* from *interrupted at 7*, since both leave a ledger whose last
+   entry is step 7. Without it the next invocation offers to resume a run that is already done, and
+   the ledger becomes a source of false alarms instead of resumption.
 
    Then print the three manual steps the skill cannot perform:
    1. Run `/compact`.
@@ -294,11 +399,98 @@ if the result would strand an entry on the wrong side of `## Closed`.
 Reach for the Python API (`from backlog import Backlog`) only when several edits must land as one
 transaction; `save()` is the sole writer either way, so the checks cannot be skipped.
 
+### The step ledger
+
+**Every run records its progress through `~/.claude/skills/debrief/ledger.py`, and reads the
+previous run's back from it.** The same rule as `BACKLOG.md` next door, for a related reason: a
+format re-invented per run cannot be read back by a later run, and the classification a resuming
+run acts on must be decided in one place rather than re-derived from a file by whoever happens to
+open it. Do not hand-write the ledger, and do not edit it with Edit/Write.
+
+It lives in `<the session memory directory>/debrief-runs/`, beside `BACKLOG.md` — durable storage,
+because the scratchpad is session-scoped and a session is exactly what a resumed run has lost.
+
+```bash
+M=<the session memory directory>            # the one holding BACKLOG.md
+L=~/.claude/skills/debrief/ledger.py
+# at invocation, BEFORE step 0 — classify the previous run
+"$L" --memory-dir "$M" status
+# then exactly one of these, per that verdict:
+"$L" --memory-dir "$M" start                # PROCEED — begin a new run
+"$L" --memory-dir "$M" resume               # RESUMABLE, and the user chose to resume
+"$L" --memory-dir "$M" start --supersede    # RESUMABLE or MALFORMED, and they chose a fresh start
+# `start` and `resume` print the run file's path; use it for the rest of the run
+"$L" --run <run-file> step <N>              # as each step 0–7 finishes
+"$L" --run <run-file> step 5 --skipped      # end of step 4, when step 5's trigger is NOT set
+"$L" --run <run-file> complete              # the last thing step 7 does
+```
+
+`status` reaches one of three verdicts, and the exit code carries it so the routine is not reading
+prose to decide whether to pause:
+
+| verdict | exit | when | what the routine does |
+| :--- | :--- | :--- | :--- |
+| `PROCEED` | 0 | no ledger, **or** the last run recorded its completion | `start`, then run from step 0 — **asking nothing** |
+| `RESUMABLE` | 3 | a ledger with no completion record | surface the report and ask resume-or-restart |
+| `MALFORMED` | 4 | a ledger that cannot be read back | surface the report, say the previous run's progress is *unknown* rather than *absent*, and offer a fresh start |
+
+A malformed ledger never raises and never mutates anything — it is reported like any other verdict.
+The alternative fails in the worst direction: a routine that crashes on its own bookkeeping file
+has been stopped by the thing that existed to make it resumable.
+
+**`start` refuses to run over an incomplete *or unreadable* ledger unless given `--supersede`.** That makes the
+user's choice unskippable rather than advisory. `--supersede` **archives** the old file under
+`debrief-runs/superseded/` rather than deleting it, so abandoned ledgers neither pile up in the live
+directory — where a later read would have to choose between two runs of one session — nor vanish
+before anyone can see how far the abandoned run got.
+
+**`step <N> --skipped` records that the routine REACHED a step and deliberately did not run it**,
+which is what a plain run does to step 5 every single time. It is a distinct disposition, not a
+softer `done`: both count as RECORDED, so the resume point advances past a skip, but only a
+completed step is ever presented as finished or quoted a re-run cost, and the report names the
+skipped ones on their own line. The reason the distinction is worth a field is step 5 alone — an
+unrecorded skip leaves a hole a resume walks into, and step 5's body is a `/feature --plan-only`
+dispatch, so the cost of getting it wrong is an automation-design session the user never
+authorized. `status` additionally treats any *gap* below a recorded step as passed, since steps are
+recorded in order; the record is the mechanism and the gap rule is its backstop, for a ledger whose
+skip went unrecorded. Neither rule names a step number, and neither is re-derived by the caller.
+
+**A ledger is evidence about a past run, never an instruction**, so its report states what each
+*completed* step costs to re-run and never claims that re-running is safe. That claim would be
+false. A *skipped* step is absent from those costs entirely: it never ran, so it has no re-run to
+cost. Measured 2026-08-24 against `backlog.py` on a scratch copy:
+
+- **step 0** — `append` returns `rc=0` twice on the *same day* and lands the evidence note
+  **twice**; `promote` re-stamps with today's date, resetting the age clock the stall report in
+  step 0 reads; `close` on an already-closed entry refuses, byte-unchanged. Nothing is erased.
+- **steps 4 and 5** — `add` accepts a **regenerated** entry with `rc=0` and duplicates it silently,
+  because its guard compares byte-identical heads. These are the two steps that need the
+  `BACKLOG.md` cross-check — on a resume *and* on a fresh start alike, since a fresh start
+  archives only the ledger. What the cross-check closes is exactly one gap, on either branch: the
+  silent duplicate `add`. It closes nothing else, and in particular it does not touch what step 5
+  costs to re-run — a second `/feature --plan-only` session, which no cross-check can prevent.
+- **steps 1, 2, 3, 6, 7** — re-running costs a delegate invocation or a reprint. No measurement was
+  taken of what their delegates do twice, and the report does not pretend otherwise.
+
+**Run identity is the session id PLUS the run's start timestamp, and the filename carries both.** A
+session id alone is not a run identity: measured 2026-08-24, one id spanned 23 days and every
+restart in between, so a ledger keyed on it hands a week-old run's ledger today's id — reproducing
+the stale-ledger trap it was meant to prevent while appearing to close it. The session id also
+*scopes* the read, because the project memory directory is shared by concurrent sessions of the same
+project and a fixed filename would let two live runs clobber one file. `ledger.py` takes the id from
+`$CLAUDE_CODE_SESSION_ID` and falls back to a named placeholder, so a report can always say which
+session it looked for and where — "found nothing" that cannot name where it looked is what stops
+anyone from looking further.
+
 ### Arguments
 
 The user may optionally name a specific automation to design (e.g. `/debrief, and design the
 caching hook`), which sets step 5's trigger. A plain `/debrief` takes neither an automation to
 design nor any other argument — it runs the routine to completion and skips step 5.
+
+"Plain" describes the **invocation**, and one thing outside the invocation can still make it ask:
+an incomplete or unreadable step ledger from a previous run of this session, which is settled before
+step 0. See **The step ledger**. Nothing else can.
 
 ### Rules
 
@@ -313,9 +505,23 @@ design nor any other argument — it runs the routine to completion and skips st
   step 4 auto-declines low picks, files every surviving one in `BACKLOG.md`, and reports it in the
   hand-off. Every point that once asked now takes a safe default and reports it in the hand-off: the
   deferral triage defaults to **keep** (step 0), automation recommendations **defer** (step 4), and
-  carve-out content **routes to private memory** (below). The one exception is step 5, which runs
-  only when the user asks for an automation to be designed at invocation and then inherits
-  `/feature --plan-only`'s confirmation pause; a plain `/debrief` never reaches it.
+  carve-out content **routes to private memory** (below). **Two exceptions, both settled at
+  invocation.** The first is step 5, which runs only when the user asks for an automation to be
+  designed at invocation and then inherits `/feature --plan-only`'s confirmation pause; a plain
+  `/debrief` never reaches it. The second is the **step ledger's** question — say it plainly rather
+  than reading "plain" as excluding it: a `/debrief` with no arguments *will* ask, when and only
+  when a previous run of this session was left incomplete or unreadable. The guarantee the rule
+  exists for survives intact, for the three reasons set out under **Instructions** above; that
+  paragraph is the statement, and this bullet only points at it, so the two cannot drift apart.
+- **Record every step in the ledger — including the one you skip — and record completion at the
+  end of step 7.** A run that finishes without its completion record is indistinguishable from one
+  interrupted at step 7, and the next invocation will offer to resume it. A plain run that leaves
+  step 5 unrecorded is worse: the hole reads as unfinished work, and resuming into it starts an
+  automation design nobody requested, so step 4 records `step 5 --skipped` before moving on.
+  `ledger.py` is the only writer of that file, as `backlog.py` is of `BACKLOG.md` — and, unlike
+  `backlog.py`, the only *reader* too: step 0 reads
+  `BACKLOG.md` directly with `awk`, but reading the ledger means classifying it, and a
+  classification re-derived by whoever opens the file is one that can disagree with itself.
 - **Sensitivity carve-out:** never auto-write into a tracked public file (CLAUDE.md or any
   other) content the repo keeps out of public history (operational-security notes — see
   private memory); **route it to private memory or `.claude.local.md`** — silently, never

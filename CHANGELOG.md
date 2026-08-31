@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.96.0 — 2026-08-24
+- feat(debrief): resume an interrupted run from a per-run step ledger
+
 ## v0.95.0 — 2026-08-24
 - feat(propagate): refresh the config farm on promote and assert it
 
