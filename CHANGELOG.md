@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.97.1 — 2026-08-25
+- fix(feature): give each merge precondition its own remedy
+
 ## v0.97.0 — 2026-08-25
 - feat(mutate): record timeout headroom in the campaign report
 

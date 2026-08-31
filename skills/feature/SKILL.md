@@ -371,13 +371,26 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
    **merge the feature branch** back to its base and clean up. The **merge is the default end
    action** — do not pause to choose it. If tests fail, stop and report; do not merge. **The base
    must not have moved either** — assert `git merge-base <base> <feature-tip>` equals the base tip
-   before merging, and if it moved, rebase and re-run **at minimum** the suite and `/audit`, exactly
-   as the adopted finish does. **Also assert the final review's commit and the feature tip have the
+   before merging. **If it moved, do not merge: rebase onto the base tip** and re-run **at minimum**
+   the suite and `/audit` — re-running a review changes nothing about the base, so it is no remedy
+   for this precondition. Grade that `/audit` exactly as step 2 grades it: an introduced FAIL blocks,
+   a pre-existing one does not. **If the rebase conflicts, resolve against each commit's frozen
+   intent — and if one cannot be resolved without altering what a commit was meant to do, stop and
+   report**, exactly as the adopted finish's point 1 does. That is a failure disposition, not an
+   alternative to rebasing: it ends the finish, and never licenses merging a branch whose base moved. The re-run list differs from the adopted finish's, which names the
+   suite and the final review instead — not because the two arms disagree about what a rebase
+   invalidates, but because the adopted path gets its authoritative `/audit` structurally, per brick,
+   during re-derivation, while this path's only full `/audit` run was the branch-level one in step 2,
+   which the rebase invalidates. **Also assert the final review's commit and the feature tip have the
    same tree** — a fast-forward guarantees the merged tree equals the *tip's*, never that the tip is
-   what any review judged, and the adopted arm needs the same assert for the same reason. **On
-   either mismatch, do not merge:** stop and report, or re-run SDD's final whole-branch review on the
-   tip and treat its verdict as the final one. Otherwise the merge integrates a tree no review
-   judged, and any conflict resolution lands in it having appeared in no reviewer's diff.
+   what any review judged, and the adopted arm needs the same assert for the same reason. **Re-check
+   this assert against the rebased tip: a rebase that changes the tree makes it fire again**, so the
+   final review's re-run is a *consequence* of rebasing, never an *alternative* to it — a tree-neutral
+   base advance leaves the tree unchanged and needs no re-review. **On a tree mismatch, do not
+   merge:** stop and report, or re-run SDD's final whole-branch review on the tip and merge only if
+   **that review comes back clean** — a FAIL there is a stop, not a formality discharged by having
+   re-run it. Otherwise the merge integrates a tree no review judged, and any conflict resolution
+   lands in it having appeared in no reviewer's diff.
    **Adopted repos**: do not merge — finish instead via **Adopted-repo finish: re-derive onto
    `dev`**, below.
 
@@ -394,9 +407,11 @@ history never had to be.
    **Record the feature-tip SHA now**, before the branch is discarded — the tip tree-compare in point
    4 needs it. **Assert the commit that SDD's final whole-branch review judged and the feature tip
    have the same tree** before freezing; on mismatch, do not freeze — re-run that review on the tip
-   and treat its verdict as the final one, or stop and report. Point 4 compares the integrated tree
-   to this *oracle*, never to what a review judged, so without this assert any commit landing between
-   the final review and the freeze rides in unreviewed and point 4 still passes.
+   and freeze only if **that review comes back clean**, or stop and report; a FAIL there is a stop,
+   not a formality discharged by having re-run it — never freeze a broken tip as the oracle. Point 4
+   compares the integrated tree to this *oracle*, never to what a review judged, so without this
+   assert any commit landing between the final review and the freeze rides in unreviewed and point 4
+   still passes.
    - **Precondition (BLOCKER): `dev` must not have moved since the branch was cut.** Assert
      `git merge-base dev <feature-tip>` equals `dev`'s current tip. `/feature` spans sessions, so
      `dev` advancing underneath a long-running branch is plausible, not a corner case. If `dev`
