@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.91.7 — 2026-08-23
+- test(mutate-run-long): add a row for classify's observation order
+
 ## v0.91.6 — 2026-08-23
 - fix(run-long): sample liveness before reading the status trailer
 

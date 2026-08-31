@@ -57,6 +57,16 @@ MUTATIONS = [
         'if [[ -n "$JOB_PID" ]] && kill -0 "$JOB_PID" 2>/dev/null; then',
         'if [[ -n "$JOB_PID" ]]; then',
     ),
+    # The ORDER of classify()'s two observations, which is a separate property from whether
+    # liveness is checked at all (the row above). Reverting it does not delete the hoisted
+    # sample — it makes the terminal decision RE-SAMPLE liveness at the bottom, which is exactly
+    # the pre-fix behaviour: trailer first, liveness second. A job that finishes between the two
+    # then reads no-trailer AND not-alive, and a healthy run is reported DIED.
+    mutate.Mutation(
+        "the trailer is read BEFORE liveness again, so a job finishing mid-classification reads DIED",
+        '  if [[ "$alive" -eq 1 ]]; then',
+        '  if [[ -n "$JOB_PID" ]] && kill -0 "$JOB_PID" 2>/dev/null; then',
+    ),
     mutate.Mutation(
         "--status stops distinguishing a failed run from a successful one",
         '      [[ "$JOB_RC" == "0" ]] && return 0\n      return 1',
