@@ -289,6 +289,18 @@ left legal.
   **But a RED proves only that SOMETHING failed, not that your named subject did** — a row titled for
   one guard fired off a *different* assertion that raised first, so deleting the guard it named left
   the suite green (measured). Mutate what a row names; if the suite holds, the row is not testing it.
+- **A favourable measurement can be the DEFECT restated — and it reads as success either way.** Two
+  shapes, both measured inside one change. A candidate replacement benchmarked at 76,067 ms → 280 ms
+  over 4000 iterations, and the figure went into a plan as licence to ship — but the corpus was
+  nearly all inputs that SKIP the branch the replacement existed to handle; on the input that
+  exercises it the same code took **10,928 ms for ONE 1,750-byte subject**, unbounded and reachable
+  from ordinary text. And a matcher recorded as producing *"no false positives against that
+  producer"* — a sentence identical to *"that producer yields zero rows"*, so half the intended
+  population went invisible while the note read as proof the matcher was right. **Ask what the
+  pleasing number's COMPLEMENT says**: which inputs the corpus omitted, and what the exclusion set
+  contains. The same change then bounded a cost in a test using the convenient fixture rather than
+  the expensive one, understating the shipped residual by half — the identical error one level down,
+  in the artifact written to catch it.
 - **A test that supplies the option's own DEFAULT cannot tell whether the option is read at all.**
   Measured by mutation: five separate "parse the flag, then discard its value" mutants ALL SURVIVED
   a green suite, because every test invoked the script with the value the script would have chosen
@@ -373,6 +385,16 @@ left legal.
   out loud before anyone questioned it. Note what does not catch this: the probe really did reach the
   subject, so "did it run on the right thing" clears it. Echo back the parameters the tool reports
   using, or check that the verdict MOVES when you deliberately change them.
+- **A check that ENUMERATES at a coarser unit than the property it asserts passes on the first
+  satisfying instance.** Measured: a checker requiring every test file that creates a repository to
+  disable commit signing reported `0 violations` over a file where one fixture set the flags and a
+  newly added one did not — the property is per-REPOSITORY, the enumeration per-FILE, so one
+  compliant fixture cleared the whole file. The new fixture really did sign (signing was on globally
+  and a fresh initialisation inherits it) and survived only on a cached hardware-key PIN; on a cold
+  one it hangs rather than fails, which is the outcome no harness may produce. **Compare the check's
+  unit of enumeration against the property's unit before trusting a violation count** — the tell is
+  visible in the report itself, which counts FILES while the rule it enforces is written about
+  repositories.
 - **An instrument that enumerates its subjects from VERSION CONTROL grades the COMMITTED
   population, not the one in your working tree — so the newest work sits outside its scope at
   exactly the moment nothing has ever checked it.** Measured: a checker discovering subjects with

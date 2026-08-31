@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.98.4 — 2026-08-27
+- docs(CLAUDE.md): add the false-measurement and enumeration hazards
+
 ## v0.98.3 — 2026-08-27
 - fix(exec-bit-guard): reach large commands without forking per line
 
