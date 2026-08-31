@@ -21,6 +21,7 @@ for how the index below stays in sync.
 | `env-claims-check.py`            | Verify CLAUDE.md's documented environment claims still hold on this machine                                                    |
 | `exec-bit-guard-test.sh`         | PostToolUse hook — run the exec-bit-guard test suite when the gate or its suite changes                                        |
 | `exec-bit-guard.sh`              | PreToolUse hook — block `git commit` when it would record a new shebang file without the exec bit (or a 755→644 downgrade)     |
+| `explain-git-command.py`         | Show WHICH byte broke `scripts/lib/git_command.py`'s parse, or what it found if it didn't                                      |
 | `fixture-signing-check.py`       | Flag test fixtures whose git repos can inherit the operator's global signing config                                            |
 | `guard-secrets-test.sh`          | PostToolUse hook — run the guard-secrets test suite when the guard changes                                                     |
 | `guard-secrets.sh`               | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem)                                                  |

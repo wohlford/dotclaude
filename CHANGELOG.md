@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.93.0 — 2026-08-24
+- feat(explain-git-command): show where the tokenizer gave up
+
 ## v0.92.0 — 2026-08-24
 - feat(guards): locate the construct that stopped the tokenizer
 
