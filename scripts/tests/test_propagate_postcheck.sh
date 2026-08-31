@@ -57,7 +57,15 @@ check_eq() { # got want label
 }
 
 check_has() { # haystack needle label
-  if printf '%s' "$1" | grep -qF -- "$2"; then
+  # Herestring, not `printf … | grep -qF`. This file runs under `set -o pipefail`, and `grep -q`
+  # exits at its first match, SIGPIPEing the writer -- pipefail then surfaces 141 and the check
+  # reports MISSING on a needle that is present. Today's haystacks are far under the pipe buffer
+  # so no row is flaky, but this is the same hazard the subject was just hardened against, and
+  # leaving it in the harness built to guard against it is how it comes back. `check_lacks` below
+  # is the worse half: there the inversion produces a PASS, so a suppressed byte-identity
+  # assertion would be reported as absent -- the exact rubber stamp row 16 exists to catch,
+  # manufactured by the instrument instead of the subject.
+  if grep -qF -- "$2" <<<"$1"; then
     pass_line "$3"
   else
     fail_line "$3 (missing [$2])"
@@ -65,7 +73,8 @@ check_has() { # haystack needle label
 }
 
 check_lacks() { # haystack needle label
-  if printf '%s' "$1" | grep -qF -- "$2"; then
+  # Herestring for the reason given on check_has, and here the inversion is the SILENT direction.
+  if grep -qF -- "$2" <<<"$1"; then
     fail_line "$3 (unexpectedly present: [$2])"
   else
     pass_line "$3"
@@ -376,6 +385,143 @@ check_has  "$OUT" 'NOT in the incoming range' 'strict dead gate: this is the str
 check_has  "$OUT" 'PASS settings-identical' 'strict dead gate: byte-identity reads CLEAN here'
 check_has  "$OUT" 'FAIL hooks-registered' 'strict dead gate: the hooks check still catches it'
 check_has  "$OUT" 'guard-one' 'strict dead gate: the missing hook is named'
+
+# ---------- 15. a LARGE incoming range must not invert the range verdict ----------
+# Measured 2026-08-26: `grep -q` exits at its first match, SIGPIPEs the producer, and under
+# `set -o pipefail` the pipeline reports 141 -- so `printf … | grep -qx` reads FALSE on exactly the
+# inputs where the needle is PRESENT. At 130,213 diff bytes it answered correctly 200/200; at
+# 195,313 it was wrong 200/200. A genuine non-match was answered correctly at every size, so the
+# defect is asymmetric and only ever hides a `yes`.
+#
+# This fixture is ~260,413 bytes. RANGE_BYTES_FLOOR and the pipe-form CONTROL below both exist
+# because the failure mode of this row is a vacuous GREEN: below the threshold the old code passes
+# too, and a regression row that proves nothing looks exactly like one that proves everything.
+RANGE_BYTES_FLOOR=200000
+
+r="$tmproot/inrange-large"; mk "$r"
+before="$(sha256_of "$r/live/settings.json")"
+advance_settings "$r"
+# 1200 padding paths under a name sorting AFTER settings.json, so the needle matches at line 1 and
+# the producer still has ~260 KB to write when grep exits. 200-char names buy the byte total from
+# few files rather than many, which is what keeps the build cheap: ~0.4 s once the per-file subshell
+# below was removed.
+# pad_name via printf/tr rather than `printf 'a%.0s' $(seq …)`: the latter relies on unquoted word
+# splitting, which check_shellcheck flags (SC2046). C-style loop for the same reason.
+# printf -v, not $(printf …): the command-substitution form forks a subshell per file and measured
+# 1.62 s of the fixture's 1.85 s build; printf -v measured 0.16 s, which is ~1 min across a campaign.
+pad_name="$(printf '%0200d' 0 | tr '0' 'a')"
+mkdir -p "$r/src/zzpad"
+for ((i = 0; i < 1200; i++)); do
+  printf -v pad_n '%05d' "$i"
+  : > "$r/src/zzpad/${pad_name}-${pad_n}.txt"
+done
+git -C "$r/src" add -A >/dev/null
+git -C "$r/src" commit -qm 'bulk padding to cross the pipe-buffer threshold'
+promote_with_dance "$r"
+settings_json runtime-local scripts/guard-one.sh scripts/guard-two.sh > "$r/live/settings.json"
+
+# The fixture's OWN diff, from the SAME two refs the engine uses -- ORIG_HEAD as the pre-merge base
+# and FETCH_HEAD as --ref's default. Do not substitute HEAD: it is equal only because the merge was
+# a fast-forward, and a control that grades a different pair than the subject proves nothing.
+large_changed="$(git -C "$r/live" diff --name-only ORIG_HEAD FETCH_HEAD)"
+
+# Precondition 1 -- the fixture did not shrink. ${#…} counts CHARACTERS; the floor is stated in
+# bytes. Equal here because every pad path is ASCII by construction, and a multibyte pad scheme
+# would under-count and false-block, which is the safe direction.
+# The floor is NOT a second guarantee that the regime is live -- the CONTROL below is the only thing
+# that certifies that, and the smallest size ever observed to reproduce (195,313) sits just 2.4%
+# under this floor, on a boundary measured as probabilistic rather than a clean step. All the floor
+# distinguishes is WHICH failure you are looking at: under it, the fixture shrank; over it with a
+# failing control, the platform moved. Do not read a passing floor as "this row is testing something".
+if [[ "${#large_changed}" -ge "$RANGE_BYTES_FLOOR" ]]; then
+  pass_line "large range: the fixture diff is ${#large_changed} bytes, at or above the ${RANGE_BYTES_FLOOR}-byte floor (says the fixture did not shrink; says nothing about the regime)"
+else
+  fail_line "large range: the fixture diff shrank to ${#large_changed} bytes, below the ${RANGE_BYTES_FLOOR}-byte floor -- the padding got smaller; enlarge it"
+fi
+
+# Precondition 2 -- the CONTROL. This deliberately reconstructs the OLD pipe form and requires it to
+# be WRONG here. It is not a copy of the subject: the subject assertion below runs the real engine.
+# This answers a question about the FIXTURE and the PLATFORM -- is the defect regime present at all?
+# It FAILs rather than SKIPs on purpose: a SKIP is a coverage gap that reads as clean, which is the
+# exact failure this row exists to close.
+#
+# Its one drift bound, stated rather than left implicit: it certifies the FIXTURE'S RAW DIFF is in
+# the regime, not the engine's actual match haystack. If the engine ever derives $changed
+# differently -- a filter, -z, another ref pair -- this control keeps answering the old question
+# while the assertion below tests the new code, and could stay green over a row gone vacuous. The
+# end-to-end proof against that is the campaign's pipe-form mutant, which must go red on this row.
+# Three outcomes, not two. `-ne 0` would lump rc=1 in with rc=141 and then PRINT that the regime is
+# live over a fixture broken in an entirely different way -- and this line is the one anybody
+# consults when everything else is green, so a lying diagnostic here is worse than a missing one.
+printf '%s\n' "$large_changed" | grep -qx 'settings.json'; large_pipe_rc=$?
+case "$large_pipe_rc" in
+  141)
+    pass_line "large range: control -- the old pipe form is killed by SIGPIPE on this fixture (rc=141), so the regime is live" ;;
+  0)
+    fail_line "large range: control -- the old pipe form answered CORRECTLY (rc=0) here, so this fixture no longer reproduces the defect and the row below would pass vacuously; enlarge the padding" ;;
+  1)
+    # rc=1 has TWO causes and the arm must not pick one by assumption: the needle is genuinely
+    # absent, OR SIGPIPE was inherited ignored, in which case bash's printf gets EPIPE and exits 1
+    # while the regime is in fact live. Settle it with a pipe-free probe -- the one instrument that
+    # cannot be confused by the signal disposition -- rather than asserting a cause we cannot see.
+    if grep -qxF -- 'settings.json' <<<"$large_changed"; then
+      fail_line "large range: control -- the pipe form exited 1 while settings.json IS in the fixture diff, so SIGPIPE is being ignored rather than delivered; the regime cannot be certified either way here -- treat this row as INDETERMINATE"
+    else
+      fail_line "large range: control -- settings.json is ABSENT from the fixture diff, so the fixture is broken rather than the regime being gone; the padding size is not the problem"
+    fi ;;
+  *)
+    fail_line "large range: control -- the old pipe form exited $large_pipe_rc, which is neither the SIGPIPE this row expects nor a clean answer; treat this row as INDETERMINATE, not as a pass" ;;
+esac
+
+OUT="$("$engine" --scope "$r/live" --before-sha "$before" 2>/dev/null)"; RC=$?
+
+check_eq   "$RC" 0 'large range: rc=0'
+check_has  "$OUT" 'IS in the incoming range' 'large range: a present settings.json is still found across a 260 KB diff'
+# CONTROL, not a pin: `verdict_pass range` fires on BOTH arms, so this is green before and after the
+# fix by construction. It earns its place by discriminating a row that reached the branch logic from
+# one whose ORIG_HEAD failed to resolve -- which would emit FAIL range and make every sibling
+# assertion below unreachable for a reason having nothing to do with this defect.
+check_has  "$OUT" 'PASS range' 'large range: control -- the range row reached its branch logic at all'
+check_has  "$OUT" 'SKIP settings-identical' 'large range: the in-range arm was chosen, so identity is skipped'
+check_has  "$OUT" 'RESULT: PASS' 'large range: RESULT is PASS'
+
+# ---------- 16. a path that merely RESEMBLES settings.json must not select the in-range arm -------
+# The match is `grep -qxF -- settings.json`, and it has THREE axes that each fail SILENT if dropped.
+# A spurious in-range verdict reaches `verdict_skip settings-identical`, suppressing the one
+# assertion that catches a clobbered runtime file -- so every axis below is a rubber-stamp risk, not
+# a noise risk. This fixture carries one witness per axis that can be witnessed:
+#
+#   -F  without it the pattern is a BRE whose dot matches any character, so the ROOT path
+#       `settingsXjson` matches. Measured: BRE rc=0, fixed-string rc=1.
+#   -x  without it the match is a SUBSTRING one, so the NESTED path `sub/settings.json` matches --
+#       a real shape, since a plugin or vendored tree can carry its own settings.json. This axis had
+#       no witness and no mutant when the row was first written; it was the untested third of a
+#       change whose whole subject is this matcher's precision.
+#
+# Three axes is the COMPLETE enumeration only because $SETTINGS is a readonly plain-ASCII constant:
+# that is what makes `--` inert (it can never begin with `-`) and what makes -F's newline-as-
+# alternation semantics inert (it carries no embedded newline). Both become live axes, with no
+# witness and no mutant, the day that constant becomes operator-supplied.
+#
+# Kept in its OWN small fixture rather than folded into row 15: combined, the large-diff shape
+# raises first and these never get reached.
+
+r="$tmproot/inrange-lookalike"; mk "$r"
+before="$(sha256_of "$r/live/settings.json")"
+printf 'not the settings file\n' > "$r/src/settingsXjson"
+mkdir -p "$r/src/sub"
+printf 'a nested settings.json that is NOT the one this check tracks\n' > "$r/src/sub/settings.json"
+git -C "$r/src" add -A >/dev/null
+git -C "$r/src" commit -qm 'add paths that resemble settings.json'
+promote "$r"
+OUT="$("$engine" --scope "$r/live" --before-sha "$before" 2>/dev/null)"; RC=$?
+
+# CONTROL, green before and after: nothing else about this fixture is broken, so a FAIL here means
+# the row is measuring something other than the arm selection.
+check_eq    "$RC" 0 'lookalike: control -- the fixture is otherwise healthy (rc=0)'
+check_has   "$OUT" 'NOT in the incoming range' 'lookalike: neither settingsXjson nor sub/settings.json counts as settings.json'
+check_has   "$OUT" 'PASS settings-identical' 'lookalike: the strict arm ran, so byte-identity was actually asserted'
+check_lacks "$OUT" 'SKIP settings-identical' 'lookalike: identity was not silently suppressed'
 
 # ---------- N. the boundary hook, adopted fixtures ----------
 

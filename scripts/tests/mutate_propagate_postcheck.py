@@ -262,6 +262,29 @@ MUTATIONS = [
         "  base_ok=no",
         "  base_ok=yes",
     ),
+    # The three below revert ONE axis each of the range match and keep the others, so a survivor
+    # names exactly which axis is untested. A mutant reverting more than one would not distinguish
+    # them. Note the -F and -x mutants produce the SAME three-row failure signature, so the suite
+    # catches both but cannot say which broke -- these labels are what does that job.
+    mutate.Mutation(
+        "the range match goes back through a pipe, so a large incoming range inverts its verdict",
+        '    if grep -qxF -- "$SETTINGS" <<<"$changed"; then',
+        '    if printf \'%s\\n\' "$changed" | grep -qxF -- "$SETTINGS"; then',
+    ),
+    mutate.Mutation(
+        "the range match drops -F, so a path resembling settings.json silently skips byte-identity",
+        '    if grep -qxF -- "$SETTINGS" <<<"$changed"; then',
+        '    if grep -qx -- "$SETTINGS" <<<"$changed"; then',
+    ),
+    # The third axis, and the one the first draft of this change left unpinned: -x. Without it the
+    # match is a SUBSTRING one, so a NESTED settings.json selects the in-range arm and suppresses
+    # byte-identity -- the same silent direction as dropping -F, which is why it needs its own
+    # mutant rather than being assumed covered by the two above.
+    mutate.Mutation(
+        "the range match drops -x, so a NESTED settings.json silently skips byte-identity",
+        '    if grep -qxF -- "$SETTINGS" <<<"$changed"; then',
+        '    if grep -qF -- "$SETTINGS" <<<"$changed"; then',
+    ),
 ]
 
 

@@ -158,6 +158,13 @@ hook_is_a_tracked_version() { # scope path
     | while IFS= read -r c; do
         git -C "$scope" rev-parse -q --verify "$c:$TRACKED_HOOK" 2>/dev/null
       done)"
+  # No -F here, and that is deliberate rather than an oversight -- the siblings at :219 and the
+  # range check both carry it. `$blob` is `git hash-object` output, guarded non-empty above, so it
+  # is 40 or 64 hex characters: no BRE metacharacter, no leading `-`. Adding -F would be inert, and
+  # an inert token invites a mutant for it that could only ever SURVIVE, reading as a coverage gap
+  # where there is none. The same reasoning covers the `--` the siblings keep: inert there too,
+  # retained only for parity with a call whose needle is operator-supplied. Both go live the moment
+  # either needle stops being a constant this function derives itself.
   grep -qx "$blob" <<<"$members"
 }
 
@@ -320,7 +327,13 @@ main() {
   else
     base_ok=yes
     changed="$(git -C "$scope" diff --name-only "$base" "${ref_sha:-$head_sha}" 2>/dev/null)"
-    if printf '%s\n' "$changed" | grep -qx "$SETTINGS"; then
+    # A HERESTRING with -F, never `printf … | grep -qx`, and both halves are load-bearing. This
+    # file runs under `set -o pipefail`, where `grep -q` exiting at its first match SIGPIPEs the
+    # producer and the pipeline reports 141 on exactly the inputs that DO match -- measured wrong
+    # 200/200 at a 195 KB diff and correct 200/200 at 130 KB, so it hides from a small fixture. And
+    # -F because the name carries a dot: as a BRE under -x, `settings.json` also matches the path
+    # `settingsXjson`, and a false yes here SKIPS the byte-identity assertion below.
+    if grep -qxF -- "$SETTINGS" <<<"$changed"; then
       in_range=yes
       verdict_pass range
       printf '  %s IS in the incoming range (%s..%s, from %s)\n' \

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.98.2 — 2026-08-26
+- fix(propagate-postcheck): stop the range row inverting its own verdict
+
 ## v0.98.1 — 2026-08-26
 - fix(audit): tell a historical checkout from a stale hook install
 
