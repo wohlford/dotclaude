@@ -103,11 +103,11 @@ finding='MD022/blanks-around-headings'
 expect_flagged() {
   local rel="$1" label="$2" out
   out="$(lint "$rel")"
-  if ! printf '%s' "$out" | grep -qE '^Linting: [1-9]'; then
+  if ! grep -qE -- '^Linting: [1-9]' <<<"$out"; then
     note_fail "$label" "nothing was linted — the assertion never reached a file"
     return
   fi
-  if printf '%s' "$out" | grep -qF "$finding"; then
+  if grep -qF -- "$finding" <<<"$out"; then
     note_pass "$label"
   else
     note_fail "$label" "expected $finding, got none"
@@ -118,11 +118,11 @@ expect_flagged() {
 expect_unflagged() {
   local rel="$1" label="$2" out
   out="$(lint "$rel")"
-  if ! printf '%s' "$out" | grep -qE '^Linting: [1-9]'; then
+  if ! grep -qE -- '^Linting: [1-9]' <<<"$out"; then
     note_fail "$label" "nothing was linted — a skipped file is not a clean file"
     return
   fi
-  if printf '%s' "$out" | grep -qF "$finding"; then
+  if grep -qF -- "$finding" <<<"$out"; then
     note_fail "$label" "unexpected $finding"
   else
     note_pass "$label"
@@ -146,7 +146,7 @@ expect_unflagged clean.md 'a correctly spaced heading is left alone'
 # claim about a file nobody is looking at any more.
 for f in below.md clean.md CHANGELOG.md sub/notes.md; do
   out="$(lint "$f")"
-  if printf '%s' "$out" | grep -qE '^Summary: 0 error'; then
+  if grep -qE -- '^Summary: 0 error' <<<"$out"; then
     note_pass "$f is clean for every rule, not just the one under test"
   else
     note_fail "$f is clean for every rule, not just the one under test" \
@@ -168,8 +168,8 @@ fi
 # "headings are not checked here".
 printf '%s\n#Bad heading\n' "$changelog" > "$sandbox/CHANGELOG.md"
 out="$(lint CHANGELOG.md)"
-if printf '%s' "$out" | grep -qE '^Linting: [1-9]' \
-  && printf '%s' "$out" | grep -qF 'MD018'; then
+if grep -qE -- '^Linting: [1-9]' <<<"$out" \
+  && grep -qF -- 'MD018' <<<"$out"; then
   note_pass 'other heading rules still fire'
 else
   note_fail 'other heading rules still fire' 'an unrelated heading defect went unreported'
