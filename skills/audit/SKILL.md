@@ -219,6 +219,17 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   hook that would enforce the push boundary is actually installed, executable, and current.
   It says nothing about whether that hook actually blocks a push — that is
   `scripts/tests/test_pre_push_hook.sh`'s job, not this sweep's.
+  It emits a **second** `SKIP`, in an adopted repo, when a source mismatch is attributable to
+  which commit is checked out rather than to a stale install — the worktree hook matches
+  `HEAD`'s tracked blob and the installed hook matches `refs/heads/dev`'s, so nothing installed
+  is out of date. That is what per-brick auditing of a historical tree produces, and the `SKIP`
+  names its reason inline. Accepted residual, deliberately not excluded: an unlanded feature
+  branch that edited the hook satisfies the same two conditions, so it takes the same `SKIP` —
+  the advice it carries (do **not** install this tree's hook) is the right advice there too, and
+  a stale install resurfaces as a `FAIL` once the branch lands, because the `refs/heads/dev`
+  side moves and the installed side does not. Only the source comparison is set aside: the
+  not-installed, symlink, not-regular and not-executable arms judge the live hooks directory and
+  keep firing, because a historical audit runs at exactly the moment before real pushes.
 - Never run `/audit` as a substitute for `/vet` when skills or agents were edited — the sweep
   checks mechanics only; it has no judgment about content or structure.
 - **A clean verdict on a killed run is structurally impossible, not merely unlikely.**

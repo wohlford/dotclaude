@@ -1735,5 +1735,174 @@ run_engine "$rMA2"
 assert_has 'SKIP mutation-anchors' 'rMA2: an IGNORED campaign is a declared exclusion -> SKIP'
 assert_not_has 'FAIL mutation-anchors' 'rMA2: an ignored campaign does not false-block'
 
+# ============================================================================
+# rPP. check_pre_push_installed — a HISTORICAL CHECKOUT is an artifact, not a defect
+# ============================================================================
+# The check had no rows at all before this section (`grep -c 'pre.push'` -> 0), so everything
+# here is new machinery: an adopted marker on a branch, a resolvable refs/heads/main, a
+# refs/heads/dev that tracks the hook, and the fixture repo's own hooks directory to install
+# into. Never this repo's hooks directory — that one is the live publication boundary.
+#
+# THE DEFECT these rows pin. `source_sha` comes from the CHECKED-OUT worktree copy and
+# `dest_sha` from the installed hook, so auditing a historical tree — which is exactly what
+# per-brick auditing on the publication path produces — FAILed purely because an older commit
+# was checked out. Worse than the false verdict was the remedy it printed: re-run the
+# installer, which on a historical tree would have installed THAT tree's hook as the live
+# boundary.
+#
+# THE PREDICATE, with W = worktree hook, H = HEAD:git-hooks/pre-push, I = installed hook,
+# D = refs/heads/dev:git-hooks/pre-push:
+#
+#   a source mismatch is an ARTIFACT iff  W == H  and  I == D
+#
+# Each row below moves a DIFFERENT conjunct, so neither half is along for the ride and neither
+# can be deleted without a row going red:
+#
+#   rPP1 historical checkout       W==H yes  I==D yes  -> artifact (was a FAIL)
+#   rPP2 edited in the worktree    W==H NO   I==D yes  -> real, still FAILs
+#   rPP3 committed, never installed W==H yes I==D NO   -> real, still FAILs
+#   rPP4 foreign installed hook    W==H yes  I==D NO   -> real, still FAILs
+#
+# rPP0 and rPP5 guard the two ends: the check must still be able to PASS outright, and the
+# suppression must reach ONLY the source-comparison arm — an implementation that short-circuits
+# at the top of the function satisfies every other row here while reporting clean on a clone
+# with no boundary hook installed at all.
+
+mk_prepush_hook() { # marker -> stdout: a plausible boundary-hook body, distinct per marker
+  printf '#!/usr/bin/env bash\nset -uo pipefail\n# fixture boundary hook %s\nexit 0\n' "$1"
+}
+
+mk_prepush_repo() { # dir -> adopted repo: main tracks hook v1, dev tracks v2, nothing installed
+  mkrepo "$1"
+  mkdir -p "$1/git-hooks"
+  mk_prepush_hook v1 > "$1/git-hooks/pre-push"
+  chmod +x "$1/git-hooks/pre-push"
+  # The dormancy predicate is "SOME refs/heads/* carries a tracked .publication.toml"; without
+  # this file every row below would SKIP as un-adopted and assert nothing.
+  printf 'adopted = true\n' > "$1/.publication.toml"
+  commit_all "$1" 'hook v1'
+  # -B rather than a bare branch name: `git init` picks the default branch from the machine's
+  # own init.defaultBranch, so the fixture must not assume it is already called main.
+  git -C "$1" checkout -q -B main
+  git -C "$1" checkout -q -B dev
+  mk_prepush_hook v2 > "$1/git-hooks/pre-push"
+  commit_all "$1" 'hook v2'
+}
+
+prepush_hooks_dir() { # dir -> the repo's own absolute hooks directory
+  (cd "$1" && git rev-parse --path-format=absolute --git-path hooks)
+}
+
+install_prepush() { # dir source-file -> install source-file as that repo's pre-push hook
+  local hooks
+  hooks="$(prepush_hooks_dir "$1")"
+  cp "$2" "$hooks/pre-push"
+  chmod +x "$hooks/pre-push"
+}
+
+# --- rPP0: the healthy live tree still PASSes outright -------------------------------------
+# The control for every row below it. Without this the whole section could be satisfied by an
+# implementation that never reaches a PASS at all.
+rPP0="$tmp/rPP0_current"
+mk_prepush_repo "$rPP0"
+install_prepush "$rPP0" "$rPP0/git-hooks/pre-push"
+run_engine "$rPP0"
+assert_has 'PASS pre-push-installed' 'rPP0: tip of dev with a current install -> PASS'
+assert_rc 0 'rPP0: a healthy adopted fixture drives the sweep to exit 0'
+
+# --- rPP1: THE DEFECT — a historical checkout must not be reported as a stale install -------
+rPP1="$tmp/rPP1_historical"
+mk_prepush_repo "$rPP1"
+install_prepush "$rPP1" "$rPP1/git-hooks/pre-push"   # I == D: the installation is current
+git -C "$rPP1" checkout -q --detach main             # W == H at an older commit
+run_engine "$rPP1"
+assert_not_has 'FAIL pre-push-installed' \
+  'rPP1: a historical checkout is not a stale-install FAIL'
+assert_has 'artifact of the checked-out commit' \
+  'rPP1: the verdict names WHY the source comparison was set aside'
+assert_rc 0 'rPP1: auditing a historical tree does not fail the sweep'
+# The harmful half of the old verdict: a historical tree must never be told to install its own
+# hook, because obeying that downgrades the live publication boundary to a superseded copy.
+assert_not_has 're-run scripts/install-git-hooks.sh' \
+  'rPP1: no unconditional re-install is prescribed on a historical tree'
+
+# --- rPP2: W != H — edited in the worktree, never installed — still a REAL defect -----------
+rPP2="$tmp/rPP2_edited"
+mk_prepush_repo "$rPP2"
+install_prepush "$rPP2" "$rPP2/git-hooks/pre-push"
+mk_prepush_hook v3 > "$rPP2/git-hooks/pre-push"      # W != H: an uncommitted local edit
+run_engine "$rPP2"
+assert_has 'FAIL pre-push-installed' \
+  'rPP2: an edited-but-not-installed hook still FAILs (W != H)'
+assert_rc 1 'rPP2: a real stale install still fails the sweep'
+
+# --- rPP3: I != D — committed on dev, never installed — still a REAL defect -----------------
+rPP3="$tmp/rPP3_stale_install"
+mk_prepush_repo "$rPP3"
+git -C "$rPP3" cat-file blob 'refs/heads/main:git-hooks/pre-push' > "$tmp/rPP3_v1"
+install_prepush "$rPP3" "$tmp/rPP3_v1"               # I is the superseded v1 blob
+run_engine "$rPP3"
+assert_has 'FAIL pre-push-installed' \
+  'rPP3: a hook committed on dev but never installed still FAILs (I != D)'
+assert_rc 1 'rPP3: a stale install of the live gate still fails the sweep'
+
+# --- rPP4: I != D — a foreign installed hook — still a REAL defect --------------------------
+# Distinct from rPP3: the installed bytes correspond to no commit in this repo at all, which is
+# the shape a hand-edited or third-party hook takes.
+rPP4="$tmp/rPP4_foreign"
+mk_prepush_repo "$rPP4"
+mk_prepush_hook foreign > "$tmp/rPP4_foreign_hook"
+install_prepush "$rPP4" "$tmp/rPP4_foreign_hook"
+run_engine "$rPP4"
+assert_has 'FAIL pre-push-installed' \
+  'rPP4: a foreign installed hook still FAILs (I != D)'
+assert_rc 1 'rPP4: an unrecognised installed hook still fails the sweep'
+
+# --- rPP5: the narrowing — an artifact-shaped tree with NO hook installed still FAILs -------
+# This is the row that separates "suppress the source comparison" from "skip the check". The
+# not-installed / symlink / not-executable / hooks-dir arms judge the LIVE hooks directory,
+# which is the same real directory whatever commit is checked out, and they run at exactly the
+# moment before real pushes.
+rPP5="$tmp/rPP5_absent"
+mk_prepush_repo "$rPP5"
+install_prepush "$rPP5" "$rPP5/git-hooks/pre-push"
+git -C "$rPP5" checkout -q --detach main
+rm -f "$(prepush_hooks_dir "$rPP5")/pre-push"
+run_engine "$rPP5"
+assert_has 'FAIL pre-push-installed' \
+  'rPP5: a historical checkout with NO hook installed is still a FAIL'
+assert_has 'not installed' 'rPP5: the verdict is the not-installed one, not the source arm'
+assert_rc 1 'rPP5: a missing boundary hook fails the sweep on any checkout'
+
+# --- rPP6: an UNREADABLE source must not collide with an ABSENT HEAD blob ------------------
+# The predicate compares digests, and BOTH sides can be the empty string for reasons that have
+# nothing to do with each other: sha256_hex over a source it could not read yields "", and so
+# does the head_sha that is never assigned because HEAD does not track the hook at all. Without
+# the non-empty guards those two empties compare EQUAL, and the check reports "artifact" for a
+# tree whose source it never managed to read — the vacuous PASS this repo's own hazard list
+# calls out. HEAD here is a commit predating git-hooks/, and the worktree copy is present but
+# unreadable, so the check reaches the mismatch arm with source_sha empty.
+rPP6="$tmp/rPP6_unreadable_source"
+mkrepo "$rPP6"
+printf 'adopted = true\n' > "$rPP6/.publication.toml"
+commit_all "$rPP6" 'before the hook existed'
+git -C "$rPP6" checkout -q -B main
+git -C "$rPP6" checkout -q -B dev
+mkdir -p "$rPP6/git-hooks"
+mk_prepush_hook v2 > "$rPP6/git-hooks/pre-push"
+chmod +x "$rPP6/git-hooks/pre-push"
+commit_all "$rPP6" 'hook v2'
+install_prepush "$rPP6" "$rPP6/git-hooks/pre-push"   # I == D
+git -C "$rPP6" checkout -q --detach main             # HEAD tracks no git-hooks/pre-push
+mkdir -p "$rPP6/git-hooks"
+mk_prepush_hook v2 > "$rPP6/git-hooks/pre-push"      # present, untracked at this commit
+chmod 000 "$rPP6/git-hooks/pre-push"
+run_engine "$rPP6"
+chmod 644 "$rPP6/git-hooks/pre-push" 2>/dev/null || true
+assert_has 'FAIL pre-push-installed' \
+  'rPP6: a source that could not be read is never reported as a checkout artifact'
+assert_not_has 'artifact of the checked-out commit' \
+  'rPP6: two unrelated empty digests must not compare equal into an artifact verdict'
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

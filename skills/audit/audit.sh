@@ -867,6 +867,11 @@ tests_excerpt() { # output
 # Static and unconditional, like exec-bit and mutation-anchors: this reads no repo code and
 # needs no --tests gate. Never scoped by .auditignore — a repo cannot hide a missing or
 # stale push boundary any more than it can hide a broken tracked .json.
+#
+# ONE arm is conditional: the source comparison at the bottom sets itself aside when the
+# mismatch is provably an artifact of which commit is checked out (the historical trees
+# per-brick auditing produces). Its predicate, its measured evidence and the reason it is
+# narrowed to that single arm are documented at the comparison itself.
 check_pre_push_installed() {
   local scope="$1" ref marker_found=false
 
@@ -896,10 +901,14 @@ check_pre_push_installed() {
 
   # Source preference: the CHECKED-OUT worktree copy when present -- this is what catches
   # "edited the hook, forgot to re-install" -- else the committed blob on refs/heads/dev.
-  local source_kind source_sha
+  local source_kind source_sha source_is_worktree=false
   if [[ -f "$scope/git-hooks/pre-push" ]]; then
     source_kind="the worktree git-hooks/pre-push"
     source_sha="$(sha256_hex < "$scope/git-hooks/pre-push" 2>/dev/null)"
+    # Recorded as its own flag, not re-derived by matching $source_kind's prose downstream:
+    # the checkout-artifact test below is only meaningful against the WORKTREE copy, and a
+    # string compare against a message would drift the moment that message is reworded.
+    source_is_worktree=true
   elif git -C "$scope" cat-file -e 'refs/heads/dev:git-hooks/pre-push' 2>/dev/null; then
     source_kind='refs/heads/dev:git-hooks/pre-push'
     source_sha="$(git -C "$scope" cat-file blob 'refs/heads/dev:git-hooks/pre-push' 2>/dev/null | sha256_hex)"
@@ -949,10 +958,66 @@ check_pre_push_installed() {
     return
   fi
 
-  local dest_sha
+  local dest_sha head_sha='' dev_sha=''
   dest_sha="$(sha256_hex < "$dest" 2>/dev/null)"
   if [[ -z "$source_sha" || "$dest_sha" != "$source_sha" ]]; then
-    verdict_fail pre-push-installed "$dest does not match $source_kind (sha256 mismatch) -- re-run scripts/install-git-hooks.sh"
+    # A mismatch against the WORKTREE copy can be an artifact of WHICH COMMIT IS CHECKED OUT
+    # rather than a stale installation. With W = the worktree hook, H = HEAD:git-hooks/pre-push,
+    # I = the installed hook and D = refs/heads/dev:git-hooks/pre-push, it is an artifact iff
+    #
+    #     W == H   the worktree copy matches what its OWN commit tracks -- nobody edited it
+    #     I == D   the installed hook matches what refs/heads/dev tracks -- the install is current
+    #
+    # and then the only thing out of step is the checkout. That is the shape per-brick auditing
+    # produces on the publication path: audit.sh is run against a HISTORICAL tree, whose
+    # git-hooks/pre-push is a superseded blob. The old verdict there was false, and its remedy
+    # was worse than false -- re-running the installer from a historical tree installs THAT
+    # tree's superseded hook as the live publication boundary.
+    #
+    # Measured across four fixtures, each moving a DIFFERENT conjunct so neither half is along
+    # for the ride (rows rPP1-rPP4 of scripts/tests/test_audit.sh): historical checkout
+    # yes/yes -> artifact; edited-in-worktree no/yes, committed-but-never-installed yes/no, and
+    # a foreign installed hook yes/no -> all still real, all still FAIL.
+    #
+    # It needs NO ancestry between HEAD and dev (this repo's main and dev share none --
+    # `git merge-base main dev` exits 1); it needs only refs/heads/dev to resolve, which the
+    # fallback source above already assumes. And it needs no cooperation from the caller: a
+    # flag would have to be passed by publish-brick.sh, which deliberately runs THE SCOPE'S OWN
+    # audit.sh, and every historical copy predates the flag and exits 2 on an unknown one.
+    #
+    # Each blob is read behind its own `cat-file -e`. Piping a FAILED `cat-file blob` into
+    # sha256_hex yields the digest of the empty string -- non-empty, and it would satisfy a
+    # naive -n test on a tree that does not track the hook at all.
+    if [[ "$source_is_worktree" == true ]]; then
+      if git -C "$scope" cat-file -e 'HEAD:git-hooks/pre-push' 2>/dev/null; then
+        head_sha="$(git -C "$scope" cat-file blob 'HEAD:git-hooks/pre-push' 2>/dev/null | sha256_hex)"
+      fi
+      if git -C "$scope" cat-file -e 'refs/heads/dev:git-hooks/pre-push' 2>/dev/null; then
+        dev_sha="$(git -C "$scope" cat-file blob 'refs/heads/dev:git-hooks/pre-push' 2>/dev/null | sha256_hex)"
+      fi
+    fi
+    # SKIP, not PASS: the source comparison genuinely did not run, and a PASS verdict carries no
+    # reason line -- this file's PASS helper takes a check name and nothing else -- so a PASS
+    # here would suppress the mismatch SILENTLY. That helper is deliberately not named in this
+    # comment: scripts/tests/test_audit_name_parity.sh derives each check's verdict name by
+    # matching `verdict_<kind>` followed by a word, and it read the prose mention as a SECOND
+    # verdict name for this check, failing nine of its rows.
+    #
+    # The narrowing is deliberate and only this arm is affected -- the not-installed, symlink,
+    # not-regular and not-executable arms above judge the LIVE hooks directory, which is the
+    # same real directory whatever commit is checked out, and they must keep firing during a
+    # historical audit, because that audit runs at exactly the moment before real pushes.
+    #
+    # Accepted residual: a checkout whose HEAD is a FEATURE BRANCH that changed the hook also
+    # reads as an artifact. Today's advice in that case is to install an unlanded branch's hook
+    # as the live boundary, which is the counsel this change exists to stop; and once the branch
+    # lands the per-brick audit still catches a stale install, because D moves with dev.
+    if [[ -n "$head_sha" && -n "$dev_sha" \
+          && "$source_sha" == "$head_sha" && "$dest_sha" == "$dev_sha" ]]; then
+      verdict_skip pre-push-installed "source comparison not applicable -- the worktree copy matches HEAD and $dest matches refs/heads/dev:git-hooks/pre-push, so the mismatch is an artifact of the checked-out commit, not a stale install; the installed boundary is current -- do NOT install this tree's git-hooks/pre-push"
+      return
+    fi
+    verdict_fail pre-push-installed "$dest does not match $source_kind (sha256 mismatch) -- establish WHICH copy is current first, by comparing both against refs/heads/dev:git-hooks/pre-push; re-run scripts/install-git-hooks.sh only from a tree that carries the current hook, and never install a historical tree's hook on this check's advice"
     return
   fi
 

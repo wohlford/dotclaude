@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.98.1 — 2026-08-26
+- fix(audit): tell a historical checkout from a stale hook install
+
 ## v0.98.0 — 2026-08-26
 - feat(timing-guard): track the guard and its suite in the repo
 
