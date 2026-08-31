@@ -12,6 +12,15 @@ set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 engine="$here/../run-long.sh"
 
+# The w11/w12 race shims below intercept the engine's own trailer-presence query and recover its
+# pid from the header, so they need the engine's BEGIN/STATUS record prefixes. Derive them from
+# the engine's own `readonly` lines rather than hand-copying the literals — the same way this file
+# already derives $engine from $here — so a rename in run-long.sh cannot silently degrade a shim
+# into one that never matches anything, and therefore never actually enters the race it exists to
+# probe.
+begin_prefix="$(sed -n "s/^readonly BEGIN_PREFIX='\\(.*\\)'\$/\\1/p" "$engine")"
+status_prefix="$(sed -n "s/^readonly STATUS_PREFIX='\\(.*\\)'\$/\\1/p" "$engine")"
+
 # `pwd -P` pins the PHYSICAL path: $TMPDIR is a symlink on macOS (/tmp -> /private/tmp), and a
 # logical path that does not physically contain the artifact lets a path-resolving subject take a
 # different branch and never reach what these rows exist to test.
@@ -320,6 +329,182 @@ check_eq "$RC" 2 'w9: a non-numeric --interval is a usage error'
 
 run --status "$wa" --interval 5
 check_eq "$RC" 2 'w10: --interval outside wait mode is a usage error, not a silent no-op'
+
+# THE defect this row exists to pin: classify() checks for the RUN_LONG_EXIT_STATUS= trailer
+# BEFORE it checks whether the job is still alive. A job that finishes in the gap between those
+# two observations is seen as "no trailer, not alive" and reported DIED — a healthy run
+# misreported with the strongest "do not trust this" verdict the tool has. Load alone cannot be
+# trusted to land in that gap reliably, so it is reproduced DETERMINISTICALLY: a grep SHIM placed
+# ahead of the engine on PATH answers the trailer query faithfully (real grep, real exit status),
+# but only AFTER releasing a job that was blocked on a trigger file and waiting for its wrapper
+# process to actually exit — so the liveness check classify() makes next is guaranteed to observe
+# a job that is already gone. Every other grep call (there is at most one more, from a second
+# classify() after the --wait poll) delegates to the real grep unchanged; a state file makes the
+# special case fire exactly once so it cannot also swallow that second call.
+#
+# --interval 1 / run_bounded 30, not the suite's usual 20: under the FIXED engine this row's green
+# path costs a full poll interval (classify reads a stale alive=true, reports RUNNING, and only the
+# NEXT poll sees the trailer and reports DONE) — at the default 15s interval against a 20s bound
+# there would be only 5s of margin, enough to make correct code flake red.
+toctou_shim_dir="$tmp/toctou-shim"
+mkdir -p "$toctou_shim_dir"
+toctou_state="$tmp/toctou-fired"
+toctou_overrun="$tmp/toctou-wait-overrun"
+# Positive evidence that the shim actually recovered a pid and entered the bounded wait — without
+# this, w11c's "did not overrun" check passes for free whenever the pid extraction comes back
+# empty, since the whole wait (and the only place that could write toctou_overrun) sits inside
+# `if [[ -n "$wpid" ]]`. A row that cannot tell "never waited" from "waited and finished" is not
+# testing what it claims.
+toctou_waited="$tmp/toctou-wait-executed"
+# `type -P`, not `command -v`: the latter returns a BARE NAME ("grep") when grep resolves to a
+# shell FUNCTION rather than a binary — measured true of this machine's interactive shell — and
+# the shim's `exec '$REAL' "$@"` would then re-resolve through the shim-prefixed PATH and recurse
+# without bound. `type -P` always returns an absolute path to a real executable.
+toctou_real_grep="$(type -P grep)"
+wr="$(art wait_toctou)"
+wr_trigger="$tmp/toctou-job-trigger"
+
+cat > "$toctou_shim_dir/grep" <<SHIM
+#!/usr/bin/env bash
+# Delegates every call to the real grep unchanged, except the ONE trailer-presence query
+# classify() makes against the artifact under test — answered faithfully, but only after
+# releasing the blocked job and waiting for its wrapper to actually exit.
+if [[ "\$1" == "-q" && "\$2" == '^${status_prefix}' && "\$3" == '$wr' && ! -e '$toctou_state' ]]; then
+  : > '$toctou_state'
+  '$toctou_real_grep' "\$@"
+  rc=\$?
+  : > '$wr_trigger'
+  wpid="\$(sed -n 's/^${begin_prefix} pid=\([0-9]*\).*/\1/p' '$wr' | head -1)"
+  if [[ -n "\$wpid" ]]; then
+    : > '$toctou_waited'
+    # Bounded like every other polling loop in this file (wait_done's tries, the engine's
+    # tries -lt 250): run_bounded's alarm does NOT cover this — an orphaned child holds the
+    # command-substitution pipe open, so SIGALRM never frees it. An overrun leaves a trace file
+    # instead of hanging or silently proceeding.
+    wtries=0
+    while kill -0 "\$wpid" 2>/dev/null && [[ \$wtries -lt 500 ]]; do
+      sleep 0.01
+      wtries=\$((wtries + 1))
+    done
+    kill -0 "\$wpid" 2>/dev/null && : > '$toctou_overrun'
+  fi
+  exit "\$rc"
+fi
+exec '$toctou_real_grep' "\$@"
+SHIM
+chmod +x "$toctou_shim_dir/grep"
+
+# Bounded, like every other polling loop in this file: the shim releases this job only once, and
+# only via the trigger file below, but a suite bug elsewhere (or a shim that never fires) must not
+# leave a 100Hz spinner running forever after the EXIT trap deletes $tmp out from under it —
+# including on a Ctrl-C between launch and shim fire. 3000 iterations at 0.01s is 30s, well past
+# run_bounded's 30s alarm on the row that uses this job, so the alarm — not this bound — fires
+# first on any real hang; this bound exists only to give the spinner itself a way to give up.
+#
+# `"$1"`, not `"$@"`: this repo already uses `# shellcheck disable=SC2016` for exactly this
+# shape (run-long.sh:487, test_push_guard.sh:113) rather than working around the warning with a
+# different positional parameter. It is safe only because this `sh -c` body is invoked with
+# EXACTLY one positional argument by construction (`_ "$wr_trigger"` below supplies $0 and a
+# single $1).
+# shellcheck disable=SC2016
+"$engine" --out "$wr" -- /bin/sh -c \
+  'i=0; while [ ! -f "$1" ] && [ "$i" -lt 3000 ]; do sleep 0.01; i=$((i + 1)); done; exit 0' \
+  _ "$wr_trigger" \
+  > /dev/null 2>&1
+toctou_old_path="$PATH"
+PATH="$toctou_shim_dir:$PATH"
+run_bounded 30 --wait "$wr" --interval 1
+PATH="$toctou_old_path"
+check_eq "$RC" 0 'w11: a job that completes DURING classification reports DONE, never a false DIED'
+check_contains "$OUT" 'RESULT: DONE rc=0' 'w11b: the raced wait returns the DONE verdict, not DIED'
+# Precondition, not decoration: w11c below is satisfied for free whenever the shim's pid
+# extraction comes back empty, since the wait it bounds — and the only place that can write
+# toctou_overrun — both sit inside `if [[ -n "$wpid" ]]`. Without this row, a broken extraction
+# (e.g. a bad match on the derived BEGIN prefix) reads as a clean "did not overrun".
+check_eq "$([[ -e "$toctou_waited" ]] && echo yes || echo no)" yes \
+  'w11c0: the shim actually recovered the wrapper pid and entered the bounded wait'
+check_eq "$([[ -e "$toctou_overrun" ]] && echo yes || echo no)" no \
+  'w11c: the shim'"'"'s bounded wrapper-exit wait did not overrun'
+
+# ---------------------------------------------------------------- w12: the self-correction pin
+#
+# classify()'s comment (scripts/run-long.sh) documents an ACCEPTED regression: `alive` is sampled
+# before the trailer is consumed, so a wrapper killed in that gap reads RUNNING once instead of
+# DIED. That is safe ONLY because the very next read self-corrects to DIED — RUNNING is
+# non-terminal. This row pins that self-correction, the load-bearing half of the safety argument;
+# without it, nothing here would catch RUNNING becoming sticky or cached.
+#
+# The window is opened the same way w11 opens its mirror image: a PATH-shimmed grep sits between
+# the alive sample and the trailer check classify() makes right after it — the ONLY external
+# command in that gap, so intercepting it is how the gap is entered deterministically. Where w11
+# releases a blocked job and waits for it to finish NORMALLY (so the sample was stale-but-now-true),
+# this shim kills the wrapper directly and waits, BOUNDED, for it to actually be gone — so the
+# absence this run reports is a REAL kill, never a fabricated state, and the second read's DIED is
+# a fresh, honest sample rather than a leftover from the first.
+#
+# This row deliberately PINS an accepted defect, not a desired behaviour: the RUNNING-then-DIED
+# sequence it asserts on is the cost classify()'s comment accepts, not the ideal outcome. If that
+# window is ever closed properly (e.g. a re-sample gated to move only RUNNING→DIED), w12/w12b go
+# red — read that as the pin becoming obsolete, not as a regression, and DELETE this row rather
+# than "fixing" it back to green.
+w12_shim_dir="$tmp/w12-shim"
+mkdir -p "$w12_shim_dir"
+w12_state="$tmp/w12-fired"
+w12_overrun="$tmp/w12-wait-overrun"
+# See toctou_waited above for why this exists: without it, w12f is satisfied for free whenever the
+# pid extraction fails, since the wait it bounds lives inside the same `if [[ -n "$wpid" ]]`.
+w12_waited="$tmp/w12-wait-executed"
+w12_real_grep="$(type -P grep)"
+w12_art="$(art wait_selfcorrect)"
+
+"$engine" --out "$w12_art" -- /bin/sh -c 'sleep 30' > /dev/null 2>&1
+
+cat > "$w12_shim_dir/grep" <<SHIM
+#!/usr/bin/env bash
+# Delegates every call to the real grep unchanged, except the ONE trailer-presence query
+# classify() makes against the artifact under test — answered faithfully (the trailer really is
+# absent, since the job below never reaches the point of writing one), and only AFTER answering
+# does it kill the wrapper and wait, bounded, for it to actually exit — so the NEXT classify() call
+# samples liveness fresh rather than racing this one's kill.
+if [[ "\$1" == "-q" && "\$2" == '^${status_prefix}' && "\$3" == '$w12_art' && ! -e '$w12_state' ]]; then
+  : > '$w12_state'
+  '$w12_real_grep' "\$@"
+  rc=\$?
+  wpid="\$(sed -n 's/^${begin_prefix} pid=\([0-9]*\).*/\1/p' '$w12_art' | head -1)"
+  if [[ -n "\$wpid" ]]; then
+    : > '$w12_waited'
+    kill -9 "\$wpid" 2>/dev/null
+    wtries=0
+    while kill -0 "\$wpid" 2>/dev/null && [[ \$wtries -lt 500 ]]; do
+      sleep 0.01
+      wtries=\$((wtries + 1))
+    done
+    kill -0 "\$wpid" 2>/dev/null && : > '$w12_overrun'
+  fi
+  exit "\$rc"
+fi
+exec '$w12_real_grep' "\$@"
+SHIM
+chmod +x "$w12_shim_dir/grep"
+
+w12_old_path="$PATH"
+PATH="$w12_shim_dir:$PATH"
+run_bounded 20 --status "$w12_art"
+check_eq "$RC" 3 \
+  'w12: a wrapper killed between the alive sample and the trailer read gives the SAFE stale verdict — RUNNING, not DIED'
+check_contains "$OUT" 'RESULT: RUNNING' 'w12b: ...and the RUNNING verdict line prints'
+
+run_bounded 20 --status "$w12_art"
+PATH="$w12_old_path"
+check_eq "$RC" 4 'w12c: the VERY NEXT read self-corrects to DIED — the pin this row exists for'
+check_contains "$OUT" 'RESULT: DIED' 'w12d: ...and the DIED verdict line prints'
+
+check_absent "$(cat "$w12_art")" 'RUN_LONG_EXIT_STATUS=' \
+  'w12e: the trailer is genuinely absent throughout — a real kill, not a fabricated state'
+check_eq "$([[ -e "$w12_waited" ]] && echo yes || echo no)" yes \
+  'w12f0: the shim actually recovered the wrapper pid and entered the bounded kill-wait'
+check_eq "$([[ -e "$w12_overrun" ]] && echo yes || echo no)" no \
+  'w12f: the shim'"'"'s bounded wrapper-exit wait did not overrun'
 
 # ---------------------------------------------------------------- subject stamp
 

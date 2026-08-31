@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.91.6 — 2026-08-23
+- fix(run-long): sample liveness before reading the status trailer
+
 ## v0.91.5 — 2026-08-23
 - docs(CLAUDE.md): add the reader-limit and premise-vs-remedy hazards
 

@@ -332,6 +332,42 @@ classify() { # artifact -> sets CLASS to done | running | died
   EXPECT_ACTIVE=0
   EXPECT_UNMATCHED=""
 
+  # ORDER IS LOAD-BEARING: sample liveness BEFORE reading the trailer.
+  #
+  # The wrapper appends the trailer as its LAST act before exiting (see the launcher block near
+  # the end of this file), so for a job that ran TO COMPLETION, "wrapper observably gone" implies
+  # "trailer on disk". Reading the trailer FIRST leaves a window: a job finishing between the two
+  # observations is seen as no-trailer AND not-alive, and a healthy run is reported DIED — the one
+  # verdict a reader must never re-run past. Measured 2/30 under load, 0/80 quiesced.
+  #
+  # Do NOT restate that as a flat "dead implies trailer on disk". It is FALSE for a killed wrapper
+  # (measured 5/5), and the absolute form invites an "improvement" that re-reads until a trailer
+  # appears — which would hang forever on every genuine kill. Every other dead-without-trailer
+  # state is one where DIED is the correct fail-closed verdict: either the job was killed, or the
+  # RECORDING of its status was, and an unrecorded status is untrustworthy either way.
+  #
+  # Accepted cost: `alive` is sampled earlier and consumed later, so a job killed in THAT gap
+  # reads RUNNING once rather than DIED. That is the safe direction — RUNNING is non-terminal, so
+  # --wait self-corrects on its next poll and a repeated --status corrects too, where the defect
+  # this replaces was terminal. No measurement was taken of THIS window's width, but nothing about
+  # it should read as smaller than the 2/30 above: both windows are opened by one external command
+  # sitting between a sample and its use (there `sed | head`, here the `grep -q` right below) —
+  # same order of magnitude, opposite direction, and — the part that actually matters — this one
+  # is non-terminal where that one was.
+  #
+  # The SELF-CORRECTION is the load-bearing half of that argument, so it is PINNED rather than
+  # asserted: row `w12`. The window is deterministically reachable because the `grep -q` below is
+  # an EXTERNAL command sitting between the sample and its use, so a PATH shim can open it. An
+  # earlier version of this comment called the window untestable and used that to justify leaving
+  # it unpinned; both halves were wrong, and the claim is recorded here because "no test can reach
+  # this" is exactly the excuse one probe settles.
+  local alive=0
+  JOB_PID="$(sed -n "s/^${BEGIN_PREFIX} pid=\\([0-9][0-9]*\\).*/\\1/p" "$art" | head -1)"
+  # `2>/dev/null` is required, not tidiness: this now runs on EVERY classify, including done-path
+  # reads of old artifacts whose pid has been recycled or belongs to another user, and
+  # `kill: Operation not permitted` would otherwise land in --status output that callers capture.
+  if [[ -n "$JOB_PID" ]] && kill -0 "$JOB_PID" 2>/dev/null; then alive=1; fi
+
   if grep -q "^${STATUS_PREFIX}" "$art"; then
     JOB_RC="$(sed -n "s/^${STATUS_PREFIX}\\([0-9][0-9]*\\)\$/\\1/p" "$art" | tail -1)"
     CLASS="done"
@@ -351,8 +387,7 @@ classify() { # artifact -> sets CLASS to done | running | died
     return 0
   fi
 
-  JOB_PID="$(sed -n "s/^${BEGIN_PREFIX} pid=\\([0-9][0-9]*\\).*/\\1/p" "$art" | head -1)"
-  if [[ -n "$JOB_PID" ]] && kill -0 "$JOB_PID" 2>/dev/null; then
+  if [[ "$alive" -eq 1 ]]; then
     CLASS="running"
   else
     CLASS="died"
@@ -484,7 +519,10 @@ pid=$!
 # launch, so the header really is absent when the launcher would otherwise return. The window is
 # too small for a separate --status process to observe (40/40 probe runs read RUNNING with this
 # guard removed), which is why no test row covers it — it is a flagged untestable-timing guard,
-# kept because the ordering holds by accident rather than by construction.
+# kept because the ordering holds by accident rather than by construction. This is not the "no
+# test can reach it" excuse rejected above (:357): a probe WAS run, 40 times, and it DID reach the
+# window — it measured that the window is too narrow for that probe's own instrument (forking a
+# separate --status process) to resolve, not that no instrument could.
 tries=0
 while [[ $tries -lt 250 ]]; do
   grep -q "^${BEGIN_PREFIX}" "$out" 2>/dev/null && break
