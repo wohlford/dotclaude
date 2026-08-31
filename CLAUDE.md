@@ -471,6 +471,17 @@ left legal.
   capped is another tool's whole stdout, those are the least informative lines it produced. Filter to
   failure-shaped lines before capping, or write the full output to an artifact whose destination
   sits outside everything else's clean-tree precondition.
+- **A reader's DEFAULT limit truncates stored state silently, and the store's insertion order
+  decides which half dies.** Not a producer's output cap — nothing is filtered on the way out, the
+  file is intact, the reader simply stops. Measured in a routine that had run for weeks: a record's
+  live section ran 2,243 lines against a reading tool's 2,000-line default, so every run saw 75 of
+  84 entries and dropped 9 without a word — and since new entries are inserted at the TOP, the ones
+  it ate were the OLDEST, exactly those most in need of attention. One had been marked
+  called-up-and-pending 29 days earlier and had never once been reported: the staleness had a
+  MECHANISM and read as neglect. Derive the bound from the document rather than accepting a
+  default, then **CROSS-CHECK the count against an independent count over the whole file** — a
+  truncated read looks exactly like a shorter file. **That count is blind to WHICH entries are
+  missing**, so it tells you to re-read, never what you lost.
 
 #### The fix it prescribes is not the defect it found
 
@@ -488,6 +499,14 @@ left legal.
   shared set would have RE-OPENED the hole the task existed to close, since that set was consulted at
   more call sites than I had in mind. The implementer declined the literal wording. **Read a
   delegate's push-back as evidence, not insubordination.**
+- **Re-measuring a queued item's PREMISE is not re-deriving its REMEDY, and the confirmation is
+  what discharges the obligation without meeting it.** The bullet above gets honoured in form and
+  missed in substance exactly this way. Measured: a queued entry's defect re-confirmed almost
+  exactly (66% → 67%, and grown since filing), which felt like compliance — so its prescribed
+  repair went unexamined through a full design and a probe before anyone noticed the two describe
+  different halves of the system: the defect was a READER's cost and the repair a WRITER's change,
+  and altering the reader delivered the same benefit at none of the risk. **Ask which half the
+  stated defect is in, and whether the prescribed repair is in that same half.**
 
 #### The repair you would reach for first makes it worse
 

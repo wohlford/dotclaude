@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.91.5 — 2026-08-23
+- docs(CLAUDE.md): add the reader-limit and premise-vs-remedy hazards
+
 ## v0.91.4 — 2026-08-22
 - fix(debrief): bound step 0's backlog read and cross-check the count
 
