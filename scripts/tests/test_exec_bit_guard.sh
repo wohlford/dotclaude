@@ -134,5 +134,115 @@ case "$msg" in
   *) printf 'FAIL  block stderr message missing/unhelpful: %s\n' "$msg"; fail=$((fail + 1)) ;;
 esac
 
+# ---------- large-payload rows: the scan must stay correct AND affordable ----------
+# Measured 2026-08-26. The loop makes a segment of every LINE (`read -r`), and there is no `break`
+# after `found=1`, so every line matching both `git` and `commit` falls through into allow_re, two
+# seds and aflag_re -- about five forks per line. Prose *about* git commits is therefore the
+# expensive shape, and it is not contrived: it is what a plan or spec document looks like.
+#
+# The ceiling bounds a CLASS, not a budget. The fixed guard measures ~0.4-0.8 s on these fixtures;
+# 20 s is ~25x headroom and still catches the 62 s regression these rows exist to pin. A tight
+# ceiling here would be a flaky gate on every commit, which is worse than the defect.
+EXEC_BIT_SCAN_CEILING_S=20
+# 5000 lines x ~52 bytes ~= 260KB, comfortably past the ~128KB size measured DETERMINISTIC (40/40).
+# 2000 lines (99KB) sits in the probabilistic band above macOS's 64KB pipe capacity but below that,
+# where a pre-fix run can fail with the WRONG shape -- a ceiling breach instead of a wrong exit --
+# which would break the attribution the RED gate rests on. The boundary is a pipe-buffer artifact,
+# so headroom is the only defence; do not tune this down.
+BIG_LINES=5000
+
+# Without `timeout` the bounded rows below would run unbounded and their FAIL could never fire --
+# the rows would still report, but about a different question. Fail loudly rather than quietly
+# downgrade to an unbounded assertion.
+have_timeout=1
+command -v timeout >/dev/null 2>&1 || {
+  have_timeout=0
+  printf 'FAIL  bounded rows need GNU timeout, which is not on PATH\n'; fail=$((fail + 1)); }
+
+big_cmd() { # nlines outfile -- every padding line carries BOTH tokens, the expensive shape
+  local n="$1" out="$2" i
+  {
+    printf 'git commit -m msg\n'
+    for ((i = 0; i < n; i++)); do
+      printf '  see the git commit --amend convention note on line %d\n' "$i"
+    done
+  } > "$out"
+}
+
+# The padding line carries a DASH as well as both tokens, deliberately. A dash-free line lets any
+# flag-parsing shortcut skip the expensive work, so a dash-free fixture would under-state the cost
+# and could be satisfied by an optimisation that does not survive real technical prose. Measured:
+# the dash shape is what defeated a dash-guard half-measure, at 81 s where the dash-free shape
+# reached 0.6 s.
+
+run_file() { # cmdfile cwd -> exit code, or 124 when it exceeded the ceiling
+  local got=0
+  python3 -c 'import json,sys;print(json.dumps({"tool_input":{"command":open(sys.argv[1]).read()},"cwd":sys.argv[2]}))' "$1" "$2" \
+    | timeout "$EXEC_BIT_SCAN_CEILING_S" "$guard" >/dev/null 2>&1 || got=$?
+  printf '%s' "$got"
+}
+
+assert_file() { # cmdfile cwd want label
+  # Skip rather than run a missing command: without timeout each row would exit 127 and Step 2's
+  # "exactly these FAIL labels" check would read three extra failures as unattributable REDs.
+  if [[ "$have_timeout" != 1 ]]; then
+    printf 'FAIL  %s (skipped: no timeout on PATH)\n' "$4"; fail=$((fail + 1)); return
+  fi
+  local got; got="$(run_file "$1" "$2")"
+  if [[ "$got" -eq "$3" ]]; then
+    printf 'PASS  %s (exit %d)\n' "$4" "$got"; pass=$((pass + 1))
+  elif [[ "$got" -eq 124 ]]; then
+    printf 'FAIL  %s (exceeded the %ss ceiling -- the per-segment scan is forking per line)\n' \
+      "$4" "$EXEC_BIT_SCAN_CEILING_S"; fail=$((fail + 1))
+  else
+    printf 'FAIL  %s (want %d, got %d)\n' "$4" "$3" "$got"; fail=$((fail + 1))
+  fi
+}
+
+# --- rL1: COST. Below the pipe-buffer threshold the guard is correct today but takes 62 s. ---
+mkrepo "$tmp/rL1"
+printf '#!/bin/sh\necho hi\n' > "$tmp/rL1/hook.sh"
+git -C "$tmp/rL1" add hook.sh
+big_cmd 500 "$tmp/rL1.cmd"   # deliberately BELOW the threshold: correct today, but 62s
+assert_file "$tmp/rL1.cmd" "$tmp/rL1" 2 'a 24KB command about git commits still blocks, within the ceiling'
+
+# --- rL2: CORRECTNESS. Above the threshold the pre-filter SIGPIPEs and the gate allows. ---
+mkrepo "$tmp/rL2"
+printf '#!/bin/sh\necho hi\n' > "$tmp/rL2/hook.sh"
+git -C "$tmp/rL2" add hook.sh
+big_cmd "$BIG_LINES" "$tmp/rL2.cmd"
+assert_file "$tmp/rL2.cmd" "$tmp/rL2" 2 'a >=256KB command still reaches the scan rather than being skipped'
+
+# --- rL3: the override must be honoured at SIZE, on the honest path. Today this passes only
+# because the pre-filter bails before allow_re is ever consulted, so it is not evidence yet. ---
+#
+# The padding here must NOT be candidate segments. An earlier draft reused rL2's payload, whose
+# every line matches both git and commit without an override -- so each one sets found=1 and the
+# FIXED guard correctly returns 2, not 0. The suite already pins that semantics ("override on the
+# WRONG segment -> still blocked"), so the draft row asserted a verdict the fix does not produce
+# and would have detonated after the RED gate rather than at it. Only the first segment is a
+# candidate here, and it carries the override.
+mkrepo "$tmp/rL3"
+printf '#!/bin/sh\necho hi\n' > "$tmp/rL3/hook.sh"
+git -C "$tmp/rL3" add hook.sh
+{
+  printf 'ALLOW_NONEXEC=1 git commit -m msg\n'
+  for ((i = 0; i < BIG_LINES; i++)); do
+    printf '  ordinary prose padding with no tokens on line %d\n' "$i"
+  done
+} > "$tmp/rL3.cmd"
+assert_file "$tmp/rL3.cmd" "$tmp/rL3" 0 'a >=256KB command with ALLOW_NONEXEC=1 is still allowed'
+
+# --- rL5: the leading `.*` in the -C extraction is load-bearing and nothing else pins it. With it,
+# `git -C /a commit -C /b` yields /b (sed's last-match semantics); without it, /a. A tidier deleting
+# the "redundant" .* ships green through every other row. Repo A is clean, repo B holds the
+# offender, so the verdict moves 0 <-> 2 on which one is resolved. ---
+mkrepo "$tmp/rL5a"
+mkrepo "$tmp/rL5b"
+printf '#!/bin/sh\necho hi\n' > "$tmp/rL5b/hook.sh"
+git -C "$tmp/rL5b" add hook.sh
+assert "git -C $tmp/rL5a commit -C $tmp/rL5b -m x" "$tmp/rL5a" 2 \
+  'the LAST -C wins, so the offender in the second repo is still found'
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

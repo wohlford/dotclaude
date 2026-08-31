@@ -35,8 +35,13 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null) |
 # Cheapest guard: bail unless a git word and a commit word appear somewhere at all.
 git_re='(^|[^A-Za-z0-9_])git([^A-Za-z0-9_]|$)'
 commit_re='(^|[^A-Za-z0-9_])commit([^A-Za-z0-9_]|$)'
-printf '%s' "$cmd" | grep -qE "$git_re" || exit 0
-printf '%s' "$cmd" | grep -qE "$commit_re" || exit 0
+# Herestrings, never `printf … | grep -q`. This file runs under `set -o pipefail`, and `grep -q`
+# exits at its first match, SIGPIPEing the producer -- pipefail then surfaces 141 and the test reads
+# FALSE on exactly the inputs that DO match, so `|| exit 0` silently allows. Measured: wrong 40/40
+# at 128KB and above, correct 0/40 below. `[[ =~ ]]` is NOT usable here: $cmd is multi-line and bash
+# anchors ^ and $ to the whole string where grep anchors per line.
+grep -qE "$git_re" <<<"$cmd" || exit 0
+grep -qE "$commit_re" <<<"$cmd" || exit 0
 
 allow_re='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*ALLOW_NONEXEC=1([[:space:]]|$)'
 # -a detection: a single-dash short-option cluster containing `a` (-a, -am), or exact --all.
@@ -58,11 +63,27 @@ seg_dir=""
 found=0
 wtscan=0
 first=1
+# Every per-segment REGEX MATCH in this loop is a bash builtin, deliberately -- but NOT every fork
+# is gone, and the difference matters. Three forks survive on purpose: the gated quote-strip sed
+# below, the `cd` prefix strip in the first-segment branch, and `strip_quotes`. Each runs at most
+# once per candidate and two of the three are reached only by rare shapes.
+#
+# `read -r` makes a segment of each LINE, so a heredoc discussing git commits produces one candidate
+# per line -- and with no `break` after `found=1`, each candidate previously cost about five forks.
+# Measured: 62 s on a 24KB command, 48.5 s vs 0.28 s on a 28KB one.
+#
+# Builtins are safe here precisely BECAUSE a segment is single-line: bash anchors ^ and $ to the
+# whole string, which on a one-line subject is identical to grep's per-line anchoring. That
+# equivalence does NOT hold for the whole-command pre-filters above, which is why those keep grep.
+#
+# DO NOT "finish the job" by making the surviving seds builtins too. That was designed, measured and
+# rejected: the parameter-expansion quote-strip is super-quadratic -- 10,928 ms for ONE 1,750-byte
+# segment carrying 50 quoted spans, against 60 ms for sed. See the note at the quote-strip itself.
 while IFS= read -r seg; do
   if [ "$first" = 1 ]; then
     first=0
     # A leading `cd <dir>` first segment adjusts the base dir (simple paths only).
-    if printf '%s' "$seg" | grep -qE '^[[:space:]]*cd[[:space:]]'; then
+    if [[ $seg =~ ^[[:space:]]*cd[[:space:]] ]]; then
       cdtarget=$(strip_quotes "$(printf '%s' "$seg" | sed -E 's/^[[:space:]]*cd[[:space:]]+//')")
       case "$cdtarget" in
         /*) base="$cdtarget" ;;
@@ -72,17 +93,33 @@ while IFS= read -r seg; do
       continue
     fi
   fi
-  printf '%s' "$seg" | grep -qE "$git_re" || continue
-  printf '%s' "$seg" | grep -qE "$commit_re" || continue
-  printf '%s' "$seg" | grep -qE "$allow_re" && continue   # this segment is authorized
+  [[ $seg =~ $git_re ]] || continue
+  [[ $seg =~ $commit_re ]] || continue
+  [[ $seg =~ $allow_re ]] && continue   # this segment is authorized
   found=1
   # Flag detection runs on the segment with quoted strings stripped: message text like
   # -m "refactor -a mode" must neither trigger the -a scan (reviewer-verified false BLOCK)
   # nor let a quoted "-C foo" hijack repo resolution (reviewer-verified false PASS).
-  seg_flags=$(printf '%s' "$seg" | sed -E "s/\"[^\"]*\"//g; s/'[^']*'//g")
-  ctarget=$(printf '%s' "$seg_flags" | sed -nE 's/.*[[:space:]]-C[[:space:]]+([^[:space:]]+).*/\1/p')
+  # KEEP the sed; only skip the fork when there is nothing for it to strip. This is deliberately
+  # not a cleverer matcher: a parameter-expansion rewrite measured 10,928 ms on one 1,750-byte
+  # segment with 50 quoted spans, unbounded and reachable from ordinary input, where sed is 60 ms.
+  # The gate is free on quote-free prose (the common shape) and costs one fork otherwise -- bounded
+  # at ~15 ms per quote-bearing segment, with no input that makes it worse.
+  case "$seg" in
+    *[\"\']*) seg_flags=$(printf '%s' "$seg" | sed -E "s/\"[^\"]*\"//g; s/'[^']*'//g") ;;
+    *)          seg_flags="$seg" ;;
+  esac
+  # ctarget is CLEARED first for EXACT equivalence, not to prevent a bug: the sed this replaces
+  # assigned on every candidate iteration, empty on no match. Clearing reproduces that without
+  # needing any argument about reachability. (A stale ctarget is in fact unobservable -- its only
+  # consumer re-assigns seg_dir to the value it already holds -- so no test can pin this line, and
+  # none is written for it.)
+  # The leading `.*` is retained to preserve sed's LAST-match greediness: `git -C /a commit -C /b`
+  # must yield /b from both forms.
+  ctarget=""
+  [[ $seg_flags =~ .*[[:space:]]-C[[:space:]]+([^[:space:]]+) ]] && ctarget="${BASH_REMATCH[1]}"
   [ -n "$ctarget" ] && seg_dir="$(strip_quotes "$ctarget")"
-  printf '%s' "$seg_flags" | grep -qE "$aflag_re" && wtscan=1
+  [[ $seg_flags =~ $aflag_re ]] && wtscan=1
 done < <(printf '%s\n' "$cmd" | sed -E 's/(&&|[|][|]|;|[|])/\n/g')
 
 [ "$found" = 1 ] || exit 0
