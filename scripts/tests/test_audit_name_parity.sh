@@ -480,7 +480,7 @@ check_case "GREEN: real audit.sh and SKILL.md agree" \
 # ---------------------------------------------------------------------------
 stale_count="$sandbox/stale-count-skill.md"
 mutate "$audit_skill" "$stale_count" \
-  'The sweep runs 19 checks:' 'The sweep runs 14 checks:'
+  'The sweep runs 20 checks:' 'The sweep runs 14 checks:'
 check_case "RED: stale 'runs 14 checks' is caught" \
   "$audit_sh" "$stale_count" 1 "skill-runs-count"
 
@@ -494,8 +494,8 @@ check_case "RED: stale 'runs 14 checks' is caught" \
 prefix_trap="$sandbox/prefix-trap-skill.md"
 # shellcheck disable=SC2016  # backticked names are literal SKILL.md text to match
 mutate "$audit_skill" "$prefix_trap" \
-  '; and `hermetic-outside` (the suite
-wrote nothing under the Claude config root). The last three run' \
+  '; and `hermetic-outside` (the
+suite wrote nothing under the Claude config root). The last three run' \
   '. The last three run'
 check_case "RED: hermetic-outside dropped while hermetic remains" \
   "$audit_sh" "$prefix_trap" 1 "skill-name-list"
@@ -537,10 +537,12 @@ mutate "$audit_sh" "$regated" \
   check_script_headers "$scope"
   check_mutation_anchors "$scope"
   check_pre_push_installed "$scope"
+  check_timing_guard_conf "$scope"
   if [[ "$run_tests" == true ]]; then' \
   '  check_script_headers "$scope"
   check_mutation_anchors "$scope"
   check_pre_push_installed "$scope"
+  check_timing_guard_conf "$scope"
   if [[ "$run_tests" == true ]]; then
     check_sync_docs "$scope"'
 check_case "RED: a check moved behind --tests changes only the static total" \
@@ -559,8 +561,8 @@ reworded="$sandbox/reworded-skill.md"
 # checker an unmutated copy. The checker itself is immune (it flattens
 # whitespace before matching); it was the fixture that had to learn this.
 mutate "$audit_skill" "$reworded" \
-  'so a static sweep totals 16 and a
-  full one 19.' \
+  'so a static sweep totals 17 and a
+  full one 20.' \
   'so the totals depend on which flags you passed.'
 check_case "RED: a reworded claim is reported unfindable, not skipped" \
   "$audit_sh" "$reworded" 1 "skill-sweep-totals"
@@ -598,7 +600,7 @@ check_case "RED: a check newly given \$ignore contradicts both scoped sites" \
 #    assertion fired first and the floor was never consulted -- a mutation
 #    deleting the floor survived the whole suite while this row stayed green.
 #    Renaming the verdict token AND the function together keeps every internal
-#    assertion satisfied, so the derived set is a coherent 19 that simply no
+#    assertion satisfied, so the derived set is a coherent 20 that simply no
 #    longer contains `hermetic-outside`. Only the floor can object.
 # ---------------------------------------------------------------------------
 floor_reached="$sandbox/floor-reached-audit.sh"
@@ -607,8 +609,11 @@ floor_reached="$sandbox/floor-reached-audit.sh"
 # absent-root SKIP was replaced by a verified PASS/FAIL pair and the AFTER/modified
 # enumerations gained their own unprovable verdicts; 13 -> 14 when a security review found the
 # absent-root PASS also firing for a root that EXISTS but cannot be resolved, which needed its
-# own unprovable verdict to stop the widening handing a positive result to an unmeasured probe.
-mutate_all "$audit_sh" "$floor_reached" 'hermetic-outside' 'hermetic-elsewhere' 14
+# own unprovable verdict to stop the widening handing a positive result to an unmeasured probe;
+# 14 -> 15 when the new timing-guard-conf check's own comment named the hermetic-outside check
+# by its verdict name, as a precedent to distinguish itself from -- one more literal occurrence,
+# nothing about check_hermetic_outside itself changed.
+mutate_all "$audit_sh" "$floor_reached" 'hermetic-outside' 'hermetic-elsewhere' 15
 mutate_all "$floor_reached" "$floor_reached.2" \
   'check_hermetic_outside' 'check_hermetic_elsewhere' 2
 mv "$floor_reached.2" "$floor_reached"

@@ -12,16 +12,19 @@ set -uo pipefail
 #   same way) both glob the filesystem rather than call `git ls-files`, so an untracked file
 #   matching a handler's glob is discovered and folded in exactly like a tracked one — measured:
 #   an untracked scripts/*.sh drops both into `script-headers`' `missing …` output and into
-#   `sync-docs`' rendered scripts/README.md table as drift. Every other check is tracked-only,
-#   so an untracked violation stays invisible to the sweep.
+#   `sync-docs`' rendered scripts/README.md table as drift. Every other repo-scoped check is
+#   tracked-only, so an untracked violation stays invisible to the sweep — except
+#   `timing-guard-conf`, which is not repo-scoped at all: it reads a MACHINE-GLOBAL path
+#   ($HOME/.claude/.git-timing-guard.conf) that no repo's tracked/untracked split can describe,
+#   so "tracked-only" is simply not a claim that check can make.
 # Usage: audit.sh [--scope <path>] [--tests]
 #
 # A `.auditignore` at the scope root (opt-in, one glob pathspec per line, `#` comments and
 # blank lines ignored) excludes matching paths from the five text-content checks
 # (format-trailing-ws, format-crlf, format-final-newline, format-tabs, md-links) only — it
 # can never silence a code/config check (shellcheck, ruff, markdownlint, env-claims, exec-bit,
-# json, toml, sync-docs, script-headers, mutation-anchors, pre-push-installed, tests, hermetic,
-# hermetic-outside).
+# json, toml, sync-docs, script-headers, mutation-anchors, pre-push-installed, timing-guard-conf,
+# tests, hermetic, hermetic-outside).
 # No file present, or a present-but-empty file, sweeps unchanged.
 #
 # Exit codes:
@@ -1116,6 +1119,208 @@ check_pre_push_installed() {
   verdict_pass pre-push-installed
 }
 
+# Registration, not liveness -- the same limitation as check_pre_push_installed above, stated
+# for the same reason. This asserts the SCOPE'S ON-DISK settings.json carries a hook whose
+# command carries git-timing-guard.sh as a whole path token (anchored on both sides -- see the
+# matcher's own comment below), and that when it does, the guard's policy file is USABLE.
+# "On-disk", never "committed" -- this reads $scope/settings.json exactly as it sits in the
+# working tree, which is not the same thing as git's committed blob (an uncommitted edit, or --
+# measured on this machine -- a skip-worktree file whose committed copy carries 0 occurrences of
+# git-timing-guard.sh against 1 on disk). Whether that on-disk copy is ALSO the runtime file
+# depends entirely on what --scope points at: for a scope whose settings.json is the file
+# ~/.claude/settings.json resolves into, reading $scope/settings.json IS reading the runtime
+# file, so the verdict below is a claim about the gate running right now. For any other scope
+# it is a claim about registration-on-promote only. This IS decidable, definitely: one
+# `readlink -f` comparison of $scope/settings.json against ~/.claude/settings.json settles
+# which case applies, and every conf FAIL and the conf-absent SKIP below name the resolved path
+# rather than a nickname like "the dotclaude clone" -- ambiguous to a reader who is themselves
+# sitting in a clone. Everything else carries no such caveat, and "everything else" is FOUR
+# verdicts, not the two a "SKIPs and PASS" phrasing suggests: the settings-absent SKIP, the
+# settings-unparseable SKIP, the not-registered SKIP, and the jq-unavailable FAIL -- which is a
+# FAIL, so a partition drawn as "the other SKIPs and PASS" silently omits it. PASS carries no
+# detail at all, structurally: verdict_pass takes a name and nothing else.
+#
+# The conf is resolved EXACTLY as the guard resolves it -- hardcoded $HOME/.claude/, per the
+# `conf=` assignment in scripts/git-timing-guard.sh. Deliberately NOT the hermetic-outside
+# check's own $CLAUDE_CONFIG_DIR-else-~/.claude idiom: the guard itself never consults that
+# variable, and copying that precedent here would grade a directory nobody is using.
+#
+# Static and unconditional, like exec-bit, mutation-anchors and pre-push-installed: this reads
+# no repo code and needs no --tests gate, and it is never scoped by .auditignore -- a repo
+# cannot hide a broken gate config any more than it can hide a broken tracked .json.
+#
+# Measured collapse this check exists to make visible: the guard's reader greps the conf with
+# stderr suppressed, so an unreadable file, a typo'd GUARD_REPO_PATTERN key and an empty value
+# all collapse to the same empty sentinel a genuinely absent conf produces -- all four silently
+# fail the gate OPEN. Fail-open is the correct, documented behaviour; only the SILENCE on three
+# of those four shapes is the defect. A genuinely absent conf is the documented disable spelling,
+# so that arm is a SKIP naming the gap, never a FAIL.
+check_timing_guard_conf() {
+  local scope="$1" registered=false
+  local settings="$scope/settings.json"
+  # Empty until one of the branches below sets it; the VALUE names which branch fired, so the
+  # three causes this arm used to collapse into one message ("absent, unparseable, or jq is
+  # unavailable") stay distinguishable all the way to their own verdicts.
+  local undecided_reason=""
+  # Definite, not conditional: resolve both $settings and ~/.claude/settings.json with
+  # `readlink -f` and compare. When they resolve to the same file, $settings IS the runtime
+  # file and the verdict below is a claim about the gate running right now; when they differ,
+  # it is a claim about registration-on-promote only. This used to be phrased as "this check
+  # cannot tell which case it is in" -- false: one readlink -f comparison settles it, and a
+  # nickname like "the dotclaude clone" is ambiguous to a reader sitting in any dotclaude clone,
+  # where naming the resolved path is not.
+  local settings_resolved home_settings_resolved is_runtime_file=false
+  settings_resolved="$(readlink -f -- "$settings" 2>/dev/null || true)"
+  home_settings_resolved="$(readlink -f -- "$HOME/.claude/settings.json" 2>/dev/null || true)"
+  if [[ -n "$settings_resolved" && "$settings_resolved" == "$home_settings_resolved" ]]; then
+    is_runtime_file=true
+  fi
+  local liveness_note
+  if [[ "$is_runtime_file" == true ]]; then
+    liveness_note=" -- registration-not-liveness: this reads $settings, which resolves to $settings_resolved, the same file ~/.claude/settings.json resolves into on this machine -- it IS the runtime file, so this verdict is a claim about the gate running right now"
+  else
+    liveness_note=" -- registration-not-liveness: this reads $settings, which resolves to ${settings_resolved:-$settings} -- ~/.claude/settings.json on this machine resolves to ${home_settings_resolved:-a different, nonexistent path} instead, so this verdict is a claim about registration-on-promote only, not about the gate running now"
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    # Tested BEFORE settings-absent, deliberately: jq-availability is a MACHINE-GLOBAL fact,
+    # not a scope-local one, so it must not sit behind a settings.json existence test. A repo
+    # with no settings.json on a jq-less machine used to read the reassuring "settings-absent"
+    # SKIP instead of this FAIL, hiding the identical machine-global fact that a repo WITH a
+    # settings.json correctly surfaces as FAIL -- most repos on a jq-less machine lack a local
+    # settings.json, so most of them read the calm SKIP for a fact true of every repo alike.
+    undecided_reason="jq-unavailable"
+  elif [[ ! -f "$settings" ]]; then
+    undecided_reason="settings-absent"
+  else
+    local commands
+    # Restricted to .hooks.PreToolUse, deliberately -- a registration under any OTHER event
+    # (PostToolUse, Stop, ...) does not make this a live PreToolUse gate, and counting it would
+    # report "registered" for a repo where the guard never actually intercepts a push.
+    if ! commands="$(jq -r '.hooks.PreToolUse // [] | .[]? | .hooks[]? | .command // empty' "$settings" 2>/dev/null)"; then
+      undecided_reason="settings-unparseable"
+    else
+      local c
+      # Anchored on BOTH sides, not widened with alternatives -- the filename must appear as a
+      # whole token: a path separator, a quote character, whitespace, or the start of the
+      # string before it (an optional literal `.` is tolerated between that boundary and the
+      # filename, so a dotfile invocation counts too -- see Third, below); and whitespace, `;`,
+      # a quote character, a shell metacharacter (`&`, `|`, `)`, `>`), or the end of the string
+      # after it. This fixes three things at once. First: a bare suffix match (the previous
+      # `*git-timing-guard.sh`) matches a DIFFERENT, differently-prefixed script too (e.g. a
+      # sibling literally named `old-git-timing-guard.sh`, whose "old-" ends in `-`, not a
+      # boundary character), which would read as registered when it is not -- the anchor keeps
+      # excluding it. Second: the previous `*'git-timing-guard.sh '*` only tolerated a literal
+      # trailing space, so a quoted path, a tab before a flag, a trailing `;`, or a trailing
+      # shell metacharacter (`&&true`, a closing `)`) all missed and read as "not registered" --
+      # the same silent self-retirement class this whole check exists to catch, one level up.
+      # Third: the optional leading `.` is what lets the REAL orphaned original,
+      # `~/.claude/.git-timing-guard.sh` -- this repo's own header, in
+      # scripts/git-timing-guard.sh's PROVENANCE comment, records it as deliberately left in
+      # place -- count as registered when something actually points at it: a dotfile's boundary
+      # character is the `.` itself, which the plain class above never contained.
+      #
+      # ACCEPTED RESIDUAL, deliberately not fixed here: this is still a character-boundary
+      # match, not command-position analysis, so a MENTION of the filename as some other
+      # command's argument (e.g. `echo git-timing-guard.sh is disabled`), a variable ASSIGNMENT
+      # (e.g. `CMD=.../git-timing-guard.sh`), or `rm -f .../git-timing-guard.sh || true` all
+      # still read as registered. Not because those are character-for-character identical to a
+      # genuine invocation -- the echo mention has a space before the filename where an
+      # invocation like `.../git-timing-guard.sh --verbose` (asserted by rTGC+A) has a `/`, so a
+      # boundary-only rule COULD require `/` immediately before the filename and separate them.
+      # It is declined because that would also reject a legitimate bare-path registration with
+      # no directory at all (`"command": "git-timing-guard.sh"`), which matches at the start of
+      # the string and must keep counting as registered. Distinguishing "is the first word of
+      # this command" from "is some other command's argument" needs command-position analysis
+      # instead, out of scope for this character-boundary matcher; building it here would be
+      # scope creep past a boundary drawn on purpose.
+      local tgc_re="(^|[[:space:]/'\"])\\.?git-timing-guard\\.sh([[:space:];'\"&|)>]|\$)"
+      while IFS= read -r c; do
+        [[ -z "$c" ]] && continue
+        if [[ "$c" =~ $tgc_re ]]; then
+          registered=true
+        fi
+      done <<< "$commands"
+    fi
+  fi
+
+  case "$undecided_reason" in
+    settings-absent)
+      verdict_skip timing-guard-conf "could not determine registration -- $settings does not exist, so it is unprovable whether scripts/git-timing-guard.sh is registered here"
+      return
+      ;;
+    settings-unparseable)
+      verdict_skip timing-guard-conf "could not determine registration -- $settings exists but jq could not parse it, so it is unprovable whether scripts/git-timing-guard.sh is registered here"
+      return
+      ;;
+    jq-unavailable)
+      # FAIL, not SKIP: this is not merely "registration undecidable" here. The guard's own
+      # `command -v jq >/dev/null 2>&1 || exit 0` (scripts/git-timing-guard.sh) makes the
+      # identical check, on the identical PATH, at hook-execution time -- so jq being
+      # unavailable to THIS process is evidence the guard is ALSO exiting open right now,
+      # wherever it is registered. That is a guard-disabling FACT, not a failure to observe.
+      verdict_fail timing-guard-conf "jq is unavailable on PATH -- registration cannot be checked, and scripts/git-timing-guard.sh makes this identical 'command -v jq' check itself, so if that guard is registered anywhere it is ALSO silently failing open right now; install jq"
+      return
+      ;;
+  esac
+
+  if [[ "$registered" == false ]]; then
+    verdict_skip timing-guard-conf "not registered -- $settings carries no PreToolUse hook command with git-timing-guard.sh as a whole path token; a registration living instead in $scope/settings.local.json would not be seen here -- this check reads $settings only"
+    return
+  fi
+
+  # Registered: resolve the conf exactly as the guard resolves it.
+  local conf="$HOME/.claude/.git-timing-guard.conf"
+
+  # `-e` alone follows symlinks, so a BROKEN symlink at this path (target deleted or never
+  # existed) satisfies `! -e` and would read as the reassuring "absence IS the documented way
+  # to disable" SKIP below -- but a dangling symlink is the same "almost certainly a mistake,
+  # not a deliberate disable" shape the non-regular-file arm right below exists to catch, not
+  # a clean disable. `-L` still sees it (it does NOT follow the link), so excluding that case
+  # here routes it into that arm instead.
+  if [[ ! -e "$conf" && ! -L "$conf" ]]; then
+    verdict_skip timing-guard-conf "registered, but $conf is absent -- absence IS the documented way to disable the gate (fail-open here is correct), so this is a coverage gap, not a clean bill of health${liveness_note}"
+    return
+  fi
+
+  # Non-regular-file arm, ahead of the readability/grep logic: a directory, a FIFO (which
+  # would otherwise hang the grep below), or a dangling symlink at this path is almost
+  # certainly a mistake, not a deliberate disable, and the two arms further down would
+  # misdescribe it -- `-r` on a directory is typically true, and grep failing on it ("Is a
+  # directory") collapses pat_line to empty, which used to print "is readable, but no
+  # GUARD_REPO_PATTERN= line was found -- a typo'd key", both clauses false for a directory.
+  # The guard's own `[ -f "$conf" ]` treats all of these exactly like an absent conf (silent
+  # fail-open, no distinction from intentional disable); this check still FAILs them,
+  # deliberately, because a stray non-regular path here is worth a human looking at.
+  if [[ ! -f "$conf" ]]; then
+    local kind="not a regular file"
+    [[ -d "$conf" ]] && kind="a directory"
+    [[ -L "$conf" && ! -e "$conf" ]] && kind="a dangling symlink (its target does not exist)"
+    verdict_fail timing-guard-conf "registered, and $conf exists but is $kind, not a regular file -- the guard's own [ -f \"\$conf\" ] test treats this exactly like an absent conf (silent fail-open), but that is almost certainly a mistake here; remove it and replace it with a regular file carrying GUARD_REPO_PATTERN=<pattern>${liveness_note}"
+    return
+  fi
+
+  if [[ ! -r "$conf" ]]; then
+    verdict_fail timing-guard-conf "registered, and $conf exists but is not readable by this process -- an unreadable conf silently fails the gate OPEN exactly like an absent one; chmod it readable (e.g. chmod 600 $conf), or delete it if disabling the gate is what you intend${liveness_note}"
+    return
+  fi
+
+  local pat_line pat_val
+  pat_line="$(grep -E '^GUARD_REPO_PATTERN=' "$conf" 2>/dev/null | tail -1)"
+  if [[ -z "$pat_line" ]]; then
+    verdict_fail timing-guard-conf "registered, $conf is readable, but no GUARD_REPO_PATTERN= line was found -- a typo'd key silently fails the gate OPEN exactly like an absent conf; fix the key, or delete the file entirely if you mean to disable the gate (deletion is the documented way to disable)${liveness_note}"
+    return
+  fi
+
+  pat_val="$(printf '%s' "$pat_line" | cut -d= -f2- | tr -d "\"' \\r")"
+  if [[ -z "$pat_val" ]]; then
+    verdict_fail timing-guard-conf "registered, $conf carries a GUARD_REPO_PATTERN= line, but its value is empty -- an empty value silently fails the gate OPEN exactly like an absent conf; set a value, or delete the file entirely if you mean to disable the gate (deletion is the documented way to disable)${liveness_note}"
+    return
+  fi
+
+  verdict_pass timing-guard-conf
+}
+
 check_tests() {
   local scope="$1" ran=false detail="" unprovable="" sh_list py_list t out rc note py_count py_why
   # Per-suite, gates ONLY the "full output:" line below — never the notes above the excerpts,
@@ -1492,6 +1697,7 @@ EOF
   check_script_headers "$scope"
   check_mutation_anchors "$scope"
   check_pre_push_installed "$scope"
+  check_timing_guard_conf "$scope"
   if [[ "$run_tests" == true ]]; then
     # Snapshot BEFORE the only checks that execute repo code, and hand both the snapshot
     # and its status to check_hermetic — a failed read must not be able to compare equal.

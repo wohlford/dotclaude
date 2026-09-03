@@ -20,17 +20,23 @@ set -euo pipefail
 # The window/repo/day policy lives in an untracked local config; absent → no-op (fail open).
 # Global PreToolUse(Bash) hook: exits 0 cheaply for the common non-git case.
 #
-# PROVENANCE — this is phase 1 of two, and the copy is NOT yet the running gate.
-# Byte-identical copy of the machine-local ~/.claude/.git-timing-guard.sh, taken 2026-08-25 at
+# PROVENANCE — BOTH PHASES ARE DONE. THIS FILE IS THE RUNNING GATE.
+# Phase 1 (2026-08-25) tracked a byte-identical copy of the machine-local
+# ~/.claude/.git-timing-guard.sh, taken at
 #   sha256 14ad06c7da787c72299cd27dba6ab04684eda9b04d3082edc5aa472236ce618e
-# The live PreToolUse registration in settings.json still points at that UNTRACKED original, not
-# at this file, so editing here changes nothing about what the gate does today. The policy config
-# (.git-timing-guard.conf) stays untracked by design: policy is local, logic is versioned.
+# Phase 2 (2026-09-01) re-pointed the live PreToolUse registration here, on operator
+# authorization, after re-measuring that digest against the live file and finding them equal. It
+# was then verified live: the gate fired and its refusal named this file's installed path. So an
+# edit HERE changes what the gate does, from the next promote onward. The orphaned original is
+# left in place untouched; retiring it is a separate, separately authorized cleanup. The policy
+# config (.git-timing-guard.conf) stays untracked by design: policy is local, logic is versioned.
 #
-# PHASE-2 PRECONDITION — before re-pointing the registration at this file, compare the LIVE
-# file's current sha256 against the digest recorded above. Equal → re-point. Different → the live
-# copy has drifted since this copy was taken; reconcile the two FIRST, because re-pointing a
-# drifted pair silently reverts whatever was changed live. Re-pointing is held for the operator.
+# The paragraph above replaced one that said "phase 1 of two ... NOT yet the running gate ...
+# re-pointing is held for the operator". That text was true when written and FALSE for the seven
+# days after phase 2 landed, and it read exactly like a live statement of fact the whole time — a
+# reviewer relied on it and built a recommendation on a premise that no longer held. If you change
+# what this file IS, change this paragraph in the same commit; a stale status here is not a
+# cosmetic defect, it is the same silent-staleness failure the block further down exists to catch.
 #
 # DOCUMENTED EXCEPTION (not a defect to fix in this pass) — scripts/HOOKS.md requires hooks to be
 # bash-3.2/BSD-safe with "no mapfile", and the segment split below uses `mapfile -t SEG` (line 40
@@ -40,6 +46,43 @@ set -euo pipefail
 # because `env bash` resolves to a 4+/5.x bash here. Recorded rather than rewritten: this pass
 # tracks existing behaviour unchanged, and replacing the split would alter a live gate's parsing.
 
+# FAIL-OPEN HERE IS DELIBERATE, AND FIVE DIFFERENT CONDITIONS REACH IT.
+# Conditions 2, 3 and 4 make the config read below yield an empty GUARD_REPO_PATTERN — and so
+# disable the gate. Condition 1 is different: it exits at the `[ -f "$conf" ] || exit 0` test
+# that follows, before the file is ever opened, so no config read happens at all for it —
+# "yields an empty pattern" describes 2/3/4 only, never 1.
+#   1. the file being ABSENT      (the documented way to disable; correct and intended)
+#   2. the file being UNREADABLE  (a permissions accident)
+#   3. a MISSPELLED key           (an edit that looks right)
+#   4. the key present but EMPTY  (a half-finished edit)
+# A FIFTH reaches the same fail-open through a DIFFERENT mechanism, earlier than 2, 3 and 4 (not
+# earlier than 1 — `command -v jq` runs strictly after the `-f` test that follows, so on an
+# absent conf condition 1 is still the one that fires first): `command -v jq` failing exits
+# before the conf is even opened, so jq being missing from PATH disables the gate regardless of
+# how good the conf is —
+#   5. jq being UNAVAILABLE on PATH (an environment change, not a conf problem at all)
+# Only (1) is intent. The other four silently retire a live gate, and measurement confirms all
+# five are indistinguishable from inside this script.
+#
+# Do NOT "fix" that by refusing here. Without a usable pattern this script cannot know WHICH
+# repositories it governs, so refusing would assert authority over every repository on the
+# machine at all hours, triggered by a permissions change — and scripts/HOOKS.md is explicit
+# that only a real violation may refuse. Fail-open is the right behaviour; the SILENCE was the
+# defect, and it is fixed OUTSIDE this file.
+#
+# THE OBSERVER: the `timing-guard-conf` check in skills/audit/audit.sh distinguishes all five
+# above and reports 2/3/4 as failures against the CONF. Condition 5 surfaces differently: that
+# check needs jq itself to even read this repo's registration, so jq being unavailable to IT is
+# also FAILed (not folded into its "registration undecidable" SKIP) — on the reasoning that jq
+# missing from this machine's PATH is evidence the guard, wherever registered, is failing open
+# the identical way, not merely uncertainty about registration. It resolves this same conf path
+# the same hardcoded way; if you ever change how the path below is derived, change it there too
+# or that check grades a file nobody is using. Why an EXTERNAL observer rather than a warning
+# from inside this script: all three hook-side channels were measured and all three fail. A
+# structured message field has undocumented user-facing behaviour; a non-2 non-zero exit renders
+# identically to this script crashing, which `set -euo pipefail` makes indistinguishable; and a
+# prompt-the-user decision re-imports the blocking this design rejected. Recorded here rather
+# than by reference, because a pointer a reader cannot follow is the same as no reasoning at all.
 conf="$HOME/.claude/.git-timing-guard.conf"
 [ -f "$conf" ] || exit 0
 command -v jq >/dev/null 2>&1 || exit 0

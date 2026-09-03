@@ -2119,8 +2119,9 @@ if [[ "$oc_major" -gt 5 || ( "$oc_major" -eq 5 && "$oc_minor" -ge 1 ) ]]; then
   fi
   # The RED assertion: today nothing degrades loudly, so no "unavailable"-shaped wording is
   # printed at all. Grounded in the plan itself (Task 3): a truncating check whose write fails
-  # "must print the unavailable wording" -- the same vocabulary check_tests already uses
-  # (audit.sh:1156) for the identical failure shape.
+  # "must print the unavailable wording" -- the same vocabulary check_tests() already uses, in
+  # its `full output: (unavailable — could not create an artifact directory)` line, for the
+  # identical failure shape.
   case "$r1c_out" in
     *'unavailable'*) pass_line '1c: a write failure is reported as unavailable, not silently' ;;
     *) fail_line '1c: a write failure is reported as unavailable, not silently' ;;
@@ -2134,8 +2135,9 @@ fi
 #     time check_tests runs -- and then the ONE suite check_tests itself runs has every one of
 #     ITS OWN writes fail (the suite chmods the just-created directory 500 as its first act,
 #     before failing). Without the `wrote_any` fix this prints the directory anyway, wrongly
-#     claiming preservation THIS check never achieved (audit.sh:1191-ish, gated on the shared
-#     global rather than on whether check_tests' own write landed).
+#     claiming preservation THIS check never achieved (check_tests()'s `wrote_any` gate on its
+#     `full output: %s` print, tied to whether check_tests' own write landed, never to the
+#     shared `audit_artifact_root` global another check may have already populated).
 r1d="$tmp/r1d_seam"
 mkrepo "$r1d"
 : > "$r1d/manylines.txt"
@@ -2191,6 +2193,793 @@ case "$r1d_out" in
     fail_line '1d: check_tests never prints a real path when its own writes all failed' ;;
   *) pass_line '1d: check_tests never prints a real path when its own writes all failed' ;;
 esac
+
+# ============================================================================
+# rTGC. check_timing_guard_conf
+# ============================================================================
+# A live fail-closed publication
+# gate (scripts/git-timing-guard.sh) reads its policy from a hardcoded, untracked
+# $HOME/.claude/.git-timing-guard.conf. Measured: an unreadable conf, a typo'd key and an empty
+# value ALL collapse to the same "not configured" sentinel the guard reads on a genuinely absent
+# conf, so a chmod or a typo silently disables a live gate with zero signal. This section is the
+# suite for the /audit check `timing-guard-conf`, which observes that from OUTSIDE the
+# guard (see scripts/tests/test_git_timing_guard.sh's own CONTROL rows, which pin that the
+# guard's fail-open behaviour on all three broken shapes is the decision, not the defect).
+#
+# These rows assert on the CHECK'S OWN VERDICT LINE (narrowed out of the engine's full sweep
+# output by tgc_narrow_out below), never by calling a shell function directly. Originally (before
+# `timing-guard-conf` existed) that made every assert_has row below go red because the line was
+# ABSENT, never because a function was undefined or a fixture was broken -- that was the red that
+# proved this suite reached the right defect, and it stays true of every assert_has row here
+# today: narrowing OUT to just this check's line means an assert_has needle can only be found on
+# THAT line, so a row still cannot pass by picking up unrelated text from the other ~20 checks
+# that also run against these fixtures. The assert_not_has rows below do NOT go red on that same
+# absence -- they pass VACUOUSLY when there is nothing to find. That is fine here because each is
+# paired with a sibling assert_has already proving the line exists and belongs to the right arm;
+# the assert_not_has only constrains which VOCABULARY that already-proven-present line uses, and
+# it is not, by itself, evidence the check exists at all.
+#
+# HOME REDIRECTION. The check resolves the conf exactly as the guard resolves it -- hardcoded
+# $HOME/.claude/.git-timing-guard.conf, the same `conf=` assignment scripts/git-timing-guard.sh
+# itself uses (deliberately not by line number: a line number here goes stale the moment either
+# file gains or loses a line above it, and it already had, twice, before this comment was
+# rewritten) -- never hermetic-outside's $CLAUDE_CONFIG_DIR-else-~/.claude idiom (the plan calls
+# that idiom WRONG here -- it would hardcode the one location while the guard searches none). So
+# every row below redirects HOME per fixture, the same way test_git_timing_guard.sh's make_home*
+# helpers do, and the fixture conf bodies below are copied from those helpers verbatim so both
+# suites pin the identical collapse.
+#
+# TEN ARMS, one row each, plus two regression rows pinning the registration MATCH itself:
+#   1  registered + conf ABSENT                           -> SKIP, names the path
+#   2  registered + conf UNREADABLE (chmod 000)            -> FAIL, names the chmod repair
+#   3  registered + conf is a DIRECTORY (non-regular file) -> FAIL, its own accurate message
+#   4  registered + readable, key TYPO'D (no GUARD_REPO_PATTERN line) -> FAIL, names the typo'd
+#      key and says deleting the file is the documented way to disable
+#   5  registered + GUARD_REPO_PATTERN present, value EMPTY -> FAIL, same repair
+#   6  registered + conf VALID                             -> PASS (the row whose verdict MOVES)
+#   7  NOT registered (settings.json parses, no matching PreToolUse hook) -> SKIP, names where
+#      it looked
+#   8  registration UNDERIVABLE: settings.json ABSENT      -> SKIP, its own reason
+#   9  registration UNDERIVABLE: settings.json UNPARSEABLE -> SKIP, reason DISTINCT from arm 8
+#   10 registration UNDERIVABLE: jq UNAVAILABLE            -> FAIL, not SKIP -- jq missing here
+#      is a guard-disabling FACT (the guard makes the identical `command -v jq` check), not mere
+#      uncertainty about registration
+#   +  registration match tolerates TRAILING ARGUMENTS on the hook command (".../
+#      git-timing-guard.sh --verbose") -- still counts as registered
+#   +  registration under PostToolUse ONLY (never PreToolUse) does NOT count as registered
+#
+# Arms 7, 8 and 9 answer different questions ("no", "settings.json absent", "settings.json
+# unparseable") and must stay distinguishable from their reason text alone -- collapsing any of
+# them would rebuild, one level up, the exact sentinel-collapse this whole change exists to fix.
+# This suite enforces that distinctness directly: arm 7's contract vocabulary is "not
+# registered", arms 8/9's is "unprovable"/"could not determine" (further split by their own
+# distinct clause), and each row's SKIP text is asserted to carry its own vocabulary and NOT the
+# other's.
+#
+# MUTATION CHECK, do this by hand once a change lands here (not asserted in this file): arms
+# 2/3/4/5/10 must FAIL, 1/7/8/9 must SKIP, and arm 6 must PASS; if any arm cannot be made to move
+# independently, that is a finding to report, not a row to write around.
+
+run_engine_home() { # home scope [extra-args...] -> sets OUT/RC, same contract as run_engine
+  local home="$1" scope="$2"
+  shift 2
+  OUT="$(HOME="$home" "$engine" --scope "$scope" "$@" 2>&1)"
+  RC=$?
+}
+
+# tgc_narrow_out -> narrows $OUT (the engine's WHOLE sweep, every check) down to just the ONE
+# line check_timing_guard_conf printed, or "" if it printed none. Every verdict helper
+# (verdict_pass/fail/skip) prints exactly one line per check, so this is a safe line match, not a
+# substring match against the full sweep -- without it, 'unprovable', 'settings.json' and
+# 'delete' all appear in OTHER checks' output on these same fixtures, and an assert_has/
+# assert_not_has row could pass or fail for a reason that has nothing to do with
+# timing-guard-conf at all.
+tgc_narrow_out() {
+  OUT="$(printf '%s\n' "$OUT" | grep -E '^(PASS|FAIL|SKIP) timing-guard-conf( |$)' || true)"
+}
+
+# tgc_home name -> a fresh $tmp/tgc_home_<name>/.claude dir (empty; callers populate the conf)
+tgc_home() {
+  local h="$tmp/tgc_home_$1"
+  mkdir -p "$h/.claude"
+  printf '%s' "$h"
+}
+
+# tgc_home_absent -> $HOME/.claude exists (the guard's own precondition) but no conf at all:
+# the documented disable spelling.
+tgc_home_absent() { tgc_home absent; }
+
+# tgc_home_unreadable -> conf exists, chmod 000. Copied from
+# test_git_timing_guard.sh:make_home_unreadable so both suites pin the same collapse.
+tgc_home_unreadable() {
+  local h; h="$(tgc_home unreadable)"
+  printf 'GUARD_REPO_PATTERN=wohlford/dotclaude\nGUARD_DAYS=1-7\nGUARD_START=0000\nGUARD_END=2359\n' \
+    > "$h/.claude/.git-timing-guard.conf"
+  chmod 000 "$h/.claude/.git-timing-guard.conf"
+  printf '%s' "$h"
+}
+
+# tgc_home_typo_key -> conf readable, GUARD_REPO_PATTERN misspelled GUARD_REPO_PATERN. Copied
+# from test_git_timing_guard.sh:make_home_typo_key.
+tgc_home_typo_key() {
+  local h; h="$(tgc_home typo)"
+  printf 'GUARD_REPO_PATERN=wohlford/dotclaude\nGUARD_DAYS=1-7\nGUARD_START=0000\nGUARD_END=2359\n' \
+    > "$h/.claude/.git-timing-guard.conf"
+  printf '%s' "$h"
+}
+
+# tgc_home_empty_pattern -> conf readable, key present, value empty. Copied from
+# test_git_timing_guard.sh:make_home_empty_pattern.
+tgc_home_empty_pattern() {
+  local h; h="$(tgc_home emptypat)"
+  printf 'GUARD_REPO_PATTERN=\nGUARD_DAYS=1-7\nGUARD_START=0000\nGUARD_END=2359\n' \
+    > "$h/.claude/.git-timing-guard.conf"
+  printf '%s' "$h"
+}
+
+# tgc_home_valid -> conf exists, readable, GUARD_REPO_PATTERN set -- the CONTROL whose verdict
+# must be PASS. Without this row nothing in the suite ever asserts PASS timing-guard-conf, so a
+# mutant that replaces the final verdict_pass with an unconditional verdict_fail flips zero rows.
+tgc_home_valid() {
+  local h; h="$(tgc_home valid)"
+  printf 'GUARD_REPO_PATTERN=wohlford/dotclaude\nGUARD_DAYS=1-7\nGUARD_START=0000\nGUARD_END=2359\n' \
+    > "$h/.claude/.git-timing-guard.conf"
+  printf '%s' "$h"
+}
+
+# tgc_home_dir_conf -> nothing named .git-timing-guard.conf but a DIRECTORY at that exact path.
+# The guard's own `[ -f "$conf" ]` treats this exactly like an absent conf (silent fail-open);
+# this check still FAILs it because a stray directory is almost certainly a mistake, not intent.
+tgc_home_dir_conf() {
+  local h; h="$(tgc_home dirconf)"
+  mkdir -p "$h/.claude/.git-timing-guard.conf"
+  printf '%s' "$h"
+}
+
+# tgc_home_dangling_symlink -> a SYMLINK at the conf path whose target does not exist. `-e`
+# follows symlinks and is false for a dangling one, so a naive `[[ ! -e "$conf" ]]` absent-test
+# would read this as "absence IS the documented way to disable" -- but a broken symlink is the
+# same "almost certainly a mistake, not a deliberate disable" shape the non-regular-file arm
+# exists for, not a clean disable. Must FAIL, never SKIP.
+tgc_home_dangling_symlink() {
+  local h; h="$(tgc_home danglingsymlink)"
+  ln -s "$h/.claude/.git-timing-guard.conf.NO-SUCH-TARGET" "$h/.claude/.git-timing-guard.conf"
+  printf '%s' "$h"
+}
+
+# --- scope fixtures ---------------------------------------------------------------------
+
+# tgc_registered_scope dir -> settings.json carries a PreToolUse hook whose command ends in
+# git-timing-guard.sh, mirroring this repo's own live registration shape (the PreToolUse hook
+# entry in this repo's own settings.json).
+tgc_registered_scope() {
+  local d="$1"
+  mkrepo "$d"
+  cat > "$d/settings.json" <<'JSONEOF'
+{
+ "hooks": {
+  "PreToolUse": [
+   {
+    "matcher": "Bash",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "$HOME/.claude/scripts/git-timing-guard.sh"
+     }
+    ]
+   }
+  ]
+ }
+}
+JSONEOF
+  commit_all "$d" 'registered'
+}
+
+# tgc_registered_scope_with_args dir -> same as tgc_registered_scope, but the hook command
+# carries a trailing argument. The registration match must tolerate this (a suffix-only match
+# would report "not registered" here, the same silent self-retirement class this check exists
+# to catch, one level up).
+tgc_registered_scope_with_args() {
+  local d="$1"
+  mkrepo "$d"
+  cat > "$d/settings.json" <<'JSONEOF'
+{
+ "hooks": {
+  "PreToolUse": [
+   {
+    "matcher": "Bash",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "$HOME/.claude/scripts/git-timing-guard.sh --verbose"
+     }
+    ]
+   }
+  ]
+ }
+}
+JSONEOF
+  commit_all "$d" 'registered with trailing arguments'
+}
+
+# tgc_registered_scope_posttooluse_only dir -> the SAME command, but wired to PostToolUse
+# instead of PreToolUse. A PostToolUse registration of this script does not gate anything -- it
+# fires AFTER the command already ran -- so this must NOT count as registered.
+tgc_registered_scope_posttooluse_only() {
+  local d="$1"
+  mkrepo "$d"
+  cat > "$d/settings.json" <<'JSONEOF'
+{
+ "hooks": {
+  "PostToolUse": [
+   {
+    "matcher": "Bash",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "$HOME/.claude/scripts/git-timing-guard.sh"
+     }
+    ]
+   }
+  ]
+ }
+}
+JSONEOF
+  commit_all "$d" 'registered under PostToolUse only'
+}
+
+# tgc_registered_scope_quoted_path dir -> the hook command is the script's path wrapped in
+# double quotes (a shape that would appear if the command needed quoting for spaces). The
+# matcher must anchor on the QUOTE as a valid right-hand boundary, not only on whitespace or
+# end-of-string, or this reads as "not registered".
+tgc_registered_scope_quoted_path() {
+  local d="$1"
+  mkrepo "$d"
+  cat > "$d/settings.json" <<'JSONEOF'
+{
+ "hooks": {
+  "PreToolUse": [
+   {
+    "matcher": "Bash",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "\"$HOME/.claude/scripts/git-timing-guard.sh\""
+     }
+    ]
+   }
+  ]
+ }
+}
+JSONEOF
+  commit_all "$d" 'registered, quoted path'
+}
+
+# tgc_registered_scope_trailing_semicolon dir -> the hook command runs the guard then a second
+# statement (`; true`). The matcher must anchor on `;` as a valid right-hand boundary too.
+tgc_registered_scope_trailing_semicolon() {
+  local d="$1"
+  mkrepo "$d"
+  cat > "$d/settings.json" <<'JSONEOF'
+{
+ "hooks": {
+  "PreToolUse": [
+   {
+    "matcher": "Bash",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "$HOME/.claude/scripts/git-timing-guard.sh; true"
+     }
+    ]
+   }
+  ]
+ }
+}
+JSONEOF
+  commit_all "$d" 'registered, trailing semicolon'
+}
+
+# tgc_unregistered_scope_different_script dir -> the hook command invokes a DIFFERENT,
+# differently-prefixed script whose name merely ENDS with the same suffix
+# (old-git-timing-guard.sh). This is a hypothetical sibling for the exclusion boundary, not the
+# real orphan -- the orphan this repo's own header records as deliberately left in place is
+# ~/.claude/.git-timing-guard.sh (scripts/git-timing-guard.sh's PROVENANCE comment), a
+# DOT-prefixed name that DOES count as registered (see tgc_registered_scope_orphaned_original
+# and rTGC+G below). A suffix-only match (the pre-fix predicate) would misread old-prefixed
+# names like this one as registered; the anchored matcher requires a path separator, quote,
+# whitespace or start of string as the boundary, optionally followed by a literal `.` (so the
+# dot-prefixed orphan matches -- the `.` is TOLERATED BETWEEN the boundary and the filename, it
+# is not itself a boundary; `x.git-timing-guard.sh` is correctly NOT registered). "old-" ends in
+# "-", which is not a boundary character, so this must NOT count as registered.
+tgc_unregistered_scope_different_script() {
+  local d="$1"
+  mkrepo "$d"
+  cat > "$d/settings.json" <<'JSONEOF'
+{
+ "hooks": {
+  "PreToolUse": [
+   {
+    "matcher": "Bash",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "$HOME/.claude/scripts/old-git-timing-guard.sh --x"
+     }
+    ]
+   }
+  ]
+ }
+}
+JSONEOF
+  commit_all "$d" 'a DIFFERENT, differently-prefixed script'
+}
+
+# tgc_registered_scope_orphaned_original dir -> the hook command invokes the REAL orphaned
+# original this repo's own header records as deliberately left in place
+# (~/.claude/.git-timing-guard.sh, scripts/git-timing-guard.sh's PROVENANCE comment), not a
+# differently-prefixed sibling. Its filename starts with `.`, so the character immediately
+# before "git" is the dot itself, not one of the plain boundary characters -- this MUST count as
+# registered, because a registration pointing there runs a live guard reading the same conf.
+# tgc_registered_scope_metachar dir -> the hook command is a genuine invocation followed
+# IMMEDIATELY by a shell metacharacter with no space (`...git-timing-guard.sh&&true`). Pins the
+# TRAILING boundary class: delete `&|)>` from it and this row goes RED. Without this row the
+# whole metacharacter half of the matcher is unpinned -- measured, deleting all four changed no
+# verdict in the entire suite, which is the "mutate what a row names" rule failing silently.
+tgc_registered_scope_metachar() {
+  local d="$1"
+  mkrepo "$d"
+  cat > "$d/settings.json" <<'JSONEOF'
+{
+ "hooks": {
+  "PreToolUse": [
+   {
+    "matcher": "Bash",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "$HOME/.claude/scripts/git-timing-guard.sh&&true"
+     }
+    ]
+   }
+  ]
+ }
+}
+JSONEOF
+}
+
+# tgc_registered_scope_bare_path dir -> the hook command is the BARE filename with no directory
+# at all. This is the shape the ACCEPTED RESIDUAL's whole justification rests on: a
+# `/`-before-filename rule would separate a mere mention from a real invocation, and is declined
+# precisely because it would break THIS registration. Before this row that premise was load-
+# bearing and unpinned -- the residual cited a shape nothing asserted.
+tgc_registered_scope_bare_path() {
+  local d="$1"
+  mkrepo "$d"
+  cat > "$d/settings.json" <<'JSONEOF'
+{
+ "hooks": {
+  "PreToolUse": [
+   {
+    "matcher": "Bash",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "git-timing-guard.sh"
+     }
+    ]
+   }
+  ]
+ }
+}
+JSONEOF
+}
+
+tgc_registered_scope_orphaned_original() {
+  local d="$1"
+  mkrepo "$d"
+  cat > "$d/settings.json" <<'JSONEOF'
+{
+ "hooks": {
+  "PreToolUse": [
+   {
+    "matcher": "Bash",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "$HOME/.claude/.git-timing-guard.sh"
+     }
+    ]
+   }
+  ]
+ }
+}
+JSONEOF
+  commit_all "$d" 'registered, the dot-prefixed orphaned original'
+}
+
+# tgc_scope_bare_mention dir -> the hook command merely MENTIONS the filename as an argument to
+# some other command (echo), rather than invoking it. ACCEPTED RESIDUAL, not fixed by this
+# check's word-boundary matcher: distinguishing "is the command being run" from "is some other
+# command's argument" needs command-position analysis, out of scope for this boundary-only
+# matcher -- a bare trailing argument on a genuine invocation (e.g. "... git-timing-guard.sh
+# --verbose", asserted by rTGC+A) must keep matching. Be precise about WHY this is declined,
+# because the obvious reason is wrong: a `/`-before-filename rule COULD tell this mention apart
+# from a real invocation, since the mention has a SPACE before the filename and an invocation
+# has a `/`. It is declined because that same rule would reject a legitimate bare-path
+# registration with no directory at all (asserted by rTGC+H). The `rm -f .../git-timing-guard.sh`
+# shape, and an assignment like `CMD=/x/git-timing-guard.sh`, genuinely are inseparable without
+# command-position analysis; this mention is not, and claiming otherwise misstates the trade.
+# This fixture pins
+# TODAY'S behaviour (still counted as registered) so a future attempt to narrow the matcher
+# further is forced to look at this row and decide deliberately, not by accident.
+tgc_scope_bare_mention() {
+  local d="$1"
+  mkrepo "$d"
+  cat > "$d/settings.json" <<'JSONEOF'
+{
+ "hooks": {
+  "PreToolUse": [
+   {
+    "matcher": "Bash",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "echo git-timing-guard.sh is disabled >&2"
+     }
+    ]
+   }
+  ]
+ }
+}
+JSONEOF
+  commit_all "$d" 'a mere mention, not an invocation'
+}
+
+# tgc_unregistered_scope dir -> settings.json parses fine and carries an UNRELATED hook, but
+# none carrying git-timing-guard.sh as a whole path token, anchored on both sides. Distinct from
+# tgc_no_settings_scope: this repo's registration status IS knowable here, and the answer is no.
+tgc_unregistered_scope() {
+  local d="$1"
+  mkrepo "$d"
+  cat > "$d/settings.json" <<'JSONEOF'
+{
+ "hooks": {
+  "PreToolUse": [
+   {
+    "matcher": "Bash",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "$HOME/.claude/scripts/some-other-guard.sh"
+     }
+    ]
+   }
+  ]
+ }
+}
+JSONEOF
+  commit_all "$d" 'not registered'
+}
+
+# tgc_no_settings_scope dir -> no settings.json at all: registration cannot be DERIVED here,
+# never folded into "not registered" (plan review finding).
+tgc_no_settings_scope() {
+  local d="$1"
+  mkrepo "$d"
+  printf '# no settings.json in this scope\n' > "$d/README.md"
+  commit_all "$d" 'no settings.json'
+}
+
+# tgc_unparseable_settings_scope dir -> settings.json EXISTS but is not valid JSON. Distinct
+# from tgc_no_settings_scope: here jq DOES find the file and fails to parse it, a different
+# branch than "the file does not exist" -- collapsing the two into one message is the exact
+# sentinel-collapse this whole change exists to fix, one level up.
+tgc_unparseable_settings_scope() {
+  local d="$1"
+  mkrepo "$d"
+  printf '{ "hooks": { this is not valid JSON\n' > "$d/settings.json"
+  commit_all "$d" 'unparseable settings.json'
+}
+
+# tgc_path_without_jq -> echoes a PATH string built from the CURRENT $PATH with every directory
+# that carries an executable named jq removed, or "" if that cannot be determined. Built from
+# the live PATH, never hardcoded, so it does not assume where MacPorts/Xcode/etc. put jq on this
+# machine -- only that removing every directory that has it is sufficient to make `command -v
+# jq` fail.
+tgc_path_without_jq() {
+  local d out=""
+  local saved_ifs="$IFS"
+  IFS=':'
+  for d in $PATH; do
+    [ -n "$d" ] && [ -x "$d/jq" ] && continue
+    out="${out:+$out:}$d"
+  done
+  IFS="$saved_ifs"
+  printf '%s' "$out"
+}
+
+# --- rTGC1: registered + conf ABSENT -> SKIP naming the path ------------------------------
+rTGC1_scope="$tmp/rTGC1_scope"
+tgc_registered_scope "$rTGC1_scope"
+rTGC1_home="$(tgc_home_absent)"
+run_engine_home "$rTGC1_home" "$rTGC1_scope"
+tgc_narrow_out
+assert_has 'SKIP timing-guard-conf' \
+  'rTGC1: registered + absent conf -> SKIP timing-guard-conf'
+assert_has '.git-timing-guard.conf' \
+  'rTGC1: the SKIP reason names the path it looked at'
+
+# --- rTGC2: registered + conf UNREADABLE -> FAIL naming the chmod repair ------------------
+rTGC2_scope="$tmp/rTGC2_scope"
+tgc_registered_scope "$rTGC2_scope"
+rTGC2_home="$(tgc_home_unreadable)"
+run_engine_home "$rTGC2_home" "$rTGC2_scope"
+tgc_narrow_out
+chmod 600 "$rTGC2_home/.claude/.git-timing-guard.conf" 2>/dev/null || true
+assert_has 'FAIL timing-guard-conf' \
+  'rTGC2: registered + unreadable conf -> FAIL timing-guard-conf'
+assert_has 'chmod' \
+  'rTGC2: the FAIL reason names the permissions (chmod) repair'
+
+# --- rTGC3: registered + conf is a DIRECTORY -> FAIL, its own accurate message -----------
+rTGC3_scope="$tmp/rTGC3_scope"
+tgc_registered_scope "$rTGC3_scope"
+rTGC3_home="$(tgc_home_dir_conf)"
+run_engine_home "$rTGC3_home" "$rTGC3_scope"
+tgc_narrow_out
+assert_has 'FAIL timing-guard-conf' \
+  'rTGC3: registered + conf path is a directory -> FAIL timing-guard-conf'
+assert_has 'directory' \
+  'rTGC3: the FAIL reason names it as a directory, not a typo'"'"'d key or unreadable file'
+assert_not_has 'is readable' \
+  'rTGC3: the FAIL reason does not claim a directory is readable-as-a-file'
+assert_not_has "typo'd key" \
+  'rTGC3: the FAIL reason does not misdescribe this as a typo'"'"'d key'
+
+# --- rTGC4: registered + readable, key TYPO'D -> FAIL naming the key and the disable repair
+rTGC4_scope="$tmp/rTGC4_scope"
+tgc_registered_scope "$rTGC4_scope"
+rTGC4_home="$(tgc_home_typo_key)"
+run_engine_home "$rTGC4_home" "$rTGC4_scope"
+tgc_narrow_out
+assert_has 'FAIL timing-guard-conf' \
+  'rTGC4: registered + typo'"'"'d key -> FAIL timing-guard-conf'
+assert_has 'GUARD_REPO_PATTERN' \
+  'rTGC4: the FAIL reason names the (typo'"'"'d) required key'
+assert_has 'delete' \
+  'rTGC4: the FAIL reason says deleting the file is the documented way to disable'
+assert_has 'disable' \
+  'rTGC4: the FAIL reason names disabling, not just deletion in the abstract'
+
+# --- rTGC5: registered + key present, value EMPTY -> FAIL, same repair as rTGC4 ----------
+rTGC5_scope="$tmp/rTGC5_scope"
+tgc_registered_scope "$rTGC5_scope"
+rTGC5_home="$(tgc_home_empty_pattern)"
+run_engine_home "$rTGC5_home" "$rTGC5_scope"
+tgc_narrow_out
+assert_has 'FAIL timing-guard-conf' \
+  'rTGC5: registered + empty GUARD_REPO_PATTERN -> FAIL timing-guard-conf'
+assert_has 'GUARD_REPO_PATTERN' \
+  'rTGC5: the FAIL reason names the (empty-valued) required key'
+assert_has 'delete' \
+  'rTGC5: the FAIL reason says deleting the file is the documented way to disable'
+assert_has 'disable' \
+  'rTGC5: the FAIL reason names disabling, not just deletion in the abstract'
+
+# --- rTGC6: registered + conf VALID -> PASS -- the row whose verdict MOVES ---------------
+rTGC6_scope="$tmp/rTGC6_scope"
+tgc_registered_scope "$rTGC6_scope"
+rTGC6_home="$(tgc_home_valid)"
+run_engine_home "$rTGC6_home" "$rTGC6_scope"
+tgc_narrow_out
+assert_has 'PASS timing-guard-conf' \
+  'rTGC6: registered + valid conf -> PASS timing-guard-conf'
+assert_not_has 'FAIL' \
+  'rTGC6: a valid conf never FAILs'
+assert_not_has 'SKIP' \
+  'rTGC6: a valid, registered conf is not a coverage gap either'
+
+# --- rTGC7: NOT registered -> SKIP naming where it looked --------------------------------
+rTGC7_scope="$tmp/rTGC7_scope"
+tgc_unregistered_scope "$rTGC7_scope"
+rTGC7_home="$(tgc_home_absent)"   # conf state is irrelevant when not registered
+run_engine_home "$rTGC7_home" "$rTGC7_scope"
+tgc_narrow_out
+assert_has 'SKIP timing-guard-conf' \
+  'rTGC7: not registered -> SKIP timing-guard-conf'
+assert_has 'settings.json' \
+  'rTGC7: the SKIP reason names settings.json as where it looked'
+assert_has 'not registered' \
+  "rTGC7: the SKIP reason uses this arm's own vocabulary (a definitive no)"
+assert_not_has 'unprovable' \
+  'rTGC7: the SKIP reason does not borrow arm 8/9'"'"'s undecidable vocabulary'
+
+# --- rTGC8: registration UNDERIVABLE: settings.json ABSENT -> SKIP, its own reason -------
+rTGC8_scope="$tmp/rTGC8_scope"
+tgc_no_settings_scope "$rTGC8_scope"
+rTGC8_home="$(tgc_home_absent)"   # conf state is irrelevant when registration is undecidable
+run_engine_home "$rTGC8_home" "$rTGC8_scope"
+tgc_narrow_out
+assert_has 'SKIP timing-guard-conf' \
+  'rTGC8: settings.json absent -> SKIP timing-guard-conf'
+assert_has 'unprovable' \
+  "rTGC8: the SKIP reason uses this arm's own vocabulary (could not determine)"
+assert_has 'does not exist' \
+  'rTGC8: the SKIP reason names ITS OWN cause (absent), not the generic collapse'
+assert_not_has 'not registered' \
+  'rTGC8: the SKIP reason does not borrow arm 7'"'"'s definitive-no vocabulary'
+assert_not_has 'could not parse' \
+  'rTGC8: the SKIP reason does not borrow arm 9'"'"'s unparseable vocabulary'
+
+# --- rTGC9: registration UNDERIVABLE: settings.json UNPARSEABLE -> SKIP, distinct from rTGC8
+rTGC9_scope="$tmp/rTGC9_scope"
+tgc_unparseable_settings_scope "$rTGC9_scope"
+rTGC9_home="$(tgc_home_absent)"
+run_engine_home "$rTGC9_home" "$rTGC9_scope"
+tgc_narrow_out
+assert_has 'SKIP timing-guard-conf' \
+  'rTGC9: settings.json unparseable -> SKIP timing-guard-conf'
+assert_has 'unprovable' \
+  "rTGC9: the SKIP reason uses this arm's own vocabulary (could not determine)"
+assert_has 'could not parse' \
+  'rTGC9: the SKIP reason names ITS OWN cause (unparseable), not the generic collapse'
+assert_not_has 'does not exist' \
+  'rTGC9: the SKIP reason does not borrow arm 8'"'"'s absent vocabulary'
+
+# --- rTGC10: registration UNDERIVABLE: jq UNAVAILABLE -> FAIL, not SKIP ------------------
+# jq missing is not mere uncertainty: scripts/git-timing-guard.sh makes this identical
+# `command -v jq` check on the identical PATH at hook-execution time, so if the guard is
+# registered anywhere it is ALSO silently failing open right now. Built from the LIVE $PATH
+# (tgc_path_without_jq), never a hardcoded one; if this machine cannot yield a PATH lacking jq
+# the row is skipped with a stated reason rather than faked.
+rTGC10_no_jq_path="$(tgc_path_without_jq)"
+if [ -n "$rTGC10_no_jq_path" ] && ! PATH="$rTGC10_no_jq_path" command -v jq >/dev/null 2>&1; then
+  rTGC10_scope="$tmp/rTGC10_scope"
+  tgc_registered_scope "$rTGC10_scope"
+  rTGC10_home="$(tgc_home_valid)"
+  OUT="$(HOME="$rTGC10_home" PATH="$rTGC10_no_jq_path" "$engine" --scope "$rTGC10_scope" 2>&1)"; RC=$?
+  tgc_narrow_out
+  assert_has 'FAIL timing-guard-conf' \
+    'rTGC10: jq unavailable -> FAIL timing-guard-conf (a guard-disabling fact, not a SKIP)'
+  assert_has 'jq' \
+    'rTGC10: the FAIL reason names jq'
+else
+  printf 'skip - rTGC10: could not construct a PATH lacking jq on this machine\n'
+fi
+
+# --- rTGC+A: registration tolerates TRAILING ARGUMENTS on the hook command ---------------
+rTGCA_scope="$tmp/rTGCA_scope"
+tgc_registered_scope_with_args "$rTGCA_scope"
+rTGCA_home="$(tgc_home_valid)"
+run_engine_home "$rTGCA_home" "$rTGCA_scope"
+tgc_narrow_out
+assert_has 'PASS timing-guard-conf' \
+  'rTGC+A: a hook command with trailing arguments still counts as registered'
+
+# --- rTGC+B: registration under PostToolUse ONLY does NOT count as registered -----------
+rTGCB_scope="$tmp/rTGCB_scope"
+tgc_registered_scope_posttooluse_only "$rTGCB_scope"
+rTGCB_home="$(tgc_home_absent)"   # conf state is irrelevant when not registered
+run_engine_home "$rTGCB_home" "$rTGCB_scope"
+tgc_narrow_out
+assert_has 'SKIP timing-guard-conf' \
+  'rTGC+B: PostToolUse-only registration -> SKIP timing-guard-conf (not registered)'
+assert_has 'not registered' \
+  'rTGC+B: the SKIP reason uses the definitive-no vocabulary, not the undecidable one'
+assert_has 'settings.local.json' \
+  'rTGC+B: the not-registered SKIP names settings.local.json as a place it does NOT look'
+
+# --- rTGC11: registration UNDERIVABLE by settings-ABSENCE, AND jq UNAVAILABLE, together -----
+# jq-unavailability is a MACHINE-GLOBAL fact and must be tested BEFORE settings-absence, never
+# behind it -- otherwise a repo with no local settings.json on a jq-less machine reads the
+# reassuring "settings-absent" SKIP for a fact that is true of every repo on that machine alike,
+# while a repo that HAPPENS to carry a settings.json correctly gets the FAIL. Built from the
+# LIVE $PATH (tgc_path_without_jq), never a hardcoded one; if this machine cannot yield a PATH
+# lacking jq the row is skipped with a stated reason rather than faked.
+rTGC11_no_jq_path="$(tgc_path_without_jq)"
+if [ -n "$rTGC11_no_jq_path" ] && ! PATH="$rTGC11_no_jq_path" command -v jq >/dev/null 2>&1; then
+  rTGC11_scope="$tmp/rTGC11_scope"
+  tgc_no_settings_scope "$rTGC11_scope"
+  rTGC11_home="$(tgc_home_absent)"
+  OUT="$(HOME="$rTGC11_home" PATH="$rTGC11_no_jq_path" "$engine" --scope "$rTGC11_scope" 2>&1)"; RC=$?
+  tgc_narrow_out
+  assert_has 'FAIL timing-guard-conf' \
+    'rTGC11: settings.json absent AND jq unavailable -> FAIL, not the reassuring settings-absent SKIP'
+  assert_not_has 'SKIP' \
+    'rTGC11: does not silently downgrade to SKIP because settings.json also happens to be absent'
+else
+  printf 'skip - rTGC11: could not construct a PATH lacking jq on this machine\n'
+fi
+
+# --- rTGC12: registered + conf is a DANGLING SYMLINK -> FAIL, never the absent-conf SKIP ----
+# `-e` follows symlinks and is false for a broken one, so a naive absent-test would read this
+# as "absence IS the documented way to disable" -- the same reassuring SKIP a genuinely deleted
+# conf gets. A dangling symlink is almost certainly a mistake, not a deliberate disable, so this
+# must FAIL through the non-regular-file arm instead, naming the dangling-symlink shape.
+rTGC12_scope="$tmp/rTGC12_scope"
+tgc_registered_scope "$rTGC12_scope"
+rTGC12_home="$(tgc_home_dangling_symlink)"
+run_engine_home "$rTGC12_home" "$rTGC12_scope"
+tgc_narrow_out
+assert_has 'FAIL timing-guard-conf' \
+  'rTGC12: registered + dangling symlink conf -> FAIL timing-guard-conf'
+assert_has 'dangling symlink' \
+  'rTGC12: the FAIL reason names the dangling-symlink shape'
+assert_not_has 'absence IS the documented way' \
+  'rTGC12: does not borrow the absent-conf arm'"'"'s reassuring vocabulary'
+
+# --- rTGC+C: registration recognizes a QUOTED path -----------------------------------------
+rTGCC_scope="$tmp/rTGCC_scope"
+tgc_registered_scope_quoted_path "$rTGCC_scope"
+rTGCC_home="$(tgc_home_valid)"
+run_engine_home "$rTGCC_home" "$rTGCC_scope"
+tgc_narrow_out
+assert_has 'PASS timing-guard-conf' \
+  'rTGC+C: a double-quoted hook command path still counts as registered'
+
+# --- rTGC+D: registration recognizes a TRAILING SEMICOLON ----------------------------------
+rTGCD_scope="$tmp/rTGCD_scope"
+tgc_registered_scope_trailing_semicolon "$rTGCD_scope"
+rTGCD_home="$(tgc_home_valid)"
+run_engine_home "$rTGCD_home" "$rTGCD_scope"
+tgc_narrow_out
+assert_has 'PASS timing-guard-conf' \
+  'rTGC+D: a hook command ending in "; true" still counts as registered'
+
+# --- rTGC+E: a DIFFERENT, differently-prefixed script does NOT count as registered ----------
+rTGCE_scope="$tmp/rTGCE_scope"
+tgc_unregistered_scope_different_script "$rTGCE_scope"
+rTGCE_home="$(tgc_home_absent)"   # conf state is irrelevant when not registered
+run_engine_home "$rTGCE_home" "$rTGCE_scope"
+tgc_narrow_out
+assert_has 'SKIP timing-guard-conf' \
+  'rTGC+E: old-git-timing-guard.sh (a different script) -> SKIP timing-guard-conf'
+assert_has 'not registered' \
+  'rTGC+E: the SKIP reason uses the definitive-no vocabulary'
+
+# --- rTGC+F: a bare MENTION of the filename, ACCEPTED RESIDUAL -----------------------------
+# Pins today's documented behaviour rather than silently doing nothing about it: the word-
+# boundary matcher cannot distinguish "is the command being run" from "is some other command's
+# argument" without command-position analysis, which is deliberately a separate, later change:
+# the guard's own matcher has the identical gap, and fixing both belongs in one place rather
+# than half here (the reasoning is inlined at tgc_scope_bare_mention above). If a future change narrows the matcher
+# further and this row goes RED, that is the deliberate decision point, not a surprise.
+rTGCF_scope="$tmp/rTGCF_scope"
+tgc_scope_bare_mention "$rTGCF_scope"
+rTGCF_home="$(tgc_home_valid)"
+run_engine_home "$rTGCF_home" "$rTGCF_scope"
+tgc_narrow_out
+assert_has 'PASS timing-guard-conf' \
+  'rTGC+F: a bare mention of the filename still counts as registered today (known residual)'
+
+# --- rTGC+G: the REAL orphaned original (dot-prefixed) DOES count as registered ------------
+rTGCG_scope="$tmp/rTGCG_scope"
+tgc_registered_scope_orphaned_original "$rTGCG_scope"
+rTGCG_home="$(tgc_home_valid)"
+run_engine_home "$rTGCG_home" "$rTGCG_scope"
+tgc_narrow_out
+assert_has 'PASS timing-guard-conf' \
+  'rTGC+G: the dot-prefixed orphaned original (.git-timing-guard.sh) counts as registered'
+
+# --- rTGC+H: a trailing metacharacter with no space still registers -------------------------
+rTGCH_scope="$tmp/rTGCH_scope"
+tgc_registered_scope_metachar "$rTGCH_scope"
+rTGCH_home="$(tgc_home_valid)"
+run_engine_home "$rTGCH_home" "$rTGCH_scope"
+tgc_narrow_out
+assert_has 'PASS timing-guard-conf' \
+  'rTGC+H: a genuine invocation followed immediately by && still counts as registered'
+
+# --- rTGC+I: a bare-path registration with no directory still registers ---------------------
+rTGCI_scope="$tmp/rTGCI_scope"
+tgc_registered_scope_bare_path "$rTGCI_scope"
+rTGCI_home="$(tgc_home_valid)"
+run_engine_home "$rTGCI_home" "$rTGCI_scope"
+tgc_narrow_out
+assert_has 'PASS timing-guard-conf' \
+  'rTGC+I: a bare-path registration registers (the shape the accepted residual rests on)'
+
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

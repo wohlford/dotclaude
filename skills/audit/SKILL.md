@@ -68,7 +68,7 @@ The user may optionally provide:
    and do not attempt a fix unless asked. An `INCOMPLETE` or missing verdict is a reason
    to re-run deliberately, not to assume the sweep would have passed.
 
-The sweep runs 19 checks: `format-trailing-ws`, `format-crlf`, `format-final-newline`,
+The sweep runs 20 checks: `format-trailing-ws`, `format-crlf`, `format-final-newline`,
 `format-tabs` (formatting); `shellcheck`, `ruff` (linters); `markdownlint` (opt-in, see Rules);
 `md-links` (relative link/anchor validity); `env-claims` (opt-in, see Rules; CLAUDE.md's
 documented environment claims still hold on this machine);
@@ -78,9 +78,10 @@ documented environment claims still hold on this machine);
 as one self-contained line);
 `mutation-anchors` (every mutation campaign's anchor still resolves exactly once in the file it
 mutates); `pre-push-installed` (adopted repos: the tracked `git-hooks/pre-push` is installed at
-the resolved hooks path, executable, and matches its source); `tests` (shell suites + pytest);
-`hermetic` (the suite left the working tree as it found it); and `hermetic-outside` (the suite
-wrote nothing under the Claude config root). The last three run only with `--tests`.
+the resolved hooks path, executable, and matches its source); `timing-guard-conf` (registered
+repos: the timing guard's local policy file is usable — see Rules); `tests` (shell suites +
+pytest); `hermetic` (the suite left the working tree as it found it); and `hermetic-outside` (the
+suite wrote nothing under the Claude config root). The last three run only with `--tests`.
 
 ### Hermeticity — what a suite run leaves behind
 
@@ -141,9 +142,9 @@ becomes a `:(exclude)` pathspec — this mirrors the repo's own `.markdownlint-c
 It scopes ONLY the five text-content checks: `format-trailing-ws`, `format-crlf`,
 `format-final-newline`, `format-tabs`, `md-links`. Code/config checks (`shellcheck`, `ruff`,
 `markdownlint`, `env-claims`, `exec-bit`, `json`, `toml`, `sync-docs`, `script-headers`,
-`mutation-anchors`, `pre-push-installed`, `tests`, `hermetic`, `hermetic-outside`) are
-deliberately never scoped by it — a repo cannot hide a broken tracked `.json`, a non-executable
-shebang file, or an artifact its own suite dropped from the audit.
+`mutation-anchors`, `pre-push-installed`, `timing-guard-conf`, `tests`, `hermetic`,
+`hermetic-outside`) are deliberately never scoped by it — a repo cannot hide a broken tracked
+`.json`, a non-executable shebang file, or an artifact its own suite dropped from the audit.
 
 An absent `.auditignore` is fully backward compatible — behavior is identical to before it
 existed. A present-but-empty file (or one containing only comments/blank lines) behaves exactly
@@ -273,6 +274,51 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   side moves and the installed side does not. Only the source comparison is set aside: the
   not-installed, symlink, not-regular and not-executable arms judge the live hooks directory and
   keep firing, because a historical audit runs at exactly the moment before real pushes.
+- `timing-guard-conf` runs whenever the scope's `settings.json` **on disk** registers a
+  `PreToolUse` hook whose command carries `git-timing-guard.sh` as a whole path token, anchored
+  on both sides (a trailing argument on the command is still a match, and so is a leading `.` —
+  the dot-prefixed orphaned original counts too; a differently-prefixed sibling like
+  `old-git-timing-guard.sh` does not, and neither does a registration under any other event,
+  e.g. `PostToolUse`). **Registration, not
+  liveness** — and read this entry, not the verdict line, for what that means: it reads
+  `$scope/settings.json` exactly as it sits on disk, never git's committed blob. Whether that
+  on-disk copy is ALSO the runtime file depends on what `--scope` points at — for a scope whose
+  settings.json is the file `~/.claude/settings.json` resolves into, it IS the runtime file, so
+  the verdict is a claim about the gate running right now; for any other scope it is a claim
+  about registration-on-promote only. This IS decidable: a single `readlink -f` comparison of
+  the two paths settles which case applies, and the caveat names the RESOLVED path rather than
+  a nickname like "the dotclaude clone" — ambiguous to a reader who is themselves sitting in a
+  clone. That definite caveat is carried by **every conf `FAIL` and the conf-absent `SKIP`.**
+  It is NOT in the other SKIPs (there is no conf to say anything
+  about yet), and it is not in `PASS` — which, like every check's PASS, prints `PASS
+  timing-guard-conf` and no detail at all. A bare PASS is therefore the output most easily
+  misread as "the gate is live and working"; it does not say that and cannot. The `jq`-unavailable
+  `FAIL` below omits the caveat too, deliberately — it is not a registration claim at all, so
+  "registration, not liveness" would be a non sequitur there.
+  It is machine-scoped, not repo-scoped: the policy file always resolves to
+  `$HOME/.claude/.git-timing-guard.conf`, the same hardcoded path the guard itself uses (the
+  `conf=` assignment in `scripts/git-timing-guard.sh`, under the comment block that explains
+  why), so no `--scope` redirects it. Never scoped by `.auditignore`, like the rest of this group.
+  It carries **four SKIP arms, deliberately never collapsed**, each distinguishable from its
+  reason text alone: *not registered* — `settings.json` was read and carries no matching
+  `PreToolUse` hook; *`settings.json` absent* and *`settings.json` unparseable* — two DISTINCT
+  reasons registration could not be derived at all; and *registered but the conf is absent* —
+  which names the path, because absence IS the documented way to disable the gate, making this a
+  coverage gap rather than a clean bill of health. Keeping each "could not tell" reason apart
+  from the others, and apart from "we looked and there is none", is the point: collapsing any of
+  them would rebuild, one level up, the exact sentinel-collapse this check exists to catch.
+  A FIFTH registration-underivable cause, **`jq` unavailable, is a `FAIL`, not a SKIP** — jq
+  missing here is not mere uncertainty about registration, it is evidence the guard is ALSO
+  failing open right now, since `scripts/git-timing-guard.sh` makes this identical `command -v
+  jq` check on the identical PATH at hook-execution time.
+  When registered and the conf exists, it `FAIL`s on an unreadable file (naming the `chmod`
+  repair), on a path that exists but is not a regular file (e.g. a directory — its own message,
+  since the guard's own `[ -f "$conf" ]` silently treats that like an absent conf too, but a
+  stray directory here is almost certainly a mistake worth flagging rather than fail-open-by-
+  design), on a conf with no `GUARD_REPO_PATTERN=` line (a typo'd key), or on one whose value is
+  empty — all four (unreadable, not-a-regular-file, no key line, empty value) collapse to the
+  guard's same silent fail-open, and the `FAIL` text names deleting the file as the documented
+  way to disable the gate deliberately. A registered scope with a valid conf `PASS`es.
 - Never run `/audit` as a substitute for `/vet` when skills or agents were edited — the sweep
   checks mechanics only; it has no judgment about content or structure.
 - **A clean verdict on a killed run is structurally impossible, not merely unlikely.**
@@ -301,8 +347,8 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   non-zero, so `&&` chains still short-circuit. Under `nohup`, SIGHUP is ignored before
   the script starts and so cannot be trapped at all: a HUP then has no effect whatever —
   the run continues to completion and emits a normal verdict.
-- **`checks=<pass>/<fail>/<skip>` counts emitted verdict lines, not the 19 named checks.**
-  Two things make the totals differ from 19: an invalid `.auditignore` pattern adds a
-  `FAIL auditignore` that is not one of the 19, and without `--tests` none of `tests`,
-  `hermetic`, or `hermetic-outside` emits a line at all — so a static sweep totals 16 and a
-  full one 19. Compare counts only across runs invoked with the same flags.
+- **`checks=<pass>/<fail>/<skip>` counts emitted verdict lines, not the 20 named checks.**
+  Two things make the totals differ from 20: an invalid `.auditignore` pattern adds a
+  `FAIL auditignore` that is not one of the 20, and without `--tests` none of `tests`,
+  `hermetic`, or `hermetic-outside` emits a line at all — so a static sweep totals 17 and a
+  full one 20. Compare counts only across runs invoked with the same flags.
