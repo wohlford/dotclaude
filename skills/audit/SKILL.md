@@ -166,22 +166,42 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
 - **Read-only** — never auto-fix a FAIL without the caller asking; `/audit` only runs the sweep
   and reports.
 - Offender output is capped at 50 lines per check (not an `.auditignore` feature), ending with
-  `… more (run the underlying tool for the full list)` when more exist. **`tests` and `ruff` do
-  NOT use that cap** — see the next bullet for what each does instead, and why.
+  `… more (run the underlying tool for the full list)` when more exist — **and, since the full
+  detail is now preserved (with two stated limits below), a following
+  `complete list saved to: <path>` line** (or
+  `complete list: unavailable (…)` when the artifact could not be written, which is never
+  silent). The excerpt itself is unchanged: still the first 50 lines, so nothing that used to be
+  visible stopped being visible. **`tests` and `ruff` do NOT use that cap** — see the next bullet
+  for what each does instead, and why.
 - **The flat cap is correct only where one offender is one self-naming line.** That is
-  `format-trailing-ws`, `format-crlf`, `format-final-newline`, `format-tabs` and `exec-bit`: the
-  first 50 are representative, the rest are more of the same, and no file is lost entirely.
-- **Everywhere else the cap is a known, UNFIXED defect — never read a capped FAIL as complete.**
-  `toml`, `json`, `shellcheck` and `md-links` emit several lines per offender, so a flat cap drops
-  whole files (measured: six invalid `.toml`, four named, two never named at all). `markdownlint`,
-  `sync-docs`, `env-claims` and `script-headers` pipe a whole tool's stdout, preamble and summary
-  included.
+  `format-trailing-ws`, `format-crlf`, `format-final-newline`, `format-tabs`, `exec-bit`,
+  `hermetic`, `hermetic-outside` and the `.auditignore` validation in `main`: the first 50 are
+  representative, the rest are more of the same, and no file is lost entirely.
+- **Everywhere else the INLINE excerpt is still incomplete — never read it as the whole finding —
+  but the full detail is no longer lost.** `toml`, `json`, `shellcheck` and `md-links` emit
+  several lines per offender, so a flat cap drops whole files inline (measured: six invalid
+  `.toml`, four named, two never named at all). `markdownlint`, `sync-docs`, `env-claims` and
+  `script-headers` pipe a whole tool's stdout, preamble and summary included — measured on
+  `sync-docs`: a 44-row table plus one bad file produced 103 diff lines with the offending row at
+  line 100, so every one of the 50 visible lines was a deletion of a row whose content had not
+  changed. Structural, not luck: a unified diff emits all removals before all additions, so the
+  first ADDED line only clears the cap at ~44 rows (measured: first `+` at line 31 for N=24, 47
+  for N=40, 51 for N=44).
+  **What changed is recoverability, not truncation.** Truncation stays by design — an offender
+  list can be unbounded — but the complete text is written to the path the block now names.
+  **Two limits to state rather than discover.** `format-trailing-ws`, `format-crlf` and
+  `format-tabs` cap COLLECTION at `head -n 51` before the printer ever sees the text, so their
+  artifact holds only what was collected, never the whole truth; and where the write fails or no
+  scope is resolvable, nothing is preserved and the block says `unavailable` instead of naming a
+  path.
   **`mutation-anchors` has `ruff`'s exact shape but has not crossed yet**: it prints a
   `campaign: <file>` line for EVERY campaign, passing or failing, so its padding grows with the
   campaign COUNT rather than with the findings. Measured today: 18 campaigns, so 18 padding lines
   precede any finding and 32 of the cap remain — it does not yet hide anything. It starts to at
-  ~50 campaigns, and nothing signals the crossing. This list is deliberately explicit: three
-  earlier drafts stated a rule quantified over "every other check" and were wrong each time.
+  ~50 campaigns, and nothing signals the crossing — though the artifact above now removes that
+  crossing's cost, since the full list is preserved whether or not anyone notices it. This list is
+  deliberately explicit: three earlier drafts stated a rule quantified over "every other check"
+  and were wrong each time.
 - **The two exceptions, and why each is one.** `tests` holds another tool's *entire* stdout, mostly
   passes, whose interesting lines are the FAILURES — and suites print passes as they go, so a
   head-cap there reliably keeps the useless half. `ruff` had the same shape, and was measured

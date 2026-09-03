@@ -75,6 +75,14 @@ audit_reported=no
 # breaks a mutation target two files away. Measured — it did.
 hermetic_marker=""
 
+# The repo root every check runs against, set once in main() before any check runs. Every
+# check function already receives its own scope as $1, but print_offenders() does not — its
+# only parameters are the detail block and (optionally) a filename label — so this is how it
+# reaches a scope to keep its own artifact writes OUTSIDE. Read as "${audit_scope:-}", never
+# bare: under `set -u` a bare reference would crash the very first offender-cap row a sourced
+# unit test exercises, before main() ever runs to set it.
+audit_scope=""
+
 usage() {
   printf 'Usage: audit.sh [--scope <path>] [--tests]\n' >&2
 }
@@ -131,14 +139,30 @@ audit_on_exit() { # exit-status
   fi
 }
 
-print_offenders() { # detail-block (newline-separated, unindented) -> indent 2sp, cap 50 lines
-  local detail="$1" n
+print_offenders() { # detail-block (newline-separated, unindented) [label] -> indent 2sp, cap 50 lines
+  local detail="$1" label="${2:-offenders}" n
   [[ -z "$detail" ]] && return
   detail="${detail%$'\n'}"           # avoid a doubled trailing blank line
   n="$(printf '%s\n' "$detail" | wc -l | tr -d ' ')"
   if [[ "$n" -gt 50 ]]; then
     printf '%s\n' "$detail" | sed -n '1,50p' | sed 's/^/  /'
+    # This line stays even once the full text is preserved below: format-trailing-ws/
+    # format-crlf/format-tabs cap their own COLLECTION at 51 lines before it ever reaches
+    # here, so their artifact can never be the complete list either; the tool itself is the
+    # only place the rest can still be found. Never remove it on the theory the path below
+    # replaces it.
     printf '  … more (run the underlying tool for the full list)\n'
+    # "${audit_scope:-}": under `set -u` a bare $audit_scope would crash a sourced unit
+    # test that calls this before main() has set it. An empty scope degenerates the
+    # artifact helper's containment guard (`== "$scope_phys"/*`) into `== /*`, matching
+    # every absolute path, so audit_artifact_dir refuses an empty scope outright — this
+    # then takes the same "unavailable" branch as a genuine write failure, never a silent
+    # omission and never a `set -u` crash.
+    if audit_artifact_write "${audit_scope:-}" "$label" "$detail"; then
+      printf '  complete list saved to: %s\n' "$audit_artifact_last"
+    else
+      printf '  complete list: unavailable (could not create an artifact directory)\n'
+    fi
   else
     printf '%s\n' "$detail" | sed 's/^/  /'
   fi
@@ -385,7 +409,7 @@ check_shellcheck() {
   done <<< "$files"
   if [[ "$rc" -ne 0 ]]; then
     verdict_fail shellcheck 'shellcheck reported findings'
-    print_offenders "$detail"
+    print_offenders "$detail" shellcheck
   else
     verdict_pass shellcheck
   fi
@@ -547,7 +571,7 @@ check_markdownlint() {
   out="$(cd "$scope" && PATH="${path_prefix}${PATH}" markdownlint-cli2 "**/*.md" 2>&1)"; rc=$?
   if [[ "$rc" -ne 0 ]]; then
     verdict_fail markdownlint 'markdownlint-cli2 reported findings'
-    print_offenders "$out"
+    print_offenders "$out" markdownlint
   else
     verdict_pass markdownlint
   fi
@@ -573,7 +597,7 @@ check_md_links() {
   done <<< "$files"
   if [[ -n "$detail" ]]; then
     verdict_fail md-links 'broken relative link(s) or anchor(s)'
-    print_offenders "$detail"
+    print_offenders "$detail" md-links
   else
     verdict_pass md-links
   fi
@@ -600,9 +624,9 @@ check_env_claims() {
     0) verdict_pass env-claims ;;
     3) verdict_skip env-claims 'the documented environment is not present on this machine' ;;
     2) verdict_fail env-claims 'unprovable: the checker could not reach a verdict (instrument failure)'
-       print_offenders "$out" ;;
+       print_offenders "$out" env-claims ;;
     *) verdict_fail env-claims 'a documented environment claim no longer holds'
-       print_offenders "$out" ;;
+       print_offenders "$out" env-claims ;;
   esac
 }
 
@@ -650,7 +674,7 @@ check_json() {
   done <<< "$files"
   if [[ -n "$detail" ]]; then
     verdict_fail json 'invalid JSON'
-    print_offenders "$detail"
+    print_offenders "$detail" json
   else
     verdict_pass json
   fi
@@ -676,7 +700,7 @@ check_toml() {
   done <<< "$files"
   if [[ -n "$detail" ]]; then
     verdict_fail toml 'invalid TOML'
-    print_offenders "$detail"
+    print_offenders "$detail" toml
   else
     verdict_pass toml
   fi
@@ -703,7 +727,7 @@ check_sync_docs() {
   out="$(python3 "$runner" --scope "$scope" sync --check 2>&1)"; rc=$?
   if [[ "$rc" -ne 0 ]]; then
     verdict_fail sync-docs 'sync-docs reported drift'
-    print_offenders "$out"
+    print_offenders "$out" sync-docs
   else
     verdict_pass sync-docs
   fi
@@ -754,9 +778,9 @@ check_script_headers() {
   case "$rc" in
     0) verdict_pass script-headers ;;
     1) verdict_fail script-headers 'script header(s) unreadable by sync-docs'
-       print_offenders "$out" ;;
+       print_offenders "$out" script-headers ;;
     *) verdict_fail script-headers 'unprovable: the checker could not reach a verdict (instrument failure)'
-       print_offenders "$out" ;;
+       print_offenders "$out" script-headers ;;
   esac
 }
 
@@ -809,27 +833,31 @@ check_mutation_anchors() {
     # or present in the tree but untracked. Naming only the first would prescribe the wrong
     # repair for the second, so defer to the checker's own output, which says which it found.
     verdict_fail mutation-anchors 'a campaign anchor no longer resolves, or a campaign went unjudged'
-    print_offenders "$out"
+    print_offenders "$out" mutation-anchors
   else
     verdict_pass mutation-anchors
   fi
 }
 
-# ---------- the tests check's reporting ----------
+# ---------- the shared offender-artifact store ----------
 #
-# `tests` deliberately does NOT route its detail through print_offenders. For the content checks
-# the offender is a list of offending FILES: the first 50 are representative and the rest are the
-# same defect, so the cap is right there and is unchanged. Here the "offender" is another tool's
-# entire stdout, whose interesting lines are the FAILURES — and suites print passes as they go, so
-# a head-cap reliably keeps the useless half. Measured twice, the second time at the last gate
-# before an irreversible publish; neither failure reproduced, so both diagnoses are unrecoverable.
+# Originally built only for `tests` (below): the "offender" there is another tool's entire
+# stdout, whose interesting lines are the FAILURES, and suites print passes as they go — a
+# head-cap reliably keeps the useless half. Measured twice, the second time at the last gate
+# before an irreversible publish; neither failure reproduced, so both diagnoses are
+# unrecoverable. `print_offenders` now shares this same store for every OTHER check's
+# truncated excerpt, for the identical reason: a capped list is exactly as unrecoverable once
+# `/tmp` is swept or the terminal scrolls past it.
 #
-# A per-suite budget under a global cap does not fix it either: at ~21 lines per suite, TWO failing
-# suites fit under 50 and THREE do not, so the third is truncated and a fourth is never even NAMED
-# (names live only in the per-suite headers). Every failing suite is therefore always named, and
-# only its excerpt is bounded.
-tests_artifact_root=""
-tests_artifact_tried=false
+# A per-suite budget under a global cap does not fix `tests`' case either: at ~21 lines per
+# suite, TWO failing suites fit under 50 and THREE do not, so the third is truncated and a
+# fourth is never even NAMED (names live only in the per-suite headers). Every failing suite
+# is therefore always named, and only its excerpt is bounded.
+audit_artifact_root=""
+audit_artifact_tried=false
+# Out-param of audit_artifact_write(): the path it just wrote, on success. Never a command
+# substitution for the same reason audit_artifact_dir()'s own note below gives.
+audit_artifact_last=""
 TESTS_EXCERPT_MAX=20
 
 # Deliberately GENEROUS, and deliberately NOT load-bearing. The complete output is preserved in the
@@ -838,23 +866,28 @@ TESTS_EXCERPT_MAX=20
 # true positives get dropped silently, and here it cannot happen.
 TESTS_FAILURE_RE='FAIL|ERROR|Traceback|AssertionError|^E[[:space:]]|fatal:|[0-9]+ (failed|error)'
 
-# Lazily create the directory holding failing suites' complete output. Created only on the first
-# FAILURE, so a passing sweep — the overwhelming majority — writes nothing at all: a default output
-# path would otherwise make every run of this tool a writer of real state.
+# Lazily create the directory holding every check's preserved full output. Created only on the
+# first write, so a clean sweep — the overwhelming majority — writes nothing at all: a default
+# output path would otherwise make every run of this tool a writer of real state.
 #
-# It SETS tests_artifact_root and returns only a status — it must never echo the path for a caller
+# It SETS audit_artifact_root and returns only a status — it must never echo the path for a caller
 # to capture with `$( )`. Measured: doing that ran every assignment inside a command-substitution
 # SUBSHELL, so the memoisation never took effect (a fresh directory per failing suite) and the
 # parent's global stayed empty, making the report claim the artifact was unavailable while the
 # files sat on disk. The `while … done <<< "$list"` loop below is a here-string, not a pipe, so the
 # loop body does run in the current shell and these assignments survive it.
-tests_artifact_dir() { # scope -> sets tests_artifact_root; nonzero when unavailable
+audit_artifact_dir() { # scope -> sets audit_artifact_root; nonzero when unavailable
   local scope="$1" base base_phys scope_phys
-  if [[ "$tests_artifact_tried" == true ]]; then
-    [[ -n "$tests_artifact_root" ]] || return 1
+  if [[ "$audit_artifact_tried" == true ]]; then
+    [[ -n "$audit_artifact_root" ]] || return 1
     return 0
   fi
-  tests_artifact_tried=true
+  audit_artifact_tried=true
+  # An empty scope cannot be resolved to a physical path, and letting `cd -P ""` fail into the
+  # fallback `scope_phys="$scope"` (i.e. "") would degenerate the containment test below into
+  # `"$base_phys" == /*`, matching every absolute base — the guard would then never fire for
+  # ANY caller, ever, rather than only for this one. Refuse outright instead.
+  [[ -n "$scope" ]] || return 1
   base="${TMPDIR:-/tmp}"
   # BOTH sides physical. A containment test with one side logical and the other resolved can never
   # match, so the guard would silently never fire — the measured trap this file already documents
@@ -866,28 +899,29 @@ tests_artifact_dir() { # scope -> sets tests_artifact_root; nonzero when unavail
   if [[ "$base_phys" == "$scope_phys" || "$base_phys" == "$scope_phys"/* ]]; then
     return 1
   fi
-  tests_artifact_root="$(mktemp -d "$base/audit-tests-XXXXXX" 2>/dev/null)" || tests_artifact_root=""
-  [[ -n "$tests_artifact_root" ]] || return 1
+  audit_artifact_root="$(mktemp -d "$base/audit-artifact-XXXXXX" 2>/dev/null)" || audit_artifact_root=""
+  [[ -n "$audit_artifact_root" ]] || return 1
   return 0
 }
 
-tests_artifact_write() { # scope label output
+audit_artifact_write() { # scope label output -> sets audit_artifact_last on success
   local scope="$1" label="$2" out="$3" safe target n
-  tests_artifact_dir "$scope" || return 1
+  audit_artifact_dir "$scope" || return 1
   # `printf '%s'`, never `echo`: echo's trailing newline would become a trailing `_`.
   safe="$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '_')"
   # NEVER overwrite. `tr` is many-to-one — `test_a b.sh` and `test_a_b.sh` sanitise to the same
   # name — so a bare write silently destroys the first suite's output, which is precisely the
   # loss this whole check exists to prevent, and it would do so while the report still claimed
   # every failing suite's text was preserved. Suffix instead, and give up rather than spin.
-  target="$tests_artifact_root/$safe.log"
+  target="$audit_artifact_root/$safe.log"
   n=2
   while [[ -e "$target" ]]; do
     [[ "$n" -gt 99 ]] && return 1
-    target="$tests_artifact_root/$safe-$n.log"
+    target="$audit_artifact_root/$safe-$n.log"
     n=$((n + 1))
   done
   printf '%s\n' "$out" > "$target" 2>/dev/null || return 1
+  audit_artifact_last="$target"
   return 0
 }
 
@@ -1084,6 +1118,12 @@ check_pre_push_installed() {
 
 check_tests() {
   local scope="$1" ran=false detail="" unprovable="" sh_list py_list t out rc note py_count py_why
+  # Per-suite, gates ONLY the "full output:" line below — never the notes above the excerpts,
+  # which already say per-suite whether THIS write landed. The directory can exist (another
+  # check's print_offenders may have created it first) while every write attempted here still
+  # fails, and printing the directory in that case would claim preservation this check itself
+  # never achieved.
+  local wrote_any=false
   sh_list="$(git -C "$scope" ls-files -- 'scripts/tests/test_*.sh' 2>/dev/null)"
   while IFS= read -r t; do
     [[ -z "$t" ]] && continue
@@ -1092,7 +1132,8 @@ check_tests() {
     if [[ "$rc" -ne 0 ]]; then
       # Per-suite, not per-run: the directory existing does not mean THIS suite's write landed,
       # and claiming preservation that did not happen is worse than admitting it did not.
-      if tests_artifact_write "$scope" "$t" "$out"; then note=""; else note=' (full output NOT preserved)'; fi
+      if audit_artifact_write "$scope" "$t" "$out"; then note=""; wrote_any=true
+      else note=' (full output NOT preserved)'; fi
       detail="${detail}${t} exited ${rc}:${note}"$'\n'"$(tests_excerpt "$out")"$'\n'
     fi
   done <<< "$sh_list"
@@ -1111,7 +1152,8 @@ check_tests() {
       ran=true
       out="$(cd "$scope" && python3 -m pytest -q 2>&1)"; rc=$?
       if [[ "$rc" -ne 0 ]]; then
-        if tests_artifact_write "$scope" pytest "$out"; then note=""; else note=' (full output NOT preserved)'; fi
+        if audit_artifact_write "$scope" pytest "$out"; then note=""; wrote_any=true
+        else note=' (full output NOT preserved)'; fi
         detail="${detail}pytest exited ${rc}:${note}"$'\n'"$(tests_excerpt "$out")"$'\n'
       fi
     else
@@ -1150,8 +1192,11 @@ check_tests() {
   if [[ -n "$detail" ]]; then
     verdict_fail tests 'test suite failure(s)'
     # Printed BEFORE the detail: it is the one line whose loss would make the rest pointless.
-    if [[ -n "$tests_artifact_root" ]]; then
-      printf '  full output: %s\n' "$tests_artifact_root"
+    # Gated on `wrote_any`, not on `$audit_artifact_root` — the shared global can be non-empty
+    # because some OTHER check's print_offenders created the directory first, which says
+    # nothing about whether any write attempted HERE landed.
+    if [[ "$wrote_any" == true ]]; then
+      printf '  full output: %s\n' "$audit_artifact_root"
     else
       printf '  full output: (unavailable — could not create an artifact directory)\n'
     fi
@@ -1400,6 +1445,7 @@ main() {
     exit 2
   fi
   scope="$(cd "$scope" && pwd)"
+  audit_scope="$scope"
   audit_phase=sweeping
 
   [[ -f "$scope/.auditignore" ]] && auditignore="$(cat "$scope/.auditignore")"

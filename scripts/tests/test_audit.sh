@@ -1904,5 +1904,293 @@ assert_has 'FAIL pre-push-installed' \
 assert_not_has 'artifact of the checked-out commit' \
   'rPP6: two unrelated empty digests must not compare equal into an artifact verdict'
 
+# ============================================================================
+# rQ. print_offenders artifact preservation — Task 1 RED rows, plan
+#     plans/2026-08-30-audit-offender-cap.md. `print_offenders` (audit.sh:134) caps every
+#     offender block at 50 lines; the coming fix additionally writes the full detail to a
+#     temp artifact and prints its path on the truncating branch only. These three rows must
+#     fail against UNMODIFIED audit.sh — no production file changes ride with them.
+#
+#     The path line's wording is explicitly UNDECIDED by the plan (Task 3: "distinctly from
+#     `full output:`" — row 15i already owns that phrase in one configuration), so nothing
+#     here matches a guessed string. Both helpers below test the PROPERTY instead: does any
+#     absolute-path token in the output resolve to a REAL file, and does that file hold the
+#     expected content. That also survives Task 6's "invert the write-failure branch" mutant,
+#     which would print a stale or empty path rather than a genuinely absent one.
+# ============================================================================
+
+# has_abs_path_token TEXT -> 0 iff some whitespace-separated token starts with '/'
+has_abs_path_token() {
+  local text="$1" line tok
+  while IFS= read -r line; do
+    for tok in $line; do
+      case "$tok" in
+        /*) return 0 ;;
+      esac
+    done
+  done <<< "$text"
+  return 1
+}
+
+# find_artifact_containing TEXT NEEDLE -> echoes the first REAL on-disk absolute path named
+# anywhere in TEXT whose own file content contains NEEDLE; empty (rc 1) if none. Per-token,
+# not `grep -r` over a directory: an artifact CLAIMED but pointing at the wrong (or a stale)
+# file must not read as found.
+find_artifact_containing() {
+  local text="$1" needle="$2" line tok
+  while IFS= read -r line; do
+    for tok in $line; do
+      case "$tok" in
+        /*)
+          if [[ -f "$tok" ]] && grep -q -- "$needle" "$tok" 2>/dev/null; then
+            printf '%s\n' "$tok"
+            return 0
+          fi
+          ;;
+      esac
+    done
+  done <<< "$text"
+  return 1
+}
+
+# --- 1a: unit. print_offenders called directly on a 60-line block; the excerpt keeps the
+#     first 50 and the coming fix preserves line 60 (a distinctive sentinel) in an artifact.
+#     `audit_scope` is the global Task 0 introduces (absent from today's audit.sh) — setting
+#     it here is a no-op today and load-bearing once the fix lands, per the brief: the row
+#     must fail for "no artifact printed", never a `set -u` crash on an unset global.
+r1a_scope="$tmp/r1a_scope"
+mkdir -p "$r1a_scope"
+r1a_detail="$(i=1; while [[ "$i" -le 59 ]]; do printf 'line%02d\n' "$i"; i=$((i + 1)); done
+  printf 'SENTINEL-1A-TAIL\n')"
+r1a_out="$(bash -c '
+source "$1"
+audit_scope="$2"
+print_offenders "$3"
+' _ "$engine" "$r1a_scope" "$r1a_detail" 2>&1)"
+
+case "$r1a_out" in
+  *'line01'*) pass_line '1a: the excerpt begins at line 1' ;;
+  *) fail_line '1a: the excerpt begins at line 1'
+     printf '  --- output ---\n%s\n  --------------\n' "$r1a_out" ;;
+esac
+case "$r1a_out" in
+  *'line50'*) pass_line '1a: the excerpt keeps line 50' ;;
+  *) fail_line '1a: the excerpt keeps line 50' ;;
+esac
+case "$r1a_out" in
+  *'line51'*) fail_line '1a: the excerpt does not run past line 50 (line51 absent)' ;;
+  *) pass_line '1a: the excerpt does not run past line 50 (line51 absent)' ;;
+esac
+case "$r1a_out" in
+  *'SENTINEL-1A-TAIL'*)
+    fail_line '1a: the truncated 60th line (sentinel) is absent from the INLINE excerpt' ;;
+  *) pass_line '1a: the truncated 60th line (sentinel) is absent from the INLINE excerpt' ;;
+esac
+
+if has_abs_path_token "$r1a_out"; then
+  pass_line '1a: a path line is printed'
+else
+  fail_line '1a: a path line is printed'
+fi
+r1a_artifact="$(find_artifact_containing "$r1a_out" 'SENTINEL-1A-TAIL')"
+if [[ -n "$r1a_artifact" ]]; then
+  pass_line '1a: the file at that path contains the sentinel (line 60)'
+else
+  fail_line '1a: the file at that path contains the sentinel (line 60)'
+fi
+
+# --- 1b: integration, at the MEASURED threshold. difflib.unified_diff(n=3) puts the first
+#     `+` line at 51 for N=44 table rows (measured; an earlier N>=24 draft was where the
+#     diff's TOTAL first exceeds 50, not where the first addition does) — so N=45 rows here,
+#     and the 46th (added) row MUST widen a column, forcing a whole-table reflow: without
+#     widening the diff is empty (measured 0 lines) and this row would be RED before AND
+#     after the fix. `skills/<name>/SKILL.md` + `<!-- sync:skills -->` is production's own
+#     mechanism (README.md/CLAUDE.md/skills/README.md all use it), so no synthetic handler.
+if ! command -v python3 >/dev/null 2>&1; then
+  printf 'skip - python3 not available for row 1b\n'
+else
+  r1b="$tmp/r1b_sync_drift"
+  mkrepo "$r1b"
+  mkdir -p "$r1b/skills"
+  i=1
+  while [[ "$i" -le 45 ]]; do
+    r1b_name="$(printf 'aaa%03d' "$i")"
+    mkdir -p "$r1b/skills/$r1b_name"
+    printf -- '---\ndescription: d\n---\n# %s\n' "$r1b_name" \
+      > "$r1b/skills/$r1b_name/SKILL.md"
+    i=$((i + 1))
+  done
+  cat > "$r1b/INDEX.md" <<'EOF'
+# Index
+
+<!-- sync:skills cols=Command:key,Purpose:auto -->
+<!-- /sync:skills -->
+EOF
+  r1b_sync_runner="$here/../../skills/sync-docs/sync_docs.py"
+  python3 "$r1b_sync_runner" --scope "$r1b" sync >/dev/null 2>&1
+  commit_all "$r1b" seed
+
+  # The widening row: sorts LAST (zzz > aaa), Purpose far longer than every other row's "d",
+  # so render_table (formatters.py:36) pads every row -- header, separator, all 45 data rows
+  # -- to the new column width. That reflow, not the row count alone, is what pushes the
+  # diff past the cap.
+  mkdir -p "$r1b/skills/zzz046"
+  printf -- '---\ndescription: %s\n---\n# zzz046\n' \
+    'SENTINEL-1B-WIDENED-ROW-0123456789-abcdefghij' > "$r1b/skills/zzz046/SKILL.md"
+  commit_all "$r1b" widen
+
+  run_engine "$r1b"
+  assert_has 'FAIL sync-docs' '1b: a widened/added table row -> FAIL sync-docs'
+  assert_not_has 'SENTINEL-1B-WIDENED-ROW' \
+    '1b: the widened row is ABSENT from the inline excerpt (past the 50-line cap)'
+
+  # Report the measured facts, mirroring check_sync_docs' own invocation exactly (audit.sh:704).
+  r1b_probe_out="$(python3 "$r1b_sync_runner" --scope "$r1b" sync --check 2>&1)"
+  r1b_total_lines="$(printf '%s\n' "$r1b_probe_out" | wc -l | tr -d ' ')"
+  r1b_row_line="$(printf '%s\n' "$r1b_probe_out" \
+    | grep -n 'SENTINEL-1B-WIDENED-ROW' | head -1 | cut -d: -f1)"
+  printf '1b: measured -- offending row at diff line %s of %s total lines\n' \
+    "${r1b_row_line:-ABSENT}" "$r1b_total_lines"
+  if [[ -n "$r1b_row_line" && "$r1b_row_line" -gt 50 ]]; then
+    pass_line '1b: the offending row is measured past line 50 of the real drift output'
+  else
+    fail_line '1b: the offending row is measured past line 50 of the real drift output'
+  fi
+
+  r1b_artifact="$(find_artifact_containing "$OUT" 'SENTINEL-1B-WIDENED-ROW')"
+  if [[ -n "$r1b_artifact" ]]; then
+    pass_line '1b: the widened row is preserved in the printed artifact'
+  else
+    fail_line '1b: the widened row is preserved in the printed artifact'
+  fi
+fi
+
+# --- 1c: the write-failure path. A read-only TMPDIR (same shape as row 15k), gated on the
+#     engine's bash being >= 5.1 for the identical reason row 15k documents: below that a
+#     here-string materialises a temp file, so an unwritable TMPDIR misfires elsewhere and
+#     this row would fail for a reason it does not name. Without this row, Task 6's "invert
+#     the write-failure branch" mutant (claim preservation despite the write failing) has no
+#     row to catch it.
+oc_ver="$(env bash --version | sed -n '1s/.*version \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p')"
+oc_major="${oc_ver%% *}"
+oc_minor="${oc_ver##* }"
+oc_major="${oc_major:-0}"
+oc_minor="${oc_minor:-0}"
+if [[ "$oc_major" -gt 5 || ( "$oc_major" -eq 5 && "$oc_minor" -ge 1 ) ]]; then
+  r1c="$tmp/r1c_readonly_artifact"
+  mkrepo "$r1c"
+  : > "$r1c/manylines.txt"
+  i=1
+  while [[ "$i" -le 59 ]]; do
+    printf 'line%d \n' "$i" >> "$r1c/manylines.txt"
+    i=$((i + 1))
+  done
+  printf 'SENTINEL-1C-TAIL \n' >> "$r1c/manylines.txt"
+  commit_all "$r1c" seed
+
+  r1c_ro="$tmp/r1c_readonly"
+  rm -rf "$r1c_ro"; mkdir -p "$r1c_ro"; chmod 500 "$r1c_ro"
+  # No rc capture: this row asserts on the engine's own verdict/summary LINES, which is the
+  # authoritative reading here — an exit status would add nothing and shellcheck correctly
+  # flagged the unused assignment (SC2034).
+  r1c_out="$(TMPDIR="$r1c_ro" "$engine" --scope "$r1c" 2>&1)"
+  chmod 700 "$r1c_ro"
+
+  case "$r1c_out" in
+    *'FAIL format-trailing-ws'*) pass_line '1c: 60 offending lines under a RO TMPDIR -> FAIL format-trailing-ws' ;;
+    *) fail_line '1c: 60 offending lines under a RO TMPDIR -> FAIL format-trailing-ws' ;;
+  esac
+  case "$r1c_out" in
+    *'… more (run the underlying tool'*)
+      pass_line '1c: the "… more" excerpt text still appears when the artifact write fails' ;;
+    *) fail_line '1c: the "… more" excerpt text still appears when the artifact write fails' ;;
+  esac
+  case "$r1c_out" in
+    *'SENTINEL-1C-TAIL'*)
+      fail_line '1c: the truncated 60th (sentinel) line is absent from the inline excerpt' ;;
+    *) pass_line '1c: the truncated 60th (sentinel) line is absent from the inline excerpt' ;;
+  esac
+
+  r1c_artifact="$(find_artifact_containing "$r1c_out" 'SENTINEL-1C-TAIL')"
+  if [[ -z "$r1c_artifact" ]]; then
+    pass_line '1c: no REAL artifact preserves the sentinel when the write genuinely failed'
+  else
+    fail_line '1c: no REAL artifact preserves the sentinel when the write genuinely failed'
+  fi
+  # The RED assertion: today nothing degrades loudly, so no "unavailable"-shaped wording is
+  # printed at all. Grounded in the plan itself (Task 3): a truncating check whose write fails
+  # "must print the unavailable wording" -- the same vocabulary check_tests already uses
+  # (audit.sh:1156) for the identical failure shape.
+  case "$r1c_out" in
+    *'unavailable'*) pass_line '1c: a write failure is reported as unavailable, not silently' ;;
+    *) fail_line '1c: a write failure is reported as unavailable, not silently' ;;
+  esac
+else
+  pass_line "1c: SKIPPED -- engine bash ${oc_major}.${oc_minor} < 5.1 makes this fixture unreliable"
+fi
+
+# --- 1d: the check_tests seam. A content check (format-trailing-ws) truncates first and
+#     successfully writes its own artifact, so the shared directory global is non-empty by the
+#     time check_tests runs -- and then the ONE suite check_tests itself runs has every one of
+#     ITS OWN writes fail (the suite chmods the just-created directory 500 as its first act,
+#     before failing). Without the `wrote_any` fix this prints the directory anyway, wrongly
+#     claiming preservation THIS check never achieved (audit.sh:1191-ish, gated on the shared
+#     global rather than on whether check_tests' own write landed).
+r1d="$tmp/r1d_seam"
+mkrepo "$r1d"
+: > "$r1d/manylines.txt"
+i=1
+while [[ "$i" -le 59 ]]; do
+  printf 'line%d \n' "$i" >> "$r1d/manylines.txt"
+  i=$((i + 1))
+done
+printf 'SENTINEL-1D-WS-TAIL \n' >> "$r1d/manylines.txt"
+mkdir -p "$r1d/scripts/tests"
+cat > "$r1d/scripts/tests/test_seam.sh" <<'EOF'
+#!/usr/bin/env bash
+for d in "${TMPDIR:-/tmp}"/audit-artifact-*; do
+  [[ -d "$d" ]] && chmod 500 "$d" 2>/dev/null
+done
+printf 'FAIL  seam-row-suite\n'
+exit 1
+EOF
+chmod +x "$r1d/scripts/tests/test_seam.sh"
+commit_all "$r1d" seed
+
+r1d_tmp="$tmp/r1d_tmpdir"
+rm -rf "$r1d_tmp"; mkdir -p "$r1d_tmp"
+r1d_out="$(TMPDIR="$r1d_tmp" "$engine" --scope "$r1d" --tests 2>&1)"
+# Undo the suite's own chmod so the top-level trap can clean $tmp up afterward.
+chmod -R 700 "$r1d_tmp" 2>/dev/null || true
+
+case "$r1d_out" in
+  *'FAIL format-trailing-ws'*)
+    pass_line '1d: the content check still truncates and reports FAIL, establishing the precondition' ;;
+  *) fail_line '1d: the content check still truncates and reports FAIL, establishing the precondition' ;;
+esac
+if has_abs_path_token "$r1d_out"; then
+  pass_line '1d: the content check successfully wrote its own artifact (a path is printed)'
+else
+  fail_line '1d: the content check successfully wrote its own artifact (a path is printed)'
+fi
+case "$r1d_out" in
+  *'FAIL tests'*) pass_line '1d: FAIL tests' ;;
+  *) fail_line '1d: FAIL tests' ;;
+esac
+case "$r1d_out" in
+  *'seam-row-suite'*) pass_line '1d: the failing suite is still named inline' ;;
+  *) fail_line '1d: the failing suite is still named inline' ;;
+esac
+case "$r1d_out" in
+  *'full output: (unavailable'*)
+    pass_line '1d: check_tests reports its OWN output unavailable, not the shared directory' ;;
+  *) fail_line '1d: check_tests reports its OWN output unavailable, not the shared directory' ;;
+esac
+case "$r1d_out" in
+  *"full output: $r1d_tmp"*|*'full output: /'*)
+    fail_line '1d: check_tests never prints a real path when its own writes all failed' ;;
+  *) pass_line '1d: check_tests never prints a real path when its own writes all failed' ;;
+esac
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

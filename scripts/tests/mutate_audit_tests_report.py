@@ -39,25 +39,32 @@ LIVE_RE = (
     "^E[[:space:]]|fatal:|[0-9]+ (failed|error)'"
 )
 
-LIVE_PATH_FIRST = """    if [[ -n "$tests_artifact_root" ]]; then
-      printf '  full output: %s\\n' "$tests_artifact_root"
+LIVE_PATH_FIRST = """    if [[ "$wrote_any" == true ]]; then
+      printf '  full output: %s\\n' "$audit_artifact_root"
     else
       printf '  full output: (unavailable — could not create an artifact directory)\\n'
     fi
     printf '%s\\n' "${detail%$'\\n'}" | sed 's/^/  /'"""
 
 MUTATED_PATH_LAST = """    printf '%s\\n' "${detail%$'\\n'}" | sed 's/^/  /'
-    if [[ -n "$tests_artifact_root" ]]; then
-      printf '  full output: %s\\n' "$tests_artifact_root"
+    if [[ "$wrote_any" == true ]]; then
+      printf '  full output: %s\\n' "$audit_artifact_root"
     else
       printf '  full output: (unavailable — could not create an artifact directory)\\n'
     fi"""
 
-LIVE_DECOLLIDE = """  target="$tests_artifact_root/$safe.log"
+# The gate itself, narrowed to a shape that would still be TRUE whenever the shared directory
+# merely EXISTS -- reintroducing the exact defect the `wrote_any` flag was added to close (a
+# directory created by some OTHER check's print_offenders() must not make check_tests claim ITS
+# OWN writes landed).
+LIVE_WROTE_ANY_GATE = '    if [[ "$wrote_any" == true ]]; then'
+MUTATED_WROTE_ANY_GATE = '    if [[ -n "$audit_artifact_root" ]]; then'
+
+LIVE_DECOLLIDE = """  target="$audit_artifact_root/$safe.log"
   n=2
   while [[ -e "$target" ]]; do
     [[ "$n" -gt 99 ]] && return 1
-    target="$tests_artifact_root/$safe-$n.log"
+    target="$audit_artifact_root/$safe-$n.log"
     n=$((n + 1))
   done"""
 
@@ -74,14 +81,14 @@ MUTATIONS = [
     ),
     mutate.Mutation(
         "the complete output is never preserved; only the excerpt survives",
-        'if tests_artifact_write "$scope" "$t" "$out"; then note=""; '
-        "else note=' (full output NOT preserved)'; fi",
+        'if audit_artifact_write "$scope" "$t" "$out"; then note=""; wrote_any=true\n'
+        "      else note=' (full output NOT preserved)'; fi",
         'note=""',
     ),
     mutate.Mutation(
         "the de-collision loop is removed, so one suite's log silently clobbers another's",
         LIVE_DECOLLIDE,
-        '  target="$tests_artifact_root/$safe.log"',
+        '  target="$audit_artifact_root/$safe.log"',
     ),
     mutate.Mutation(
         "the artifact path is printed AFTER the detail, where a downstream cap eats it first",
@@ -97,6 +104,12 @@ MUTATIONS = [
         "the failure pattern is narrowed to ^FAIL, silently dropping every other failure shape",
         LIVE_RE,
         "TESTS_FAILURE_RE='^FAIL'",
+    ),
+    mutate.Mutation(
+        "the full-output gate reverts to the shared directory, claiming preservation a check's "
+        "own writes never achieved when some OTHER check created the directory first",
+        LIVE_WROTE_ANY_GATE,
+        MUTATED_WROTE_ANY_GATE,
     ),
 ]
 

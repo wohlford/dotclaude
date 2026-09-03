@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.99.1 — 2026-08-31
+- fix(audit): keep the full offender list when the excerpt truncates
+
 ## v0.99.0 — 2026-08-30
 - feat(audit): check every script header is one sync-docs can read whole
 
