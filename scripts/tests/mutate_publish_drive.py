@@ -108,6 +108,12 @@ MUTATIONS = [
         "                if engine_status in RELAY_STATUSES:",
         "                if True:",
     ),
+    mutate.Mutation(
+        "the timeout handler drops the engine's partial output again — the one artifact that "
+        "matters most when the tree state afterward is genuinely unknown",
+        "            if text:",
+        "            if False:",
+    ),
 ]
 
 

@@ -72,6 +72,7 @@ case "$mode" in
     printf '    git -C %s reset --hard HEAD~1\\n' "$here"
     printf 'RESULT: FAIL rc=1 brick=%s\\n' "$version"
     exit 1 ;;
+  noisyhang)   printf 'zz-sentinel-noisyhang-started\\n'; sleep 30 ;;
   *)           printf 'RESULT: ERROR rc=2 brick=%s\\n' "$version"; exit 2 ;;
 esac
 """
@@ -654,6 +655,29 @@ def test_the_relayed_block_shows_HALT_TAIL_LINES_worth_of_engine_lines_not_one_f
 
 
 # ---------- a timeout must not discard what the engine already printed ----------
+
+
+def test_a_timeout_still_logs_the_engines_partial_output(bed):
+    """The timeout shape is the one whose tree state is unknown BY CONSTRUCTION — the driver
+    deliberately refuses to say whether the brick was proven. That makes it the shape where the
+    operator most needs to see how far the engine got, and today it is the one shape whose log
+    holds nothing at all: the `except subprocess.TimeoutExpired` handler writes only the fixed
+    string 'TIMEOUT after {timeout}s — no verdict was reached', discarding `exc.stdout` /
+    `exc.stderr` entirely.
+
+    Uses `noisyhang`, which prints one distinctive line and then hangs (unlike plain `hang`,
+    which must keep emitting nothing — see the note above `FAKE_ENGINE`). The RED failure this
+    row must produce is the sentinel's ABSENCE from the log, not a fixture error, an import
+    error, or an exception raised before the assertion.
+    """
+    _, scope, engine, art, plan, behaviour = bed
+    behaviour(**{"v0.1.0": "noisyhang"})
+    p = plan(("v0.1.0", "aaa", "first"))
+    proc = run(p, scope, engine, art, "--timeout", "1")
+
+    assert "INDETERMINATE" in proc.stdout, proc.stdout
+    log_text = (art / "drive.log").read_text()
+    assert "zz-sentinel-noisyhang-started" in log_text, log_text
 
 
 # ---------- preconditions: refuse rather than half-run ----------

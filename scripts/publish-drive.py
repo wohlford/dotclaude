@@ -213,10 +213,27 @@ def drive_one(
         proc = subprocess.run(
             cmd, capture_output=True, text=True, check=False, timeout=timeout
         )
-    except subprocess.TimeoutExpired:
-        # NOT a failure verdict. The brick may or may not have been proven; saying either
-        # would state something that was not measured, and the inflating direction is how
-        # every prior hole in this path failed.
+    except subprocess.TimeoutExpired as exc:
+        # NOT a failure verdict. The brick may or may not have been proven; saying either would
+        # state something that was not measured, and the inflating direction is how every prior
+        # hole in this path failed.
+        #
+        # The engine's partial output up to the kill is the one thing the operator most needs
+        # here — this is the shape whose tree state is unknown BY CONSTRUCTION, so it is also the
+        # shape where "how far did it get" matters most. Measured on this interpreter:
+        # `exc.stdout`/`exc.stderr` are `bytes` even though `subprocess.run` was called with
+        # `text=True`, and either may be `None` if the engine produced nothing on that stream
+        # before being killed — the ternary below then leaves `text = None`, which `if text:`
+        # already rejects, so no separate `is None` guard is needed ahead of it.
+        for label, chunk in (("stdout", exc.stdout), ("stderr", exc.stderr)):
+            text = (
+                chunk.decode("utf-8", errors="replace")
+                if isinstance(chunk, bytes)
+                else chunk
+            )
+            if text:
+                log.write(f"----- engine {label} at the moment of the kill -----\n")
+                log.write(text)
         log.write(f"TIMEOUT after {timeout}s — no verdict was reached\n")
         log.flush()
         return "INDETERMINATE", f"exceeded {timeout}s without a verdict", None, ""

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.101.1 — 2026-08-31
+- fix(publish): log the engine's partial output on a timeout
+
 ## v0.101.0 — 2026-08-31
 - feat(publish): relay the engine's failure block at a halt
 
