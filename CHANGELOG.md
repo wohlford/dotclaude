@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.102.1 — 2026-09-01
+- test(timing-guard): pin fail-open for a broken policy config
+
 ## v0.102.0 — 2026-09-01
 - feat(timing-guard): point the registration at the tracked copy
 

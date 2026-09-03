@@ -50,6 +50,40 @@ make_home() {
   printf '%s' "$h"
 }
 
+# make_home_unreadable <name> -- a fixture HOME whose guard conf EXISTS but cannot be
+# read (chmod 000). The guard's `[ -f "$conf" ]` check passes on an unreadable file
+# -- existence, not readability -- so this reaches the reader's suppressed
+# `grep ... 2>/dev/null`, which returns nothing and collapses repo_pat to empty: the
+# same sentinel an absent GUARD_REPO_PATTERN hits.
+make_home_unreadable() {
+  local h="$tmproot/$1"; mkdir -p "$h/.claude"
+  printf 'GUARD_REPO_PATTERN=wohlford/dotclaude\nGUARD_DAYS=1-7\nGUARD_START=0000\nGUARD_END=2359\n' \
+    > "$h/.claude/.git-timing-guard.conf"
+  chmod 000 "$h/.claude/.git-timing-guard.conf"
+  printf '%s' "$h"
+}
+
+# make_home_typo_key <name> -- a fixture HOME whose conf is readable but the required
+# key is misspelled (PATERN, not PATTERN). The guard's `grep -E "^GUARD_REPO_PATTERN="`
+# never matches, so repo_pat collapses to empty exactly as if the key were absent.
+make_home_typo_key() {
+  local h="$tmproot/$1"; mkdir -p "$h/.claude"
+  printf 'GUARD_REPO_PATERN=wohlford/dotclaude\nGUARD_DAYS=1-7\nGUARD_START=0000\nGUARD_END=2359\n' \
+    > "$h/.claude/.git-timing-guard.conf"
+  printf '%s' "$h"
+}
+
+# make_home_empty_pattern <name> -- a fixture HOME whose conf is readable, the key is
+# spelled correctly and present, but its VALUE is empty. The grep matches and `cut`
+# returns the empty string after the "=", so repo_pat collapses to empty the same way
+# as the two fixtures above.
+make_home_empty_pattern() {
+  local h="$tmproot/$1"; mkdir -p "$h/.claude"
+  printf 'GUARD_REPO_PATTERN=\nGUARD_DAYS=1-7\nGUARD_START=0000\nGUARD_END=2359\n' \
+    > "$h/.claude/.git-timing-guard.conf"
+  printf '%s' "$h"
+}
+
 # make_repo <name> <origin-url> -- a git repo the guard can resolve an origin from.
 # "-" for <origin-url> leaves the repo with no origin at all.
 # Signing is disabled per-fixture, not inherited. A fixture repo that inherits a global
@@ -104,6 +138,9 @@ check_msg() {
 open_home=$(make_home open 0000 2400 1-7)     # window ALWAYS open
 shut_home=$(make_home shut 0000 0000 1-7)     # window ALWAYS closed
 none_home=$(make_home none - - -)             # no config at all
+unreadable_home=$(make_home_unreadable unreadable)   # conf exists, chmod 000
+typo_home=$(make_home_typo_key typo)                 # conf readable, key misspelled
+emptypat_home=$(make_home_empty_pattern emptypat)    # conf readable, value empty
 
 guarded=$(make_repo guarded https://github.com/wohlford/dotclaude.git)
 foreign=$(make_repo foreign https://github.com/someone/other.git)
@@ -131,6 +168,23 @@ check 0 "push in a foreign repo is allowed"    "$open_home" "$foreign" "git push
 check 0 "push with no origin is allowed"       "$open_home" "$noremote" "git push origin main"
 check 0 "push outside the window is allowed"   "$shut_home" "$guarded" "git push origin main"
 check 0 "no config fails open"                 "$none_home" "$guarded" "git push origin main"
+
+echo "--- broken policy config also fails open (CONTROL rows, not red-first) ---"
+# These three rows assert rc=0 -- TODAY's behaviour -- so they are green before AND
+# after this change. That is normally the signature of a vacuous test; here it is the
+# point. An unreadable conf, a typo'd key and an empty value all collapse into the
+# same empty repo_pat before `[ -n "$repo_pat" ] || exit 0` -- one sentinel,
+# four meanings. These rows are CONTROLS pinning the DECISION that fail-open there is
+# the specification, not an accident: with the pattern unknown the guard cannot tell
+# which repos it governs, so failing closed would assert jurisdiction over EVERY repo
+# on this machine at ALL hours, triggered by nothing more than a chmod or a typo --
+# which also violates scripts/HOOKS.md's "Only real violations reach exit 2". The
+# silence, not the fail-open, is the actual defect, and it is fixed separately by an
+# /audit observer -- not by making this guard exit 2. A future well-meaning change
+# that makes the guard block on a broken conf must turn these three rows RED.
+check 0 "unreadable conf fails open"           "$unreadable_home" "$guarded" "git push origin main"
+check 0 "malformed key (typo) fails open"      "$typo_home"       "$guarded" "git push origin main"
+check 0 "empty GUARD_REPO_PATTERN fails open"  "$emptypat_home"   "$guarded" "git push origin main"
 
 echo "--- reads are never writes ---"
 check 0 "git status is allowed"                "$open_home" "$guarded" "git status -sb"
