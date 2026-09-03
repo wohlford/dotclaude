@@ -324,6 +324,18 @@ left legal.
   while grepping for that default — and it was the one assertion that would have caught a real
   defect shipping in that exact field. Pass a value that DIFFERS from the default, assert on that
   distinctive value, then delete the option's plumbing and watch the row go red.
+- **A comparison of two ABSENT readings returns EQUAL, so a probe whose subject never existed
+  prints the reassuring answer.** Not a discovery enumerating zero items, and not two sides
+  resolved differently — there is no enumeration, and the two sides agree perfectly. Measured: a
+  before/after probe captured a file's timestamp, inode and digest around an operation; the
+  subject had failed to be created, so every capture was the empty string and all three printed
+  `SAME` — byte-identical to what a flawlessly idempotent operation prints. Only unsuppressed
+  `stat:` errors on stderr gave it away, and a script redirecting stderr has no tell at all.
+  Equality is the SUCCESS value, so absence fails toward reassurance. **Assert each side is
+  non-empty BEFORE comparing** — a non-zero denominator is no help here, since nothing is
+  counted. Its own failure mode: that guard proves the readings EXIST, never that the probe can
+  still SEE a change — pair it with a control that must MOVE, or a probe watching the wrong
+  attribute passes both checks.
 
 #### Every row got the same verdict, whatever it contained
 

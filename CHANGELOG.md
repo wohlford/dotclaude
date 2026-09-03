@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.101.3 — 2026-09-01
+- docs(CLAUDE.md): add the absent-readings comparison hazard
+
 ## v0.101.2 — 2026-08-31
 - docs(CLAUDE.md): give the allowlist rule its own failure mode
 
