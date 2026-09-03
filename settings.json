@@ -15,6 +15,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "$HOME/.claude/scripts/git-timing-guard.sh"
+          },
+          {
+            "type": "command",
             "command": "$HOME/.claude/scripts/push-guard.py"
           },
           {
