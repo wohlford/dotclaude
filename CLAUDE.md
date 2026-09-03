@@ -666,6 +666,19 @@ left legal.
   `find ~/.claude/ …`, descends and returns all 16 — so the declared-FLOOR rule under **Building a
   check that holds** is what catches it, with 1 standing in for that rule's zero.
 
+- **A SEMANTIC property cannot be asserted STRUCTURALLY, and the author is the one reader who
+  cannot detect its loss** — their own memory supplies exactly what the artifact stopped saying.
+  Measured on a compressed index: every mechanical check passed — identical link multiset,
+  identical count, size under target, identical section set, and a floor requiring each bullet to
+  carry a separator plus 40+ characters — while one entry had quietly lost the clause saying WHEN
+  to open what it points at, becoming a bare technical fact. All five assertions passed on that
+  exact entry, because each measures shape and none can measure whether the text still tells you
+  anything. A reader handed ONLY the compressed file, forbidden to open anything it linked, found
+  it in one pass. **Give the artifact to someone without your context, with the task it exists to
+  serve**; a green assertion set is not evidence the artifact still works. Its own failure mode:
+  that probe tests NAVIGABILITY, never FIDELITY — whether the text points somewhere, not whether
+  what it says is true — so it complements the mechanical checks and never replaces them.
+
 #### It answered about the PARTS; your claim is about the WHOLE
 
 - **A tool that answers one question per item has not answered how the items COMPOSE — and an

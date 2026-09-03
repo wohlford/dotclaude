@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.100.1 — 2026-08-31
+- docs(CLAUDE.md): add the semantic-vs-structural assertion hazard
+
 ## v0.100.0 — 2026-08-31
 - feat(memory-index): fail when the index outgrows its reader's limit
 
