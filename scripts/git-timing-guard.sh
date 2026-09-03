@@ -83,6 +83,22 @@ set -euo pipefail
 # identically to this script crashing, which `set -euo pipefail` makes indistinguishable; and a
 # prompt-the-user decision re-imports the blocking this design rejected. Recorded here rather
 # than by reference, because a pointer a reader cannot follow is the same as no reasoning at all.
+# INVOCATION CONTRACT, asserted for every registered hook by
+# scripts/tests/test_hook_argv_refusal.py. This must come FIRST, before the policy read below:
+# on a machine with no policy file the guard exits 0 at the `-f` test, so a refusal placed after
+# it would return 0 and the invariant would go unenforced exactly where it is least observable.
+# Both tests are false on the real path — Claude Code invokes this with no arguments and a piped
+# payload — so this cannot change any live verdict; it only stops the two malformed invocations
+# from reading as a clean pass (argv) or hanging forever on a read that will never arrive (tty).
+if [ "$#" -gt 0 ]; then
+  printf 'git-timing-guard: expects a JSON payload on stdin, not arguments — see scripts/HOOKS.md\n' >&2
+  exit 2
+fi
+if [ -t 0 ]; then
+  printf 'git-timing-guard: expects a JSON payload on stdin; refusing a terminal stdin rather than blocking on a read that will never arrive — see scripts/HOOKS.md\n' >&2
+  exit 2
+fi
+
 conf="$HOME/.claude/.git-timing-guard.conf"
 [ -f "$conf" ] || exit 0
 command -v jq >/dev/null 2>&1 || exit 0

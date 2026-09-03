@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.103.1 — 2026-09-01
+- fix(timing-guard): refuse argv and a terminal stdin
+
 ## v0.103.0 — 2026-09-01
 - feat(audit): add the timing-guard-conf check
 
