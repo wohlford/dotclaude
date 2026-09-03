@@ -813,7 +813,16 @@ left legal.
   it read; the tool reports findings, not a manifest). A *precondition on its input* closed it in one
   move, needing nothing from the tool — ask **"what can I observe without this thing's cooperation?"**
   before "how do I word this better?". All three failures defaulted to *proceed*.
-- **Clear by allowlist, since a blocklist admits every value you forgot.**
+- **Clear by allowlist, since a blocklist admits every value you forgot.** Its own failure mode:
+  a rule phrased *iff X* is an allowlist only where X is the PROPERTY. Where X is a cheap
+  OBSERVABLE standing in for it, the rule READS as an allowlist and BEHAVES as a blocklist,
+  admitting every case the proxy cannot distinguish. Measured: a dangerous action was gated on
+  *did the subject reach a verdict*, as a proxy for *did it conclude in a state it handled
+  itself*. A killed subject's exit trap emits a verdict having run no cleanup, so the proxy
+  admitted exactly the shape the rule existed to exclude — and the output there is actively
+  reassuring, ending in a success line. Enumerate the property's SOURCES and match on those.
+  Note what does NOT rescue you: a design note listing the unsafe case, since the rule that
+  contradicted it was written by the same author, who never diffed rule against table.
 - **Derive an input from what you already asserted rather than checking a hand-made copy — but pair
   the derivation with a declared FLOOR, since discovery cannot detect ABSENCE.** Seen twice in one
   session: a gate's hand-listed file set went stale and waved through a file nobody checked, and a

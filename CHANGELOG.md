@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.101.2 — 2026-08-31
+- docs(CLAUDE.md): give the allowlist rule its own failure mode
+
 ## v0.101.1 — 2026-08-31
 - fix(publish): log the engine's partial output on a timeout
 
