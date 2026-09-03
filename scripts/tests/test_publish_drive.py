@@ -12,6 +12,8 @@ hang. Those are precisely the shapes a real run produces rarely and at the worst
 
 from __future__ import annotations
 
+import importlib.util
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -26,9 +28,11 @@ FAKE_ENGINE = """#!/usr/bin/env bash
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 args=()
+artifactdir=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --scope|--artifact-dir) shift 2 ;;
+    --scope) shift 2 ;;
+    --artifact-dir) artifactdir="$2"; shift 2 ;;
     *) args+=("$1"); shift ;;
   esac
 done
@@ -42,6 +46,32 @@ case "$mode" in
   wrongbrick)  printf 'RESULT: PASS rc=0 brick=v9.9.9\\n'; exit 0 ;;
   lying)       printf 'RESULT: PASS rc=0 brick=%s\\n' "$version"; exit 3 ;;
   hang)        sleep 30 ;;
+  # Mirrors publish-brick.sh's on_exit EXIT trap: it still emits a genuine RESULT: line for a
+  # killed engine, unlike `silent`/`hang` above. This is THE shape the STATUS allowlist exists
+  # to catch — a verdict was read, but INCOMPLETE means nothing was proven and no rollback ran.
+  incomplete)  printf 'zz-sentinel-incomplete-emitted\\n'; printf 'RESULT: INCOMPLETE rc=143 brick=%s\\n' "$version"; exit 143 ;;
+  # A status this driver has never seen at all — neither PASS, FAIL, ERROR nor INCOMPLETE.
+  # Proves the gate is a real ALLOWLIST, not a two-way branch that only names INCOMPLETE.
+  weirdstatus) printf 'RESULT: WEIRDSTATUS rc=9 brick=%s\\n' "$version"; exit 9 ;;
+  # 20+ filler lines BEFORE the failure block, so a fixture smaller than the tail window
+  # cannot hide a head-instead-of-tail bug: [-12:] and [:12] must give DIFFERENT answers.
+  failrestored)
+    n=1
+    while [ "$n" -le 20 ]; do printf 'filler-line-%02d\\n' "$n"; n=$((n + 1)); done
+    printf '  audit: %s/audit-report.txt\\n' "$artifactdir"
+    printf 'FAIL zz-sentinel-audit-refused\\n'
+    printf '  nothing was committed; the working tree was restored.\\n'
+    printf 'RESULT: FAIL rc=1 brick=%s\\n' "$version"
+    exit 1 ;;
+  faillanded)
+    n=1
+    while [ "$n" -le 20 ]; do printf 'filler-line-%02d\\n' "$n"; n=$((n + 1)); done
+    printf 'FAIL zz-sentinel-audit-refused\\n'
+    printf '  the brick commit ALREADY LANDED on main. Recovery (run it yourself):\\n'
+    printf '    git -C %s tag -d %s   # only if the tag was minted\\n' "$here" "$version"
+    printf '    git -C %s reset --hard HEAD~1\\n' "$here"
+    printf 'RESULT: FAIL rc=1 brick=%s\\n' "$version"
+    exit 1 ;;
   *)           printf 'RESULT: ERROR rc=2 brick=%s\\n' "$version"; exit 2 ;;
 esac
 """
@@ -207,6 +237,423 @@ def test_a_missing_verdict_is_diagnosed_as_a_DEATH_not_as_a_wrong_verdict(bed):
     proc = run(p, scope, engine, art)
     assert "emitted no RESULT line" in proc.stdout, proc.stdout
     assert "wanted" not in proc.stdout, proc.stdout
+
+
+# ---------- the halt relays the engine's own block, and only when there is one ----------
+#
+# THE RULE (plans/2026-08-31-drive-halt-reproduction.md): the "+ <invocation>" line and the
+# relayed engine tail travel TOGETHER, and both print if and only if the engine reached a
+# verdict — i.e. drive_one read a RESULT: line. PRINT for a FAIL whose verdict was read.
+# SUPPRESS for INDETERMINATE (timeout) and for the absent-verdict FAIL, where the engine was
+# killed, there is no block to relay, and a bare invocation would stand uncontextualised.
+#
+# None of this exists yet — every row below is RED against today's driver, by design (Task 1
+# is RED-only; the feature lands in Task 3).
+
+
+def test_a_restored_failure_relays_the_engine_tail_and_the_invocation(bed):
+    """The halt must show the engine's own FAIL block, not just the driver's own summary line.
+
+    Uses a 2-brick plan halting on the SECOND brick, so an implementation that mistakenly
+    rebuilds the invocation from bricks[0] instead of the brick that actually halted would
+    fail this row. The sentinel `zz-sentinel-audit-refused` cannot appear in today's output —
+    publish-drive.py already prints bare `FAIL`/`RESULT: FAIL` text elsewhere, so asserting on
+    those would be green before the feature exists and would prove nothing.
+    """
+    _, scope, engine, art, plan, behaviour = bed
+    behaviour(**{"v0.1.0": "pass", "v0.2.0": "failrestored"})
+    p = plan(("v0.1.0", "aaa", "first"), ("v0.2.0", "bbb", "second"))
+    proc = run(p, scope, engine, art)
+
+    assert proc.returncode == 1, proc.stdout
+    assert "zz-sentinel-audit-refused" in proc.stdout, proc.stdout
+    assert f"audit: {art}" in proc.stdout, proc.stdout
+    # A verdict WAS read and relayed here — the engine concluded on its own and ran its own
+    # recovery. Both existing rows below assert presence only, so an implementation that prints
+    # the killed sentence unconditionally, on every halt, would pass all of them.
+    assert "the engine was killed" not in proc.stdout, proc.stdout
+
+    expected_argv = [
+        str(engine),
+        "--scope",
+        str(scope),
+        "--artifact-dir",
+        str(art),
+        "v0.2.0",
+        "bbb",
+        "second",
+    ]
+    expected_line = "+ " + " ".join(shlex.quote(c) for c in expected_argv)
+    assert expected_line in proc.stdout, proc.stdout
+
+
+def test_the_relay_shows_the_TAIL_of_the_engine_output_not_the_HEAD(bed):
+    """Pins tail-not-head. `failrestored` prints 20 filler lines before its 4-line failure
+    block — well past a 12-line window — so `[-12:]` (correct) and `[:12]` (a plausible bug)
+    give DIFFERENT answers here: a head-instead-of-tail implementation would show the first
+    filler line and never reach the failure block, which is exactly the truncation failure
+    this design exists to prevent.
+    """
+    _, scope, engine, art, plan, behaviour = bed
+    behaviour(**{"v0.1.0": "pass", "v0.2.0": "failrestored"})
+    p = plan(("v0.1.0", "aaa", "first"), ("v0.2.0", "bbb", "second"))
+    proc = run(p, scope, engine, art)
+
+    assert "filler-line-01" not in proc.stdout, proc.stdout
+    assert "zz-sentinel-audit-refused" in proc.stdout, proc.stdout
+
+
+def test_a_failure_after_landing_relays_the_ALREADY_LANDED_recovery(bed):
+    """The recovery instructions for a failure that lands ON TOP of an already-committed brick
+    are a different shape (nothing to roll back) and must reach the operator just the same.
+    """
+    _, scope, engine, art, plan, behaviour = bed
+    behaviour(**{"v0.1.0": "pass", "v0.2.0": "faillanded"})
+    p = plan(("v0.1.0", "aaa", "first"), ("v0.2.0", "bbb", "second"))
+    proc = run(p, scope, engine, art)
+
+    assert proc.returncode == 1, proc.stdout
+    assert "ALREADY LANDED" in proc.stdout, proc.stdout
+
+
+def test_an_INDETERMINATE_halt_states_the_engine_was_killed_and_suppresses_the_relay(
+    bed,
+):
+    """Per THE RULE: no verdict was read on a timeout, so there is nothing to relay and no
+    invocation to label — printing either would misrepresent an unproven state as reviewed
+    engine output. The absence half is already true today (nothing is relayed at all yet); the
+    statement half — that the operator is told the engine was killed — is not.
+    """
+    _, scope, engine, art, plan, behaviour = bed
+    behaviour(**{"v0.1.0": "pass", "v0.2.0": "hang"})
+    p = plan(("v0.1.0", "aaa", "first"), ("v0.2.0", "bbb", "second"))
+    proc = run(p, scope, engine, art, "--timeout", "1")
+
+    assert not any(ln.startswith("+ ") for ln in proc.stdout.split("\n")), proc.stdout
+    assert "the engine was killed" in proc.stdout, proc.stdout
+    assert "the tree state is UNKNOWN" in proc.stdout, proc.stdout
+    assert "Read the log before doing anything." in proc.stdout, proc.stdout
+
+
+def test_an_absent_verdict_halt_states_the_engine_was_killed_and_suppresses_the_relay(
+    bed,
+):
+    """New shape revision 1 covered nowhere: a FAIL with NO verdict read at all (the engine
+    died before printing one) gets the same suppression as INDETERMINATE per THE RULE — there
+    is no block to relay either way, only the reason differs (a `silent` engine vs. a timeout).
+    """
+    _, scope, engine, art, plan, behaviour = bed
+    behaviour(**{"v0.1.0": "pass", "v0.2.0": "silent"})
+    p = plan(("v0.1.0", "aaa", "first"), ("v0.2.0", "bbb", "second"))
+    proc = run(p, scope, engine, art)
+
+    assert not any(ln.startswith("+ ") for ln in proc.stdout.split("\n")), proc.stdout
+    assert "the engine was killed" in proc.stdout, proc.stdout
+    assert "the tree state is UNKNOWN" in proc.stdout, proc.stdout
+    assert "Read the log before doing anything." in proc.stdout, proc.stdout
+
+
+def test_an_INCOMPLETE_verdict_from_a_killed_engine_suppresses_the_relay(bed):
+    """THE BLOCKER regression test.
+
+    `publish-brick.sh`'s `on_exit` fires from its EXIT trap and emits a REAL `RESULT:
+    INCOMPLETE ...` verdict when the engine dies partway — confirmed against the real engine:
+    `bash -c 'source scripts/publish-brick.sh; (phase=proving; version=vPROBE; reported=no;
+    on_exit 143)'` prints exactly `RESULT: INCOMPLETE rc=143 brick=vPROBE`. So a killed engine
+    (SIGTERM from any supervisor, an operator `kill`, a shell-fatal inside `main`) DOES emit a
+    verdict, and the OLD gate — `if tail is not None` — only asked "was a verdict read at all".
+    INCOMPLETE reads one just as well as FAIL or PASS does, so the old gate relayed a
+    paste-ready invocation in precisely the state where `on_exit` did NOT call `fail_brick`:
+    no rollback ran, and a commit may already be sitting on the append-only published branch.
+
+    The fix is a STATUS allowlist (RELAY_STATUSES): FAIL and ERROR relay because the engine
+    handled its own state; INCOMPLETE must not, because on_exit's non-init branch is exactly
+    the "died mid-flight, nothing was handled" shape.
+    """
+    _, scope, engine, art, plan, behaviour = bed
+    behaviour(**{"v0.1.0": "pass", "v0.2.0": "incomplete"})
+    p = plan(("v0.1.0", "aaa", "first"), ("v0.2.0", "bbb", "second"))
+    proc = run(p, scope, engine, art)
+
+    assert proc.returncode != 0, proc.stdout
+    assert not any(ln.startswith("+ ") for ln in proc.stdout.split("\n")), proc.stdout
+    assert "----- engine stdout" not in proc.stdout, proc.stdout
+    assert "zz-sentinel-incomplete-emitted" not in proc.stdout, (
+        "the engine's own stdout must not be relayed for an INCOMPLETE verdict: "
+        + proc.stdout
+    )
+    # Assert the sentence's OPENING CLAUSE *and* its warning body. Pinning the opener alone
+    # is what an earlier fix got wrong: the opener names the status, but the operator
+    # INSTRUCTION after it was then unpinned, so a reword could delete the whole warning
+    # and leave the suite green. Not two substrings that fire off something else:
+    # "INCOMPLETE" alone is already present in the pre-existing detail line printed just above
+    # ("verdict was 'RESULT: INCOMPLETE rc=143 brick=v0.2.0', wanted ..."), so a status-free
+    # sentence would still pass that check. This exact phrase appears ONLY when the elif
+    # branch actually fires with this status — it also does not appear if that branch is
+    # collapsed into the generic `else`, whose sentence never names a status at all.
+    assert "the engine reported INCOMPLETE" in proc.stdout, proc.stdout
+    assert "the tree state is UNKNOWN" in proc.stdout, proc.stdout
+    assert "Read the log before doing anything." in proc.stdout, proc.stdout
+
+
+def test_an_unrecognized_engine_status_also_suppresses_the_relay(bed):
+    """The gate must be a real ALLOWLIST, not a two-way branch that special-cases only the one
+    status (INCOMPLETE) this task was filed about. A status this driver has never seen at all —
+    `WEIRDSTATUS`, neither PASS, FAIL, ERROR nor INCOMPLETE — must take the same safe branch.
+    """
+    _, scope, engine, art, plan, behaviour = bed
+    behaviour(**{"v0.1.0": "pass", "v0.2.0": "weirdstatus"})
+    p = plan(("v0.1.0", "aaa", "first"), ("v0.2.0", "bbb", "second"))
+    proc = run(p, scope, engine, art)
+
+    assert proc.returncode != 0, proc.stdout
+    assert not any(ln.startswith("+ ") for ln in proc.stdout.split("\n")), proc.stdout
+    assert "----- engine stdout" not in proc.stdout, proc.stdout
+    # Same reasoning as the INCOMPLETE test above: pin the SENTENCE, which fires only from
+    # the elif branch and only for THIS status — collapsing that branch into the generic
+    # `else` (whose sentence never names a status) makes this go RED.
+    assert "the engine reported WEIRDSTATUS" in proc.stdout, proc.stdout
+    assert "the tree state is UNKNOWN" in proc.stdout, proc.stdout
+    assert "Read the log before doing anything." in proc.stdout, proc.stdout
+
+
+def test_an_ERROR_verdict_from_the_engine_relays_the_block_and_the_invocation(bed):
+    """The fake engine's `*)` default arm — reached by no row before this one — emits a genuine
+    `RESULT: ERROR rc=2 brick=<version>` verdict, the same shape `fatal()` or on_exit's
+    init-phase branch produce in the real engine: a precondition refused, nothing materialised.
+    ERROR sits on the allowlist beside FAIL — the engine reached ITS OWN conclusion and
+    reported it — so, unlike INCOMPLETE, the halt must still relay it.
+
+    CONTROL row: this test is green both before and after the MINOR-1/MINOR-2 fixes to the
+    suppression tests above it, and that green is not vacuous — it is the only row whose engine
+    reports ERROR, so it is what catches ERROR being dropped from RELAY_STATUSES. Measured:
+    dropping ERROR reddens this row alone; dropping FAIL reddens five OTHER rows and not this
+    one, so this row guards the ERROR member specifically, not the allowlist as a whole.
+    """
+    _, scope, engine, art, plan, behaviour = bed
+    behaviour(**{"v0.1.0": "pass", "v0.2.0": "this-mode-does-not-exist"})
+    p = plan(("v0.1.0", "aaa", "first"), ("v0.2.0", "bbb", "second"))
+    proc = run(p, scope, engine, art)
+
+    assert proc.returncode != 0, proc.stdout
+    assert "RESULT: ERROR rc=2 brick=v0.2.0" in proc.stdout, proc.stdout
+    assert any(ln.startswith("+ ") for ln in proc.stdout.split("\n")), proc.stdout
+    assert "the engine was killed" not in proc.stdout, proc.stdout
+
+
+def test_the_recovery_label_avoids_the_rejected_phrasings_CONTROL(bed):
+    """CONTROL row.
+
+    The negative half below is a THREE-PHRASE TRIPWIRE against the rejected design's own
+    canonical phrasings ('re-run this' / 'run this to reproduce' / 'retry with') — it is NOT a
+    guarantee of descriptiveness. A blocklist admits every wording it does not name: a
+    determined implementer could still land 'paste this', 'execute:', or 'you should rerun'
+    and this half would stay green throughout. It is the POSITIVE assertion on the label
+    string 'the invocation that halted' that actually pins the chosen wording. The negative
+    half is green before and after this change; only the positive half is RED today.
+    """
+    _, scope, engine, art, plan, behaviour = bed
+    behaviour(**{"v0.1.0": "pass", "v0.2.0": "failrestored"})
+    p = plan(("v0.1.0", "aaa", "first"), ("v0.2.0", "bbb", "second"))
+    proc = run(p, scope, engine, art)
+
+    lowered = proc.stdout.lower()
+    assert "re-run this" not in lowered, proc.stdout
+    assert "run this to reproduce" not in lowered, proc.stdout
+    assert "retry with" not in lowered, proc.stdout
+    assert "the invocation that halted" in proc.stdout, proc.stdout
+
+
+def test_the_drivers_own_verdict_stays_last_even_with_a_relayed_verdict_mid_stream(bed):
+    """`wrongbrick` relays a PASS-shaped RESULT: line for a DIFFERENT brick — the first time an
+    engine RESULT: line appears mid-stream instead of only at the very end. The driver's own
+    contract is a last-line allowlist; a reader that greps the wrong line reads a false PASS.
+
+    Asserts an EXACT standalone line, not a substring: today's diagnostic already embeds the
+    wrong-brick verdict inside a longer sentence (`verdict was 'RESULT: PASS rc=0
+    brick=v9.9.9', wanted ...`), so a bare substring check on that text would be green before
+    the feature exists and would prove nothing — the same collision hazard as the `FAIL`
+    sentinel above, in a different shape. Only a genuine relay of the engine's raw stdout
+    reproduces the engine's line VERBATIM as its own line.
+    """
+    _, scope, engine, art, plan, behaviour = bed
+    behaviour(**{"v0.1.0": "pass", "v0.2.0": "wrongbrick"})
+    p = plan(("v0.1.0", "aaa", "first"), ("v0.2.0", "bbb", "second"))
+    proc = run(p, scope, engine, art)
+
+    lines = [ln for ln in proc.stdout.split("\n") if ln.strip()]
+    assert "RESULT: PASS rc=0 brick=v9.9.9" in lines, proc.stdout
+    assert lines[-1].startswith("RESULT: FAIL rc=1 bricks="), lines[-1]
+
+
+# ---------- the tail window is derived by MEASURING the real engine, not by parsing it ----------
+
+
+def test_HALT_TAIL_LINES_is_at_least_twice_the_measured_worst_case_engine_block(
+    tmp_path,
+):
+    """A printf count is not an emitted-line count — revision 1's own arithmetic proved that.
+
+    It asserted "one FAIL line + 3 recovery lines + result_line = 6"; that is actually 5, and
+    the 6 only came out right because it silently ALSO counted the `  audit: <artifact>` line
+    at publish-brick.sh:190 — which lives in `run_audit`, a DIFFERENT function from
+    `fail_brick`. A test that regex-parses `fail_brick` alone would derive 5, pass a `<= 6`
+    bound with a line of silent slack, and leave the `audit:` line — the component the whole
+    design's "pointer to the failing check" claim rests on — completely unguarded.
+
+    So this row does not parse the shell source at all. It SOURCES the real
+    `publish-brick.sh` in a bash subshell (safe: the file is source-guarded at `:385`, so
+    sourcing defines functions without running `main`) and MEASURES what each function
+    actually emits, the same way an operator would experience it.
+
+    Declared floor: a measurement of nothing must never read as a pass. This row fails loudly
+    — not silently as a 0-line "pass" — if `fail_brick`/`run_audit` are not defined after
+    sourcing, or if either measured count comes back 0.
+    """
+    real_engine = TOOL.parent / "publish-brick.sh"
+    assert real_engine.is_file(), f"real engine not found at {real_engine}"
+
+    # ---- measure fail_brick's own emission, in the ALREADY-LANDED (committed=yes) shape ----
+    fail_brick_probe = """
+set -uo pipefail
+source "$1" || { printf 'SOURCE_FAILED\\n' >&2; exit 97; }
+declare -F fail_brick >/dev/null || { printf 'FAIL_BRICK_NOT_DEFINED\\n' >&2; exit 98; }
+(
+  committed=yes
+  version="vMEASURE"
+  scope="/nonexistent-measurement-scope"
+  fail_brick "measurement probe"
+)
+"""
+    proc = subprocess.run(
+        ["bash", "-c", fail_brick_probe, "_", str(real_engine)],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 97, f"could not source the real engine: {proc.stderr}"
+    assert proc.returncode != 98, (
+        f"fail_brick was not defined after sourcing: {proc.stderr}"
+    )
+    assert proc.returncode == 1, (proc.returncode, proc.stdout, proc.stderr)
+
+    fail_brick_lines = [ln for ln in proc.stdout.split("\n") if ln]
+    assert len(fail_brick_lines) > 0, (
+        f"measured ZERO lines from fail_brick — a measurement of nothing is not a pass: "
+        f"{proc.stdout!r} / stderr {proc.stderr!r}"
+    )
+    assert len(fail_brick_lines) == 5, (
+        f"fail_brick's committed=yes block emitted {len(fail_brick_lines)} lines, expected "
+        f"exactly 5 — the window's derivation below depends on this number: {proc.stdout!r}"
+    )
+
+    # ---- measure run_audit's own unconditional pre-verdict "  audit: <path>" line ----
+    fake_audit = tmp_path / "fake-audit-pass.sh"
+    fake_audit.write_text(
+        "#!/usr/bin/env bash\nprintf 'RESULT: PASS rc=0 brick=fake\\n'\nexit 0\n"
+    )
+    fake_audit.chmod(0o755)
+    artifact_path = tmp_path / "audit-artifact.txt"
+
+    audit_probe = """
+set -uo pipefail
+source "$1" || { printf 'SOURCE_FAILED\\n' >&2; exit 97; }
+declare -F run_audit >/dev/null || { printf 'RUN_AUDIT_NOT_DEFINED\\n' >&2; exit 96; }
+audit_path="$2"
+version="vMEASURE"
+scope="/nonexistent-measurement-scope"
+run_audit "$3"
+"""
+    proc2 = subprocess.run(
+        [
+            "bash",
+            "-c",
+            audit_probe,
+            "_",
+            str(real_engine),
+            str(fake_audit),
+            str(artifact_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc2.returncode != 97, f"could not source the real engine: {proc2.stderr}"
+    assert proc2.returncode != 96, (
+        f"run_audit was not defined after sourcing: {proc2.stderr}"
+    )
+    assert proc2.returncode == 0, (proc2.returncode, proc2.stdout, proc2.stderr)
+
+    audit_lines = [ln for ln in proc2.stdout.split("\n") if ln.startswith("  audit: ")]
+    assert len(audit_lines) > 0, (
+        f"measured ZERO '  audit: <path>' lines — a measurement of nothing is not a pass: "
+        f"{proc2.stdout!r}"
+    )
+    assert len(audit_lines) == 1, (
+        f"expected exactly one '  audit: <path>' line, got {len(audit_lines)}: {proc2.stdout!r}"
+    )
+
+    worst_case_block = len(fail_brick_lines) + len(audit_lines)
+    assert worst_case_block == 6, worst_case_block
+
+    # ---- assert the driver's own constant against the measured worst case ----
+    # `import publish_drive` cannot work — the filename is dashed. Copy the pattern at
+    # scripts/publish-rehearse.py:91-105.
+    spec = importlib.util.spec_from_file_location("publish_drive_measure", TOOL)
+    assert spec is not None and spec.loader is not None, f"cannot load {TOOL}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    halt_tail_lines = module.HALT_TAIL_LINES
+    assert halt_tail_lines >= 2 * worst_case_block, (halt_tail_lines, worst_case_block)
+
+
+def test_the_relayed_block_shows_HALT_TAIL_LINES_worth_of_engine_lines_not_one_fewer(
+    bed,
+):
+    """The header claims `last {HALT_TAIL_LINES} lines`; `split("\n")` on newline-terminated
+    stdout ends in a trailing empty element that, left in, silently occupies one slot of the
+    `[-HALT_TAIL_LINES:]` window — so only 11 real engine lines ever reached the operator, not
+    12, understating the delivered margin (2x the measured worst case) to 1.83x.
+
+    The row above pins a property of the CONSTANT (it is >= 2x a measured worst case); it says
+    nothing about how many of the engine's OWN lines actually land in the block the operator
+    reads. This fixture emits EXACTLY `HALT_TAIL_LINES` lines of real engine stdout and counts
+    how many of them land inside the relayed block, closing that gap.
+    """
+    _, scope, engine, art, plan, behaviour = bed
+
+    spec = importlib.util.spec_from_file_location("publish_drive_measure3", TOOL)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    n = module.HALT_TAIL_LINES
+
+    # n-1 filler lines + 1 terminal RESULT: line = exactly n lines of engine stdout.
+    filler = "\n".join(f"printf 'exact-filler-{i:02d}\\n'" for i in range(1, n))
+    engine.write_text(
+        "#!/usr/bin/env bash\n"
+        f"{filler}\n"
+        "printf 'RESULT: FAIL rc=1 brick=v0.1.0\\n'\n"
+        "exit 1\n"
+    )
+    engine.chmod(0o755)
+
+    p = plan(("v0.1.0", "aaa", "first"))
+    proc = run(p, scope, engine, art)
+
+    header = f"----- engine stdout (last {n} lines) -----\n"
+    assert header in proc.stdout, proc.stdout
+    block = proc.stdout.split(header, 1)[1].split("\n-----\n", 1)[0]
+    engine_lines = [ln for ln in block.split("\n") if ln]
+    assert len(engine_lines) == n, (
+        f"the fixture emitted exactly {n} engine lines; only {len(engine_lines)} reached the "
+        f"relayed block: {engine_lines!r}"
+    )
+    assert engine_lines[0] == "exact-filler-01", (
+        "the FIRST of the n emitted lines must survive — losing it is the off-by-one this row "
+        f"exists to catch: {engine_lines!r}"
+    )
+
+
+# ---------- a timeout must not discard what the engine already printed ----------
 
 
 # ---------- preconditions: refuse rather than half-run ----------

@@ -672,7 +672,9 @@ session, which is why the tooling below is in the repo.
    outside the file set moved — the second is the half that catches a materialisation reaching too
    far), inserts the CHANGELOG entry with an insert-only assertion, commits, runs the audit,
    verifies the tag exists after minting it, and stops on the first thing that does not hold.
-   Read its terminal `RESULT: PASS rc=0 brick=<version>` line before running the next one.
+   By hand, read its terminal `RESULT: PASS rc=0 brick=<version>` line before running the next
+   one. Under `publish-drive.py`, that exact shape can also appear **mid-stream** (a relayed halt
+   block) — key on the driver's own **last** `RESULT: ... bricks=<n>` line instead.
 
    **What it deliberately leaves to you.** Nothing it does is irreversible — it never pushes and
    never moves the watermark. When it fails *after* the commit lands it prints the recovery

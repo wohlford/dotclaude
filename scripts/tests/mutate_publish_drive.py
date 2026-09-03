@@ -61,8 +61,8 @@ MUTATIONS = [
     mutate.Mutation(
         "a hang is reported as a FAILURE verdict rather than INDETERMINATE, stating an "
         "outcome nobody measured",
-        '        return "INDETERMINATE", f"exceeded {timeout}s without a verdict"',
-        '        return "FAIL", f"exceeded {timeout}s without a verdict"',
+        '        return "INDETERMINATE", f"exceeded {timeout}s without a verdict", None',
+        '        return "FAIL", f"exceeded {timeout}s without a verdict", None',
     ),
     mutate.Mutation(
         "the artifact may live INSIDE the repo, so the driver's own log fails the next "
@@ -86,6 +86,27 @@ MUTATIONS = [
         "reads exactly like a shorter plan and publishes less than the operator reviewed",
         "        if len(args) < 3:\n            raise DriveError(",
         "        if len(args) < 3:\n            continue\n        if len(args) < 0:\n            raise DriveError(",
+    ),
+    mutate.Mutation(
+        "the halt no longer relays the engine's own output at all — the operator is told "
+        "there was a failure block without ever seeing it",
+        "                    print(tail, flush=True)",
+        '                    print("", flush=True)',
+    ),
+    mutate.Mutation(
+        "the relay takes the HEAD of the engine's stdout instead of the TAIL — invisible on "
+        "a fixture short enough that head and tail coincide, which is why the fixtures print "
+        "20+ filler lines before their failure block",
+        '    tail = "\\n".join(stdout_lines[-HALT_TAIL_LINES:])',
+        '    tail = "\\n".join(stdout_lines[:HALT_TAIL_LINES])',
+    ),
+    mutate.Mutation(
+        "THE BLOCKER, restored — the STATUS ALLOWLIST becomes an always-true condition, so a "
+        "killed engine's INCOMPLETE verdict (emitted by publish-brick.sh's on_exit EXIT trap, "
+        "with no rollback run) reads as a genuine terminal state and relays a paste-ready "
+        "invocation for a brick that was never proven and may already be committed",
+        "                if engine_status in RELAY_STATUSES:",
+        "                if True:",
     ),
 ]
 
