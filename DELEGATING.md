@@ -14,7 +14,15 @@ depend on it doing so.
 
 Two smaller things go with it. When a plan exists, copy the block into that plan's
 `## Global Constraints` section as well — the review side reads it there, so a violation the
-implementer missed still gets caught. And around the block, never inside it, cite this file's path,
+implementer missed still gets caught.
+
+**REVIEW dispatches need the block too, and this was learned the expensive way.** A reviewer
+reads it from the plan only when there IS a plan; a reviewer dispatched directly at an artifact
+gets nothing, and "do not edit anything, do not commit" does not constrain EXECUTION at all.
+Measured: a review subagent under exactly that brief ran a command to demonstrate what a shell
+would do with it, the command held a real publish, and only a locked hardware key stopped it.
+Read-only is a claim about the FILES, never about the shell — paste the block into review
+dispatches as well. And around the block, never inside it, cite this file's path,
 so a delegate that wants to contest a constraint has a route to its reasoning; the last block item
 invites exactly that, and an invitation with no reachable rationale is decorative.
 
@@ -24,6 +32,12 @@ invites exactly that, and an invitation with no reachable rationale is decorativ
 - Do not run `git commit`, and do not create a tag. Commits and tags here are signed, and
   signing needs a prompt a subagent cannot answer. The controller commits in the foreground.
   This overrides any instruction in your own prompt template telling you to commit your work.
+- Never EXECUTE a command that could publish, and never run a command merely to observe what
+  the shell does with it. Publishing is authorized per-push by the operator and that
+  authorization is not delegable. To show what a shell would do with some text, print it —
+  `echo`, `printf`, a tokenizer — never run it. This is measured, not hypothetical: a review
+  subagent ran `bash -c "$c"` to demonstrate a parse, `$c` held a real publish, and it reached
+  the SSH agent and failed only on a locked hardware key.
 - Do not modify `scripts/tests/fixtures/prechange/`. It is a frozen baseline whose digests a
   session-scoped autouse fixture asserts, so drift fails every test in that module rather
   than one row.
