@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.105.1 — 2026-09-02
+- fix(push-guard): treat reserved words as command position
+
 ## v0.105.0 — 2026-09-02
 - feat(audit): re-point the observer and register the python hook
 

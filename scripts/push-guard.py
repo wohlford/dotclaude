@@ -20,6 +20,23 @@ while every direct push shape (`git push`, `sudo git push`, `git -C <dir> push`,
 `git <globals> push`, `git subtree push`, in any control-operator or newline-joined position) stays
 blocked unless authorized.
 
+RESERVED-WORD / COMPOUND-COMMAND POSITION IS COVERED. A reserved word (`if`, `then`, `elif`,
+`else`, `while`, `until`, `do`, `{`, `!`, `coproc`) or `exec` puts a following `git` in command
+position exactly as a control operator does — `if true; then git push …; fi`, `{ git push …; }`,
+`! git push …`, `while false; do git push …; done`, `exec git push …` and a function body
+(`f() { git push …; }; f`) are all seen and blocked. This was a MEASURED defect, not a hypothesized
+one: all six shapes read exit 0 (unblocked) through the real hook before this fix, because the two
+`is_git(...) and starts_command(...)` call sites in `_segment_has_unauthorized_push` called
+`starts_command` bare, and `starts_command` only treats reserved words as command-position
+boundaries when told to (see `git_command.py`'s `RESERVED_WORDS`/`_git_starts_command`). Fixing
+detection alone is a HALF fix and was measured to regress the override: `_leading_env_authorized`
+walks from `seg[0]` to find a leading `ALLOW_PUSH=1`, and once a reserved word can legitimately BE
+`seg[0]`, that walk breaks before ever reaching the assignment — so
+`if true; then ALLOW_PUSH=1 git push …; fi` would stop being authorized. Both halves land together:
+the walker also skips a leading run of reserved words / `exec` before looking for the assignment. A
+WRAPPER (`sudo`, `env`, …) is deliberately NOT skipped there — that is push-guard's stricter
+reading (previous paragraph) and it must survive: `sudo ALLOW_PUSH=1 git push` still blocks.
+
 NESTED COMMAND CONTEXTS ARE COVERED. A push inside `$( … )`, backticks, `<( … )` or `>( … )` — at
 any depth, and including one inside another git command's own argument span
 (`git commit -m "$(git push …)"`) — is seen and judged. `ALLOW_PUSH=1` stays *segment*-scoped
@@ -93,9 +110,27 @@ AMBIGUOUS_MESSAGE = (
 def _leading_env_authorized(seg: list[str]) -> bool:
     """True if seg's leading run of consecutive `NAME=val` env-assignment tokens (before the first
     non-assignment token) contains the literal token `ALLOW_PUSH=1`. A wrapper or any other
-    non-assignment token at the start of the run means the segment is not authorized."""
+    non-assignment token at the start of the run means the segment is not authorized.
+
+    A LEADING RUN OF RESERVED WORDS / `exec` IS SKIPPED FIRST, and this half is only correct
+    alongside `_segment_has_unauthorized_push` passing `reserved_words=`/`extra_wrappers=` at its
+    detection sites. Teaching the detector that `if`/`then`/`{`/`!`/`exec` put git in command
+    position, WITHOUT teaching this walker the same thing, silently converts an under-block into an
+    over-block: this loop starts at `seg[0]`, which is now the reserved word, and breaks before it
+    ever reaches the assignment, so `if true; then ALLOW_PUSH=1 git push …; fi` stops being
+    authorized. Measured, in exactly that half-applied state — the suite's "the override still
+    authorizes inside a compound" row is the only one that moves, which is why it exists.
+
+    A WRAPPER is deliberately NOT skipped here: `sudo` is in `WRAPPERS`, not `RESERVED_WORDS`, so
+    `sudo ALLOW_PUSH=1 git push` still does not authorize — push-guard's stricter reading (see the
+    module docstring), and it has its own row."""
+    start = 0
+    while start < len(seg) and (
+        seg[start] in gitcmd.RESERVED_WORDS or seg[start] in gitcmd.GIT_ONLY_WRAPPERS
+    ):
+        start += 1
     authorized = False
-    for tok in seg:
+    for tok in seg[start:]:
         if not gitcmd.ENV_ASSIGN.match(tok):
             break
         if tok == "ALLOW_PUSH=1":
@@ -130,7 +165,15 @@ def _segment_has_unauthorized_push(seg: list[str]) -> bool:
     authorized = _leading_env_authorized(seg)
     j, n = 0, len(seg)
     while j < n:
-        if not (gitcmd.is_git(seg[j]) and gitcmd.starts_command(seg, j)):
+        if not (
+            gitcmd.is_git(seg[j])
+            and gitcmd.starts_command(
+                seg,
+                j,
+                reserved_words=gitcmd.RESERVED_WORDS,
+                extra_wrappers=gitcmd.GIT_ONLY_WRAPPERS,
+            )
+        ):
             j += 1
             continue
         sub_idx = _skip_global_options(seg, j + 1)
@@ -139,7 +182,15 @@ def _segment_has_unauthorized_push(seg: list[str]) -> bool:
         sub = seg[sub_idx]
         k = sub_idx + 1
         args: list[str] = []
-        while k < n and not (gitcmd.is_git(seg[k]) and gitcmd.starts_command(seg, k)):
+        while k < n and not (
+            gitcmd.is_git(seg[k])
+            and gitcmd.starts_command(
+                seg,
+                k,
+                reserved_words=gitcmd.RESERVED_WORDS,
+                extra_wrappers=gitcmd.GIT_ONLY_WRAPPERS,
+            )
+        ):
             args.append(seg[k])
             k += 1
         is_push_op = sub == "push" or (sub == "subtree" and "push" in args)

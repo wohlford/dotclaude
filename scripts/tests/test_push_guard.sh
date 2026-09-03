@@ -216,6 +216,36 @@ assert "echo 'git push origin dev'" 0 'single-quoted literal is not a push'
 assert 'x="$(( 1 + 2 ))" && git status' 0 'arithmetic expansion is not a push'
 assert 'x="$(git status)"' 0 'non-push git inside a substitution stays allowed'
 
+# --- RESERVED WORDS put git in command position, exactly as an operator does -----------------
+# Measured, NOT hypothesized: `git push`, `if true; then git push origin main; fi`, `{ git push
+# origin main; }`, `! git push origin main`, `while false; do git push origin main; done`,
+# `exec git push origin main`, `f() { git push origin main; }; f` were run through the real hook
+# before this fix -- only the bare form (rc=2) and the ALLOW_PUSH=1-authorized form (rc=0) behaved
+# correctly; all six of the reserved-word/exec shapes below read rc=0 (unblocked). These are NOT
+# the CONCEDED RESIDUAL class the module docstring names (nested shell strings, wrapper-with-args):
+# the push is a bare `git` token in genuine command position in the segment's own token stream, and
+# the tokenizer finds it once `starts_command` is told reserved words count. RED before the fix.
+assert '{ git push origin main; }' 2 'reserved: a brace group is command position'
+assert 'if true; then git push origin main; fi' 2 'reserved: if/then is command position'
+assert 'while false; do git push origin main; done' 2 'reserved: while/do is command position'
+assert 'f() { git push origin main; }; f' 2 'reserved: a function body is command position'
+assert 'exec git push origin main' 2 'reserved: exec is command position'
+assert '! git push origin main' 2 'reserved: ! negation is command position'
+assert 'git status && if true; then git push origin main; fi' 2 'reserved: a compound later in a chain'
+
+# THE ROW THAT CATCHES HALF A FIX. Teaching `_segment_has_unauthorized_push` about reserved words
+# WITHOUT also teaching `_leading_env_authorized` about them turns this from allow into block:
+# that walker starts at seg[0], which is now the reserved word, and breaks before it ever reaches
+# the assignment. So this row is GREEN before the change and GREEN after -- and RED for anything
+# in between (specifically: RED if only the detection call sites are fixed). It is the control
+# proving the two halves landed together, and it is the only row that can say so.
+assert 'if true; then ALLOW_PUSH=1 git push origin main; fi' 0 \
+  'reserved: the override still authorizes inside a compound'
+
+# The stricter wrapper rule must SURVIVE the reserved-word widening: a wrapper is not a reserved
+# word, so an assignment after one still does not authorize.
+assert 'sudo ALLOW_PUSH=1 git push origin main' 2 'reserved: a wrapper is still not a reserved word'
+
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
