@@ -5,7 +5,7 @@ Deliberately NOT named `test_*`: it mutates a tracked file in place, so pytest m
 it. Run it on demand — `./scripts/tests/mutate_memory_index_check.py` — and never while editing
 the subject, since the restore would clobber your edits.
 
-Every row names ONE safety property the 18-row suite (`test_memory_index_check.sh`) is supposed
+Every row names ONE safety property the 24-row suite (`test_memory_index_check.sh`) is supposed
 to be defending, and mutates exactly what it names. A row that survives is not evidence the code
 is fine — it is evidence the suite is not testing what the row claims; the fix is to strengthen
 the SUITE ROW, never to reword this file's assertion.
@@ -17,9 +17,10 @@ the SUITE ROW, never to reword this file's assertion.
 those rows are unreachable by this mutation and MUST stay green — that is not a coverage gap, it
 is the scope/opt-in guard working as designed. Naming the rows precisely, rather than rounding up
 to "the `scope-*` rows": the unreachable set is exactly the three out-of-scope rows
-(`scope-projects`, `scope-memory`, `scope-name`), plus `optin-absent` (declined by the
-content-opt-in gate) and `absent-file` (declined by `is_file()`) — five rows, one per declining
-reason named above. `absent-file`'s own coverage comes from the `isfile` mutation below, not this
+(`scope-projects`, `scope-memory`, `scope-name`), plus `optin-absent` AND `agg-no-optin` (both
+declined by the content-opt-in gate, which sits ABOVE `entry_blocks`) and `absent-file` (declined
+by `is_file()`) — six rows, one per declining reason named above, and the count is six rather than
+five because the aggregate check's arrival added a second opt-in-declined row. `absent-file`'s own coverage comes from the `isfile` mutation below, not this
 one. `scope-symlink`'s fixture resolves the payload path THROUGH a
 symlink to a real, opted-in, in-scope `MEMORY.md`, so it DOES reach `entry_blocks` and joins the
 in-scope rows that flip — it is not a fourth row that stays green. What the mutation actually
@@ -73,6 +74,34 @@ SUBJECT = REPO / "scripts" / "memory-index-check.py"
 SUITE = ["bash", str(REPO / "scripts" / "tests" / "test_memory_index_check.sh")]
 
 MUTATIONS = [
+    # ---- aggregate whole-file cap. These exist because a first pass at this campaign covered
+    # the per-entry path eight ways and the aggregate path not at all; a perfect score over the
+    # wrong mutants is the failure this block is written against.
+    mutate.Mutation(
+        "the aggregate boundary flips to strict >, so a file exactly at the threshold passes",
+        "total_bytes >= AGG_MAX_BYTES",
+        "total_bytes > AGG_MAX_BYTES",
+    ),
+    mutate.Mutation(
+        "the threshold is raised past the harness's real limit, so the check never fires in time",
+        "AGG_MAX_BYTES = 20000",
+        "AGG_MAX_BYTES = 200000",
+    ),
+    mutate.Mutation(
+        "the aggregate is summed from entry blocks, under-counting every non-entry byte",
+        "total_bytes = len(content)",
+        "total_bytes = sum(b[1] for b in blocks)",
+    ),
+    mutate.Mutation(
+        "the aggregate branch is never reached, so only the per-entry cap survives",
+        "agg_breach = total_bytes >= AGG_MAX_BYTES",
+        "agg_breach = False",
+    ),
+    mutate.Mutation(
+        "the opt-in gate is removed, enrolling every project index on the machine",
+        "if OPT_IN_NEEDLE not in content.lower():\n        return 0",
+        "if False:\n        return 0",
+    ),
     # ---- the cap itself and its boundary
     mutate.Mutation(
         "the cap is widened 100x, so the 4052B defect and every over-cap fixture reads clean",

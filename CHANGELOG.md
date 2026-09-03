@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.100.0 — 2026-08-31
+- feat(memory-index): fail when the index outgrows its reader's limit
+
 ## v0.99.1 — 2026-08-31
 - fix(audit): keep the full offender list when the excerpt truncates
 

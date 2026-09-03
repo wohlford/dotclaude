@@ -70,7 +70,13 @@ output=$(cd "$root" && bash scripts/tests/test_memory_index_check.sh 2>&1) && rc
 
 if [[ "$rc" -ne 0 ]]; then
   printf 'memory-index-check tests FAILED after editing %s:\n' "$file_path" >&2
-  printf '%s\n' "$output" | tail -20 >&2
+  # Filter to failure-shaped lines rather than a fixed tail. PASS rows print as the suite goes
+  # and sort BEFORE the FAILs that made the run fail, so a tail cap truncates by keeping the
+  # least informative half once the row count grows past it — the suite already emits more
+  # lines than a `tail -20` can hold. FAIL rows carry their own attached "      stderr: ..."
+  # context line(s), and the final tally ("FAIL n/m") also starts with FAIL, so one filter
+  # covers per-row failures and the summary with no separate case for either.
+  printf '%s\n' "$output" | grep -E '^(FAIL|      stderr:)' >&2
   exit 2
 fi
 

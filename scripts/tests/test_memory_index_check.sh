@@ -5,8 +5,11 @@ set -uo pipefail
 # Purpose: Regression tests for memory-index-check.py — per-entry byte cap, the boundary
 #          (> not >=), byte-vs-character counting, the hard-wrap evasion, the bare-dash evasion,
 #          the report cap, tail-anchored scope (projects/*/memory/MEMORY.md, symlink
-#          tail-survival), the content opt-in gate, the argv/TTY refusal, and the fail-open
-#          paths (malformed JSON, absent file).
+#          tail-survival), the content opt-in gate, the argv/TTY refusal, the fail-open
+#          paths (malformed JSON, absent file), and the whole-file aggregate-size check
+#          (over/under/boundary, the small-entries discriminator, the opt-in gate on the
+#          aggregate path, and non-entry content). NOTE: the aggregate rows are RED against
+#          today's checker — the aggregate check does not exist yet; see Task 2.
 # Usage:   bash scripts/tests/test_memory_index_check.sh
 #
 # Every row asserts BOTH the exit code AND stderr: an exit-0 row requires stderr EMPTY (else a
@@ -265,18 +268,107 @@ write(
     HEADER + bde_head + "\n" + bde_cont + "\n",
 )
 
+# ---- aggregate-size fixtures (memory-index-reader-limit spec, Task 1) ----------------------
+# The checker does not implement an aggregate/whole-file check yet — only the per-entry cap
+# above. Threshold pinned here for the check-to-be: 20000 raw file bytes (not entries). Rows
+# that expect a TRIP are RED against today's checker (it never emits this message); rows that
+# expect NO trip are unavoidably already true today too (there is no aggregate logic yet to
+# misfire) and serve as controls the new check must not regress.
+#
+# Every entry in every one of these fixtures stays at or under 960B, comfortably under
+# MAX_ENTRY_BYTES(1000), so today's checker finds zero per-entry offenders and returns rc 0 for
+# every one of them (except agg-boundary/agg-small-entries etc. — same reasoning). That makes
+# every "must trip" row fail today for a single, unambiguous reason: "want rc 2, got 0".
+
+
+def build_multi_entries(n: int, size: int, prefix_fmt: str = "- [E{i}](t{i}.md) - ") -> str:
+    return "\n\n".join(pad_line(prefix_fmt.format(i=i), size) for i in range(n))
+
+
+# agg-over: 21 entries @ 960B (each < MAX_ENTRY_BYTES) -> total 20268B, over the 20000B
+# threshold. Plain "over the aggregate, trips" case.
+agg_over_body = build_multi_entries(21, 960)
+agg_over_content = HEADER + agg_over_body + "\n"
+assert len(agg_over_content.encode("utf-8")) == 20268, len(agg_over_content.encode("utf-8"))
+write(sandbox / "agg-over" / "projects" / "proj1" / "memory" / "MEMORY.md", agg_over_content)
+
+# agg-under: 13 entries @ 900B -> total 11792B, comfortably under 20000B.
+agg_under_body = build_multi_entries(13, 900)
+agg_under_content = HEADER + agg_under_body + "\n"
+assert len(agg_under_content.encode("utf-8")) == 11792, len(agg_under_content.encode("utf-8"))
+write(sandbox / "agg-under" / "projects" / "proj1" / "memory" / "MEMORY.md", agg_under_content)
+
+# agg-boundary: 21 entries @ 900B + 1 entry @ 990B -> total EXACTLY 20000B. Pins the
+# comparison's direction: this row asserts exactly-at-threshold TRIPS, i.e. the aggregate check
+# must use ">=", not ">" (unlike the per-entry check above, which deliberately uses ">"). Chosen
+# because "err low" (see spec) favours catching the boundary itself, and because the opposite
+# choice ("does not trip" at the boundary) can never be RED here — it is already true today with
+# no aggregate logic at all, so it would pin nothing.
+agg_boundary_lines = [pad_line(f"- [E{i}](t{i}.md) - ", 900) for i in range(21)] + [
+    pad_line("- [ELAST](tlast.md) - ", 990)
+]
+agg_boundary_body = "\n\n".join(agg_boundary_lines)
+agg_boundary_content = HEADER + agg_boundary_body + "\n"
+assert len(agg_boundary_content.encode("utf-8")) == 20000, len(
+    agg_boundary_content.encode("utf-8")
+)
+write(
+    sandbox / "agg-boundary" / "projects" / "proj1" / "memory" / "MEMORY.md",
+    agg_boundary_content,
+)
+
+# agg-small-entries: 210 entries @ 100B each (all far under the 1000B per-entry cap) -> total
+# 21486B, over threshold. The discriminator: proves the aggregate check is not the per-entry
+# check restated — nothing here is anywhere near MAX_ENTRY_BYTES, yet the file must still trip.
+agg_small_body = build_multi_entries(210, 100)
+agg_small_content = HEADER + agg_small_body + "\n"
+assert len(agg_small_content.encode("utf-8")) == 21486, len(agg_small_content.encode("utf-8"))
+write(
+    sandbox / "agg-small-entries" / "projects" / "proj1" / "memory" / "MEMORY.md",
+    agg_small_content,
+)
+
+# agg-no-optin: same 21x960B body as agg-over (total over threshold), but under a header that
+# does NOT declare the opt-in rule -> must NOT trip. Measured justification: wohlford-court is
+# 21555B, unopted-in, on this machine; nothing must enroll it by accident.
+agg_no_optin_body = build_multi_entries(21, 960)
+agg_no_optin_content = NO_OPTIN_HEADER + agg_no_optin_body + "\n"
+assert len(agg_no_optin_content.encode("utf-8")) == 20217, len(
+    agg_no_optin_content.encode("utf-8")
+)
+write(
+    sandbox / "agg-no-optin" / "projects" / "proj1" / "memory" / "MEMORY.md",
+    agg_no_optin_content,
+)
+
+# agg-nonentry-content: 3 small entries (300B each) plus one 19526B PROSE paragraph that does
+# NOT start "- [" (so entry_blocks() never sees it) -> total 20500B, over threshold, driven
+# entirely by non-entry content. Pins that the aggregate is measured over RAW FILE BYTES, not
+# the sum of entry_blocks() — an implementation that reuses entry_blocks and sums its sizes
+# under-counts by the scaffolding and would read plausible while missing this row.
+agg_ne_entries = [pad_line(f"- [E{i}](t{i}.md) - ", 300) for i in range(3)]
+agg_ne_prose = pad_line("Prose paragraph, not a bullet - ", 19526)
+assert not agg_ne_prose.startswith("- ["), agg_ne_prose[:5]
+agg_ne_body = "\n\n".join(agg_ne_entries) + "\n\n" + agg_ne_prose
+agg_ne_content = HEADER + agg_ne_body + "\n"
+assert len(agg_ne_content.encode("utf-8")) == 20500, len(agg_ne_content.encode("utf-8"))
+write(
+    sandbox / "agg-nonentry-content" / "projects" / "proj1" / "memory" / "MEMORY.md",
+    agg_ne_content,
+)
+
 print("FIXTURES_OK")
 PY
 fixtures_rc=$?
 
 if [[ "$fixtures_rc" -ne 0 ]]; then
   printf 'FAIL  fixture construction (python3 exited %d building the sandbox — see output above)\n' "$fixtures_rc"
-  printf '\nFAIL 0/18\n'
+  printf '\nFAIL 0/24\n'
   exit 1
 fi
 
 # ============================================================================================
-# The 18 rows
+# The 24 rows
 # ============================================================================================
 
 run_block 'defect: single 4052B entry over cap, names line and byte count' \
@@ -327,6 +419,31 @@ run_ok "optin-absent: in-scope, over cap, header does NOT declare the opt-in rul
 run_block 'bare-dash-evasion: bare "- " continuation folds into its block (no bracket needed)' \
   "$sandbox/bare-dash-evasion/projects/proj1/memory/MEMORY.md" \
   'memory-index-check:' 'line 3: 5022B'
+
+# ---- aggregate-size rows (memory-index-reader-limit spec, Task 1 — RED against today's
+#      checker for every "must trip" row below; see the fixture-construction comment above) ----
+
+run_block 'agg-over: total 20268B > 20000B threshold, 21 entries all <=960B — trips, names size + threshold' \
+  "$sandbox/agg-over/projects/proj1/memory/MEMORY.md" \
+  'memory-index-check:' '20268' '20000'
+
+run_ok 'agg-under: total 11792B comfortably under the 20000B threshold — no trip' \
+  "$sandbox/agg-under/projects/proj1/memory/MEMORY.md"
+
+run_block 'agg-boundary: total exactly 20000B == threshold — trips (aggregate uses >=, not >)' \
+  "$sandbox/agg-boundary/projects/proj1/memory/MEMORY.md" \
+  'memory-index-check:' '20000'
+
+run_block 'agg-small-entries: total 21486B over threshold via 210 entries of 100B each (all far under the 1000B cap) — still trips, not the per-entry check restated' \
+  "$sandbox/agg-small-entries/projects/proj1/memory/MEMORY.md" \
+  'memory-index-check:' '21486' '20000'
+
+run_ok 'agg-no-optin: total 20217B over threshold but header does NOT declare the opt-in rule — must NOT trip' \
+  "$sandbox/agg-no-optin/projects/proj1/memory/MEMORY.md"
+
+run_block 'agg-nonentry-content: total 20500B over threshold via a 19526B prose paragraph, all 3 entries small (300B) — trips on raw file bytes, not summed entry_blocks' \
+  "$sandbox/agg-nonentry-content/projects/proj1/memory/MEMORY.md" \
+  'memory-index-check:' '20500' '20000'
 
 # ---- argv-refusal: invoked with an argv arg, stdin at EOF ----
 argv_rc=0

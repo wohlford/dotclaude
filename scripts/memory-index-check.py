@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Script: memory-index-check.py
-# Purpose: PostToolUse hook — flag a memory-index entry grown into topic-file content
-"""PostToolUse hook — flag an over-long entry in a Claude Code memory index.
+# Purpose: PostToolUse hook — flag a memory-index entry, or the whole file, grown too large
+"""PostToolUse hook — flag an over-long entry, or an over-long whole file, in a memory index.
 
 Called by Claude Code hooks with the tool-call JSON on stdin. When the edited file is a projects
 memory index, each entry — a `- [` bullet PLUS its indented continuation lines — is measured in raw
@@ -32,9 +32,34 @@ project index at that tail, most of which never adopted the cap calibrated here.
 file's OWN TEXT to declare the rule (`OPT_IN_NEEDLE`, matched case-insensitively) makes the checker
 enforce exactly the rule the file itself claims — the same sentence its own error message already
 asserts — and is self-updating: a project opts in by stating the rule in its own header, and needs
-no allowlist to maintain. State plainly what this stops matching: any index that has not declared
-the rule, including one whose entries are genuinely over-long. That is intended — an undeclared
-file has not opted in.
+no allowlist to maintain. The needle now gates BOTH checks below — the per-entry cap and the
+whole-file aggregate cap — not just the first: a project that has not declared the rule is exempt
+from the aggregate too, on the same reasoning. Measured on this machine: another project's index
+(wohlford-court) sits at 21,555 B with no opt-in declared; the aggregate check must not fire there
+on propagation. State plainly what this stops matching: any index that has not declared the rule,
+including one whose entries — or whose total size — are genuinely over-long. That is intended — an
+undeclared file has not opted in.
+
+Whole-file aggregate cap (`AGG_MAX_BYTES`): tracks the READING HARNESS's own limit, which it
+reports as "24.4KB" — a different number from the per-entry cap above, and a different failure
+mode. 25000 / 1024 = 24.41, which is ambiguous between 25,000 and 24,985 bytes as the harness's
+true byte cutoff, so this deliberately does NOT try to mirror that report exactly. Instead pick a
+round number with headroom and let the asymmetry decide which way to round: a cap set too LOW
+costs a false alarm on a file the operator can simply shorten; a cap set too HIGH costs SILENT,
+UNDETECTABLE loss — entries past the harness's own cut are dropped with no signal at all, which is
+the exact defect this check exists to catch. So err low.
+
+The aggregate check is measured over RAW FILE BYTES (`len(content)`), never the sum of
+`entry_blocks()` sizes — an implementation that sums entry blocks under-counts by whatever
+scaffolding (headers, blank lines, prose paragraphs) sits outside any `- [` block, and would read
+entirely plausible while silently missing exactly the content most likely to push a file over the
+harness's real limit.
+
+The aggregate comparison is `>=`, not `>` — this deliberately diverges from the per-entry check's
+strict `>` above. Two reasons: the err-low asymmetry favours catching the boundary itself rather
+than waiting one byte past it, and a `>` convention here would make an exactly-at-threshold file
+pass with no aggregate logic at all, which is not what "err low" means. Do not "fix" this to match
+the per-entry check's `>`; the mismatch between the two is intentional, not drift.
 
 Known leniencies (false negatives, by choice): a MEMORY.md that is itself a symlink resolves away
 from the tail and is declined; CRLF files retain \\r, shifting the boundary 1 B per line; counts
@@ -55,6 +80,14 @@ REPORT_LIMIT = 5
 SCOPE_PATTERN = "projects/*/memory/MEMORY.md"
 RULE = "detail lives in the topic file — never here"
 OPT_IN_NEEDLE = b"detail lives in the topic file"
+
+# See the "Whole-file aggregate cap" docstring paragraph above for why 20000 (not a mirror of
+# the harness's reported "24.4KB"), why raw file bytes (not summed entry_blocks()), and why the
+# comparison below is >= rather than the per-entry check's >. Do not touch MAX_ENTRY_BYTES above
+# to "harmonise" it with this — it is a different check, calibrated against a different limit,
+# and belongs to a different backlog entry.
+AGG_MAX_BYTES = 20000
+TOP_N_BY_SIZE = 3
 
 
 def read_file_path() -> str | None:
@@ -116,24 +149,59 @@ def main() -> int:
     content = abs_file.read_bytes()
     if OPT_IN_NEEDLE not in content.lower():
         return 0
-    offenders = [b for b in entry_blocks(content) if b[1] > MAX_ENTRY_BYTES]
-    if not offenders:
+    blocks = entry_blocks(content)
+    offenders = [b for b in blocks if b[1] > MAX_ENTRY_BYTES]
+    total_bytes = len(content)
+    agg_breach = total_bytes >= AGG_MAX_BYTES
+
+    if not offenders and not agg_breach:
         return 0
-    print(
-        f"memory-index-check: {len(offenders)} entry/entries over {MAX_ENTRY_BYTES}B in "
-        f"{abs_file} — this index's own header rule is: {RULE}.",
-        file=sys.stderr,
-    )
-    for lineno, size, head in offenders[:REPORT_LIMIT]:
-        excerpt = head.decode("utf-8", errors="replace")[:70]
-        print(f"  line {lineno}: {size}B — {excerpt}…", file=sys.stderr)
-    if len(offenders) > REPORT_LIMIT:
-        print(f"  … and {len(offenders) - REPORT_LIMIT} more", file=sys.stderr)
-    print(
-        "  Move the detail into the topic file each entry points at; leave a one-line hook.\n"
-        "  Do NOT wrap the line — that hides the entry from this check without shrinking it.",
-        file=sys.stderr,
-    )
+
+    # Both checks can breach on the same file at once (a runaway entry inside a runaway file).
+    # Decision: report BOTH sections rather than letting one suppress the other. An
+    # aggregate-only exit that dropped the per-entry offender list would hide the actionable
+    # half — the per-entry list names exactly which block to shrink first; the aggregate
+    # section alone only proves the file is too big, not where the bytes are concentrated.
+    if offenders:
+        print(
+            f"memory-index-check: {len(offenders)} entry/entries over {MAX_ENTRY_BYTES}B in "
+            f"{abs_file} — this index's own header rule is: {RULE}.",
+            file=sys.stderr,
+        )
+        for lineno, size, head in offenders[:REPORT_LIMIT]:
+            excerpt = head.decode("utf-8", errors="replace")[:70]
+            print(f"  line {lineno}: {size}B — {excerpt}…", file=sys.stderr)
+        if len(offenders) > REPORT_LIMIT:
+            print(f"  … and {len(offenders) - REPORT_LIMIT} more", file=sys.stderr)
+        print(
+            "  Move the detail into the topic file each entry points at; leave a one-line hook.\n"
+            "  Do NOT wrap the line — that hides the entry from this check without shrinking it.",
+            file=sys.stderr,
+        )
+
+    if agg_breach:
+        print(
+            f"memory-index-check: {abs_file} is {total_bytes}B, at or over the "
+            f"{AGG_MAX_BYTES}B aggregate threshold — entries past the reading harness's own "
+            f'cut are ALREADY invisible, not "will be" once it grows further.',
+            file=sys.stderr,
+        )
+        # Named by size, not by offender status: agg-small-entries proves a file can breach
+        # the aggregate with every entry individually under MAX_ENTRY_BYTES, so the per-entry
+        # offender list can be empty here. Without naming a target, a breach invites trimming
+        # whatever was just edited rather than the entries actually holding the most bytes.
+        by_size = sorted(blocks, key=lambda b: b[1], reverse=True)[:TOP_N_BY_SIZE]
+        if by_size:
+            print("  Largest entries by bytes:", file=sys.stderr)
+            for lineno, size, head in by_size:
+                excerpt = head.decode("utf-8", errors="replace")[:70]
+                print(f"    line {lineno}: {size}B — {excerpt}…", file=sys.stderr)
+        print(
+            "  Move detail out of the largest entries into their topic files, or archive "
+            "closed items; shortening the file is the only fix — do not narrow this check.",
+            file=sys.stderr,
+        )
+
     return 2
 
 
