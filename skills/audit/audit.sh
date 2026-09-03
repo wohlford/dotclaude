@@ -1121,29 +1121,66 @@ check_pre_push_installed() {
 
 # Registration, not liveness -- the same limitation as check_pre_push_installed above, stated
 # for the same reason. This asserts the SCOPE'S ON-DISK settings.json carries a hook whose
-# command carries git-timing-guard.sh as a whole path token (anchored on both sides -- see the
-# matcher's own comment below), and that when it does, the guard's policy file is USABLE.
-# "On-disk", never "committed" -- this reads $scope/settings.json exactly as it sits in the
-# working tree, which is not the same thing as git's committed blob (an uncommitted edit, or --
-# measured on this machine -- a skip-worktree file whose committed copy carries 0 occurrences of
-# git-timing-guard.sh against 1 on disk). Whether that on-disk copy is ALSO the runtime file
-# depends entirely on what --scope points at: for a scope whose settings.json is the file
-# ~/.claude/settings.json resolves into, reading $scope/settings.json IS reading the runtime
-# file, so the verdict below is a claim about the gate running right now. For any other scope
-# it is a claim about registration-on-promote only. This IS decidable, definitely: one
+# command carries git-timing-guard.py -- or its TRANSITIONAL .sh shim, git-timing-guard.sh,
+# which older sessions' loaded snapshots still invoke -- as a whole path token (anchored on
+# both sides -- see the matcher's own comment below), and that when it does, the guard's policy
+# file is USABLE. "On-disk", never "committed" -- this reads $scope/settings.json exactly as it
+# sits in the working tree, which is not the same thing as git's committed blob (an uncommitted
+# edit, or a skip-worktree file whose on-disk content has silently diverged from its committed
+# copy without `git status` ever reporting it -- this repo's own resolved live settings.json is
+# skip-worktree, so a promote there can change what is actually loaded while git stays silent
+# about it; re-measure the specific occurrence counts rather than trusting a number recorded
+# here, since they move with every promote and a stale pair reads as evidence of a divergence
+# that no longer exists). Whether that on-disk copy is ALSO the
+# runtime file depends entirely on what --scope points at: for a scope whose settings.json is
+# the file ~/.claude/settings.json resolves into, reading $scope/settings.json IS reading the
+# runtime file, so the verdict below is a claim about the gate running right now. For any other
+# scope it is a claim about registration-on-promote only. This IS decidable, definitely: one
 # `readlink -f` comparison of $scope/settings.json against ~/.claude/settings.json settles
 # which case applies, and every conf FAIL and the conf-absent SKIP below name the resolved path
 # rather than a nickname like "the dotclaude clone" -- ambiguous to a reader who is themselves
-# sitting in a clone. Everything else carries no such caveat, and "everything else" is FOUR
+# sitting in a clone. Everything else carries no such caveat, and "everything else" is EIGHT
 # verdicts, not the two a "SKIPs and PASS" phrasing suggests: the settings-absent SKIP, the
-# settings-unparseable SKIP, the not-registered SKIP, and the jq-unavailable FAIL -- which is a
-# FAIL, so a partition drawn as "the other SKIPs and PASS" silently omits it. PASS carries no
-# detail at all, structurally: verdict_pass takes a name and nothing else.
+# settings-unparseable SKIP, the not-registered SKIP, the jq-unavailable SKIP, the
+# python3-lib-absent SKIP, and three FAILs among them -- python3-unusable (the module exists but
+# will not import), python3-lib-gutted (the module imports but is missing a symbol
+# scripts/git-timing-guard.py actually reads), and python3-lib-broken-install (a dangling
+# symlink, or a broken scripts/ tree, sitting where a genuinely absent install would otherwise
+# read) -- so a partition drawn as "the other SKIPs and PASS" silently omits all three. PASS
+# carries no detail at all, structurally: verdict_pass takes a name and nothing else.
 #
 # The conf is resolved EXACTLY as the guard resolves it -- hardcoded $HOME/.claude/, per the
-# `conf=` assignment in scripts/git-timing-guard.sh. Deliberately NOT the hermetic-outside
+# `conf_path=` assignment in scripts/git-timing-guard.py (the .sh shim no longer resolves this
+# itself; it execs straight into the .py, which does). Deliberately NOT the hermetic-outside
 # check's own $CLAUDE_CONFIG_DIR-else-~/.claude idiom: the guard itself never consults that
 # variable, and copying that precedent here would grade a directory nobody is using.
+#
+# The python3-unusable arm resolves its import probe the SAME way -- hardcoded
+# $HOME/.claude/scripts/lib, never $scope/scripts/lib -- for the identical reason: the guard
+# that would actually run is the one at $HOME/.claude/scripts/git-timing-guard.py, which
+# resolves its own sibling `lib/` relative to ITSELF, not to whatever --scope this sweep was
+# handed. A scope-relative probe would also require every fixture scope in this suite to carry
+# a working scripts/lib, which the registration fixtures (settings.json only) do not.
+#
+# IMPORT SUCCEEDING IS NOT ENOUGH -- the python3-lib-gutted arm exists because an import probe
+# alone passes for a module that imports cleanly but does not define what the guard actually
+# reads off it (`import git_command` on an empty file, or on a real copy with one symbol
+# deleted, both import without error). Measured against a real publish into the guarded repo:
+# both shapes made the guard itself fail open (rc=0) while the plain import probe still read
+# PASS. So this arm dereferences the specific symbols scripts/git-timing-guard.py's `gitcmd.`
+# usages read, not just the module name -- see that check's own comment for the list and how to
+# re-derive it.
+#
+# `-e` FOLLOWS SYMLINKS -- the python3-lib-broken-install arm exists because a bare
+# `[[ ! -e "$git_command_module" ]]` cannot tell "nothing was ever installed here" (the
+# packaging fact python3-lib-absent names) from "something is installed but a symlink in the
+# chain is dangling" (a guard-disabling FACT, not a packaging one). This machine's own install is
+# exactly the shape a leaf-only `-e`/`-L` pair would still miss: $HOME/.claude/scripts is ITSELF
+# a symlink into the production clone (see memory/live-config-is-a-symlink-farm.md), so a stale
+# farm link leaves nothing under it for a leaf test to find, indistinguishable from having never
+# installed dotclaude here at all. Discriminate along the WHOLE chain from $HOME/.claude down
+# to git_command_module, never at a hand-picked subset of it -- an earlier revision named just
+# the leaf and the farm root, and that list was measurably incomplete in both directions.
 #
 # Static and unconditional, like exec-bit, mutation-anchors and pre-push-installed: this reads
 # no repo code and needs no --tests gate, and it is never scoped by .auditignore -- a repo
@@ -1182,13 +1219,157 @@ check_timing_guard_conf() {
     liveness_note=" -- registration-not-liveness: this reads $settings, which resolves to ${settings_resolved:-$settings} -- ~/.claude/settings.json on this machine resolves to ${home_settings_resolved:-a different, nonexistent path} instead, so this verdict is a claim about registration-on-promote only, not about the gate running now"
   fi
 
-  if ! command -v jq >/dev/null 2>&1; then
+  # Resolved the SAME way scripts/git-timing-guard.py resolves its own sibling lib/, hardcoded
+  # to $HOME, never $scope -- see the block comment above this function.
+  local git_command_module="$HOME/.claude/scripts/lib/git_command.py"
+  local scripts_root="$HOME/.claude/scripts"
+
+  # DISCRIMINATE "never installed" from "broken install" BEFORE the absence test below --
+  # `-e` FOLLOWS SYMLINKS, so it reads false for both, and a bare `[[ ! -e ]]` would route a
+  # dangling symlink into the reassuring packaging-fact SKIP.
+  #
+  # WALK THE WHOLE CHAIN, TOP-DOWN. An earlier fix hand-enumerated three clauses -- a dangling
+  # leaf, a dangling $HOME/.claude/scripts, and a non-directory $HOME/.claude/scripts -- and that
+  # list was measurably incomplete in BOTH directions from the components it named: a dangling
+  # $HOME/.claude and a dangling $HOME/.claude/scripts/lib each returned the packaging SKIP. For
+  # the first of those the text was BYTE-IDENTICAL to a genuine absence; for the second it
+  # differed only in the parenthetical, which read "exists" -- true, and reassuring in exactly
+  # the wrong direction. $HOME/.claude is a live component here, not a hypothetical: it is a
+  # symlink into a dotfiles repo, so relocating or removing that clone dangles it. (An
+  # UNINITIALISED submodule at that path does NOT -- git leaves an empty directory, which exists
+  # and is traversable, so it takes the packaging SKIP and is out of this arm's scope.)
+  # Enumerating components by hand is what went stale; deriving them from the path does not.
+  #
+  # DIRECTION IS LOAD-BEARING: lstat on a path with a broken ANCESTOR fails outright rather than
+  # reporting "not a symlink", so `-L` reads FALSE for every component BELOW a break. Only a
+  # top-down walk sees the break at all, and only the FIRST broken component is the real cause --
+  # everything under it is a consequence.
+  local module_broken_desc=""
+  local scripts_root_state="does not exist"
+  [[ -e "$scripts_root" ]] && scripts_root_state="exists"
+  [[ -L "$scripts_root" ]] && scripts_root_state="$scripts_root_state (a symlink)"
+  local _comp
+  for _comp in "$HOME/.claude" "$scripts_root" "$scripts_root/lib" "$git_command_module"; do
+    if [[ -L "$_comp" && ! -e "$_comp" ]]; then
+      module_broken_desc="$_comp is a dangling symlink (its target does not exist)"
+      [[ "$_comp" != "$git_command_module" ]] &&
+        module_broken_desc="$module_broken_desc, so $git_command_module is unreachable"
+      [[ "$_comp" == "$scripts_root" ]] &&
+        module_broken_desc="$module_broken_desc -- this machine's scripts farm link has gone stale"
+      break
+    fi
+    # A component that exists but cannot be traversed is installed-and-broken, never absent.
+    # The LEAF is exempt from both tests: a directory or an unreadable file there imports as a
+    # failure, which the python3-unusable arm below already reports with the right vocabulary.
+    if [[ "$_comp" != "$git_command_module" ]] && [[ -e "$_comp" ]]; then
+      if [[ ! -d "$_comp" ]]; then
+        module_broken_desc="$_comp exists but is not a directory, so $git_command_module is unreachable"
+        break
+      fi
+      if [[ ! -x "$_comp" ]]; then
+        module_broken_desc="$_comp exists but is not searchable (no execute permission), so $git_command_module is unreachable"
+        break
+      fi
+    fi
+    # Nothing broken at or above this component, and it simply is not there: everything below is
+    # absent as a consequence, so this is a genuine packaging absence, not a broken install.
+    [[ -e "$_comp" ]] || break
+  done
+
+  if [[ -n "$module_broken_desc" ]]; then
+    undecided_reason="python3-lib-broken-install"
+  elif [[ ! -e "$git_command_module" ]]; then
+    # SKIP, not FAIL -- MODULE ABSENT is a PACKAGING fact (dotclaude's scripts were never
+    # installed at $HOME/.claude on this machine), never evidence the guard is failing open.
+    # Reviewed and reproduced: this arm used to fall straight into the import attempt below,
+    # which fails identically whether the module is merely ABSENT or PRESENT-BUT-BROKEN, and
+    # escalated BOTH to the same FAIL -- unconditionally, before registration is even read. For
+    # THIS repo (dotclaude-dev/dotclaude) that is harmless, because the module is always present
+    # once the symlink farm is set up. But audit.sh is a DISTRIBUTED skill (hpc-project,
+    # arc-cluster-docs, the court repo, ...) and this check is never scoped by .auditignore, so
+    # every adopter whose machine has no dotclaude scripts installed at all -- true of most of
+    # them -- read a hard FAIL on every sweep, over a hook their own settings.json never even
+    # mentions. Reproduced: a fixture repo registering an unrelated hook, HOME with no
+    # $HOME/.claude/scripts/lib at all, gave FAIL here before this fix; see rTGC+K in
+    # test_audit.sh, the row that pins the SKIP this now reads instead.
+    #
+    # Reached only once EVERY component from $HOME/.claude down to the leaf is confirmed to be
+    # neither a dangling symlink nor an unusable directory (the walk above) -- so this is now a
+    # genuine, unqualified absence, not merely "-e says no".
+    undecided_reason="python3-lib-absent"
+  elif ! python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import git_command' \
+      "$HOME/.claude/scripts/lib" >/dev/null 2>&1; then
+    # Tested ahead of jq AND settings-absent, for the same machine-global reason the jq arm
+    # (right below) has always led: python3 usability is a fact about THIS MACHINE, not
+    # about this scope's settings.json, so it must not sit behind a settings-existence test --
+    # and when BOTH facts are missing (no usable python3 AND no settings.json), FAIL must win
+    # over SKIP, because this is evidence of an EXISTING fail-open, not mere
+    # registration-uncertainty (see rTGC14 in test_audit.sh, which pins that ordering).
+    #
+    # Reached only once the module is known to EXIST (the arm above), so this is MODULE PRESENT
+    # BUT BROKEN -- real fail-open evidence, distinct from the packaging fact above, and the one
+    # shape that still deserves a FAIL. Probes IMPORTABILITY of the module the guard imports at
+    # hook time (scripts/lib/git_command, via the identical sys.path.insert
+    # scripts/git-timing-guard.py's own lazy import performs), never mere PRESENCE of a
+    # `python3` binary on PATH. Both fail-opens this repo has actually measured -- a
+    # SyntaxError parsing a hook under Python 3.9, and `init_import_site` failing to initialise
+    # under concurrent hook load -- had a perfectly resolvable `python3` AND an existing module;
+    # a bare `command -v python3` probe would have read PASS through both. This is a single
+    # one-shot subprocess and CANNOT observe the concurrent-load shape -- it can only catch an
+    # interpreter- or import-level failure that reproduces outside a load spike, and its own
+    # FAIL text says so plainly rather than overclaiming coverage.
+    undecided_reason="python3-unusable"
+  elif ! python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+import git_command as g
+# IMPORTING is not USING. A module that imports cleanly can still be gutted -- an empty file, or
+# a real copy missing one symbol -- and the guard genuinely reads these off it at hook time, not
+# merely "import git_command" and stop. Measured against a real publish into the guarded repo,
+# same fixture HOME: an empty stub and a real module with GIT_ONLY_WRAPPERS deleted both left the
+# guard failing open (rc=0) while a bare import probe still read PASS.
+#
+# Coupled to scripts/git-timing-guard.py'"'"'s own gitcmd.<name> usages -- re-derive this list
+# whenever that file changes by running, from the repo root:
+#   grep -oE "gitcmd\.[A-Za-z_][A-Za-z0-9_]*" scripts/git-timing-guard.py | sort -u
+required = (
+    "ENV_ASSIGN",
+    "GIT_ONLY_WRAPPERS",
+    "RESERVED_WORDS",
+    "classify_global_opt",
+    "is_git",
+    "is_op",
+    "iter_context_token_streams",
+    "iter_git_invocations_detailed",
+    "starts_command",
+)
+missing = [n for n in required if not hasattr(g, n)]
+sys.exit(1 if missing else 0)
+' "$HOME/.claude/scripts/lib" >/dev/null 2>&1; then
+    # Reached only once the module is known to EXIST and IMPORT (the two arms above) -- so this
+    # is MODULE PRESENT, IMPORTABLE, BUT INCOMPLETE: it defines fewer symbols than
+    # scripts/git-timing-guard.py actually reads off it at hook time. An import-only probe cannot
+    # see this -- `import git_command` succeeds identically for a fully working module, an empty
+    # file, and a module missing exactly the one symbol a caller reads -- and only the LAST of
+    # those three is what a caller's `getattr`/attribute-access actually raises on. See rTGC+N in
+    # test_audit.sh, the row that pins this FAIL for the gutted-module shape.
+    undecided_reason="python3-lib-gutted"
+  elif ! command -v jq >/dev/null 2>&1; then
     # Tested BEFORE settings-absent, deliberately: jq-availability is a MACHINE-GLOBAL fact,
     # not a scope-local one, so it must not sit behind a settings.json existence test. A repo
     # with no settings.json on a jq-less machine used to read the reassuring "settings-absent"
-    # SKIP instead of this FAIL, hiding the identical machine-global fact that a repo WITH a
-    # settings.json correctly surfaces as FAIL -- most repos on a jq-less machine lack a local
-    # settings.json, so most of them read the calm SKIP for a fact true of every repo alike.
+    # SKIP instead of this SKIP-with-a-different-reason, hiding the identical machine-global
+    # fact that a repo WITH a settings.json correctly surfaces the same way -- most repos on a
+    # jq-less machine lack a local settings.json, so most of them would otherwise read the calm
+    # generic SKIP for a fact true of every repo alike.
+    #
+    # SKIP, not FAIL -- unlike before this rewrite. jq-unavailability is no longer evidence the
+    # GUARD itself is failing open: scripts/git-timing-guard.py parses JSON with the stdlib
+    # `json` module and shells out to no jq at all (see its own header, "the JQ condition is
+    # GONE, not just renamed"). What remains true is that THIS CHECK still needs jq to read
+    # $settings, so registration is genuinely undecidable here -- the same "could not tell"
+    # shape as settings-absent and settings-unparseable below, just tested earlier because
+    # jq-availability, unlike those two, is machine-global rather than scope-local.
     undecided_reason="jq-unavailable"
   elif [[ ! -f "$settings" ]]; then
     undecided_reason="settings-absent"
@@ -1201,24 +1382,35 @@ check_timing_guard_conf() {
       undecided_reason="settings-unparseable"
     else
       local c
-      # Anchored on BOTH sides, not widened with alternatives -- the filename must appear as a
-      # whole token: a path separator, a quote character, whitespace, or the start of the
-      # string before it (an optional literal `.` is tolerated between that boundary and the
-      # filename, so a dotfile invocation counts too -- see Third, below); and whitespace, `;`,
-      # a quote character, a shell metacharacter (`&`, `|`, `)`, `>`), or the end of the string
-      # after it. This fixes three things at once. First: a bare suffix match (the previous
-      # `*git-timing-guard.sh`) matches a DIFFERENT, differently-prefixed script too (e.g. a
-      # sibling literally named `old-git-timing-guard.sh`, whose "old-" ends in `-`, not a
-      # boundary character), which would read as registered when it is not -- the anchor keeps
-      # excluding it. Second: the previous `*'git-timing-guard.sh '*` only tolerated a literal
-      # trailing space, so a quoted path, a tab before a flag, a trailing `;`, or a trailing
-      # shell metacharacter (`&&true`, a closing `)`) all missed and read as "not registered" --
-      # the same silent self-retirement class this whole check exists to catch, one level up.
-      # Third: the optional leading `.` is what lets the REAL orphaned original,
-      # `~/.claude/.git-timing-guard.sh` -- this repo's own header, in
-      # scripts/git-timing-guard.sh's PROVENANCE comment, records it as deliberately left in
-      # place -- count as registered when something actually points at it: a dotfile's boundary
-      # character is the `.` itself, which the plain class above never contained.
+      # Anchored on BOTH sides, not widened with alternatives on the BOUNDARY characters -- the
+      # filename must appear as a whole token: a path separator, a quote character, whitespace,
+      # or the start of the string before it (an optional literal `.` is tolerated between that
+      # boundary and the filename, so a dotfile invocation counts too -- see Third, below); and
+      # whitespace, `;`, a quote character, a shell metacharacter (`&`, `|`, `)`, `>`), or the
+      # end of the string after it. This fixes three things at once. First: a bare suffix match
+      # (the previous `*git-timing-guard.sh`) matches a DIFFERENT, differently-prefixed script
+      # too (e.g. a sibling literally named `old-git-timing-guard.sh`, whose "old-" ends in
+      # `-`, not a boundary character), which would read as registered when it is not -- the
+      # anchor keeps excluding it. Second: the previous `*'git-timing-guard.sh '*` only
+      # tolerated a literal trailing space, so a quoted path, a tab before a flag, a trailing
+      # `;`, or a trailing shell metacharacter (`&&true`, a closing `)`) all missed and read as
+      # "not registered" -- the same silent self-retirement class this whole check exists to
+      # catch, one level up. Third: the optional leading `.` is what lets the REAL orphaned
+      # original, `~/.claude/.git-timing-guard.sh` -- deliberately left in place -- count as
+      # registered when something actually points at it: a dotfile's boundary character is the
+      # `.` itself, which the plain class above never contained.
+      #
+      # The ONE alternation this matcher DOES carry is the extension itself, `\.(sh|py)`: both
+      # `git-timing-guard.sh` and `git-timing-guard.py` must count as registered during the
+      # TRANSITIONAL shim window. `scripts/git-timing-guard.py` is the real hook every new
+      # session invokes; `scripts/git-timing-guard.sh` is now a two-line `exec` shim
+      # (scripts/git-timing-guard.sh's own header calls it TRANSITIONAL, RETIRABLE once no
+      # session predates it) that every session started before the rename still has loaded and
+      # still invokes. Narrowing this to `.py` only would have made a live, correctly
+      # registered `.sh`-pointing session read "not registered" -- and narrowing it the other
+      # way, at the moment the rename actually landed, is the plan-review BLOCKER this matcher
+      # was widened to close: a `.py`-only registration silently read as unregistered too. See
+      # rTGC+J in test_audit.sh, the row that would have caught it.
       #
       # ACCEPTED RESIDUAL, deliberately not fixed here: this is still a character-boundary
       # match, not command-position analysis, so a MENTION of the filename as some other
@@ -1234,7 +1426,7 @@ check_timing_guard_conf() {
       # this command" from "is some other command's argument" needs command-position analysis
       # instead, out of scope for this character-boundary matcher; building it here would be
       # scope creep past a boundary drawn on purpose.
-      local tgc_re="(^|[[:space:]/'\"])\\.?git-timing-guard\\.sh([[:space:];'\"&|)>]|\$)"
+      local tgc_re="(^|[[:space:]/'\"])\\.?git-timing-guard\\.(sh|py)([[:space:];'\"&|)>]|\$)"
       while IFS= read -r c; do
         [[ -z "$c" ]] && continue
         if [[ "$c" =~ $tgc_re ]]; then
@@ -1245,27 +1437,67 @@ check_timing_guard_conf() {
   fi
 
   case "$undecided_reason" in
+    python3-lib-broken-install)
+      # FAIL, not SKIP: this is not "never installed" (the packaging fact the arm below names),
+      # it is evidence of a BROKEN one -- a dangling symlink at the leaf or at the scripts farm
+      # root, or a non-directory sitting where the farm root belongs. scripts/git-timing-guard.py
+      # resolves this identical path at hook-execution time via the same lazy import, so
+      # whatever broke it here breaks the guard too, wherever it is registered.
+      verdict_fail timing-guard-conf "registration cannot be checked -- $module_broken_desc; this is a BROKEN INSTALL, not an absent one, and scripts/git-timing-guard.py resolves this identical path at hook-execution time, so if that guard is registered anywhere it is ALSO likely failing open right now; repair or reinstall the scripts farm"
+      return
+      ;;
+    python3-lib-absent)
+      # SKIP, not FAIL -- see the comment above where undecided_reason is set. Absence of
+      # $git_command_module is a packaging fact (dotclaude was never installed at $HOME/.claude
+      # on this machine), not evidence any guard is failing open -- there is nothing here for
+      # python3 to have failed to import. Registration is still genuinely undecidable from this
+      # arm alone (the same "could not tell" shape as settings-absent/unparseable/jq-unavailable
+      # below), so this stays a SKIP even though it is tested first, ahead of jq and settings,
+      # for the identical machine-global reason those two are. Reached only once the arm above
+      # has confirmed neither the leaf nor the farm root is a dangling symlink or a broken
+      # directory -- this is a genuine, unqualified absence, "not found at $git_command_module",
+      # never an inference about WHY.
+      verdict_skip timing-guard-conf "could not determine -- not found at $git_command_module ($scripts_root $scripts_root_state), so scripts/git-timing-guard.py's own supporting library was never installed here; this is a packaging fact, not evidence any guard is failing open, and registration cannot be checked without it"
+      return
+      ;;
+    python3-lib-gutted)
+      # FAIL, not SKIP -- same posture as python3-unusable right below: the module imports, but
+      # scripts/git-timing-guard.py's own gitcmd.<name> usages find at least one symbol missing.
+      # An import-only probe cannot see this (see the comment where undecided_reason is set).
+      verdict_fail timing-guard-conf "python3 can import scripts/lib/git_command from \$HOME/.claude/scripts/lib, but that module is missing at least one symbol scripts/git-timing-guard.py actually reads (see this check's own comment for the list) -- an importable-but-incomplete module is not a working one, and scripts/git-timing-guard.py resolves this identical import on the identical PATH at hook-execution time, so if that guard is registered anywhere it is ALSO likely failing open right now; reinstall or repair the module"
+      return
+      ;;
+    python3-unusable)
+      # FAIL, not SKIP: this is not "registration undecidable" here, it is a guard-disabling
+      # FACT. scripts/git-timing-guard.py resolves python3 and imports this identical module
+      # (scripts/lib/git_command) at hook-execution time -- so python3 being unable to do that
+      # HERE, on the same machine, is evidence the guard is ALSO exiting open right now,
+      # wherever it is registered. One-shot and single-process: this can catch an interpreter-
+      # or import-level failure, never the concurrent-load shape this repo has also measured
+      # (init_import_site failing under load) -- that shape is unobservable by any one-shot
+      # probe, and is named here rather than silently overclaimed.
+      verdict_fail timing-guard-conf "python3 cannot import scripts/lib/git_command from \$HOME/.claude/scripts/lib -- registration cannot be checked, and scripts/git-timing-guard.py resolves this identical import on the identical PATH at hook-execution time, so if that guard is registered anywhere it is ALSO likely failing open right now (this probe is one-shot and cannot see a concurrent-load failure, only an interpreter- or import-level one); fix python3 or the module on this machine"
+      return
+      ;;
     settings-absent)
-      verdict_skip timing-guard-conf "could not determine registration -- $settings does not exist, so it is unprovable whether scripts/git-timing-guard.sh is registered here"
+      verdict_skip timing-guard-conf "could not determine registration -- $settings does not exist, so it is unprovable whether git-timing-guard is registered here (scripts/git-timing-guard.py, or its transitional .sh shim)"
       return
       ;;
     settings-unparseable)
-      verdict_skip timing-guard-conf "could not determine registration -- $settings exists but jq could not parse it, so it is unprovable whether scripts/git-timing-guard.sh is registered here"
+      verdict_skip timing-guard-conf "could not determine registration -- $settings exists but jq could not parse it, so it is unprovable whether git-timing-guard is registered here (scripts/git-timing-guard.py, or its transitional .sh shim)"
       return
       ;;
     jq-unavailable)
-      # FAIL, not SKIP: this is not merely "registration undecidable" here. The guard's own
-      # `command -v jq >/dev/null 2>&1 || exit 0` (scripts/git-timing-guard.sh) makes the
-      # identical check, on the identical PATH, at hook-execution time -- so jq being
-      # unavailable to THIS process is evidence the guard is ALSO exiting open right now,
-      # wherever it is registered. That is a guard-disabling FACT, not a failure to observe.
-      verdict_fail timing-guard-conf "jq is unavailable on PATH -- registration cannot be checked, and scripts/git-timing-guard.sh makes this identical 'command -v jq' check itself, so if that guard is registered anywhere it is ALSO silently failing open right now; install jq"
+      # SKIP, not FAIL -- see the comment above where undecided_reason is set for why this
+      # changed: jq-unavailability no longer says anything about the GUARD (a Python hook that
+      # shells out to no jq), only about THIS CHECK'S own ability to read $settings.
+      verdict_skip timing-guard-conf "could not determine registration -- jq is unavailable on PATH, so it is unprovable whether git-timing-guard is registered here (scripts/git-timing-guard.py, or its transitional .sh shim); unlike before this check's own rewrite, this is no longer evidence the guard itself is failing open -- scripts/git-timing-guard.py parses JSON with Python's stdlib and needs no jq"
       return
       ;;
   esac
 
   if [[ "$registered" == false ]]; then
-    verdict_skip timing-guard-conf "not registered -- $settings carries no PreToolUse hook command with git-timing-guard.sh as a whole path token; a registration living instead in $scope/settings.local.json would not be seen here -- this check reads $settings only"
+    verdict_skip timing-guard-conf "not registered -- $settings carries no PreToolUse hook command with git-timing-guard.py or git-timing-guard.sh as a whole path token; a registration living instead in $scope/settings.local.json would not be seen here -- this check reads $settings only"
     return
   fi
 

@@ -2198,13 +2198,14 @@ esac
 # rTGC. check_timing_guard_conf
 # ============================================================================
 # A live fail-closed publication
-# gate (scripts/git-timing-guard.sh) reads its policy from a hardcoded, untracked
-# $HOME/.claude/.git-timing-guard.conf. Measured: an unreadable conf, a typo'd key and an empty
-# value ALL collapse to the same "not configured" sentinel the guard reads on a genuinely absent
-# conf, so a chmod or a typo silently disables a live gate with zero signal. This section is the
-# suite for the /audit check `timing-guard-conf`, which observes that from OUTSIDE the
-# guard (see scripts/tests/test_git_timing_guard.sh's own CONTROL rows, which pin that the
-# guard's fail-open behaviour on all three broken shapes is the decision, not the defect).
+# gate (scripts/git-timing-guard.py, or its transitional .sh exec shim) reads its policy from a
+# hardcoded, untracked $HOME/.claude/.git-timing-guard.conf. Measured: an unreadable conf, a
+# typo'd key and an empty value ALL collapse to the same "not configured" sentinel the guard
+# reads on a genuinely absent conf, so a chmod or a typo silently disables a live gate with zero
+# signal. This section is the suite for the /audit check `timing-guard-conf`, which observes
+# that from OUTSIDE the guard (see scripts/tests/test_git_timing_guard.sh's own CONTROL rows,
+# which pin that the guard's fail-open behaviour on all three broken shapes is the decision, not
+# the defect).
 #
 # These rows assert on the CHECK'S OWN VERDICT LINE (narrowed out of the engine's full sweep
 # output by tgc_narrow_out below), never by calling a shell function directly. Originally (before
@@ -2220,16 +2221,21 @@ esac
 # it is not, by itself, evidence the check exists at all.
 #
 # HOME REDIRECTION. The check resolves the conf exactly as the guard resolves it -- hardcoded
-# $HOME/.claude/.git-timing-guard.conf, the same `conf=` assignment scripts/git-timing-guard.sh
+# $HOME/.claude/.git-timing-guard.conf, the same `conf_path=` assignment scripts/git-timing-guard.py
 # itself uses (deliberately not by line number: a line number here goes stale the moment either
 # file gains or loses a line above it, and it already had, twice, before this comment was
 # rewritten) -- never hermetic-outside's $CLAUDE_CONFIG_DIR-else-~/.claude idiom (the plan calls
 # that idiom WRONG here -- it would hardcode the one location while the guard searches none). So
 # every row below redirects HOME per fixture, the same way test_git_timing_guard.sh's make_home*
 # helpers do, and the fixture conf bodies below are copied from those helpers verbatim so both
-# suites pin the identical collapse.
+# suites pin the identical collapse. The SAME redirected HOME also carries
+# $HOME/.claude/scripts/lib/git_command.py -- tgc_home()'s stub, importable by every fixture
+# below except tgc_home_broken_py() and tgc_home_no_lib() -- because the check's
+# python3-lib-absent and python3-unusable arms (rTGC+K/+L/+M, rTGC13) are tested FIRST,
+# unconditionally, before registration or conf state; without a working stub here every other
+# row would read one of those two instead of the arm it exists to pin.
 #
-# TEN ARMS, one row each, plus two regression rows pinning the registration MATCH itself:
+# TWELVE ARMS, one row each, plus regression rows pinning the registration MATCH and ORDERING:
 #   1  registered + conf ABSENT                           -> SKIP, names the path
 #   2  registered + conf UNREADABLE (chmod 000)            -> FAIL, names the chmod repair
 #   3  registered + conf is a DIRECTORY (non-regular file) -> FAIL, its own accurate message
@@ -2241,24 +2247,66 @@ esac
 #      it looked
 #   8  registration UNDERIVABLE: settings.json ABSENT      -> SKIP, its own reason
 #   9  registration UNDERIVABLE: settings.json UNPARSEABLE -> SKIP, reason DISTINCT from arm 8
-#   10 registration UNDERIVABLE: jq UNAVAILABLE            -> FAIL, not SKIP -- jq missing here
-#      is a guard-disabling FACT (the guard makes the identical `command -v jq` check), not mere
-#      uncertainty about registration
+#   10 registration UNDERIVABLE: jq UNAVAILABLE            -> SKIP (CHANGED from FAIL -- see
+#      below), its own reason distinct from arms 8/9
+#   13 registration UNDERIVABLE: python3 UNUSABLE (module EXISTS, cannot import
+#      scripts/lib/git_command) -> FAIL, not SKIP -- python3-unusable here is a guard-disabling
+#      FACT (the guard resolves this identical import at hook time), not mere uncertainty about
+#      registration.
+#   16 registration UNDERIVABLE: python3 LIB ABSENT (scripts/lib/git_command.py does not exist
+#      AT ALL, as distinct from arm 13's module-present-but-broken) -> SKIP, never FAIL -- a
+#      packaging fact (dotclaude's scripts were never installed on this machine), not evidence
+#      any guard is failing open. Tested FIRST, ahead of arm 13 and every other arm -- see rTGC+K
+#      (an unrelated-hook scope, the field-shape MAJOR this arm was added to fix), rTGC+L (a
+#      scope that DOES register the guard, same missing lib), and rTGC+M (ordering vs
+#      settings-absent).
+#   17 registration UNDERIVABLE: python3 LIB GUTTED (the module IMPORTS but is missing at least
+#      one symbol scripts/git-timing-guard.py actually reads) -> FAIL, not SKIP -- an
+#      import-only probe cannot see this: it passes identically for a fully working module, an
+#      empty file, and one missing exactly the symbol a caller reads. See rTGC+N (missing
+#      GIT_ONLY_WRAPPERS, the review's own measured example) and rTGC+O (a completely empty
+#      file).
+#   18 registration UNDERIVABLE: python3 LIB BROKEN INSTALL (a dangling symlink at the leaf or
+#      at the scripts farm root itself, or a non-directory where the farm root belongs) -> FAIL,
+#      not the arm-16 SKIP -- `-e` follows symlinks and cannot tell "never installed" from
+#      "installed but a symlink in the chain is dangling". See rTGC+P (the leaf,
+#      git_command.py, is dangling) and rTGC+Q (the farm root, $HOME/.claude/scripts itself, is
+#      dangling -- this machine's own failure mode, since ~/.claude/scripts is a symlink into
+#      the production clone; a leaf-only test cannot see this because lstat on a path with a
+#      broken ANCESTOR fails outright, not merely "not a symlink").
 #   +  registration match tolerates TRAILING ARGUMENTS on the hook command (".../
 #      git-timing-guard.sh --verbose") -- still counts as registered
 #   +  registration under PostToolUse ONLY (never PreToolUse) does NOT count as registered
+#   +J registration recognizes git-timing-guard.PY, not just the .sh shim -- THE row that would
+#      have caught the plan-review BLOCKER (a `.py`-only rename silently reading "not
+#      registered")
 #
-# Arms 7, 8 and 9 answer different questions ("no", "settings.json absent", "settings.json
-# unparseable") and must stay distinguishable from their reason text alone -- collapsing any of
-# them would rebuild, one level up, the exact sentinel-collapse this whole change exists to fix.
-# This suite enforces that distinctness directly: arm 7's contract vocabulary is "not
-# registered", arms 8/9's is "unprovable"/"could not determine" (further split by their own
-# distinct clause), and each row's SKIP text is asserted to carry its own vocabulary and NOT the
-# other's.
+# jq flipped from FAIL to SKIP here (arm 10) because the reasoning it used to carry --
+# "the guard makes this identical `command -v jq` check itself" -- became FALSE the moment the
+# guard was rewritten in Python: scripts/git-timing-guard.py parses JSON with the stdlib and
+# shells out to no jq at all. What remains true is that THIS CHECK still needs jq to read
+# $settings, so it is genuinely registration-undecidable, same shape as arms 8/9. The FAIL
+# reasoning arm 10 used to carry MOVED to python3 (arm 13) instead: the guard now resolves
+# python3 and this same git_command import at hook time, so THAT is the fact worth a FAIL.
+#
+# Arms 7, 8, 9 and 10 answer different questions ("no", "settings.json absent", "settings.json
+# unparseable", "jq unavailable") and must stay distinguishable from their reason text alone --
+# collapsing any of them would rebuild, one level up, the exact sentinel-collapse this whole
+# change exists to fix. This suite enforces that distinctness directly: arm 7's contract
+# vocabulary is "not registered", arms 8/9/10's is "unprovable"/"could not determine" (further
+# split by their own distinct clause), and each row's SKIP text is asserted to carry its own
+# vocabulary and NOT the others'.
+#
+# ORDERING is asserted directly, not just documented: rTGC14 pins python3-unusable beating
+# settings-absent, and rTGC15 pins python3-unusable beating jq-unavailable -- FAIL must win over
+# SKIP whenever both facts are missing, because python3-unusable is evidence of an EXISTING
+# fail-open, not mere uncertainty. rTGC+M pins python3-lib-absent (arm 16) ahead of
+# settings-absent too, but that is a distinct-vocabulary pin, not a FAIL-wins-over-SKIP one --
+# both land on SKIP, so only the reason text (not the verdict class) needs to distinguish them.
 #
 # MUTATION CHECK, do this by hand once a change lands here (not asserted in this file): arms
-# 2/3/4/5/10 must FAIL, 1/7/8/9 must SKIP, and arm 6 must PASS; if any arm cannot be made to move
-# independently, that is a finding to report, not a row to write around.
+# 2/3/4/5/13/17/18 must FAIL, 1/7/8/9/10/16 must SKIP, and arm 6 must PASS; if any arm cannot be
+# made to move independently, that is a finding to report, not a row to write around.
 
 run_engine_home() { # home scope [extra-args...] -> sets OUT/RC, same contract as run_engine
   local home="$1" scope="$2"
@@ -2278,9 +2326,161 @@ tgc_narrow_out() {
   OUT="$(printf '%s\n' "$OUT" | grep -E '^(PASS|FAIL|SKIP) timing-guard-conf( |$)' || true)"
 }
 
-# tgc_home name -> a fresh $tmp/tgc_home_<name>/.claude dir (empty; callers populate the conf)
+# tgc_home name -> a fresh $tmp/tgc_home_<name>/.claude dir (empty; callers populate the conf).
+# Also seeds $h/.claude/scripts/lib/git_command.py with a trivial, syntactically VALID stub --
+# check_timing_guard_conf's python3-unusable arm (rTGC13) is tested FIRST, unconditionally,
+# before registration or conf state is ever read, so every fixture HOME below must carry a
+# working import here or every row in this whole section would flip to that FAIL regardless of
+# what it is actually trying to pin. tgc_home_broken_py() below overwrites this stub with a
+# syntactically INVALID module for the one family of rows that needs the FAIL arm itself.
 tgc_home() {
   local h="$tmp/tgc_home_$1"
+  mkdir -p "$h/.claude/scripts/lib"
+  # Every symbol check_timing_guard_conf's python3-lib-gutted arm dereferences (see that arm's
+  # own comment in skills/audit/audit.sh for the list and how to re-derive it from
+  # scripts/git-timing-guard.py). IMPORTING alone is not enough any more -- the arm added by the
+  # final whole-branch review's MAJOR 1 fails a module that imports but is missing one of these,
+  # so every fixture below that is not deliberately testing THAT arm must carry all nine or every
+  # row in this whole section would flip to python3-lib-gutted regardless of what it exists to
+  # pin. Values are trivial placeholders (None / empty), matching the "importable, does nothing"
+  # stub this always was -- check_timing_guard_conf only asserts hasattr(), it never calls any of
+  # these. tgc_home_gutted_module() below deletes exactly one to pin the arm itself.
+  cat > "$h/.claude/scripts/lib/git_command.py" <<'PYEOF'
+"""Test-fixture stand-in for scripts/lib/git_command -- importable, does nothing."""
+ENV_ASSIGN = None
+GIT_ONLY_WRAPPERS = frozenset()
+RESERVED_WORDS = frozenset()
+classify_global_opt = None
+is_git = None
+is_op = None
+iter_context_token_streams = None
+iter_git_invocations_detailed = None
+starts_command = None
+PYEOF
+  printf '%s' "$h"
+}
+
+# tgc_home_gutted_module -> a tgc_home() whose scripts/lib/git_command.py IMPORTS cleanly but is
+# missing exactly one symbol scripts/git-timing-guard.py actually reads (GIT_ONLY_WRAPPERS, the
+# review's own measured example) -- the shape a bare `import git_command` probe cannot see at
+# all: it succeeds identically for this file, for an EMPTY file, and for the fully working stub
+# above. check_timing_guard_conf's python3-lib-gutted arm exists to catch this one specifically.
+tgc_home_gutted_module() {
+  local h; h="$(tgc_home gutted)"
+  cat > "$h/.claude/scripts/lib/git_command.py" <<'PYEOF'
+"""Test-fixture stand-in for scripts/lib/git_command -- imports, but is GUTTED: missing
+GIT_ONLY_WRAPPERS, the symbol MAJOR-1 of the final whole-branch review measured as the one whose
+absence still let the guard fail open (rc=0 on a real publish) while a bare import probe read
+PASS."""
+ENV_ASSIGN = None
+RESERVED_WORDS = frozenset()
+classify_global_opt = None
+is_git = None
+is_op = None
+iter_context_token_streams = None
+iter_git_invocations_detailed = None
+starts_command = None
+PYEOF
+  printf '%s' "$h"
+}
+
+# tgc_home_empty_module -> a tgc_home() whose scripts/lib/git_command.py is a completely EMPTY,
+# syntactically valid file -- the review's OTHER measured shape (control-column import PASS,
+# guard rc=0). Distinct from tgc_home_gutted_module (missing exactly one symbol of nine) and from
+# tgc_home_broken_py (a SyntaxError, which fails the IMPORT itself, not merely the symbol check).
+tgc_home_empty_module() {
+  local h="$tmp/tgc_home_emptymodule"
+  mkdir -p "$h/.claude/scripts/lib"
+  : > "$h/.claude/scripts/lib/git_command.py"
+  printf '%s' "$h"
+}
+
+# tgc_home_dangling_module -> the LEAF, $HOME/.claude/scripts/lib/git_command.py itself, is a
+# symlink whose target does not exist. `-e` follows symlinks and reads false for this exactly as
+# it does for a genuinely absent module -- reproduced: this used to collapse into the identical
+# "does not exist on this machine ... packaging fact" SKIP a real absence gets.
+# check_timing_guard_conf's python3-lib-broken-install arm exists to discriminate this FAIL from
+# that SKIP.
+tgc_home_dangling_module() {
+  local h="$tmp/tgc_home_danglingmodule"
+  mkdir -p "$h/.claude/scripts/lib"
+  ln -s "$h/.claude/scripts/lib/git_command.py.NO-SUCH-TARGET" \
+    "$h/.claude/scripts/lib/git_command.py"
+  printf '%s' "$h"
+}
+
+# tgc_home_dangling_farm -> the FARM ROOT, $HOME/.claude/scripts itself, is a symlink whose
+# target does not exist -- this machine's OWN failure mode (a symlink farm into the production
+# clone; see memory/live-config-is-a-symlink-farm.md), not merely a hypothetical. A leaf-only
+# `-L`/`-e` pair on git_command.py cannot see this: lstat on a path with a broken ANCESTOR
+# component fails outright, reading as "not a symlink" rather than "dangling symlink", so this
+# needs its own fixture and its own row to prove the farm-root check actually fires.
+tgc_home_dangling_farm() {
+  local h="$tmp/tgc_home_danglingfarm"
+  mkdir -p "$h/.claude"
+  ln -s "$h/.claude/scripts.NO-SUCH-TARGET" "$h/.claude/scripts"
+  printf '%s' "$h"
+}
+
+# The three chain components tgc_home_dangling_module/_farm do NOT cover. The broken-install arm
+# used to hand-enumerate its components; these are the ones that list omitted, each measured
+# taking the reassuring packaging SKIP. For +R that SKIP was byte-identical to a genuine
+# absence; for +S and +T it differed only in a parenthetical reading "exists" -- true, and
+# reassuring in the wrong direction. They are why that arm now walks the chain instead of
+# naming parts of it.
+
+# tgc_home_dangling_claude -> $HOME/.claude ITSELF is a dangling symlink. A live component here:
+# ~/.claude is a symlink into a dotfiles repo, so relocating or removing that clone dangles it.
+# NOT what an uninitialised submodule does -- measured, git leaves an empty directory there,
+# which exists and is traversable, so that shape takes the packaging SKIP and this row does not
+# speak to it. The component ABOVE the one _farm tests.
+tgc_home_dangling_claude() {
+  local h="$tmp/tgc_home_dangleclaude"
+  mkdir -p "$h"
+  ln -s "$h/.claude.NO-SUCH-TARGET" "$h/.claude"
+  printf '%s' "$h"
+}
+
+# tgc_home_dangling_lib -> $HOME/.claude/scripts/lib is a dangling symlink, with scripts/ a real
+# directory. The component BELOW the one _farm tests, and the mirror case: a leaf-only `-L` test
+# reads false here for the same lstat-through-a-broken-ancestor reason.
+tgc_home_dangling_lib() {
+  local h="$tmp/tgc_home_danglelib"
+  mkdir -p "$h/.claude/scripts"
+  ln -s "$h/.claude/scripts/lib.NO-SUCH-TARGET" "$h/.claude/scripts/lib"
+  printf '%s' "$h"
+}
+
+# tgc_home_unsearchable_scripts -> $HOME/.claude/scripts exists as a real directory that cannot be
+# TRAVERSED (mode 000). Neither dangling nor absent nor a non-directory, so all three original
+# clauses read false and it took the packaging SKIP -- an installed tree the check cannot enter,
+# described as one that was never installed.
+tgc_home_unsearchable_scripts() {
+  local h="$tmp/tgc_home_unsearchable"
+  mkdir -p "$h/.claude/scripts/lib"
+  chmod 000 "$h/.claude/scripts"
+  printf '%s' "$h"
+}
+
+# tgc_home_broken_py -> a tgc_home() whose scripts/lib/git_command.py is syntactically INVALID,
+# reproducing the SyntaxError-under-Python-3.9 shape this repo has actually measured. Not a
+# MISSING file (which would read as a packaging accident) -- python3 itself resolves fine here,
+# only the import fails, which is the exact shape check_timing_guard_conf's new arm exists to
+# catch (see its own comment: "probes IMPORTABILITY, not presence").
+tgc_home_broken_py() {
+  local h; h="$(tgc_home brokenpy)"
+  printf 'def broken(:\n    pass\n' > "$h/.claude/scripts/lib/git_command.py"
+  printf '%s' "$h"
+}
+
+# tgc_home_no_lib -> a FRESH HOME, deliberately NOT built from tgc_home() (which always seeds a
+# working git_command.py stub): $HOME/.claude exists but $HOME/.claude/scripts/lib does not, at
+# all -- the packaging fact this repo's own MAJOR-1 review reproduced (a machine that never had
+# dotclaude's scripts installed), distinct from tgc_home_broken_py's MODULE PRESENT BUT BROKEN
+# shape. check_timing_guard_conf's python3-lib-absent arm exists to read this as a SKIP, never
+# the FAIL the broken-py shape earns.
+tgc_home_no_lib() {
+  local h="$tmp/tgc_home_nolib"
   mkdir -p "$h/.claude"
   printf '%s' "$h"
 }
@@ -2373,6 +2573,35 @@ tgc_registered_scope() {
 }
 JSONEOF
   commit_all "$d" 'registered'
+}
+
+# tgc_registered_scope_py dir -> same as tgc_registered_scope, but the hook command names
+# git-timing-guard.PY, the real hook, rather than the .sh transitional shim. THE fixture that
+# would have caught the plan-review BLOCKER: before the matcher was widened to
+# `\.(sh|py)`, this registration read "SKIP -- not registered" against a live, correctly
+# configured gate -- a non-failing verdict, so the sweep read clean while every conf-FAIL arm
+# beneath it went silently dark. See rTGC+J.
+tgc_registered_scope_py() {
+  local d="$1"
+  mkrepo "$d"
+  cat > "$d/settings.json" <<'JSONEOF'
+{
+ "hooks": {
+  "PreToolUse": [
+   {
+    "matcher": "Bash",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "$HOME/.claude/scripts/git-timing-guard.py"
+     }
+    ]
+   }
+  ]
+ }
+}
+JSONEOF
+  commit_all "$d" 'registered via the .py hook, not the .sh shim'
 }
 
 # tgc_registered_scope_with_args dir -> same as tgc_registered_scope, but the hook command
@@ -2827,12 +3056,15 @@ assert_has 'could not parse' \
 assert_not_has 'does not exist' \
   'rTGC9: the SKIP reason does not borrow arm 8'"'"'s absent vocabulary'
 
-# --- rTGC10: registration UNDERIVABLE: jq UNAVAILABLE -> FAIL, not SKIP ------------------
-# jq missing is not mere uncertainty: scripts/git-timing-guard.sh makes this identical
-# `command -v jq` check on the identical PATH at hook-execution time, so if the guard is
-# registered anywhere it is ALSO silently failing open right now. Built from the LIVE $PATH
-# (tgc_path_without_jq), never a hardcoded one; if this machine cannot yield a PATH lacking jq
-# the row is skipped with a stated reason rather than faked.
+# --- rTGC10: registration UNDERIVABLE: jq UNAVAILABLE -> SKIP (CHANGED from FAIL) --------
+# jq missing used to be a guard-disabling FACT because the bash guard made this identical
+# `command -v jq` check itself. That reasoning is FALSE since the guard's rewrite:
+# scripts/git-timing-guard.py parses JSON with the stdlib and shells out to no jq at all. What
+# remains true is that THIS CHECK still needs jq to read $settings, so registration is
+# genuinely undecidable here -- the same "could not tell" shape as arms 8/9, just tested
+# earlier because jq-availability, unlike those two, is machine-global. Built from the LIVE
+# $PATH (tgc_path_without_jq), never a hardcoded one; if this machine cannot yield a PATH
+# lacking jq the row is skipped with a stated reason rather than faked.
 rTGC10_no_jq_path="$(tgc_path_without_jq)"
 if [ -n "$rTGC10_no_jq_path" ] && ! PATH="$rTGC10_no_jq_path" command -v jq >/dev/null 2>&1; then
   rTGC10_scope="$tmp/rTGC10_scope"
@@ -2840,12 +3072,69 @@ if [ -n "$rTGC10_no_jq_path" ] && ! PATH="$rTGC10_no_jq_path" command -v jq >/de
   rTGC10_home="$(tgc_home_valid)"
   OUT="$(HOME="$rTGC10_home" PATH="$rTGC10_no_jq_path" "$engine" --scope "$rTGC10_scope" 2>&1)"; RC=$?
   tgc_narrow_out
-  assert_has 'FAIL timing-guard-conf' \
-    'rTGC10: jq unavailable -> FAIL timing-guard-conf (a guard-disabling fact, not a SKIP)'
+  assert_has 'SKIP timing-guard-conf' \
+    'rTGC10: jq unavailable -> SKIP timing-guard-conf (registration-undecidable, no longer a guard-disabling fact)'
   assert_has 'jq' \
-    'rTGC10: the FAIL reason names jq'
+    'rTGC10: the SKIP reason names jq'
+  assert_not_has 'FAIL' \
+    'rTGC10: no longer FAILs -- the guard itself uses no jq since the rewrite'
 else
   printf 'skip - rTGC10: could not construct a PATH lacking jq on this machine\n'
+fi
+
+# --- rTGC13: registration UNDERIVABLE: python3 UNUSABLE -> FAIL, not SKIP ------------------
+# python3-unusable (cannot import scripts/lib/git_command) IS a guard-disabling FACT:
+# scripts/git-timing-guard.py resolves this identical import on the identical PATH at
+# hook-execution time, so if the guard is registered anywhere it is ALSO likely failing open
+# right now. This is the FAIL arm 10 used to carry, moved onto the fact that actually replaced
+# jq. tgc_home_broken_py() carries a syntactically INVALID scripts/lib/git_command.py --
+# python3 itself resolves fine, only the import fails, which is the shape this arm probes for
+# (IMPORTABILITY, not mere presence of a python3 binary).
+rTGC13_scope="$tmp/rTGC13_scope"
+tgc_registered_scope "$rTGC13_scope"
+rTGC13_home="$(tgc_home_broken_py)"
+run_engine_home "$rTGC13_home" "$rTGC13_scope"
+tgc_narrow_out
+assert_has 'FAIL timing-guard-conf' \
+  'rTGC13: python3 cannot import git_command -> FAIL timing-guard-conf (a guard-disabling fact)'
+assert_has 'python3' \
+  'rTGC13: the FAIL reason names python3'
+assert_has 'git_command' \
+  'rTGC13: the FAIL reason names the module it could not import'
+
+# --- rTGC14: python3-unusable AND settings-ABSENT, together -> FAIL wins over SKIP ---------
+# Ordering: python3-unusable is tested FIRST, ahead of settings-absent, for the same
+# machine-global reason jq used to lead alone -- otherwise a repo with no local settings.json
+# on a python3-broken machine would read the reassuring "settings-absent" SKIP for a fact true
+# of every repo on that machine alike.
+rTGC14_scope="$tmp/rTGC14_scope"
+tgc_no_settings_scope "$rTGC14_scope"
+rTGC14_home="$(tgc_home_broken_py)"
+run_engine_home "$rTGC14_home" "$rTGC14_scope"
+tgc_narrow_out
+assert_has 'FAIL timing-guard-conf' \
+  'rTGC14: settings.json absent AND python3 unusable -> FAIL, not the reassuring settings-absent SKIP'
+assert_not_has 'SKIP' \
+  'rTGC14: does not silently downgrade to SKIP because settings.json also happens to be absent'
+
+# --- rTGC15: python3-unusable AND jq-UNAVAILABLE, together -> FAIL wins over SKIP ----------
+# Both are machine-global facts now, but only one is a guard-disabling FAIL (python3) -- the
+# other (jq, arm 10) is a mere SKIP after the rewrite. FAIL must win regardless of which
+# undecidable condition is checked "first" in prose; this pins that python3 really is checked
+# ahead of jq in the code, not just documented as such.
+rTGC15_no_jq_path="$(tgc_path_without_jq)"
+if [ -n "$rTGC15_no_jq_path" ] && ! PATH="$rTGC15_no_jq_path" command -v jq >/dev/null 2>&1; then
+  rTGC15_scope="$tmp/rTGC15_scope"
+  tgc_registered_scope "$rTGC15_scope"
+  rTGC15_home="$(tgc_home_broken_py)"
+  OUT="$(HOME="$rTGC15_home" PATH="$rTGC15_no_jq_path" "$engine" --scope "$rTGC15_scope" 2>&1)"; RC=$?
+  tgc_narrow_out
+  assert_has 'FAIL timing-guard-conf' \
+    'rTGC15: python3 unusable AND jq unavailable -> FAIL, not the now-SKIP jq reason'
+  assert_has 'python3' \
+    'rTGC15: the FAIL reason names python3, not jq'
+else
+  printf 'skip - rTGC15: could not construct a PATH lacking jq on this machine\n'
 fi
 
 # --- rTGC+A: registration tolerates TRAILING ARGUMENTS on the hook command ---------------
@@ -2871,12 +3160,12 @@ assert_has 'settings.local.json' \
   'rTGC+B: the not-registered SKIP names settings.local.json as a place it does NOT look'
 
 # --- rTGC11: registration UNDERIVABLE by settings-ABSENCE, AND jq UNAVAILABLE, together -----
-# jq-unavailability is a MACHINE-GLOBAL fact and must be tested BEFORE settings-absence, never
-# behind it -- otherwise a repo with no local settings.json on a jq-less machine reads the
-# reassuring "settings-absent" SKIP for a fact that is true of every repo on that machine alike,
-# while a repo that HAPPENS to carry a settings.json correctly gets the FAIL. Built from the
-# LIVE $PATH (tgc_path_without_jq), never a hardcoded one; if this machine cannot yield a PATH
-# lacking jq the row is skipped with a stated reason rather than faked.
+# CHANGED meaning since jq flipped FAIL->SKIP (arm 10): both conditions are now SKIP-shaped, so
+# this no longer pins a FAIL-wins-over-SKIP ordering (rTGC14/15 do that for python3 now) -- it
+# instead pins that jq's OWN vocabulary appears, not settings-absent's, i.e. jq is still
+# evaluated before settings-absent even though both land on SKIP. Built from the LIVE $PATH
+# (tgc_path_without_jq), never a hardcoded one; if this machine cannot yield a PATH lacking jq
+# the row is skipped with a stated reason rather than faked.
 rTGC11_no_jq_path="$(tgc_path_without_jq)"
 if [ -n "$rTGC11_no_jq_path" ] && ! PATH="$rTGC11_no_jq_path" command -v jq >/dev/null 2>&1; then
   rTGC11_scope="$tmp/rTGC11_scope"
@@ -2884,10 +3173,12 @@ if [ -n "$rTGC11_no_jq_path" ] && ! PATH="$rTGC11_no_jq_path" command -v jq >/de
   rTGC11_home="$(tgc_home_absent)"
   OUT="$(HOME="$rTGC11_home" PATH="$rTGC11_no_jq_path" "$engine" --scope "$rTGC11_scope" 2>&1)"; RC=$?
   tgc_narrow_out
-  assert_has 'FAIL timing-guard-conf' \
-    'rTGC11: settings.json absent AND jq unavailable -> FAIL, not the reassuring settings-absent SKIP'
-  assert_not_has 'SKIP' \
-    'rTGC11: does not silently downgrade to SKIP because settings.json also happens to be absent'
+  assert_has 'SKIP timing-guard-conf' \
+    'rTGC11: settings.json absent AND jq unavailable -> SKIP timing-guard-conf'
+  assert_has 'jq' \
+    "rTGC11: the SKIP reason uses jq's own vocabulary, evaluated ahead of settings-absent"
+  assert_not_has 'does not exist' \
+    'rTGC11: does not borrow settings-absent'"'"'s vocabulary even though settings.json really is absent'
 else
   printf 'skip - rTGC11: could not construct a PATH lacking jq on this machine\n'
 fi
@@ -2979,6 +3270,201 @@ run_engine_home "$rTGCI_home" "$rTGCI_scope"
 tgc_narrow_out
 assert_has 'PASS timing-guard-conf' \
   'rTGC+I: a bare-path registration registers (the shape the accepted residual rests on)'
+
+# --- rTGC+J: registration recognizes git-timing-guard.PY, not just the .sh shim -------------
+# THE row that would have caught the plan-review BLOCKER: moving settings.json's registration
+# to scripts/git-timing-guard.py without widening the matcher made this read "SKIP -- not
+# registered" against a live, correctly configured gate -- a non-failing verdict, so the sweep
+# read clean while every conf-FAIL arm beneath it went permanently dark. Both extensions must
+# count as registered during the TRANSITIONAL shim window (scripts/git-timing-guard.sh still
+# exists as a two-line exec shim, and older sessions' loaded snapshots still invoke it).
+rTGCJ_scope="$tmp/rTGCJ_scope"
+tgc_registered_scope_py "$rTGCJ_scope"
+rTGCJ_home="$(tgc_home_valid)"
+run_engine_home "$rTGCJ_home" "$rTGCJ_scope"
+tgc_narrow_out
+assert_has 'PASS timing-guard-conf' \
+  'rTGC+J: registered via git-timing-guard.py -> PASS timing-guard-conf (the BLOCKER row)'
+
+# --- rTGC+K: UNRELATED hook registered, NO python3 lib installed -> SKIP, never FAIL --------
+# THE row a final whole-branch review found the suite had no coverage for at all (its own
+# tgc_home() ALWAYS seeds a working git_command.py stub, so no fixture before this one could
+# ever reach a genuinely absent module). Reproduced against the pre-fix code: a fixture repo
+# registering an UNRELATED hook, HOME with no $HOME/.claude/scripts/lib at all, read
+# `FAIL timing-guard-conf -- python3 cannot import ...` -- a MAJOR for every adopter of the
+# distributed audit.sh skill (hpc-project, arc-cluster-docs, the court repo, ...) whose own
+# machine has never had dotclaude installed, over a hook their settings.json never mentions.
+# This is the field-shape case: registration is undecided for an entirely different, benign
+# reason (a packaging fact), and the verdict must read as such, not as a guard-disabling FAIL.
+rTGCK_scope="$tmp/rTGCK_scope"
+tgc_unregistered_scope "$rTGCK_scope"
+rTGCK_home="$(tgc_home_no_lib)"
+run_engine_home "$rTGCK_home" "$rTGCK_scope"
+tgc_narrow_out
+assert_has 'SKIP timing-guard-conf' \
+  'rTGC+K: unrelated hook + no python3 lib installed -> SKIP timing-guard-conf, not FAIL'
+assert_has 'packaging fact' \
+  'rTGC+K: the SKIP reason names the packaging fact, not a broken import'
+assert_not_has 'FAIL' \
+  'rTGC+K: never reads as a guard-disabling FAIL for a scope with no coupling to this guard'
+assert_not_has 'not registered' \
+  "rTGC+K: does not borrow arm 7's definitive-no vocabulary -- registration was never reached"
+
+# --- rTGC+L: a scope that DOES register the guard, same missing-lib machine -> SKIP too -----
+# The mirror of rTGC+K: a scope that legitimately wants this guard, on a machine that simply
+# never had dotclaude's scripts installed, must read the identical benign SKIP -- not the FAIL
+# rTGC13/14/15 correctly reserve for a module that EXISTS but is BROKEN. Confirms the fix does
+# not merely relocate the false FAIL onto the one population that would deserve it.
+rTGCL_scope="$tmp/rTGCL_scope"
+tgc_registered_scope "$rTGCL_scope"
+rTGCL_home="$(tgc_home_no_lib)"
+run_engine_home "$rTGCL_home" "$rTGCL_scope"
+tgc_narrow_out
+assert_has 'SKIP timing-guard-conf' \
+  'rTGC+L: registered + no python3 lib installed -> SKIP timing-guard-conf, not FAIL'
+assert_has 'packaging fact' \
+  'rTGC+L: the SKIP reason names the packaging fact'
+
+# --- rTGC+M: no-lib AND settings-ABSENT, together -> lib-absent's own vocabulary wins ------
+# Ordering pin, mirroring rTGC11's pattern for jq: python3-lib-absent is tested ahead of
+# settings-absent for the same machine-global reason python3-unusable and jq-unavailable are
+# (see the comment at check_timing_guard_conf's top). Both land on SKIP here -- unlike
+# rTGC14/15, this is not a FAIL-wins-over-SKIP pin, just a distinct-vocabulary one. "does not
+# exist" alone would not distinguish the two arms (both messages use that phrase, about
+# different paths), so this pins on "packaging fact", unique to python3-lib-absent.
+rTGCM_scope="$tmp/rTGCM_scope"
+tgc_no_settings_scope "$rTGCM_scope"
+rTGCM_home="$(tgc_home_no_lib)"
+run_engine_home "$rTGCM_home" "$rTGCM_scope"
+tgc_narrow_out
+assert_has 'SKIP timing-guard-conf' \
+  'rTGC+M: settings.json absent AND no python3 lib -> SKIP timing-guard-conf'
+assert_has 'packaging fact' \
+  "rTGC+M: the SKIP reason uses python3-lib-absent's own vocabulary, evaluated ahead of settings-absent"
+assert_not_has 'unprovable whether' \
+  'rTGC+M: does not borrow settings-absent'"'"'s vocabulary even though settings.json really is absent'
+
+# --- rTGC+N: module IMPORTS but is GUTTED (missing one symbol) -> FAIL, not the reassuring
+# import-only PASS ------------------------------------------------------------------------
+# The MAJOR-1 finding from the final whole-branch review: `import git_command` succeeds
+# identically for a fully working module and for one missing GIT_ONLY_WRAPPERS, so a bare import
+# probe cannot tell them apart -- measured, the guard itself fails open (rc=0) on a real publish
+# in the gutted case. This is the row that moves independently of rTGC13 (a SyntaxError, which
+# fails the IMPORT itself): here the import succeeds and only the symbol probe catches it.
+rTGCN_scope="$tmp/rTGCN_scope"
+tgc_registered_scope "$rTGCN_scope"
+rTGCN_home="$(tgc_home_gutted_module)"
+run_engine_home "$rTGCN_home" "$rTGCN_scope"
+tgc_narrow_out
+assert_has 'FAIL timing-guard-conf' \
+  'rTGC+N: module imports but is missing GIT_ONLY_WRAPPERS -> FAIL, not a PASS-through import probe'
+assert_has 'missing at least one symbol' \
+  'rTGC+N: the FAIL reason names the shape (importable, incomplete), not a bare import failure'
+assert_not_has 'packaging fact' \
+  'rTGC+N: does not borrow python3-lib-absent'"'"'s SKIP vocabulary -- the module IS installed'
+
+# --- rTGC+O: module is a completely EMPTY file (every symbol missing) -> the same FAIL -----
+# The review's other measured control: an empty file also imports cleanly and also leaves the
+# guard failing open. Distinct fixture from rTGC+N (missing one symbol of nine) and from rTGC13
+# (a SyntaxError, which never reaches the symbol probe at all).
+rTGCO_scope="$tmp/rTGCO_scope"
+tgc_registered_scope "$rTGCO_scope"
+rTGCO_home="$(tgc_home_empty_module)"
+run_engine_home "$rTGCO_home" "$rTGCO_scope"
+tgc_narrow_out
+assert_has 'FAIL timing-guard-conf' \
+  'rTGC+O: an entirely empty git_command.py imports cleanly and still FAILs the symbol probe'
+assert_has 'missing at least one symbol' \
+  'rTGC+O: same gutted-module vocabulary as rTGC+N'
+
+# --- rTGC+P: the LEAF is a dangling symlink -> FAIL (BROKEN INSTALL), never the packaging SKIP
+# --------------------------------------------------------------------------------------------
+# The MAJOR-3 finding: `-e` follows symlinks, so a bare `[[ ! -e ]]` read this identically to a
+# genuine absence before this fix -- reproduced here as the row that would have caught it.
+rTGCP_scope="$tmp/rTGCP_scope"
+tgc_registered_scope "$rTGCP_scope"
+rTGCP_home="$(tgc_home_dangling_module)"
+run_engine_home "$rTGCP_home" "$rTGCP_scope"
+tgc_narrow_out
+assert_has 'FAIL timing-guard-conf' \
+  'rTGC+P: git_command.py is a dangling symlink -> FAIL, never the reassuring packaging SKIP'
+assert_has 'BROKEN INSTALL' \
+  'rTGC+P: the FAIL reason names this a broken install, not an absent one'
+assert_has 'dangling symlink' \
+  'rTGC+P: the FAIL reason names the dangling symlink directly'
+assert_not_has 'packaging fact' \
+  'rTGC+P: does not collapse into python3-lib-absent'"'"'s "never installed" vocabulary'
+
+# --- rTGC+Q: the FARM ROOT ($HOME/.claude/scripts itself) is a dangling symlink -> FAIL -----
+# This machine's OWN failure mode (see memory/live-config-is-a-symlink-farm.md), not merely a
+# hypothetical -- and the shape a LEAF-only dangling-symlink test cannot see: lstat on a path
+# with a broken ANCESTOR component fails outright, so `-L` on git_command.py alone reads false
+# here exactly as `-e` does, which is why the check must also probe scripts_root itself.
+rTGCQ_scope="$tmp/rTGCQ_scope"
+tgc_registered_scope "$rTGCQ_scope"
+rTGCQ_home="$(tgc_home_dangling_farm)"
+run_engine_home "$rTGCQ_home" "$rTGCQ_scope"
+tgc_narrow_out
+assert_has 'FAIL timing-guard-conf' \
+  'rTGC+Q: the scripts farm root itself is a dangling symlink -> FAIL, never the packaging SKIP'
+assert_has 'BROKEN INSTALL' \
+  'rTGC+Q: the FAIL reason names this a broken install'
+assert_has 'scripts farm link has gone stale' \
+  'rTGC+Q: the FAIL reason names the farm-root mechanism, not just "does not exist"'
+assert_not_has 'packaging fact' \
+  'rTGC+Q: a stale farm link is not a never-installed packaging fact'
+
+
+# --- rTGC+R: $HOME/.claude ITSELF dangles -> FAIL (BROKEN INSTALL), never the packaging SKIP --
+# --------------------------------------------------------------------------------------------
+# Measured before the arm walked the chain: this returned "could not determine -- not found at
+# ...", the SAME text a genuine absence returns, on this machine's own most likely break.
+rTGCR_scope="$tmp/rTGCR_scope"
+tgc_registered_scope "$rTGCR_scope"
+rTGCR_home="$(tgc_home_dangling_claude)"
+run_engine_home "$rTGCR_home" "$rTGCR_scope"
+tgc_narrow_out
+assert_has 'FAIL timing-guard-conf' \
+  'rTGC+R: a dangling $HOME/.claude -> FAIL, never the reassuring packaging SKIP'
+assert_has 'BROKEN INSTALL' \
+  'rTGC+R: the FAIL reason names this a broken install, not an absent one'
+assert_has 'dangling symlink' \
+  'rTGC+R: the FAIL reason names the dangling symlink directly'
+assert_not_has 'packaging fact' \
+  'rTGC+R: does not collapse into python3-lib-absent'"'"'s "never installed" vocabulary'
+
+# --- rTGC+S: $HOME/.claude/scripts/lib dangles -> FAIL, never the packaging SKIP -------------
+# --------------------------------------------------------------------------------------------
+# The component below the farm root. A leaf-only -L test cannot see this one either.
+rTGCS_scope="$tmp/rTGCS_scope"
+tgc_registered_scope "$rTGCS_scope"
+rTGCS_home="$(tgc_home_dangling_lib)"
+run_engine_home "$rTGCS_home" "$rTGCS_scope"
+tgc_narrow_out
+assert_has 'FAIL timing-guard-conf' \
+  'rTGC+S: a dangling scripts/lib -> FAIL, never the reassuring packaging SKIP'
+assert_has 'BROKEN INSTALL' \
+  'rTGC+S: the FAIL reason names this a broken install'
+assert_not_has 'packaging fact' \
+  'rTGC+S: a dangling lib link is not a never-installed packaging fact'
+
+# --- rTGC+T: $HOME/.claude/scripts exists but is NOT SEARCHABLE -> FAIL ----------------------
+# --------------------------------------------------------------------------------------------
+# Neither dangling nor absent nor a non-directory: an installed tree that cannot be entered.
+# All three of the arm's original hand-written clauses read false here.
+rTGCT_scope="$tmp/rTGCT_scope"
+tgc_registered_scope "$rTGCT_scope"
+rTGCT_home="$(tgc_home_unsearchable_scripts)"
+run_engine_home "$rTGCT_home" "$rTGCT_scope"
+tgc_narrow_out
+assert_has 'FAIL timing-guard-conf' \
+  'rTGC+T: an unsearchable scripts/ -> FAIL, not the packaging SKIP'
+assert_has 'not searchable' \
+  'rTGC+T: the FAIL reason names traversability, not absence'
+assert_not_has 'packaging fact' \
+  'rTGC+T: an unenterable install is not a never-installed packaging fact'
+# chmod back so the suite'"'"'s own cleanup can remove it
+chmod 755 "$rTGCT_home/.claude/scripts" 2>/dev/null || true
 
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

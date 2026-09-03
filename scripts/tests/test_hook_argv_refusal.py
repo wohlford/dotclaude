@@ -57,8 +57,34 @@ FLOOR = frozenset(
         "sync-docs-check.sh",
         "commit-subject-guard.py",
         "mutation-anchors-check-test.sh",
+        "git-timing-guard.py",
     }
 )
+
+# TRANSITIONAL: a hook `settings.json` no longer registers, but that is still reachable and
+# still owed a contract test. scripts/git-timing-guard.sh is now a two-line `exec` shim (see
+# its own header) that every session started before the registration moved to
+# git-timing-guard.py still has loaded and still invokes — derivation from settings.json cannot
+# see it once the registration moves, so nothing would exercise it at all without this union.
+#
+# The shim's `exec` line is `exec python3 "$here/git-timing-guard.py" "$@"` — the exec TARGET is
+# `python3`, not the `.py`; the `.py` path is only an ARGUMENT to it. That distinction matters
+# because the two ways this can break fail in OPPOSITE directions, and only one of them is the
+# open one. Measured directly:
+#   - the `.py` REMOVED (target resolves, argument does not): python3 itself prints "can't open
+#     file ... [Errno 2]" and exits rc=2 — the SAME rc this contract treats as a real veto, so a
+#     botched promote that deletes or moves the `.py` without updating the shim would BLOCK
+#     every Bash tool call in every OLD session, hard, not fail open.
+#   - `python3` ABSENT from PATH (the target itself does not resolve): bash's own `exec: python3:
+#     not found` exits rc=127 — a non-2 the HOOKS.md contract treats as noise, not a veto — so
+#     OLD sessions relying on the shim fail OPEN while NEW sessions (invoking the .py directly,
+#     no shim in the way) keep blocking regardless.
+# Both directions are severe and this is the sole stated rationale for keeping the shim at all
+# (a permanent one taxes every future session), so getting the failure mode wrong here
+# undermines the reasoning that justifies its existence. Retire this entry in the same change
+# that retires the shim itself, once no running session predates the rename (see the shim's own
+# RETIRABLE note).
+TRANSITIONAL = frozenset({"git-timing-guard.sh"})
 
 
 def registered_hooks():
@@ -75,8 +101,13 @@ def registered_hooks():
 
 
 def present_hooks():
-    """Registered hooks that exist in this repo, sorted — the rows the parametrised tests run."""
-    return sorted(n for n in registered_hooks() if (REPO / "scripts" / n).is_file())
+    """Registered hooks that exist in this repo, sorted — the rows the parametrised tests run.
+
+    Unions in TRANSITIONAL alongside the derived, currently-registered set — see its own
+    comment for why a purely derived population would silently stop testing the shim.
+    """
+    names = registered_hooks() | TRANSITIONAL
+    return sorted(n for n in names if (REPO / "scripts" / n).is_file())
 
 
 HOOKS = present_hooks()

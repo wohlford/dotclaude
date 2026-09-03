@@ -275,11 +275,25 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   not-installed, symlink, not-regular and not-executable arms judge the live hooks directory and
   keep firing, because a historical audit runs at exactly the moment before real pushes.
 - `timing-guard-conf` runs whenever the scope's `settings.json` **on disk** registers a
-  `PreToolUse` hook whose command carries `git-timing-guard.sh` as a whole path token, anchored
-  on both sides (a trailing argument on the command is still a match, and so is a leading `.` —
-  the dot-prefixed orphaned original counts too; a differently-prefixed sibling like
-  `old-git-timing-guard.sh` does not, and neither does a registration under any other event,
-  e.g. `PostToolUse`). **Registration, not
+  `PreToolUse` hook whose command carries `git-timing-guard.py` OR `git-timing-guard.sh` as a
+  whole path token, anchored on both sides (a trailing argument on the command is still a
+  match, and so is a leading `.` — the dot-prefixed orphaned original counts too; a
+  differently-prefixed sibling like `old-git-timing-guard.sh` does not, and neither does a
+  registration under any other event, e.g. `PostToolUse`). Both extensions must count during
+  the TRANSITIONAL shim window: `scripts/git-timing-guard.py` is the real hook every new
+  session invokes, and `scripts/git-timing-guard.sh` is now a two-line `exec` shim that every
+  session started before the rename still has loaded and still invokes. **Narrowing this matcher
+  is dangerous in BOTH directions, and they are different hazards — do not collapse them.**
+  Leaving it at `.sh` only, past the moment the registration actually moved to `.py`, is the
+  plan-review BLOCKER this widening exists to close: a correctly `.py`-registered gate reads as
+  unregistered, the check SKIPs, and because a SKIP does not fail the sweep every conf-level
+  `FAIL` arm beneath it goes dark while the run still reads clean. Narrowing it the other way —
+  to `.py` only — is the hazard that bites when the shim is RETIRED: a live session still
+  pointing at the `.sh` would then read as unregistered instead. The shim, and with it this
+  alternation, is retirable only once no running session predates the rename
+  (`scripts/git-timing-guard.sh`'s own header states that criterion). `rTGC+J` in
+  `scripts/tests/test_audit.sh` is the row that would have caught the BLOCKER.
+  **Registration, not
   liveness** — and read this entry, not the verdict line, for what that means: it reads
   `$scope/settings.json` exactly as it sits on disk, never git's committed blob. Whether that
   on-disk copy is ALSO the runtime file depends on what `--scope` points at — for a scope whose
@@ -292,25 +306,38 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   It is NOT in the other SKIPs (there is no conf to say anything
   about yet), and it is not in `PASS` — which, like every check's PASS, prints `PASS
   timing-guard-conf` and no detail at all. A bare PASS is therefore the output most easily
-  misread as "the gate is live and working"; it does not say that and cannot. The `jq`-unavailable
-  `FAIL` below omits the caveat too, deliberately — it is not a registration claim at all, so
-  "registration, not liveness" would be a non sequitur there.
+  misread as "the gate is live and working"; it does not say that and cannot. The
+  `python3`-unusable `FAIL` below omits the caveat too, deliberately — it is not a registration
+  claim at all, so "registration, not liveness" would be a non sequitur there.
   It is machine-scoped, not repo-scoped: the policy file always resolves to
   `$HOME/.claude/.git-timing-guard.conf`, the same hardcoded path the guard itself uses (the
-  `conf=` assignment in `scripts/git-timing-guard.sh`, under the comment block that explains
-  why), so no `--scope` redirects it. Never scoped by `.auditignore`, like the rest of this group.
-  It carries **four SKIP arms, deliberately never collapsed**, each distinguishable from its
+  `conf_path=` assignment in `scripts/git-timing-guard.py` — the `.sh` shim no longer resolves
+  this itself, it `exec`s straight into the `.py`), so no `--scope` redirects it. The
+  `python3`-unusable probe is resolved the same hardcoded way, against
+  `$HOME/.claude/scripts/lib`, for the identical reason. Never scoped by `.auditignore`, like
+  the rest of this group.
+  It carries **five SKIP arms, deliberately never collapsed**, each distinguishable from its
   reason text alone: *not registered* — `settings.json` was read and carries no matching
-  `PreToolUse` hook; *`settings.json` absent* and *`settings.json` unparseable* — two DISTINCT
-  reasons registration could not be derived at all; and *registered but the conf is absent* —
-  which names the path, because absence IS the documented way to disable the gate, making this a
-  coverage gap rather than a clean bill of health. Keeping each "could not tell" reason apart
-  from the others, and apart from "we looked and there is none", is the point: collapsing any of
-  them would rebuild, one level up, the exact sentinel-collapse this check exists to catch.
-  A FIFTH registration-underivable cause, **`jq` unavailable, is a `FAIL`, not a SKIP** — jq
-  missing here is not mere uncertainty about registration, it is evidence the guard is ALSO
-  failing open right now, since `scripts/git-timing-guard.sh` makes this identical `command -v
-  jq` check on the identical PATH at hook-execution time.
+  `PreToolUse` hook; *`settings.json` absent*, *`settings.json` unparseable* and *`jq`
+  unavailable* — three DISTINCT reasons registration could not be derived at all; and
+  *registered but the conf is absent* — which names the path, because absence IS the documented
+  way to disable the gate, making this a coverage gap rather than a clean bill of health.
+  Keeping each "could not tell" reason apart from the others, and apart from "we looked and
+  there is none", is the point: collapsing any of them would rebuild, one level up, the exact
+  sentinel-collapse this check exists to catch.
+  A SIXTH registration-underivable cause, **`python3` unusable, is a `FAIL`, not a SKIP** —
+  tested BEFORE every SKIP arm, including `jq`, for the same machine-global reason `jq` used to
+  lead alone. `python3` being unable to import `scripts/lib/git_command` here is not mere
+  uncertainty about registration, it is evidence the guard is ALSO failing open right now,
+  since `scripts/git-timing-guard.py` resolves this identical `python3` and this identical
+  import at hook-execution time. It probes IMPORTABILITY, never mere PRESENCE of a `python3` on
+  PATH — both fail-opens this repo has measured (a `SyntaxError` under Python 3.9,
+  `init_import_site` failing under concurrent hook load) had a perfectly resolvable `python3`,
+  and it says plainly that the concurrent-load shape is unobservable by any one-shot probe.
+  `jq` unavailable is, by contrast, now a **SKIP**: unlike before this check's own rewrite, a
+  missing `jq` no longer says anything about the GUARD (a Python hook that parses JSON with the
+  stdlib and shells out to no `jq` at all) — only about this CHECK'S own ability to read
+  `$settings`, which is exactly the "could not tell" shape the other undecidable SKIPs share.
   When registered and the conf exists, it `FAIL`s on an unreadable file (naming the `chmod`
   repair), on a path that exists but is not a regular file (e.g. a directory — its own message,
   since the guard's own `[ -f "$conf" ]` silently treats that like an absent conf too, but a
