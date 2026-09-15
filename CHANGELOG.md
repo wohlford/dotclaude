@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.108.1 — 2026-09-08
+- docs(CLAUDE.md): send waiters to run-long's own --wait mode
+
 ## v0.108.0 — 2026-09-08
 - feat(backlog): add a retier operation with a compare-and-swap
 

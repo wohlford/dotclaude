@@ -102,7 +102,13 @@ of 8 — without it an already-red suite scores every mutation CAUGHT and the sw
 And before backgrounding a check that outruns the tool timeout, use `~/.claude/scripts/run-long.sh`
 rather than a wrapper of your own — it is the shipped remedy for the killed-run and
 graded-the-launch-tree hazards below, and you read its verdict back with `--status`, never from the
-launch. Four wrappers were hand-written in one session before it existed, three byte-equivalent;
+launch. **To WAIT for one, use its own `--wait`, never a loop of your own around `--status`** — that
+loop is a wrapper too, and the tool reports liveness in a different vocabulary from the verdict
+inside the artifact, so the condition you write is against the wrong one. Measured: two hand-rolled
+`until` loops in one session, the first exiting early because a still-RUNNING status matched its
+pattern, the second — narrowed to fix exactly that — never exiting at all, because the exclusion
+also removed the real terminal value; it spun for three hours against a job that had long finished.
+Four wrappers were hand-written in one session before it existed, three byte-equivalent;
 the fourth still let a sweep that had run 4 checks of 15 read as a clean pass. Give it `--expect
 '<verdict regex>'` at LAUNCH too — the pattern is recorded INTO the artifact, so a run that
 finished having executed nothing reports INDETERMINATE instead of a truthful, useless `DONE rc=0`.
