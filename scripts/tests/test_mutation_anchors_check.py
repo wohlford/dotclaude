@@ -36,6 +36,7 @@ FLOOR = (
     "mutate_markdownlint_config.py",
     "mutate_mutation_anchors_check.py",
     "mutate_prose_diff.py",
+    "mutate_publication_push_guard_test.py",
     "mutate_run_long.py",
     "mutate_settings_hooks_check.py",
 )
