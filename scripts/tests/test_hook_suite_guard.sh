@@ -62,9 +62,10 @@ write_stub_suite() {
 }
 
 # label | hook | trigger-relative-path | SPACE-SEPARATED suite list
-# Two hooks run MULTIPLE suites, and publication-push-guard runs a DIFFERENT set per arm — the
-# shared_dep arm exists because git_command.py is the tokenizer both fail-closed push guards
-# depend on, so its unit suite is exactly the self-concealing deletion this change targets.
+# Two hooks run MULTIPLE suites. publication-push-guard-test.sh is table-driven: an edit to a gate
+# built on scripts/lib/git_command.py runs that gate's suites, and an edit to the tokenizer runs its
+# own unit suites plus EVERY gate's — so each of its trigger rows lists exactly the suites its row of
+# the hook's DEPENDENTS table requires.
 CASES="
 audit|audit-test.sh|skills/audit/audit.sh|scripts/tests/test_audit.sh
 debrief-backlog|debrief-backlog-test.sh|skills/debrief/backlog.py|skills/debrief/tests/test_stub.py
@@ -76,8 +77,15 @@ memory-index-check|memory-index-check-test.sh|scripts/memory-index-check.py|scri
 style-check|style-check-test.sh|scripts/style-check.sh|scripts/tests/test_style_check.sh
 sync-docs|sync-docs-test.sh|skills/sync-docs/sync_docs.py|skills/sync-docs/tests/test_stub.py
 commit-subject|commit-subject-test.sh|scripts/lib/commit_subject.py|scripts/tests/test_commit_subject_guard.sh scripts/tests/test_commit_subject.py scripts/tests/test_py39_compat.sh
-ppg-guard-only|publication-push-guard-test.sh|scripts/publication-push-guard.py|scripts/tests/test_publication_push_guard.sh
-ppg-shared-dep|publication-push-guard-test.sh|scripts/lib/git_command.py|scripts/tests/test_git_command.py scripts/tests/test_git_command_properties.py scripts/tests/test_publication_push_guard.sh scripts/tests/test_recast_hooks.sh
+ppg-guard-only|publication-push-guard-test.sh|scripts/publication-push-guard.py|scripts/tests/test_publication_push_guard.sh scripts/tests/test_guard_corpus.py scripts/tests/test_guard_internals.py
+ppg-shared-dep|publication-push-guard-test.sh|scripts/lib/git_command.py|scripts/tests/test_git_command.py scripts/tests/test_git_command_properties.py scripts/tests/test_publication_push_guard.sh scripts/tests/test_guard_corpus.py scripts/tests/test_guard_internals.py scripts/tests/test_push_guard.sh scripts/tests/test_git_timing_guard.sh scripts/tests/test_explain_git_command.py scripts/tests/test_commit_subject_guard.sh scripts/tests/test_commit_subject.py scripts/tests/test_recast_hooks.sh
+ppg-push-guard|publication-push-guard-test.sh|scripts/push-guard.py|scripts/tests/test_push_guard.sh
+ppg-timing-guard|publication-push-guard-test.sh|scripts/git-timing-guard.py|scripts/tests/test_git_timing_guard.sh
+ppg-explain|publication-push-guard-test.sh|scripts/explain-git-command.py|scripts/tests/test_explain_git_command.py
+ppg-recast-gate|publication-push-guard-test.sh|scripts/recast-commit-gate.py|scripts/tests/test_recast_hooks.sh
+ppg-commit-advisor|publication-push-guard-test.sh|scripts/commit-subject-advisor.py|scripts/tests/test_commit_subject_guard.sh
+ppg-commit-guard|publication-push-guard-test.sh|scripts/commit-subject-guard.py|scripts/tests/test_commit_subject_guard.sh
+ppg-commit-subject-lib|publication-push-guard-test.sh|scripts/lib/commit_subject.py|scripts/tests/test_commit_subject.py
 env-claims-check|env-claims-check-test.sh|scripts/env-claims-check.py|scripts/tests/test_env_claims_check.py
 mutation-anchors-check|mutation-anchors-check-test.sh|scripts/mutation-anchors-check.py|scripts/tests/test_mutation_anchors_check.py
 recast|recast-test.sh|skills/recast/recast-recon-history.sh|skills/recast/tests/test_recast_recon_history.py
@@ -245,6 +253,268 @@ printf '{"tool_input":{"file_path":"%s"}}' "$recast_foreign/skills/recast/recast
   | PATH="$recast_foreign/shim:$PATH" bash "$hooks/recast-test.sh" >/dev/null 2>&1 || recast_rc=$?
 check_eq "$recast_rc" 0 \
   'recast: NON-owner + suite PRESENT + pytest UNAVAILABLE -> exit 0 (inert; the discriminating row)'
+
+# ---------- publication-push-guard-test.sh: discovery, runners and the budget ----------
+# Most rows below drive a TOKENIZER edit in a fixture that owns the hook and carries a passing stub
+# for every suite the tokenizer arm requires, then change exactly one thing (the suite-as-trigger row
+# edits a suite file instead, and the CONTROL copies the real population). Each asserts the exit
+# status AND a message naming its own cause: a hook exits 2 for several reasons, and a row that
+# checked only the status would stay green if a DIFFERENT alarm fired first.
+ppg=publication-push-guard-test.sh
+ppg_union="scripts/tests/test_git_command.py scripts/tests/test_git_command_properties.py scripts/tests/test_publication_push_guard.sh scripts/tests/test_guard_corpus.py scripts/tests/test_guard_internals.py scripts/tests/test_push_guard.sh scripts/tests/test_git_timing_guard.sh scripts/tests/test_explain_git_command.py scripts/tests/test_commit_subject_guard.sh scripts/tests/test_commit_subject.py scripts/tests/test_recast_hooks.sh"
+
+# ppg_owner_fixture DIR — an owning repo holding the tokenizer and a passing stub for every suite.
+ppg_owner_fixture() {
+  mkrepo "$1"
+  mkdir -p "$1/scripts/lib"
+  printf 'x\n' > "$1/scripts/lib/git_command.py"
+  mark_owner "$1/scripts/$ppg"
+  for s in $ppg_union; do write_stub_suite "$1/$s"; done   # unquoted: split on spaces, deliberate
+}
+
+# drive_ppg DIR [NAME=VALUE ...] — drive a tokenizer edit; sets ppg_rc and ppg_err (stderr only).
+drive_ppg() {
+  local r="$1"
+  shift
+  ppg_rc=0
+  ppg_err=$(printf '{"tool_input":{"file_path":"%s"}}' "$r/scripts/lib/git_command.py" \
+    | env "$@" bash "$hooks/$ppg" 2>&1 >/dev/null) || ppg_rc=$?
+}
+
+# check_has HAYSTACK NEEDLE LABEL
+check_has() {
+  case "$1" in
+    *"$2"*) pass_line "$3" ;;
+    *) fail_line "$3 (stderr lacked [$2]; began: $(printf '%s' "$1" | head -3 | tr '\n' ' '))" ;;
+  esac
+}
+
+# An importer nobody wired, written in the LAZY, INDENTED shape three of the eight real importers
+# use — so a predicate narrowed to column-0 imports cannot pass this row. Under that narrowing the
+# rc row below still reads 2 (the tripwire fires instead), so the MESSAGE row is the catch: do not
+# relax its substring.
+r="$tmp/ppg_unwired_lazy"
+ppg_owner_fixture "$r"
+printf 'def main():\n    import git_command as gitcmd\n    return gitcmd\n' > "$r/scripts/new-gate.py"
+drive_ppg "$r"
+check_eq "$ppg_rc" 2 'ppg: owner + UNWIRED importer (lazy, indented import) -> exit 2'
+check_has "$ppg_err" 'scripts/new-gate.py depends on git_command (directly or through scripts/lib) but no suite is wired for it' \
+  'ppg: the unwired-importer alarm names the importer'
+
+# The same unwired importer in a repo that does NOT own the hook stays inert.
+r="$tmp/ppg_unwired_foreign"
+ppg_owner_fixture "$r"
+rm -f "$r/scripts/$ppg"
+printf 'import git_command\n' > "$r/scripts/new-gate.py"
+drive_ppg "$r"
+check_eq "$ppg_rc" 0 'ppg: NON-owner + unwired importer -> exit 0 (inert)'
+
+# A TRANSITIVE dependent: it imports a lib module that imports the tokenizer.
+r="$tmp/ppg_transitive"
+ppg_owner_fixture "$r"
+printf 'import git_command\n' > "$r/scripts/lib/helper_mod.py"
+printf 'from helper_mod import thing\n' > "$r/scripts/indirect-gate.py"
+drive_ppg "$r"
+check_eq "$ppg_rc" 2 'ppg: owner + unwired TRANSITIVE importer -> exit 2'
+check_has "$ppg_err" 'scripts/indirect-gate.py depends on git_command' \
+  'ppg: discovery follows imports through scripts/lib modules'
+
+# The FLOOR: a gate the table declares exists but no longer imports the tokenizer.
+r="$tmp/ppg_floor"
+ppg_owner_fixture "$r"
+printf 'print("no tokenizer here")\n' > "$r/scripts/push-guard.py"
+drive_ppg "$r"
+check_eq "$ppg_rc" 2 'ppg: a declared gate present but NOT discovered -> exit 2'
+check_has "$ppg_err" 'discovery no longer sees scripts/push-guard.py' \
+  'ppg: the floor alarm names the gate discovery lost'
+
+# The TRIPWIRE: a mention discovery cannot classify.
+r="$tmp/ppg_tripwire"
+ppg_owner_fixture "$r"
+printf 'import importlib\nmod = importlib.import_module("git_command")\n' > "$r/scripts/weird.py"
+drive_ppg "$r"
+check_eq "$ppg_rc" 2 'ppg: an unclassifiable mention of the tokenizer -> exit 2'
+check_has "$ppg_err" 'scripts/weird.py mentions git_command in a form discovery cannot classify' \
+  'ppg: the tripwire names the file'
+
+# A SUITE FILE is a trigger for its own row. A CASES row cannot pin this — its "DELETED" case writes
+# `x` INTO the trigger, which would then exit 2 for `command not found` rather than for the rule.
+# Here the edited file is the failing suite itself, so only a hook that treats it as a trigger runs it.
+r="$tmp/ppg_suite_as_trigger"
+ppg_owner_fixture "$r"
+printf '#!/usr/bin/env bash\necho push-guard-suite-edited-and-broke\nexit 1\n' > "$r/scripts/tests/test_push_guard.sh"
+ppg_rc=0
+ppg_err=$(printf '{"tool_input":{"file_path":"%s"}}' "$r/scripts/tests/test_push_guard.sh" \
+  | bash "$hooks/$ppg" 2>&1 >/dev/null) || ppg_rc=$?
+check_eq "$ppg_rc" 2 'ppg: editing a FAILING suite file runs that suite -> exit 2'
+check_has "$ppg_err" 'test_push_guard.sh FAILED after editing' 'ppg: the edited suite is the one that ran and failed'
+
+# A FAILING suite, once through each runner: shell, then pytest.
+r="$tmp/ppg_fail_shell"
+ppg_owner_fixture "$r"
+printf '#!/usr/bin/env bash\necho push-guard-suite-broke\nexit 1\n' > "$r/scripts/tests/test_push_guard.sh"
+drive_ppg "$r"
+check_eq "$ppg_rc" 2 'ppg: tokenizer edit + FAILING test_push_guard.sh -> exit 2'
+check_has "$ppg_err" 'test_push_guard.sh FAILED after editing' 'ppg: the shell-suite failure is named'
+
+r="$tmp/ppg_fail_pytest"
+ppg_owner_fixture "$r"
+printf 'def test_broken():\n    assert False, "explain-suite-broke"\n' \
+  > "$r/scripts/tests/test_explain_git_command.py"
+drive_ppg "$r"
+check_eq "$ppg_rc" 2 'ppg: tokenizer edit + FAILING test_explain_git_command.py -> exit 2'
+check_has "$ppg_err" 'test_explain_git_command.py FAILED after editing' 'ppg: the pytest-suite failure is named'
+
+# pytest UNAVAILABLE in an owner: the gate did not run. If the hook stopped reporting this, the shim
+# would make every .py suite FAIL and the rc row would still read 2 — the MESSAGE row is the catch,
+# so do not relax its substring. The shim fails every call that names pytest
+# and delegates everything else to the real interpreter by ABSOLUTE path (via `env python3` it
+# would re-find the shim and recurse).
+r="$tmp/ppg_no_pytest"
+ppg_owner_fixture "$r"
+mkdir -p "$r/shim"
+ppg_real_python3="$(command -v python3)"
+# shellcheck disable=SC2016  # $a/$@ belong to the generated shim, not to this script
+{
+  printf '#!/bin/sh\n'
+  printf 'for a in "$@"; do\n'
+  printf '  if [ "$a" = "pytest" ] || [ "$a" = "import pytest" ]; then exit 1; fi\n'
+  printf 'done\n'
+  printf 'exec "%s" "$@"\n' "$ppg_real_python3"
+} > "$r/shim/python3"
+chmod +x "$r/shim/python3"
+drive_ppg "$r" PATH="$r/shim:$PATH"
+check_eq "$ppg_rc" 2 'ppg: owner + pytest UNAVAILABLE -> exit 2 (gate did not run)'
+check_has "$ppg_err" 'pytest is unavailable' 'ppg: the unavailable runner is named'
+
+# The BUDGET: the first suite outlives a lowered budget and spawns a child that would outlive it.
+# The row asserts the overrun path (not "never started"), the bound, and that no process from the
+# suite's tree survives — rc and message alone cannot tell "killed the tree" from "abandoned it".
+r="$tmp/ppg_overrun"
+ppg_owner_fixture "$r"
+ppg_marker="PPG_OVERRUN_MARKER_$$_$RANDOM"
+# BOTH unit suites hang (glob order is locale-dependent, so whichever launches first is the one the
+# budget interrupts), and the child each spawns IGNORES SIGTERM, so only a hook that escalates to
+# KILL across the whole GROUP — not just its leader — leaves nothing behind.
+for ppg_slow in test_git_command.py test_git_command_properties.py; do
+  printf 'import subprocess, sys, time\n\n\ndef test_hangs():\n    subprocess.Popen([sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)", "%s"])\n    time.sleep(20)\n' \
+    "$ppg_marker" > "$r/scripts/tests/$ppg_slow"
+done
+ppg_t0=$SECONDS
+drive_ppg "$r" PUBLICATION_PUSH_GUARD_TEST_BUDGET=3
+ppg_elapsed=$((SECONDS - ppg_t0))
+check_eq "$ppg_rc" 2 'ppg: a suite running past the budget -> exit 2'
+check_has "$ppg_err" 'GATE DID NOT COMPLETE' 'ppg: the overrun is reported as an incomplete gate'
+check_has "$ppg_err" 'killed mid-run: scripts/tests/test_git_command' 'ppg: the overrun names a unit suite it killed'
+if [ "$ppg_elapsed" -lt 20 ]; then
+  pass_line "ppg: the budget bound the run (${ppg_elapsed}s)"
+else
+  fail_line "ppg: the budget did not bind (took ${ppg_elapsed}s against a 3s budget)"
+fi
+sleep 1
+if pgrep -f "$ppg_marker" >/dev/null 2>&1; then
+  fail_line 'ppg: a process from the killed suite tree SURVIVED the overrun'
+  pkill -f "$ppg_marker" >/dev/null 2>&1 || true
+else
+  pass_line 'ppg: no process from the killed suite tree survived'
+fi
+
+# THE KILL BEFORE setsid(): a suite whose launcher is slow to reach os.setsid() is not yet a group
+# leader when the deadline passes, so a group kill alone finds nothing to signal. The shim delays
+# ONLY the session launch — the pytest probe and every other python3 call pass straight through —
+# so the deadline expires inside that window. A lost bound waits for the 4 s launch plus the 8 s suite.
+r="$tmp/ppg_kill_before_setsid"
+ppg_owner_fixture "$r"
+# BOTH unit suites are slow: glob order is locale-dependent, so whichever one launches first must be
+# the one whose launch window the deadline falls into, and must be slow enough that a lost bound shows.
+for ppg_slow in test_git_command.py test_git_command_properties.py; do
+  printf 'import time\n\n\ndef test_slow():\n    time.sleep(8)\n' > "$r/scripts/tests/$ppg_slow"
+done
+mkdir -p "$r/shim"
+# shellcheck disable=SC2016  # $2/$@ belong to the generated shim, not to this script
+{
+  printf '#!/bin/sh\n'
+  printf 'case "$2" in *setsid*) sleep 4 ;; esac\n'
+  printf 'exec "%s" "$@"\n' "$ppg_real_python3"
+} > "$r/shim/python3"
+chmod +x "$r/shim/python3"
+ppg_t0=$SECONDS
+drive_ppg "$r" PATH="$r/shim:$PATH" PUBLICATION_PUSH_GUARD_TEST_BUDGET=2
+ppg_elapsed=$((SECONDS - ppg_t0))
+check_eq "$ppg_rc" 2 'ppg: an overrun inside the launch window -> exit 2'
+check_has "$ppg_err" 'killed mid-run: scripts/tests/test_git_command' \
+  'ppg: the launch-window overrun names a unit suite it stopped'
+if [ "$ppg_elapsed" -lt 7 ]; then
+  pass_line "ppg: the budget bound a launch-window overrun (${ppg_elapsed}s)"
+else
+  fail_line "ppg: the budget did not bind a launch-window overrun (took ${ppg_elapsed}s against a 2s budget)"
+fi
+
+# DISCOVERY FAILS CLOSED: a git that refuses ls-files must alarm, never read as "no importers".
+r="$tmp/ppg_discovery_fails"
+ppg_owner_fixture "$r"
+mkdir -p "$r/shim"
+ppg_real_git="$(command -v git)"
+# shellcheck disable=SC2016  # $a/$@ belong to the generated shim, not to this script
+{
+  printf '#!/bin/sh\n'
+  printf 'for a in "$@"; do\n'
+  printf '  if [ "$a" = "ls-files" ]; then echo "fatal: simulated ls-files failure" >&2; exit 128; fi\n'
+  printf 'done\n'
+  printf 'exec "%s" "$@"\n' "$ppg_real_git"
+} > "$r/shim/git"
+chmod +x "$r/shim/git"
+drive_ppg "$r" PATH="$r/shim:$PATH"
+check_eq "$ppg_rc" 2 'ppg: discovery failing -> exit 2 (fails closed)'
+check_has "$ppg_err" 'discovery of the files that depend on git_command failed' 'ppg: the discovery failure is named'
+
+# DISCOVERY FAILS CLOSED on a name git will only print quoted: without the check it would be dropped
+# from the candidate set without a word, and an importer hiding under such a name would go unwired.
+r="$tmp/ppg_quoted_path"
+ppg_owner_fixture "$r"
+printf 'import git_command\n' > "$r/scripts/we\"ird.py"
+drive_ppg "$r"
+check_eq "$ppg_rc" 2 'ppg: a candidate path git prints quoted -> exit 2 (discovery fails closed)'
+check_has "$ppg_err" 'discovery of the files that depend on git_command failed' \
+  'ppg: the quoted-path failure is named'
+
+# CONTROL — green before AND after this change by construction; it earns its keep by going red the
+# day a real gate imports the tokenizer without a DEPENDENTS row. It copies this repo's WHOLE
+# candidate population (every non-test .py git lists), not a hand list of known importers, so a
+# ninth importer lands in it automatically.
+ppg_real="$here/../.."
+r="$tmp/ppg_real_population"
+mkrepo "$r"
+ppg_copied=0
+while IFS= read -r f; do
+  case "$f" in
+    tests/* | */tests/* | fixtures/* | */fixtures/*) continue ;;
+  esac
+  if [ -f "$ppg_real/$f" ]; then
+    mkdir -p "$r/$(dirname "$f")"
+    cp "$ppg_real/$f" "$r/$f"
+    ppg_copied=$((ppg_copied + 1))
+  fi
+done <<EOF
+$(git -C "$ppg_real" ls-files -co --exclude-standard -- '*.py')
+EOF
+mark_owner "$r/scripts/$ppg"
+for s in $ppg_union; do write_stub_suite "$r/$s"; done
+# Measured 2026-09-14: 31 candidate files. A floor well under that still catches an empty copy.
+if [ "$ppg_copied" -ge 25 ]; then
+  pass_line "ppg control: the real candidate population was copied ($ppg_copied files)"
+else
+  fail_line "ppg control: only $ppg_copied candidate files copied (expected >= 25)"
+fi
+ppg_absent=""
+for f in scripts/push-guard.py scripts/git-timing-guard.py scripts/explain-git-command.py \
+  scripts/recast-commit-gate.py scripts/publication-push-guard.py scripts/commit-subject-guard.py \
+  scripts/commit-subject-advisor.py scripts/lib/commit_subject.py; do
+  [ -f "$r/$f" ] || ppg_absent="$ppg_absent $f"
+done
+check_eq "$ppg_absent" "" 'ppg control: all eight importers measured on 2026-09-14 are in the copy'
+drive_ppg "$r"
+check_eq "$ppg_rc" 0 'ppg CONTROL: every real importer of the tokenizer is wired -> exit 0'
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

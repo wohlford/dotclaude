@@ -2,24 +2,52 @@
 set -euo pipefail
 
 # Script: publication-push-guard-test.sh
-# Purpose: PostToolUse hook — run the publication-push-guard suite when the guard, its suite, or the shared git_command tokenizer changes
+# Purpose: PostToolUse hook — run the suites of every gate built on git_command.py when a gate, its suite, or the tokenizer changes
 # Usage: Called by Claude Code hooks with JSON on stdin
 # Ownership sentinel (do not remove): dotclaude-test-runner-hook
 #
 # Exit codes:
-#   0 — no action needed, or the run suite(s) passed (silent / brief note)
-#   2 — a run suite failed (stderr fed back to Claude to fix)
+#   0 — no action needed, or every suite this edit requires ran and passed (brief note on stdout)
+#   2 — a suite failed; a required suite is absent or unrunnable; a file depends on the tokenizer
+#       with no suite wired for it; or the run did not finish inside its budget (stderr to Claude)
 #
-# Dependency graph: scripts/lib/git_command.py is the shared tokenizer imported by BOTH
-# publication-push-guard.py (tested here) and recast-commit-gate.py (tested by
-# scripts/tests/test_recast_hooks.sh). Editing git_command.py therefore re-runs every one of its
-# dependents' suites: its OWN unit suites (the whole scripts/tests/test_git_command*.py family,
-# discovered by glob — see the floor below), the publication-push-guard suite, and the recast-hooks
-# suite. test_recast_hooks.sh is the slow one (it boots sandbox repos) — that's intentional
-# shared-dep coverage for a rare edit, not a mistake to optimize away.
+# WHAT RUNS. DEPENDENTS, below, is the one declaration of which suites test each gate built on
+# scripts/lib/git_command.py. An edit to a gate, or to one of its suites, runs that gate's row. An
+# edit to the tokenizer runs its own unit suites (the scripts/tests/test_git_command*.py glob, with
+# a floor) and then every row, deduplicated, in table order.
 #
-# Global hook: fires on every Edit|Write in every repo, so it exits 0 fast for anything that is
-# not one of the paths above in a repo that carries the suites.
+# WHY A TABLE AND A DERIVATION. On a tokenizer edit in a repo that owns this hook, the set of files
+# that depend on the tokenizer is also DERIVED from source and held against the table both ways: a
+# dependent with no row alarms (a gate nobody wired), and a row whose gate exists but is no longer
+# discovered alarms (a discovery that narrowed). A Python file that mentions git_command in a form
+# discovery cannot classify alarms too. Discovery reads the Python files git lists — tracked or
+# untracked, not ignored — outside any tests/ or fixtures/ directory, and follows imports through
+# scripts/lib modules. It does NOT see non-Python consumers (skills/audit/audit.sh checks that the
+# installed module imports, which is not a behavioural dependency), git-ignored files, code that
+# assembles the module name at runtime without the literal text git_command, or a file that reaches
+# the tokenizer only through a scripts/lib module by an import form the pattern does not match
+# (e.g. import os, commit_subject) — the tripwire looks only for the literal text git_command. In a
+# repo that does not own this hook every alarm stays silent, but a repo holding a gate and all of
+# that gate's suites still gets those suites run, as the previous hook did for its one guard.
+# DEPENDENTS is read from the copy of this hook the harness runs — the installed one — while
+# ownership and suites come from the edited repo: a branch that adds a gate and its row alarms "no
+# suite is wired" on tokenizer edits until it is promoted (the loud direction), and an edit to that
+# new gate runs nothing until then.
+#
+# THE BUDGET. Claude Code discards a hook's output when it outlives its registered timeout, and
+# Claude never learns that it did — for a gate, a silent fail-open. So this hook bounds itself
+# below its registration (600 s in settings.json; scripts/tests/test_hook_budget.py pins
+# HOOK_BUDGET_SECS below it) and reports an overrun as exit 2. Each suite runs in its own session,
+# so an overrun stops its whole process tree — TERM to the group, then KILL to whatever in it
+# ignored TERM (a descendant that starts a session of its own escapes both).
+# PUBLICATION_PUSH_GUARD_TEST_BUDGET may LOWER the budget (the guard suite uses it); any other
+# value is ignored. A stray export lowers it on real edits too — the loud direction. Measured
+# 2026-09-14, driving this hook on a tokenizer edit: 345 s on a quiet machine, and 341 s in ONE
+# observation with scripts/tests/test_audit.sh running alongside for about two thirds of it. That
+# is under 2x headroom against the budget, so a heavily loaded machine can overrun — by design an
+# alarm, never a silent pass.
+#
+# Global hook: fires on every Edit|Write in every repo, and exits 0 fast for anything else.
 
 # ---------- Parse stdin JSON ----------
 # HOOK CONTRACT: the target arrives as a JSON payload on stdin; argv is ignored. Refuse the two
@@ -39,124 +67,385 @@ if [[ -z "$file_path" ]]; then
   exit 0
 fi
 
-# ---------- Cheap guard: only the guard, its suite, or the shared tokenizer matters ----------
-# '*' spans '/' in case patterns, so the git_command.py match is at any depth.
-guard_only=0
-shared_dep=0
+# ---------- The one declaration of what tests each tokenizer-built gate ----------
+# gate|suites. Rows are in run order: cheap and high-value first, test_recast_hooks.sh (the slow one;
+# it boots sandbox repos) last, so an overrun on a loaded machine still yields the most verdicts.
+DEPENDENTS='
+scripts/publication-push-guard.py|scripts/tests/test_publication_push_guard.sh scripts/tests/test_guard_corpus.py scripts/tests/test_guard_internals.py
+scripts/push-guard.py|scripts/tests/test_push_guard.sh
+scripts/git-timing-guard.py|scripts/tests/test_git_timing_guard.sh
+scripts/explain-git-command.py|scripts/tests/test_explain_git_command.py
+scripts/commit-subject-guard.py|scripts/tests/test_commit_subject_guard.sh
+scripts/commit-subject-advisor.py|scripts/tests/test_commit_subject_guard.sh
+scripts/lib/commit_subject.py|scripts/tests/test_commit_subject.py
+scripts/recast-commit-gate.py|scripts/tests/test_recast_hooks.sh
+'
+
+# ---------- Cheap guard: which rows does this edit select? ----------
+# '*' spans '/' in case patterns, so every match is at any depth. Nothing forks before an unrelated
+# edit exits.
+tokenizer=0
 case "$file_path" in
-  */scripts/publication-push-guard.py|*/scripts/tests/test_publication_push_guard.sh)
-    guard_only=1
-    ;;
-  */scripts/lib/git_command.py)
-    shared_dep=1
-    ;;
-  *)
-    exit 0
-    ;;
+  */scripts/lib/git_command.py) tokenizer=1 ;;
 esac
 
+# Newline-delimited and deduplicated in first-seen order; the surrounding newlines make membership
+# an exact-line test.
+selected=$'\n'
+while IFS='|' read -r gate suites; do
+  if [[ -z "$gate" ]]; then
+    continue
+  fi
+  read -r -a row_suites <<< "$suites"
+  hit=$tokenizer
+  case "$file_path" in */"$gate") hit=1 ;; esac
+  for s in ${row_suites[@]+"${row_suites[@]}"}; do
+    case "$file_path" in */"$s") hit=1 ;; esac
+  done
+  if [[ "$hit" -eq 1 ]]; then
+    for s in ${row_suites[@]+"${row_suites[@]}"}; do
+      case "$selected" in
+        *$'\n'"$s"$'\n'*) ;;
+        *) selected="${selected}${s}"$'\n' ;;
+      esac
+    done
+  fi
+done <<< "$DEPENDENTS"
+
+if [[ "$tokenizer" -eq 0 && "$selected" == $'\n' ]]; then
+  exit 0
+fi
+
 # ---------- Resolve repo root ----------
-# Environment fail-open: not a git repo at all. Deliberate, unchanged. Suite presence is decided
-# per-arm below (via ownership + the missing-suite collection), so a DELETED suite in an owning
-# repo can no longer hide behind this early exit the way a single hardcoded -f check would.
+# Environment fail-open: not a git repo at all. Deliberate, unchanged.
 root=$(git -C "$(dirname "$file_path")" rev-parse --show-toplevel 2>/dev/null || true)
 if [[ -z "$root" ]]; then
   exit 0
 fi
 
-failures=()
-ran=()
+# ---------- Ownership ----------
+# Proven from THIS hook's own source inside the edited repo, which requires nothing from a suite
+# whose absence is in question — so a deletion cannot conceal itself, and a foreign repo stays
+# inert. Every alarm below is gated on it.
+owner=0
+if grep -q 'dotclaude-test-runner-hook' "$root/scripts/$(basename "$0")" 2>/dev/null; then
+  owner=1
+fi
 
-run_shell_suite() {
-  local label=$1 relpath=$2
-  if [[ ! -f "$root/$relpath" ]]; then
-    return
+# refuse LINE... — exit 2 with LINEs on stderr in an owning repo; exit 0, inert, anywhere else. A
+# non-owner holding only SOME suites must stay inert rather than EXECUTE whichever repo-supplied
+# scripts happen to exist (user privileges, on every edit in every repo).
+refuse() {
+  if [[ "$owner" -eq 1 ]]; then
+    printf '%s\n' "$@" >&2
+    exit 2
   fi
-  ran+=("$label")
-  local output rc
-  output=$(cd "$root" && bash "$relpath" 2>&1) && rc=0 || rc=$?
-  if [[ "$rc" -ne 0 ]]; then
-    printf '%s FAILED after editing %s:\n' "$label" "$file_path" >&2
-    printf '%s\n' "$output" | tail -20 >&2
-    failures+=("$label")
-  fi
+  exit 0
 }
 
-run_pytest_suite() {
-  local label=$1 relpath=$2
-  if [[ ! -f "$root/$relpath" ]]; then
-    return
-  fi
-  # ---------- Availability guard: no pytest → can't test, never falsely block ----------
-  if ! python3 -c 'import pytest' >/dev/null 2>&1; then
-    return
-  fi
-  ran+=("$label")
-  local output rc
-  output=$(cd "$root" && python3 -m pytest "$relpath" -q 2>&1) && rc=0 || rc=$?
-  if [[ "$rc" -ne 0 ]]; then
-    printf '%s FAILED after editing %s:\n' "$label" "$file_path" >&2
-    printf '%s\n' "$output" | tail -20 >&2
-    failures+=("$label")
-  fi
-}
-
-# The git_command unit suites are DISCOVERED by glob when they run (below), so a sibling suite
-# added later is covered the day it lands — naming them one at a time is exactly what left
-# test_git_command_properties.py unwired for a whole session after it was written. What a glob
-# cannot do is tell "never existed" apart from "deleted": it would simply match one fewer file and
-# report success. So this floor names the members whose ABSENCE must alarm, and the glob only ever
-# ADDS to it. Put a new sibling here too once its coverage is meant to be load-bearing.
+# ---------- The suites this edit requires ----------
+# The git_command unit suites are DISCOVERED by glob, so a sibling added later is covered the day it
+# lands. A glob cannot tell "never existed" from "deleted", so this floor names the members whose
+# ABSENCE must alarm; the glob only ever adds to it.
 git_command_floor=(
   scripts/tests/test_git_command.py
   scripts/tests/test_git_command_properties.py
 )
-
-# Every suite this arm will run must exist BEFORE any of them runs — run_shell_suite and
-# run_pytest_suite each `return` silently on a missing file, so a deleted suite would otherwise
-# be counted as "passed". Collected per arm, since the two arms run different sets.
-missing=""
-if [[ "$guard_only" -eq 1 ]]; then
-  [[ -f "$root/scripts/tests/test_publication_push_guard.sh" ]] \
-    || missing="${missing}  scripts/tests/test_publication_push_guard.sh"$'\n'
-elif [[ "$shared_dep" -eq 1 ]]; then
-  for floor_suite in "${git_command_floor[@]}"; do
-    [[ -f "$root/$floor_suite" ]] || missing="${missing}  ${floor_suite}"$'\n'
-  done
-  [[ -f "$root/scripts/tests/test_publication_push_guard.sh" ]] \
-    || missing="${missing}  scripts/tests/test_publication_push_guard.sh"$'\n'
-  [[ -f "$root/scripts/tests/test_recast_hooks.sh" ]] \
-    || missing="${missing}  scripts/tests/test_recast_hooks.sh"$'\n'
-fi
-if [[ -n "$missing" ]]; then
-  if grep -q 'dotclaude-test-runner-hook' "$root/scripts/$(basename "$0")" 2>/dev/null; then
-    {
-      printf 'GATE DID NOT RUN — this repo owns %s but these suites are absent:\n' \
-        "$(basename "$0")"
-      printf '%s' "$missing"
-      printf 'To remove this feature deliberately: delete its hook, remove its settings.json registration, then re-run /sync-docs.\n'
-    } >&2
-    exit 2
-  fi
-  # Non-owner holding only SOME of these suites: stay inert. Falling through would EXECUTE
-  # whichever repo-supplied scripts happen to exist (`bash "$relpath"`, user privileges, on every
-  # edit in every repo) — inertness the pre-split guard used to provide and this restores.
-  exit 0
-fi
-
-if [[ "$guard_only" -eq 1 ]]; then
-  run_shell_suite "publication-push-guard suite" "scripts/tests/test_publication_push_guard.sh"
-elif [[ "$shared_dep" -eq 1 ]]; then
-  # Whatever scripts/tests/test_git_command*.py exists runs — no hand-written list to go stale.
-  # Reaching here means the floor above found every required member present, so any extra match is
-  # a newer sibling that should run too. The label is the basename, so the summary line names the
-  # files that actually ran instead of a prose stand-in that cannot go out of date visibly.
+required=()
+if [[ "$tokenizer" -eq 1 ]]; then
   for suite in "$root"/scripts/tests/test_git_command*.py; do
-    [[ -f "$suite" ]] || continue   # no match at all: bash leaves the pattern itself behind
-    run_pytest_suite "${suite##*/}" "${suite#"$root"/}"
+    if [[ -f "$suite" ]]; then
+      required+=("${suite#"$root"/}")
+    fi
   done
-  run_shell_suite "publication-push-guard suite" "scripts/tests/test_publication_push_guard.sh"
-  run_shell_suite "recast-hooks suite" "scripts/tests/test_recast_hooks.sh"
+fi
+while IFS= read -r s; do
+  if [[ -n "$s" ]]; then
+    required+=("$s")
+  fi
+done <<< "$selected"
+
+# ---------- Every required suite must be present AND runnable before any runs ----------
+# A suite that cannot run is the same event as a missing one: the gate did not run.
+missing=()
+if [[ "$tokenizer" -eq 1 ]]; then
+  for f in "${git_command_floor[@]}"; do
+    if [[ ! -f "$root/$f" ]]; then
+      missing+=("  $f")
+    fi
+  done
+fi
+have_python=1
+command -v python3 >/dev/null 2>&1 || have_python=0
+have_pytest=0
+if [[ "$have_python" -eq 1 ]] && python3 -c 'import pytest' >/dev/null 2>&1; then
+  have_pytest=1
+fi
+for s in ${required[@]+"${required[@]}"}; do
+  if [[ ! -f "$root/$s" ]]; then
+    missing+=("  $s")
+  elif [[ "$s" == *.py && "$have_pytest" -eq 0 ]]; then
+    missing+=("  $s (present, but pytest is unavailable)")
+  fi
+done
+if [[ "$have_python" -eq 0 ]]; then
+  missing+=("  python3 is unavailable (every suite is launched through it, in its own session)")
+fi
+if [[ "${#missing[@]}" -gt 0 ]]; then
+  refuse "GATE DID NOT RUN — this repo owns $(basename "$0") but these suites are absent or unrunnable:" \
+    "${missing[@]}" \
+    "To remove this feature deliberately: delete its hook, remove its settings.json registration, then re-run /sync-docs."
+fi
+
+# ---------- Derive the dependents and hold them against DEPENDENTS (tokenizer edit, owner only) ----------
+
+# is_row FILE — 0 when DEPENDENTS declares FILE as a gate.
+is_row() {
+  case "$DEPENDENTS" in
+    *$'\n'"$1|"*) return 0 ;;
+  esac
+  return 1
+}
+
+# import_pattern MODULE... — an ERE matching a Python import statement naming any MODULE, at any
+# indentation (three of the eight real importers import lazily, inside a function).
+import_pattern() {
+  local alt
+  alt=$(
+    IFS='|'
+    printf '%s' "$*"
+  )
+  printf '^[[:space:]]*(import[[:space:]]+(%s)([[:space:]]|,|$)|from[[:space:]]+(%s)[[:space:]]+import([[:space:]]|$))' \
+    "$alt" "$alt"
+}
+
+# discover — fills `discovered` (files that depend on the tokenizer, directly or through a
+# scripts/lib module) and `mentions` (files that contain the text git_command but match no import).
+# Returns non-zero on ANY failure; the caller turns that into an alarm, never an empty set.
+discovered=()
+mentions=()
+discover() {
+  local listing f mod pattern changed rc
+  local -a candidates=()
+  local -a mods=(git_command)
+  # core.quotePath=false prints non-ASCII names raw. Git still quotes a name holding a quote, a
+  # backslash or a control character, and such a name cannot be read back as a path — so any quoted
+  # entry is a discovery failure, never a silently skipped candidate.
+  listing=$(git -C "$root" -c core.quotePath=false ls-files -co --exclude-standard -- '*.py') || return 1
+  while IFS= read -r f; do
+    case "$f" in
+      \"*) return 1 ;;
+      '' | tests/* | */tests/* | fixtures/* | */fixtures/*) continue ;;
+    esac
+    if [[ -f "$root/$f" ]]; then
+      candidates+=("$f")
+    fi
+  done <<< "$listing"
+
+  changed=1
+  while [[ "$changed" -eq 1 ]]; do
+    changed=0
+    pattern=$(import_pattern "${mods[@]}")
+    for f in ${candidates[@]+"${candidates[@]}"}; do
+      case "$f" in
+        scripts/lib/*.py) ;;
+        *) continue ;;
+      esac
+      mod=${f##*/}
+      mod=${mod%.py}
+      case " ${mods[*]} " in *" $mod "*) continue ;; esac
+      rc=0
+      grep -qE -- "$pattern" "$root/$f" || rc=$?
+      if [[ "$rc" -eq 0 ]]; then
+        mods+=("$mod")
+        changed=1
+      elif [[ "$rc" -ne 1 ]]; then
+        return 1
+      fi
+    done
+  done
+
+  pattern=$(import_pattern "${mods[@]}")
+  for f in ${candidates[@]+"${candidates[@]}"}; do
+    if [[ "$f" == scripts/lib/git_command.py ]]; then
+      continue
+    fi
+    rc=0
+    grep -qE -- "$pattern" "$root/$f" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+      discovered+=("$f")
+      continue
+    fi
+    if [[ "$rc" -ne 1 ]]; then
+      return 1
+    fi
+    rc=0
+    grep -qF -- git_command "$root/$f" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+      mentions+=("$f")
+    elif [[ "$rc" -ne 1 ]]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+if [[ "$tokenizer" -eq 1 && "$owner" -eq 1 ]]; then
+  if ! discover; then
+    refuse "GATE DID NOT RUN — discovery of the files that depend on git_command failed in $root," \
+      "so this hook cannot tell which suites the edit requires. Fix the failure; do not skip the gate."
+  fi
+  problems=()
+  for f in ${discovered[@]+"${discovered[@]}"}; do
+    if ! is_row "$f"; then
+      problems+=("  $f depends on git_command (directly or through scripts/lib) but no suite is wired for it — add a DEPENDENTS row")
+    fi
+  done
+  discovered_lines=$'\n'
+  for f in ${discovered[@]+"${discovered[@]}"}; do
+    discovered_lines="${discovered_lines}${f}"$'\n'
+  done
+  while IFS='|' read -r gate _; do
+    if [[ -z "$gate" || ! -f "$root/$gate" ]]; then
+      continue
+    fi
+    case "$discovered_lines" in
+      *$'\n'"$gate"$'\n'*) ;;
+      *) problems+=("  discovery no longer sees $gate, which DEPENDENTS declares — the import predicate or its closure has narrowed") ;;
+    esac
+  done <<< "$DEPENDENTS"
+  for f in ${mentions[@]+"${mentions[@]}"}; do
+    if ! is_row "$f"; then
+      problems+=("  $f mentions git_command in a form discovery cannot classify (a multi-module or dotted import line, an importlib or __import__ load, or just a comment?) — give the import a line of its own, add a DEPENDENTS row, or reword the mention")
+    fi
+  done
+  if [[ "${#problems[@]}" -gt 0 ]]; then
+    refuse "GATE DID NOT RUN — the files that depend on git_command do not match the suites wired for them:" \
+      "${problems[@]}"
+  fi
+fi
+
+# ---------- Budget ----------
+# SECONDS counts from this shell's start, so the deadline covers everything above as well.
+HOOK_BUDGET_SECS=540
+budget=$HOOK_BUDGET_SECS
+override=${PUBLICATION_PUSH_GUARD_TEST_BUDGET:-}
+case "$override" in
+  '' | *[!0-9]* | ?????*) ;; # empty, non-numeric, or five or more digits: ignored
+  *)
+    if [[ "$((10#$override))" -gt 0 && "$((10#$override))" -lt "$HOOK_BUDGET_SECS" ]]; then
+      budget=$((10#$override))
+    fi
+    ;;
+esac
+deadline=$budget
+
+# ---------- Run ----------
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/ppg-test.XXXXXX" 2>/dev/null) \
+  || refuse "GATE DID NOT RUN — could not create a temporary directory for suite output."
+
+# kill_suite PID — stop one suite launched by run_suite, and everything it started. TERM goes to the
+# group. That FAILS in the brief window between launch and os.setsid(), when PID is not yet a group
+# leader — so fall back to the process itself, which has started nothing yet. Then poll the GROUP,
+# not just its leader, for a few seconds and escalate to KILL if anything in it is still alive: a
+# descendant that ignores TERM outlives its leader, and polling the leader alone would miss it. A
+# process-group id cannot be reused while any member is alive; once the group is empty it can be,
+# so a signal can reach a reused id only within one poll interval — a residual accepted, not closed.
+kill_suite() {
+  local pid=$1
+  kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if ! kill -0 -- "-$pid" 2>/dev/null && ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+  return 0
+}
+
+# `live` holds the running suite's pid — also its process-group id once os.setsid() has run — and is
+# cleared right after `wait`. Bash reaps a finished background child as soon as it exits, before
+# `wait` runs, so between an exit and the next poll the id can already be free; see kill_suite for
+# what that leaves.
+live=""
+# shellcheck disable=SC2329  # invoked via the EXIT trap
+cleanup() {
+  if [[ -n "$live" ]]; then
+    kill_suite "$live"
+  fi
+  rm -rf "$tmpdir"
+}
+trap cleanup EXIT
+trap 'exit 2' TERM INT
+
+SESSION_EXEC='import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])'
+
+ran=()
+failures=()
+not_run=()
+killed=""
+
+# run_suite RELPATH — run one suite in its own session, bounded by the deadline. Every outcome is
+# recorded in ran/failures/not_run/killed; a non-zero status never escapes (set -e would turn it
+# into rc 1, which the harness treats as noise).
+run_suite() {
+  local rel=$1 out rc=0
+  if [[ -n "$killed" || "$SECONDS" -ge "$deadline" ]]; then
+    not_run+=("$rel")
+    return 0
+  fi
+  out="$tmpdir/${rel//\//_}.out"
+  ran+=("${rel##*/}")
+  if [[ "$rel" == *.py ]]; then
+    (cd "$root" && exec python3 -c "$SESSION_EXEC" python3 -m pytest -p no:cacheprovider -q "$rel") \
+      >"$out" 2>&1 &
+  else
+    (cd "$root" && exec python3 -c "$SESSION_EXEC" bash "$rel") >"$out" 2>&1 &
+  fi
+  live=$!
+  while kill -0 "$live" 2>/dev/null; do
+    if [[ "$SECONDS" -ge "$deadline" ]]; then
+      kill_suite "$live"
+      wait "$live" 2>/dev/null || true
+      live=""
+      killed=$rel
+      return 0
+    fi
+    sleep 0.5
+  done
+  wait "$live" || rc=$?
+  live=""
+  if [[ "$rc" -ne 0 ]]; then
+    failures+=("${rel##*/}")
+    printf '%s FAILED after editing %s:\n' "${rel##*/}" "$file_path" >&2
+    tail -20 "$out" >&2 || true
+  fi
+  return 0
+}
+
+for s in ${required[@]+"${required[@]}"}; do
+  run_suite "$s"
+done
+
+if [[ -n "$killed" || "${#not_run[@]}" -gt 0 ]]; then
+  {
+    printf 'GATE DID NOT COMPLETE — %s ran out of its %ss budget after editing %s.\n' \
+      "$(basename "$0")" "$budget" "$file_path"
+    if [[ -n "$killed" ]]; then
+      printf 'killed mid-run: %s — its last output:\n' "$killed"
+      tail -20 "$tmpdir/${killed//\//_}.out" || true
+    fi
+    if [[ "${#not_run[@]}" -gt 0 ]]; then
+      printf 'never started:\n'
+      printf '  %s\n' "${not_run[@]}"
+    fi
+    if [[ "${#failures[@]}" -gt 0 ]]; then
+      printf 'FAILED before the budget ran out: %s\n' "${failures[*]}"
+    fi
+    printf 'The harness would have killed this hook silently at its registered timeout. Run each suite named above through scripts/run-long.sh and read its verdict; do not re-edit the file to retry.\n'
+  } >&2
+  exit 2
 fi
 
 if [[ "${#ran[@]}" -eq 0 ]]; then

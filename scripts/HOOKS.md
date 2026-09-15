@@ -133,6 +133,21 @@ logic changes — so a regression in a gate is caught the moment it's edited. Se
 `style-check-test.sh` (guards `style-check.sh`) and `sync-docs-test.sh` (guards the sync-docs Python).
 A new gate with a test suite should follow the same pairing.
 
+## Bounding a long test-runner hook
+
+Claude Code kills a hook that outlives its registered `timeout`, discards its output, and never tells
+Claude that it timed out — so a test-runner hook that overruns is a gate that silently did not run. A
+hook whose suites can take minutes must bound itself **below** its registration and report an overrun
+as exit `2`: launch each suite as its own session leader (through
+`python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])'`), poll it against
+the deadline, and on overrun signal the whole group — TERM, then KILL to whatever is still alive. Two
+traps the worked example handles: a suite stopped before its launcher reaches `os.setsid()` is not yet
+a group leader, so fall back to signalling the process itself; and a descendant that ignores TERM
+outlives its leader, so poll the group, not the leader. `kill_suite` in
+`publication-push-guard-test.sh` is the worked example, and `scripts/tests/test_hook_budget.py` pins
+the `HOOK_BUDGET_SECS` of every registered `*-test.sh` hook at least 30 s below its `settings.json`
+timeout.
+
 ## Wiring
 
 Register the hook in the `hooks` → `PostToolUse` (or `PreToolUse`) array in
