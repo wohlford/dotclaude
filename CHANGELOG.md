@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.105.2 — 2026-09-02
+- docs(tests): correct the guard rationale in two orphaned files
+
 ## v0.105.1 — 2026-09-02
 - fix(push-guard): treat reserved words as command position
 

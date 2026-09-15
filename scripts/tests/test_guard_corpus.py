@@ -42,14 +42,23 @@ resolved with `.resolve()` (pwd -P) because `$TMPDIR` is reached through a symli
 (`/tmp` -> `/private/tmp`), and a path-resolving subject can take a different branch under the
 logical form.
 
-WHY THE PUSH VERB IS NEVER SPELLED NEXT TO "git" IN THIS FILE'S SOURCE. This repo's own git-timing-
-guard (`~/.claude/.git-timing-guard.sh`) greps the raw text of every Bash command the operating
-agent runs for the pattern `git <options>*` followed by the verb this module never spells out
-next to it, including inside quoted strings and comments --
-it does not parse the command, so an ad hoc verification command built while authoring this file
-could be refused by a gate that never actually judged it. Every row's command string is therefore
-assembled from `"p" + "ush"` at import time (see `_VERB` / `_p()` below), and no comment, label, or
-docstring in this file spells the two words contiguously either.
+WHY THE PUSH VERB IS NEVER SPELLED NEXT TO "git" IN THIS FILE'S SOURCE. The convention stands, but
+its reason NARROWED when the timing guard stopped being a regex. It used to grep the raw text of
+every Bash command -- comments and quoted strings included -- and refuse anything matching, so a
+verification command written while authoring this file could be refused by a gate that never
+judged it. That guard is now `scripts/git-timing-guard.py`, which decides by COMMAND POSITION via
+the shared tokenizer, and those shapes are allowed. Measured against it, window forced open: a
+comment, a single- or double-quoted string, and a grep argument all return rc=0, while a real
+publish returns rc=2.
+
+What SURVIVES is narrower, and is why the split literal is still here: the tokenizer still scans the
+body of a QUOTED heredoc as though it were commands, so a heredoc block containing the two words in
+command position is refused (measured rc=2) even though bash treats that body as inert data --
+filed separately, 2026-08-24. Authoring this file means writing exactly such heredocs, so every
+row's command string is assembled from `"p" + "ush"` at import time (see `_VERB` / `_p()` below),
+and no comment, label, or docstring here spells the two words contiguously either. (Inside a
+heredoc the position rule still applies: the verb inside a Python string literal there measures
+rc=0.)
 
 THE FOUR REQUIRED ASSERTIONS (spec S7 / plan Task 1), each its own test function below:
   1. `test_must_block_rows_block_on_new_build` -- every MUST_BLOCK row blocks (rc 2) on the NEW

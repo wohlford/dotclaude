@@ -57,11 +57,17 @@ push_run() { # cwd command want label
   assert_eq "$got" "$3" "$4"
 }
 
-# The push verb, assembled so it never appears literally next to "git" in this file's own source --
-# same reasoning as test_guard_corpus.py's _VERB: this repo's own git-timing-guard greps the RAW
-# text of every Bash command run (including comments), unparsed, so an ad hoc verification command
-# built while authoring this file could otherwise be refused by a gate that never actually judged
-# it.
+# The push verb, assembled for the assertions below that use ${VERB} -- NOT a whole-file rule, and
+# an earlier revision of this comment claimed it was. The row block further up spells the two words
+# contiguously in ~90 places and always has; only this file's later section adopted the convention.
+# test_guard_corpus.py IS strict throughout (measured: zero contiguous spellings).
+#
+# Same reasoning as that file's _VERB, and the same CORRECTION. The timing guard no
+# longer greps raw text: scripts/git-timing-guard.py decides by command position, so a comment, a
+# quoted string and a grep argument are all allowed now (measured rc=0 each, against rc=2 for a
+# real publish). What still bites is the tokenizer scanning the body of a QUOTED heredoc as if it
+# were commands -- measured rc=2 -- and authoring this file means writing exactly those. Filed
+# separately, 2026-08-24.
 VERB="pu""sh"
 
 # judge cmd cwd -> prints the guard's combined stdout+stderr; its own exit code is available via
