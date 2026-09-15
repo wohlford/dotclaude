@@ -414,11 +414,49 @@ def test_amend_head_refuses_a_tier_when_one_already_exists(tmp_path):
 def test_amend_head_refuses_a_tier_when_rest_has_no_bold_delimiter(tmp_path):
     # "A `rest` that does not start with `**` has no canonical insertion point: refuse, do not
     # guess" — never fall back to scanning for the first `**` anywhere in the headline.
+    #
+    # `match=` is load-bearing, not decoration. This fixture is ALSO refused by the subsequence
+    # postcondition, so a bare `pytest.raises(BacklogError)` is satisfied by whichever check
+    # happens to raise first and stays green when the guard this row is named for is deleted —
+    # measured by mutation, this row's earlier form survived `no-bold-guard-off`. Assert the
+    # guard's own message, and see the row below for the case where it is the ONLY refusal.
     head = "- [ ] 2026-07-01 — plain text with no bold delimiter"
     path = write_doc(tmp_path, make_doc([[head]]))
     doc = path.read_text()
-    with pytest.raises(BacklogError):
+    with pytest.raises(
+        BacklogError, match=r"rest has no '\*\*' to insert a tier inside"
+    ):
         Backlog(path).amend_head("plain text", tier="HIGH")
+    assert path.read_text() == doc
+
+
+@pytest.mark.parametrize("tier", ["HIGH", "MEDIUM", "LOW"])
+def test_amend_head_bold_guard_is_the_only_refusal_for_a_plain_tier_head(
+    tmp_path, tier
+):
+    """The `**` guard is decisive here, and its absence CORRUPTS rather than refuses.
+
+    A head carrying a tier in the plain `TIER — ` form (no `**`) is not hypothetical: 23 of the 91
+    open entries in the live backlog are written that way, 2 of them HIGH and 1 LOW. Inserting a
+    tier into one does `rest[2:]`, which eats the first two characters of real text.
+
+    When the inserted tier EQUALS the one already spelled out, the subsequence postcondition no
+    longer catches it — the inserted token supplies exactly the characters that were dropped — and
+    the length delta is unchanged, so every other postcondition passes too. Measured with the guard
+    removed from the real module: `- [ ] … — HIGH — text` + `--tier HIGH` writes
+    `- [ ] … — **HIGH — GH — text`, silently.
+
+    So this fixture is built at the smallest case where the two readings DIVERGE, not at the
+    smallest one that runs the code. The row above uses a head with no tier at all and is caught by
+    a different check; only this one can go red when the guard is deleted.
+    """
+    head = f"- [ ] 2026-08-31 — {tier} — a plain-form head carrying its tier unbolded"
+    path = write_doc(tmp_path, make_doc([[head]]))
+    doc = path.read_text()
+    with pytest.raises(
+        BacklogError, match=r"rest has no '\*\*' to insert a tier inside"
+    ):
+        Backlog(path).amend_head("plain-form head", tier=tier)
     assert path.read_text() == doc
 
 

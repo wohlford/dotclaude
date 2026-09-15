@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.107.1 — 2026-09-08
+- test(backlog): add a campaign and cover the bold-delimiter guard
+
 ## v0.107.0 — 2026-09-08
 - feat(settings-hooks): share the walker and assert test-runner parity
 
