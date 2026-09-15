@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.108.16 — 2026-09-14
+- test(git_command): add the reserved-word argument mutation campaign
+
 ## v0.108.15 — 2026-09-14
 - test(recast-commit-gate): pin reserved words in commit argv
 
