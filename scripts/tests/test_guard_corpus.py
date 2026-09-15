@@ -1222,6 +1222,51 @@ def _build_rows(
             "the per-URL credential.<url>.* form is the same URL-as-subsection shape applied to "
             "credentials; pins the class holds for a second key prefix, not just http.*",
         ),
+        # ---------- fix round 1: legitimate reads the round-1 rule-2 change would otherwise refuse
+        # ---------- for carrying a value-taking option ahead of the read flag -------------------
+        Row(
+            "config_allow_read_short_bundle_lz",
+            "git config -lz",
+            MUST_ALLOW,
+            "a bundled short-flag read (list + null-terminate); pins that a bundle read as "
+            "value-less by rule 1's own bundle walk is also recognized by rule 2's standdown",
+        ),
+        Row(
+            "config_allow_read_short_bundle_zl",
+            "git config -zl",
+            MUST_ALLOW,
+            "the same bundle in the other order, pinning the standdown does not depend on `l` "
+            "being the leading character of the bundle",
+        ),
+        Row(
+            "config_allow_read_gitmodules_regexp",
+            "git config -f .gitmodules --get-regexp submodule",
+            MUST_ALLOW,
+            "git's own documented submodule idiom: -f takes its value ATTACHED to the next "
+            "token, which used to end rule 2's key-visibility scan before it ever reached the "
+            "--get-regexp read flag that follows",
+        ),
+        Row(
+            "config_allow_read_gitmodules_short",
+            "git config -f .gitmodules -l",
+            MUST_ALLOW,
+            "the same -f-then-value shape with the short read flag -l rather than a long one",
+        ),
+        Row(
+            "config_allow_read_file_list",
+            "git config --file .gitmodules --list",
+            MUST_ALLOW,
+            "the long-flag spelling of -f ahead of a long-flag read; pins the standdown holds "
+            "across both scope-flag spellings, not just the short one",
+        ),
+        Row(
+            "config_allow_read_home_list",
+            "git config --file ~/.gitconfig --list",
+            MUST_ALLOW,
+            "the same --file-then-value shape reading the user's home config rather than a "
+            "repo-local one, pinning the value's shape (a path outside the repo) is not what "
+            "trips the scan",
+        ),
         # ---------- XFAIL_TODAY: measured open, and named to the task that will close them -------
         # Both re-measured 2026-08-04 in a genuinely adopted fixture (a first probe used an
         # UNCOMMITTED marker, so the guard was dormant and every row read "allowed" -- the control
@@ -1231,23 +1276,21 @@ def _build_rows(
         Row(
             "rename_section_builds_include_path",
             "git config --rename-section harmless include",
-            XFAIL_TODAY,
+            MUST_BLOCK,
             "renaming any section to `include` makes its existing `path` key a live include.path, "
             "reaching core.hooksPath one hop away -- with no denied key ever typed. Measured: git "
             "exits 0 and the section really is created",
-            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
         ),
         Row(
             "config_edit_is_an_arbitrary_write",
             "git config --edit",
-            XFAIL_TODAY,
+            MUST_BLOCK,
             "--edit opens the config in an arbitrary editor, so its effect is unbounded and names "
             "no key at all; allowed today. Originally carried a `GIT_EDITOR=vi` prefix that was "
             "measured not load-bearing -- T1's broadened env-name deny (any non-allowlisted "
             "`^GIT_` name) now denies GIT_EDITOR outright, which would flip this row to blocked "
             "for the wrong reason (an env name, not the --edit gap). Dropped so the row keeps "
             "testing --edit alone",
-            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
         ),
         # Six more measured ALLOWED on 2026-09-08, beside the two above -- the spec's full
         # bypass population, minus the two on record. Same xfail_task on every row: it is
@@ -1255,55 +1298,49 @@ def _build_rows(
         Row(
             "config_subcmd_rename_section",
             "git config rename-section harmless include",
-            XFAIL_TODAY,
+            MUST_BLOCK,
             "the modern subcommand spelling of --rename-section, alongside "
             "rename_section_builds_include_path above; same include.path-building bypass, "
             "just in git 2.55's newer subcommand grammar rather than the legacy flag",
-            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
         ),
         Row(
             "config_subcmd_edit",
             "git config edit",
-            XFAIL_TODAY,
+            MUST_BLOCK,
             "the modern subcommand spelling of --edit -- the same unbounded, no-key-named "
             "write as config_edit_is_an_arbitrary_write, in the newer grammar",
-            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
         ),
         Row(
             "config_rename_section_to_core",
             "git config --rename-section harmless core",
-            XFAIL_TODAY,
+            MUST_BLOCK,
             "renaming a section that holds a hooksPath key to `core` reaches the hooks path "
             "directly, without going through an include. This is the spelling the backlog "
             "entry's own prescribed remedy excludes, since that remedy names only "
             "include/includeif as dangerous targets",
-            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
         ),
         Row(
             "config_subcmd_remove_section",
             "git config remove-section harmless",
-            XFAIL_TODAY,
+            MUST_BLOCK,
             "remove-section deletes a whole section without naming any key at all -- the "
             "same operates-on-the-section-not-a-key shape as rename-section and edit, so a "
             "rule keyed only on those two action words would still miss this one",
-            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
         ),
         Row(
             "config_abbrev_rename_section",
             "git config --rename-sec harmless include",
-            XFAIL_TODAY,
+            MUST_BLOCK,
             "--rename-sec is an unambiguous abbreviation of --rename-section; a rule matching "
             "only the fully-spelled flag would leave this spelling of the include.path "
             "bypass wrongly allowed",
-            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
         ),
         Row(
             "config_short_edit_flag",
             "git config -e",
-            XFAIL_TODAY,
+            MUST_BLOCK,
             "-e is git's documented short form of --edit, confirmed accepted by git 2.55. It "
             "is single-dash, so any rule matching only --prefixed tokens misses it",
-            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
         ),
         # The final three exist to make the two forthcoming rules separable, not as extra
         # bypass spellings -- every row above is caught by EITHER rule alone, so neither one
@@ -1313,30 +1350,140 @@ def _build_rows(
         Row(
             "config_rename_dotted_to_include",
             "git config rename-section a.b include",
-            XFAIL_TODAY,
+            MUST_BLOCK,
             "rule-1-only: the dotted token a.b satisfies rule 2, so only the action rule can "
             "block this rename. This is the exact command the spec and the helper docstring "
             "cite as proving rule 1 non-redundant -- and it was missing from the corpus, so "
             "the design argued for a rule with an input it never tested",
-            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
         ),
         Row(
             "config_rename_dotted_to_core",
             "git config --rename-section a.b core",
-            XFAIL_TODAY,
+            MUST_BLOCK,
             "rule-1-only, the rename-to-core sibling of config_rename_dotted_to_include: the "
             "dotted token a.b again satisfies rule 2, so only the action rule can block this "
-            "rename -- pins rule 1 fires on the rename action itself, independent of target",
-            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
+            "rename -- pins that rule 1 fires on the rename action itself, independent of "
+            "target",
         ),
         Row(
             "config_no_action_no_key",
             "git config --global",
-            XFAIL_TODAY,
+            MUST_BLOCK,
             "rule-2-only: --global is not an unsafe action and names no key, so only the "
             "key-visibility rule can block it. git itself rejects it for naming no action, "
             "so refusing it costs nothing",
-            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
+        ),
+        # ---------- fix round 1: `--comment` swallows the NEXT argv token as its own value, so a  -
+        # ---------- read flag placed right after it is never seen as a read flag at all ----------
+        # Measured 2026-09-08 against the live guard with a valid control: `_config_is_read` scanned
+        # every token looking for a read flag or a bareword action word and, on seeing `--comment`
+        # (not itself a read flag), simply moved on to the NEXT token -- which is actually
+        # `--comment`'s own consumed value, not an independent flag -- and read it as a read flag or
+        # read action word in its own right. That misread the whole invocation as a read and carved
+        # it out before the denied-key scan ever ran, so a real write to a denied key landed. Each row
+        # below names which literal token is being swallowed.
+        Row(
+            "config_comment_swallows_get_flag",
+            "git config --comment --get core.hooksPath /dev/null",
+            MUST_BLOCK,
+            "--comment swallows the literal token `--get` as its own value, so the scan that used "
+            "to stop at the first read flag never got there -- the whole invocation read as a "
+            "read and the write to core.hooksPath landed (measured, git exits 0)",
+        ),
+        Row(
+            "config_comment_swallows_short_l",
+            "git config --comment -l core.hooksPath /tmp/via-l",
+            MUST_BLOCK,
+            "same swallowing mechanism with the short read flag `-l` as the value --comment "
+            "consumes, pinning that the bug is not specific to a long-flag spelling",
+        ),
+        Row(
+            "config_comment_swallows_list_flag",
+            "git config --comment --list include.path /tmp/x",
+            MUST_BLOCK,
+            "same mechanism against the second denied key (include.path rather than "
+            "core.hooksPath) and the second read flag (--list rather than --get), pinning the "
+            "bug is not specific to one denied key or one read flag",
+        ),
+        Row(
+            "config_comment_swallows_get_word",
+            "git config --comment get core.hooksPath /dev/null",
+            MUST_BLOCK,
+            "--comment swallows the bareword action word `get` (the subcommand-form read "
+            "action, not a --flag) as its own value, so this is the subcommand-grammar sibling "
+            "of config_comment_swallows_get_flag",
+        ),
+        Row(
+            "config_comment_swallow_global",
+            "git config --global --comment --get core.hooksPath /dev/null",
+            MUST_BLOCK,
+            "the same --comment swallow with a scope flag (--global) ahead of it, pinning that "
+            "an unrelated valueless option earlier in the token stream does not change which "
+            "token --comment consumes",
+        ),
+        # ---------- fix round 2 (this review): the read-flag standdown's own bundle scan and its
+        # ---------- exact-match-only flags were each a live over-block against dev (319edac) ------
+        Row(
+            "config_allow_read_abbrev_list",
+            "git config --li",
+            MUST_ALLOW,
+            "git accepts --li as an unambiguous abbreviation of --list and allows it at dev; "
+            "pins that _config_is_read prefix-matches _CONFIG_READ_FLAGS rather than requiring "
+            "an exact spelling, which would wrongly block this ordinary read",
+        ),
+        Row(
+            "config_allow_read_abbrev_getregexp",
+            "git config --get-reg branch",
+            MUST_ALLOW,
+            "git accepts --get-reg as an unambiguous abbreviation of --get-regexp and allows it "
+            "at dev; also pins the fix removes the arbitrary split where --get-r (with a dotted "
+            "argument) allowed while --get-reg (without one) blocked",
+        ),
+        Row(
+            "config_allow_read_path_with_l",
+            "git config -f/tmp/local.cfg --list",
+            MUST_ALLOW,
+            "pins the fix to rule 2's standdown bundle scan: a naive substring check over the "
+            "attached path would misread its embedded letter l as a bundled -l, but the real "
+            "defect this row exists to catch is the mirror case -- a scan that instead stops "
+            "correctly at -f's attached path must still recognize the later --list flag and "
+            "stand down, rather than reintroducing the e-in-a-path defect one rule down",
+        ),
+        # ---------- fix round 3 (this review, mutation-measured): the three round-2 rows above
+        # ---------- pin NOTHING on their own -- reverting either round-2 code fix alone leaves
+        # ---------- the corpus green, because the standdown fix and the read-matcher fix each
+        # ---------- rescue the other's revert. `config_allow_read_path_with_l` still allows
+        # ---------- under a reverted standdown because `--list` is an EXACT read flag the
+        # ---------- matcher catches on its own; `config_allow_read_abbrev_list` and
+        # ---------- `config_allow_read_abbrev_getregexp` still allow under a reverted read-
+        # ---------- matcher because `--li` and `--get-reg` each carry no denied key, so rule 2's
+        # ---------- key-visibility check has nothing to refuse. These two rows were built to be
+        # ---------- immune to exactly one of the two rescues each, and measured (2026-09-08)
+        # ---------- against both commits of the round-2 fix pair to confirm the verdict named.
+        Row(
+            "config_block_path_with_l_unset_all",
+            "git config -f/tmp/local.cfg --unset-all",
+            MUST_BLOCK,
+            "measured ALLOW->BLOCK across the standdown bundle-walk fix: under the prior naive "
+            '`"l" in base[1:]` substring scan, the embedded l in `local.cfg` wrongly stood '
+            "rule 2 down and this write -- which names no visible section.key -- fell through "
+            "unrefused. Carries no read flag anywhere in the command, so the read-matcher fix "
+            "(exact vs. prefix) cannot rescue it either way; it dies ONLY if the standdown "
+            "reverts to the naive substring scan, which is exactly what pins that fix",
+        ),
+        Row(
+            "config_allow_abbrev_get_denied_key",
+            "git config --get-r core.hooksPath",
+            MUST_ALLOW,
+            "measured BLOCK->ALLOW across the read-matcher prefix-match fix: under the prior "
+            "exact-match-only matcher, `--get-r` (an unambiguous abbreviation of --get-regexp) "
+            "was not recognized as a read flag anywhere in the pipeline, so `_config_is_read` "
+            "returned False and the invocation fell through to the denied-key scan, which "
+            "blocked on `core.hooksPath`. The standdown's own bundle scan cannot rescue this "
+            "one if the read-matcher reverts: standing down only bypasses rule 2's no-visible-"
+            "key refusal, and `core.hooksPath` IS a visible key, so rule 2 never fires here in "
+            "the first place -- the denied-key scan runs regardless and blocks. Dies ONLY if "
+            "the read-matcher reverts to exact-match, which is exactly what pins that fix",
         ),
     ]
 

@@ -1051,6 +1051,35 @@ def _judge_invocation(
 # case-sensitive check would read as coverage while missing two trivial spellings.
 DENIED_CONFIG_KEYS = ("core.hookspath", "include.path", "includeif.")
 
+# `git config` actions that address NO named key: they operate on a whole SECTION, or on the
+# config file itself, so the key the operation ultimately writes never appears as a token.
+# Measured 2026-09-08 against the live guard with valid controls -- all eight spellings of
+# these three were ALLOWED by the denied-key scan alone, including two the backlog entry that
+# scheduled this fix never named: the `rename-section` / `remove-section` / `edit` SUBCOMMAND
+# words that `git config -h` documents first, and a rename whose target is `core`, which
+# reaches the hooks path DIRECTLY rather than through an include.
+_CONFIG_UNSAFE_ACTIONS = ("edit", "rename-section", "remove-section")
+
+# Short forms of those actions. git documents `-e` for `--edit`, and its parser BUNDLES short
+# flags -- `git config -ze` is accepted (measured) -- so a whole-token match is not enough.
+_CONFIG_UNSAFE_SHORT = frozenset("e")
+
+# Short flags that take NO value, so the character after them is another flag rather than the
+# start of a value. Scanning a bundle has to stop at the first character outside this set,
+# because `-f` takes its value ATTACHED: `-f/home/user/.gitconfig` is one token whose tail is a
+# PATH, not flags.
+#
+# Measured 2026-09-08, and this is the whole reason the set exists: an earlier draft matched
+# any single-dash token CONTAINING `e` and would have refused `-f/home/user/.gitconfig`, a
+# legitimate and common write, because the path happens to contain the letter. A diverse-model
+# review found the attached form unpinned; the over-block was worse than the missing row.
+#
+# Deliberately NOT a general arity model -- `_config_scope_is_local`'s docstring rules that out,
+# and this is not one. It is a stop condition: an unrecognised character ends the scan, so a
+# short flag added by a future git release stops it early rather than being misread as a
+# bundle. That direction is the residual named in the spec, and rule 2 still backstops it.
+_CONFIG_VALUELESS_SHORT = frozenset("elz")
+
 # The `-c`/`--config-env` arm denies one key the `git config` seg scan must NOT: `alias.`.
 #
 # A `-c alias.<n>=<command>` value is per-invocation in FORM but arbitrary in EFFECT — the aliased
@@ -1079,6 +1108,65 @@ _CONFIG_READ_FLAGS = frozenset(
     }
 )
 
+# Options that take NO following argv token as a value, so encountering one must not end the
+# scan below. Everything NOT in this set, and not carrying its value ATTACHED via `=`, is
+# assumed to consume the next token -- the safe direction, since misjudging a value-taking
+# option as value-less would read that value as if it were the next flag and could, in
+# principle, misread a read flag sitting in the value position.
+# The real hazard measured here runs the other way: `--comment` (NOT in this set, correctly)
+# swallows the very next token, so `git config --comment --get core.hooksPath /dev/null` has its
+# `--get` consumed as `--comment`'s value rather than read as the read flag it looks like.
+_CONFIG_VALUELESS_OPTS = frozenset(
+    {
+        "--global",
+        "--local",
+        "--system",
+        "--worktree",
+        "--includes",
+        "--no-includes",
+        "--show-origin",
+        "--show-scope",
+        "--name-only",
+        "--null",
+        "-z",
+        "--fixed-value",
+        "--all",
+        "--regexp",
+        "--bool",
+        "--int",
+        "--path",
+        "--bool-or-int",
+        "--bool-or-str",
+        "--expiry-date",
+    }
+)
+
+
+def _config_read_flag_matches(base: str) -> bool:
+    """True if `base` is a `_CONFIG_READ_FLAGS` member, or an unambiguous-enough prefix of one.
+
+    git accepts any unambiguous abbreviation of a long option -- measured 2026-09-08 and new
+    breakage against dev (319edac): `git config --li`, `--lis`, `--get-reg branch` and
+    `--get-regex alias` were all ALLOWED there as abbreviations of `--list` / `--get-regexp`,
+    and started wrongly BLOCKing once `_CONFIG_READ_FLAGS` required an exact spelling. It was
+    also arbitrary in the interim -- `--get-r core.editor` allowed while `--get-reg core`
+    blocked, purely because the first happened to carry a dotted argument rule 2's key-
+    visibility scan could see.
+
+    Mirrors rule 1's own `_CONFIG_UNSAFE_ACTIONS` prefix match in `_config_action_is_unjudgeable`
+    (`any(n.startswith(stem) for n in ...)`): an AMBIGUOUS stem is one git itself refuses to run
+    before this gate's answer can have any effect, so treating it as a read here costs nothing.
+    """
+    if base in _CONFIG_READ_FLAGS:
+        return True
+    if not base.startswith("--"):
+        return False
+    stem = base[2:]
+    return bool(stem) and any(
+        name.startswith("--") and name[2:].startswith(stem)
+        for name in _CONFIG_READ_FLAGS
+    )
+
 
 def _config_is_read(seg: list[str]) -> bool:
     """True only when `git config`'s LEADING option run marks this a read.
@@ -1089,19 +1177,153 @@ def _config_is_read(seg: list[str]) -> bool:
     `core.hooksPath = --get`, relocating the hooks path. A position-insensitive rule
     allows exactly that.
 
-    This can only ever turn a read into a WRITE (over-block), never a write into a
-    read, because git refuses multiple actions in one invocation -- so it opens no
-    hole. A value-taking option before the read flag (`--type bool --get k`) breaks
-    the scan early and over-blocks; accepted residual, safe direction.
+    Measured 2026-09-08 and FALSE until this fix: this was claimed to only ever turn a read into
+    a WRITE (over-block), never the reverse. `git config --comment --get core.hooksPath
+    /dev/null` refutes it -- `--comment` takes its value ATTACHED to the next argv token
+    (confirmed, git 2.55), so it swallows the following `--get` as its OWN value rather than
+    leaving it to be read as the read flag it looks like; the scan that stopped at the first
+    unrecognised option therefore quit before ever seeing a read flag, read the whole invocation
+    as a write, and the arm below it wrote `core.hooksPath`. Same mechanism `_config_scope_is_
+    local`'s docstring already records for `--comment note --global` breaking THAT scan; this is
+    its mirror on the read side. There are TWO paths that let the scan continue past a token
+    without stopping it, not one: `_CONFIG_VALUELESS_OPTS` membership is one, and a token
+    carrying its value ATTACHED via `=` is the other -- an attached value consumes no following
+    argv token, so nothing about it can swallow a read flag the way `--comment`'s detached form
+    does. `--comment=note --get core.hooksPath /dev/null` and `--type=bool --get core.bare` both
+    continue past their leading option on the `=` path and correctly reach `--get`, returning
+    True. Anything else -- no `=` and not a `_CONFIG_VALUELESS_OPTS` member -- STOPS the scan on
+    sight, classifying the invocation as not-a-read -- the safe direction, since a wrong
+    not-a-read verdict still falls through to rule 1 and the denied-key scan below rather than
+    being waved through. This does NOT skip an unrecognised option's own next token and keep
+    scanning past it: that would require modelling each option's ARITY, which
+    `_config_scope_is_local`'s docstring already rules out for its own scan, for the mirror
+    reason -- misjudging a value-taking option as value-less would skip a real read flag sitting
+    right after it. Stopping is the one direction here with no such mirror failure mode.
     """
     for tok in seg:
         if tok == "--":
             return False
         if not tok.startswith("-"):
             return tok in _CONFIG_READ_ACTIONS  # the subcommand form's action word
-        if tok.split("=", 1)[0] in _CONFIG_READ_FLAGS:
+        base = tok.split("=", 1)[0]
+        if _config_read_flag_matches(base):
             return True
+        if "=" not in tok and base not in _CONFIG_VALUELESS_OPTS:
+            return False
     return False
+
+
+def _looks_like_config_key(tok: str) -> bool:
+    """A token shaped like a config key: dotted, and not starting like an option or a path.
+
+    Discriminates on the LEADING CHARACTER, never on containing a slash. A config key's
+    SUBSECTION may legitimately contain one -- `branch.feature/x.remote`,
+    `submodule.vendor/lib.url`, and the per-URL `http.<url>.*` and `credential.<url>.*` forms
+    are all real, and all verified accepted by git 2.55. Rejecting a slash-bearing token
+    discards the only key such a write names, so rule 2 below refuses it for want of a key.
+    That over-block lands hardest in this repo, whose branch convention puts a slash in every
+    branch name, making `git config branch.<current-branch>.remote` a slash key by
+    construction. A diverse-model review caught it; the first draft of this helper shipped it.
+
+    The exclusion that remains is narrow and is over-block avoidance with a small fail-closed
+    benefit, NOT a safety property -- do not promote it to one. A dangerous write naming no key
+    is an unsafe ACTION, caught by rule 1; a dangerous write naming a key names a DENIED key,
+    caught by the unchanged scan below, which does not consult this function at all. What the
+    leading-character test still buys is that an absolute path value (`-f /tmp/some.cfg`)
+    cannot stand in as the visible key for some future action nobody here has heard of. A
+    relative dotted path can still do so; that residual is named in the spec, not closed.
+    """
+    return "." in tok and not tok.startswith(("-", "/", "~", "."))
+
+
+def _config_short_bundle_hit(base: str, targets: frozenset[str]) -> bool:
+    """True if any of `targets` appears in this single-dash bundle before an attached-value stop.
+
+    Walks `base[1:]` one character at a time and stops at the first character outside
+    `_CONFIG_VALUELESS_SHORT` -- everything from there on is that flag's ATTACHED value (a
+    path, typically), not more bundled flags. `_CONFIG_VALUELESS_SHORT`'s own comment names the
+    reason this stop condition exists at all: `-f/tmp/local.cfg` must not read the `l` in the
+    path as a bundled `-l`.
+
+    Shared by rule 1 below (`targets=_CONFIG_UNSAFE_SHORT`) and rule 2's read-flag standdown
+    (`targets=frozenset("l")`), so both use the SAME bundle-walk rule rather than two matching
+    styles. Before this helper, rule 2's standdown matched with a naive `"l" in base[1:]`
+    substring scan -- the exact defect rule 1 was built to avoid, reintroduced one rule below it.
+    Measured 2026-09-08: `git config -f/tmp/abc.cfg --future-keyless-action` BLOCKed while
+    `git config -f/tmp/local.cfg --future-keyless-action` ALLOWed, differing only in whether the
+    attached path happens to spell the letter `l` (as in `local`, `global`, `lib`, `.claude`,
+    `.gitmodules`).
+    """
+    for ch in base[1:]:
+        if ch in targets:
+            return True
+        if ch not in _CONFIG_VALUELESS_SHORT:
+            return False
+    return False
+
+
+def _config_action_is_unjudgeable(seg: list[str]) -> str | None:
+    """Why the denied-key scan cannot judge this `git config` WRITE, or None if it can.
+
+    TWO rules, and NEITHER is redundant -- deleting either re-opens a measured bypass.
+
+    Rule 1 refuses an action that addresses no named key. Rule 2 refuses a write in which no
+    `section.key` is visible at all, which is what makes this arm fail CLOSED on an action
+    added by a git release nobody here has heard of.
+
+    Rule 2 alone is NOT sufficient, and the case that proves it is
+    `git config rename-section a.b include`: the dotted token `a.b` satisfies rule 2, while
+    the dangerous half of that command is the rename TARGET, which is never a key. Rule 1
+    alone is not fail-closed. Each covers exactly what the other cannot.
+
+    Models NO option arity, deliberately. `_config_scope_is_local`'s docstring records why:
+    skipping a flag's value requires knowing which flags take one, and misjudging that skips a
+    real flag. Both loops here visit every token and cannot skip. The cost is over-blocking a
+    VALUE that spells an action word or an action flag -- the safe direction, and the same
+    residual that function already accepts for scope words appearing as values.
+    """
+    for tok in seg:
+        if tok == "--":
+            break
+        base = tok.split("=", 1)[0].lower()
+        if base.startswith("--"):
+            stem = base[2:]
+            if stem and any(n.startswith(stem) for n in _CONFIG_UNSAFE_ACTIONS):
+                return (
+                    f"it runs `git config {base}`, an action addressing no named key, so this "
+                    "gate cannot see which key the write lands on"
+                )
+        elif base.startswith("-") and len(base) > 1:
+            if _config_short_bundle_hit(base, _CONFIG_UNSAFE_SHORT):
+                return (
+                    f"it runs `git config {base}`, a short form of an action addressing "
+                    "no named key, so this gate cannot see which key the write lands on"
+                )
+        elif base in _CONFIG_UNSAFE_ACTIONS:
+            return (
+                f"it runs `git config {base}`, an action addressing no named key, so this "
+                "gate cannot see which key the write lands on"
+            )
+
+    # Rule 2 stands down in the presence of a read flag. With `_CONFIG_VALUELESS_OPTS` in place
+    # (see `_config_is_read`), an invocation carrying a read flag and no dotted key cannot be a
+    # WRITE at all -- there is nothing here for rule 2 to refuse for want of a key, and standing
+    # down leaves the denied-key scan below to run, which is what blocks a real write disguised
+    # behind a swallowed read flag (`--comment --get core.hooksPath /dev/null`: `--get` here is
+    # `--comment`'s consumed value, but it is still the LITERAL token `--get`, so this scan sees
+    # it and stands down -- exactly the invocations `_config_is_read` no longer misreads as pure
+    # reads now still reach the denied-key scan instead of being refused here for naming no key).
+    for tok in seg:
+        base = tok.split("=", 1)[0]
+        if _config_read_flag_matches(base):
+            return None
+        if base.startswith("-") and not base.startswith("--"):
+            if _config_short_bundle_hit(base, frozenset("l")):
+                return None
+
+    if not any(_looks_like_config_key(tok) for tok in seg):
+        return "it is a `git config` write in which this gate can see no `section.key` to judge"
+    return None
 
 
 # Env assignments that redirect where `git config` WRITES. Measured: both landed a
@@ -1358,6 +1580,9 @@ def _config_injection_reason(
         # — otherwise `git -c core.hooksPath=X config --get y` would bypass the `-c` arm above.
         if _config_is_read(seg):
             return None
+        unjudgeable = _config_action_is_unjudgeable(seg)
+        if unjudgeable is not None:
+            return (unjudgeable, not _config_scope_is_local(seg, list(tokens.env)))
         for arg in seg:
             if any(arg.strip().lower().startswith(d) for d in DENIED_CONFIG_KEYS):
                 return (
