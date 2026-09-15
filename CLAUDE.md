@@ -413,6 +413,20 @@ left legal.
   clears** — the one moment nobody thinks to. Measured: a record still saying BLOCKED sent the
   operator to redo finished work; stale *blocked* survives because it reads as caution.
 
+- **Text written DURING a staged change describes a state that ENDS when the change lands, and the
+  only review that reads it sees it while it is still true.** Not the stale-status case above:
+  nothing here is a status anyone owns, so no moment arrives when clearing it would occur to
+  anyone. A comment saying a test must FAIL until a later step lands, or telling whoever works that
+  step not to touch some file, is accurate at that step's own review and false forever after — so
+  the review positioned to catch it is structurally the wrong one, and only a whole-change read of
+  the durable record can. Measured: two headers shipped asserting rows must FAIL while those rows
+  passed, plus an instruction addressed to a worker who no longer existed; four more survived
+  elsewhere in the same tree, one naming a step that was ABANDONED and will never land. A reader
+  meeting green under a header demanding red concludes the file is inconsistent or the rows inert,
+  both wrong. **Write it in the PAST tense from the start** — the text outlives the step by design.
+  Its own failure mode: tense fixes the sentence, never a pointer to a task identifier that
+  resolves for nobody later.
+
 #### Right verdict, wrong population or parameters
 
 - **A tool that IGNORES an argument it cannot parse answers with its OWN defaults, and the run looks
