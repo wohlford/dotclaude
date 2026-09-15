@@ -1081,6 +1081,147 @@ def _build_rows(
             "so it carries none of the blast radius the rest of the env arm denies; a prefix match "
             "on GIT_CONFIG_* alone would block a plain log",
         ),
+        # ---------- MUST_ALLOW: flags on an otherwise-allowed write, in the adopted repo ----------
+        # The corpus's pre-existing allowed rows for this arm are three reads and one flagless
+        # write (above), so no existing row exercised a flag on an allowed write -- a fix that
+        # over-blocked every scoped or typed write would have passed the corpus clean. These
+        # eighteen rows close that gap. All measured ALLOWED against the live guard on 2026-09-08.
+        # (config_allow_fixed_value was replaced in fix round 1: its command, --fixed-value
+        # --unset, is rejected by git itself with rc=129 -- a command git refuses cannot pin an
+        # over-block anyone would care about.)
+        Row(
+            "config_allow_plain_key",
+            "git config alias.co checkout",
+            MUST_ALLOW,
+            "a bare write with no flags at all, on a harmless key, in the adopted repo -- the "
+            "zero-flag control the other rows below each vary a single flag against",
+        ),
+        Row(
+            "config_allow_global_scope",
+            "git config --global rerere.enabled true",
+            MUST_ALLOW,
+            "--global is the ordinary, fully-spelled scope flag on a harmless key; a fix that "
+            "treats any recognized scope flag as suspicious would regress this everyday write",
+        ),
+        Row(
+            "config_allow_abbrev_scope",
+            "git config --glo rerere.enabled true",
+            MUST_ALLOW,
+            "load-bearing: --glo is an unambiguous abbreviation of --global. It refutes any "
+            "design requiring every token in the leading run to be recognized verbatim",
+        ),
+        Row(
+            "config_allow_add_flag",
+            "git config --add remote.origin.fetch +refs/heads/x:refs/y",
+            MUST_ALLOW,
+            "--add appends to a multi-valued key on a harmless name; pins that the append flag "
+            "is not mistaken for an escalation worth blocking",
+        ),
+        Row(
+            "config_allow_replace_all",
+            "git config --replace-all rerere.enabled true",
+            MUST_ALLOW,
+            "--replace-all rewrites every matching line for a harmless key; pins that the flag "
+            "does not read as a bigger-blast-radius write than a plain set",
+        ),
+        Row(
+            "config_allow_unset_flag",
+            "git config --unset rerere.enabled",
+            MUST_ALLOW,
+            "--unset removes a harmless key with no value token at all; pins that a value-less "
+            "write is still walked as a legitimate config command, not an incomplete one",
+        ),
+        Row(
+            "config_allow_unset_subcmd",
+            "git config unset rerere.enabled",
+            MUST_ALLOW,
+            "the modern `unset` subcommand spelling of the same removal; recognizing only "
+            "--unset would leave this spelling wrongly blocked",
+        ),
+        Row(
+            "config_allow_set_subcmd",
+            "git config set rerere.enabled true",
+            MUST_ALLOW,
+            "the modern `set` subcommand spelling of a plain write; recognizing only the "
+            "flag-less legacy form would leave this spelling wrongly blocked",
+        ),
+        Row(
+            "config_allow_type_attached",
+            "git config --type=bool rerere.enabled true",
+            MUST_ALLOW,
+            "--type=bool is a `--flag=value` attached form on a harmless key; pins that the "
+            "attached value is not folded into the key/value pair the walk is looking for",
+        ),
+        Row(
+            "config_allow_comment_valued",
+            "git config --comment note rerere.enabled true",
+            MUST_ALLOW,
+            "load-bearing: --comment takes its own value token ahead of the key. This row fails "
+            "the moment anyone models option arity in a way that skips over it",
+        ),
+        Row(
+            "config_allow_short_file_flag",
+            "git config -f /tmp/somecfg rerere.enabled true",
+            MUST_ALLOW,
+            "load-bearing: -f is a single-dash flag with no 'e' in it, pinning that a short-flag "
+            "rule keyed on that letter does not over-block the short flag actually in use",
+        ),
+        Row(
+            "config_allow_short_file_attached",
+            "git config -f/tmp/somecfg rerere.enabled true",
+            MUST_ALLOW,
+            "load-bearing: -f takes its value ATTACHED, so the tail of this single-dash token is "
+            "a path, not more flags -- git accepts it and performs a real write (rc=0). A rule "
+            "that matches any single-dash token CONTAINING the letter 'e' would refuse this one "
+            "outright, since the path can carry that letter (as `-f/home/user/.gitconfig` does); "
+            "this row is what fails if whole-token matching is reintroduced",
+        ),
+        Row(
+            "config_allow_two_flags_stacked",
+            "git config --type=bool --global rerere.enabled true",
+            MUST_ALLOW,
+            "two stacked flags (--type=bool and --global) ahead of a harmless key, on a write "
+            "that actually succeeds; pins that both are walked rather than the second reading "
+            "as unexpected state left over from the first",
+        ),
+        Row(
+            "config_allow_worktree_scope",
+            "git config --worktree rerere.enabled true",
+            MUST_ALLOW,
+            "--worktree is a scope flag distinct from --global/--local; pins that this scope "
+            "spelling is walked the same as the others rather than being an unrecognized gap",
+        ),
+        Row(
+            "config_allow_slash_branch_key",
+            "git config branch.feature/x.remote origin",
+            MUST_ALLOW,
+            "a slash-splitting key walk would misread the '/' in a branch-name subsection as an "
+            "extra segment and could flag it; this repo's own branch convention is "
+            "<type>/<kebab-name>, so EVERY branch name carries a slash and "
+            "`git config branch.<current-branch>.remote` is this shape by construction",
+        ),
+        Row(
+            "config_allow_slash_submodule",
+            "git config submodule.vendor/lib.url https://example.com/x",
+            MUST_ALLOW,
+            "the same slash-in-subsection risk from a second, independent source (a submodule "
+            "path) -- catches a fix that special-cased only branch-shaped subsections",
+        ),
+        Row(
+            "config_allow_slash_url_http",
+            "git config http.https://weak.example.com/.sslVerify true",
+            MUST_ALLOW,
+            "the per-URL http.<url>.* form puts a whole URL, slashes and all, into the "
+            "subsection; a fix that bounds the key walk by counting slashes would misjudge this "
+            "one worst of all",
+        ),
+        Row(
+            "config_allow_slash_url_cred",
+            "git config credential.https://example.com.username bob",
+            MUST_ALLOW,
+            "the per-URL credential.<url>.* form is the same URL-as-subsection shape applied to "
+            "credentials; pins the class holds for a second key prefix, not just http.*",
+        ),
         # ---------- XFAIL_TODAY: measured open, and named to the task that will close them -------
         # Both re-measured 2026-08-04 in a genuinely adopted fixture (a first probe used an
         # UNCOMMITTED marker, so the guard was dormant and every row read "allowed" -- the control
@@ -1106,6 +1247,95 @@ def _build_rows(
             "`^GIT_` name) now denies GIT_EDITOR outright, which would flip this row to blocked "
             "for the wrong reason (an env name, not the --edit gap). Dropped so the row keeps "
             "testing --edit alone",
+            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
+        ),
+        # Six more measured ALLOWED on 2026-09-08, beside the two above -- the spec's full
+        # bypass population, minus the two on record. Same xfail_task on every row: it is
+        # what the tripwire matches on, so it must be identical, verbatim, across all of them.
+        Row(
+            "config_subcmd_rename_section",
+            "git config rename-section harmless include",
+            XFAIL_TODAY,
+            "the modern subcommand spelling of --rename-section, alongside "
+            "rename_section_builds_include_path above; same include.path-building bypass, "
+            "just in git 2.55's newer subcommand grammar rather than the legacy flag",
+            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
+        ),
+        Row(
+            "config_subcmd_edit",
+            "git config edit",
+            XFAIL_TODAY,
+            "the modern subcommand spelling of --edit -- the same unbounded, no-key-named "
+            "write as config_edit_is_an_arbitrary_write, in the newer grammar",
+            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
+        ),
+        Row(
+            "config_rename_section_to_core",
+            "git config --rename-section harmless core",
+            XFAIL_TODAY,
+            "renaming a section that holds a hooksPath key to `core` reaches the hooks path "
+            "directly, without going through an include. This is the spelling the backlog "
+            "entry's own prescribed remedy excludes, since that remedy names only "
+            "include/includeif as dangerous targets",
+            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
+        ),
+        Row(
+            "config_subcmd_remove_section",
+            "git config remove-section harmless",
+            XFAIL_TODAY,
+            "remove-section deletes a whole section without naming any key at all -- the "
+            "same operates-on-the-section-not-a-key shape as rename-section and edit, so a "
+            "rule keyed only on those two action words would still miss this one",
+            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
+        ),
+        Row(
+            "config_abbrev_rename_section",
+            "git config --rename-sec harmless include",
+            XFAIL_TODAY,
+            "--rename-sec is an unambiguous abbreviation of --rename-section; a rule matching "
+            "only the fully-spelled flag would leave this spelling of the include.path "
+            "bypass wrongly allowed",
+            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
+        ),
+        Row(
+            "config_short_edit_flag",
+            "git config -e",
+            XFAIL_TODAY,
+            "-e is git's documented short form of --edit, confirmed accepted by git 2.55. It "
+            "is single-dash, so any rule matching only --prefixed tokens misses it",
+            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
+        ),
+        # The final three exist to make the two forthcoming rules separable, not as extra
+        # bypass spellings -- every row above is caught by EITHER rule alone, so neither one
+        # is pinned as non-redundant without these. A later mutation check names these rows
+        # specifically, so their `why` says which rule each isolates rather than restating
+        # the mechanism in vaguer terms.
+        Row(
+            "config_rename_dotted_to_include",
+            "git config rename-section a.b include",
+            XFAIL_TODAY,
+            "rule-1-only: the dotted token a.b satisfies rule 2, so only the action rule can "
+            "block this rename. This is the exact command the spec and the helper docstring "
+            "cite as proving rule 1 non-redundant -- and it was missing from the corpus, so "
+            "the design argued for a rule with an input it never tested",
+            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
+        ),
+        Row(
+            "config_rename_dotted_to_core",
+            "git config --rename-section a.b core",
+            XFAIL_TODAY,
+            "rule-1-only, the rename-to-core sibling of config_rename_dotted_to_include: the "
+            "dotted token a.b again satisfies rule 2, so only the action rule can block this "
+            "rename -- pins rule 1 fires on the rename action itself, independent of target",
+            "backlog 2026-08-04 HIGH: two git config forms reach include.path",
+        ),
+        Row(
+            "config_no_action_no_key",
+            "git config --global",
+            XFAIL_TODAY,
+            "rule-2-only: --global is not an unsafe action and names no key, so only the "
+            "key-visibility rule can block it. git itself rejects it for naming no action, "
+            "so refusing it costs nothing",
             "backlog 2026-08-04 HIGH: two git config forms reach include.path",
         ),
     ]
