@@ -124,6 +124,71 @@ MUTATIONS = [
         "        if not _is_subsequence(old, new):",
         "        if False:",
     ),
+    # ---- the atomic write. Every row below is UNOBSERVABLE in the written file: the bytes are
+    # identical whichever way they got there, so none of these can be caught by reading the
+    # result. They are caught by instrumenting the SYSCALLS, which is why those rows exist.
+    mutate.Mutation(
+        "chmod-dropped: the temp file's mode is no longer set to the target's, so every save "
+        "silently retightens the file from its own mode to `mkstemp`'s 0600. Invisible in the "
+        "file's CONTENT, and invisible to a fixture created with `write_text` under a strict "
+        "umask, where 0600 is what the fixture already had",
+        "            os.chmod(tmp, mode)",
+        "            pass",
+    ),
+    mutate.Mutation(
+        "temp-outside-dir: the temp file is created in the system temp directory instead of the "
+        "target's own. `os.replace` is atomic only WITHIN one filesystem, so this makes the "
+        "rename a cross-device copy and silently gives up the guarantee the whole change exists "
+        "for — while passing every test that reads the resulting file",
+        '            dir=directory, prefix=".backlog-", suffix=".tmp"',
+        '            prefix=".backlog-", suffix=".tmp"',
+    ),
+    mutate.Mutation(
+        "no-fsync-before-replace: the temp's contents are never flushed to disk before it is "
+        "renamed over the target, so a crash can leave the rename durable and its CONTENT not",
+        "                os.fsync(handle.fileno())",
+        "                pass",
+    ),
+    mutate.Mutation(
+        "missing-ok-dropped: the temp cleanup stops tolerating an already-renamed temp. After a "
+        "SUCCESSFUL `os.replace` that name is gone, so this raises `FileNotFoundError` on every "
+        "good save — a mutation that breaks the success path, not an edge case",
+        "            tmp.unlink(missing_ok=True)",
+        "            tmp.unlink()",
+    ),
+    mutate.Mutation(
+        "snapshot-skipped: no snapshot is taken, so the one thing that could undo a logically "
+        "wrong but successfully written edit is gone. `Report.snapshot` still reports a path",
+        "            snapshot = self._write_snapshot(mode)",
+        "            snapshot = None",
+    ),
+    mutate.Mutation(
+        "snapshot-failure-aborts: a snapshot that cannot be written now kills the save instead of "
+        "warning. This is the WRONG direction — blocking a legitimate edit because a secondary "
+        "artifact failed is worse than the risk the artifact covers",
+        '                f"proceeds, but there is nothing to restore from",\n'
+        "                file=sys.stderr,\n"
+        "            )\n"
+        "            return None",
+        "            raise",
+    ),
+    mutate.Mutation(
+        "dirfsync-propagates: a failure to fsync the DIRECTORY after the replace is raised "
+        "instead of warned. The edit has already landed at that point, so raising invites a "
+        "caller retry that re-applies it — `append_note` would double-append",
+        "            print(\n"
+        '                f"backlog: wrote {self.path} but could not fsync {directory}: {exc}",\n'
+        "                file=sys.stderr,\n"
+        "            )",
+        "            raise",
+    ),
+    mutate.Mutation(
+        "symlink-guard-off: `save` stops refusing a symlinked target. `write_text` follows a "
+        "symlink while `os.replace` replaces the LINK itself, so this change would silently "
+        "alter what the write means for such a path",
+        "        if self.path.is_symlink():",
+        "        if False:",
+    ),
 ]
 
 

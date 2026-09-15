@@ -14,7 +14,10 @@ check actually blocks a write instead of merely being present.
 from __future__ import annotations
 
 import collections
+import os
 import random
+import stat
+from pathlib import Path
 
 import backlog
 import pytest
@@ -863,3 +866,191 @@ def test_amend_head_sees_the_date_on_an_already_promoted_head(tmp_path):
     with pytest.raises(BacklogError, match="already carries a date"):
         Backlog(path).amend_head("PROTOTYPE EXISTS", date="2026-09-04")
     assert path.read_text() == doc
+
+
+# ---------- the write itself: atomic, mode-preserving, snapshotted ----------
+
+
+def test_the_write_preserves_the_targets_mode(tmp_path):
+    # 0640 deliberately, and NOT the real file's 0644: `write_text` yields 0644 under umask 022
+    # but 0600 under umask 077, and 0600 is exactly what `mkstemp` yields. A 0644 fixture would
+    # therefore supply the value the subject would have arrived at anyway on a strict-umask
+    # runner, and deleting the `chmod` would survive there. 0640 differs from BOTH.
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    path.chmod(0o640)
+    b = Backlog(path)
+    b.append_note("A", "  a note\n")
+    b.save()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+def test_the_snapshot_is_a_byte_copy_of_disk_not_of_the_normalised_text(tmp_path):
+    # The fixture's DISK bytes must differ from what `read_text()` hands the module, or a
+    # snapshot dumped from the in-memory text is indistinguishable from a byte copy and the row
+    # proves nothing. `read_text()` translates `\r\n` to `\n`, so one CRLF line is enough.
+    path = tmp_path / "BACKLOG.md"
+    text = make_doc([entry("A", body=["  a body line"]), entry("B")])
+    path.write_bytes(text.replace("  a body line\n", "  a body line\r\n").encode())
+    pre_bytes = path.read_bytes()
+    assert b"\r\n" in pre_bytes
+    assert pre_bytes != path.read_text().encode()  # the fixture is doing its job
+
+    b = Backlog(path)
+    b.append_note("A", "  a note\n")
+    report = b.save()
+
+    assert report.snapshot is not None
+    assert report.snapshot.read_bytes() == pre_bytes
+
+
+def test_the_write_fsyncs_the_temp_then_replaces_then_fsyncs_the_directory(
+    tmp_path, monkeypatch
+):
+    # The ONLY coverage the ordering gets. A replace that lands before its temp is fsynced is
+    # atomic and still loses data on process death, and neither the file's contents nor its
+    # mode can tell the two orderings apart afterwards.
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    calls = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def logging_fsync(fd):
+        kind = "dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file"
+        calls.append(f"fsync-{kind}")
+        return real_fsync(fd)
+
+    def logging_replace(src, dst):
+        calls.append("replace")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(backlog.os, "fsync", logging_fsync)
+    monkeypatch.setattr(backlog.os, "replace", logging_replace)
+
+    b = Backlog(path)
+    b.append_note("A", "  a note\n")
+    b.save()
+
+    assert calls == ["fsync-file", "replace", "fsync-dir"]
+
+
+def test_a_failure_between_the_temp_write_and_the_replace_leaves_no_trace(
+    tmp_path, monkeypatch
+):
+    # The failure the whole design exists for. The target must be byte-identical to its
+    # pre-edit state, the snapshot must be byte-identical to it too, and no temp may survive
+    # in a directory whose `*.md` neighbours the harness ingests.
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    pre_bytes = path.read_bytes()
+
+    def refuse(src, dst):
+        raise OSError("simulated failure between the temp write and the replace")
+
+    monkeypatch.setattr(backlog.os, "replace", refuse)
+
+    b = Backlog(path)
+    b.append_note("A", "  a note\n")
+    with pytest.raises(OSError):
+        b.save()
+
+    assert path.read_bytes() == pre_bytes
+    assert (tmp_path / "backlog-snapshots" / "BACKLOG.prev").read_bytes() == pre_bytes
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "BACKLOG.md",
+        "backlog-snapshots",
+    ]
+
+
+def test_the_temp_file_lives_in_the_targets_own_directory(tmp_path, monkeypatch):
+    # `os.replace` is atomic only within one filesystem, so a temp in $TMPDIR would make the
+    # rename a cross-device copy — the exact non-atomicity this replaces. And the name may
+    # never end in `.md`: a SIGKILL skips every cleanup path, and the harness ingests `*.md`.
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    sources = []
+    real_replace = os.replace
+
+    def recording_replace(src, dst):
+        sources.append(Path(src))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(backlog.os, "replace", recording_replace)
+
+    b = Backlog(path)
+    b.append_note("A", "  a note\n")
+    b.save()
+
+    assert len(sources) == 1
+    assert sources[0].parent == path.parent
+    assert not sources[0].name.endswith(".md")
+
+
+def test_an_unwritable_snapshot_directory_does_not_abort_the_edit(tmp_path, capsys):
+    # Blocking a legitimate backlog edit because a snapshot could not be written is worse than
+    # the risk the snapshot covers. But it may not be SILENT: `Report.snapshot` is None and a
+    # warning reaches stderr, so "no snapshot" is a fact the caller can see.
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    snapshot_dir = tmp_path / "backlog-snapshots"
+    snapshot_dir.mkdir()
+    snapshot_dir.chmod(0o500)
+    try:
+        b = Backlog(path)
+        b.append_note("A", "  a note\n")
+        report = b.save()
+
+        assert report.snapshot is None
+        assert "  a note" in path.read_text()
+        assert "no snapshot written" in capsys.readouterr().err
+    finally:
+        snapshot_dir.chmod(0o700)
+
+
+def test_the_write_refuses_a_symlinked_target(tmp_path):
+    """`write_text` follows a symlink; `os.replace` replaces the LINK itself.
+
+    So swapping one for the other silently changes what a write to a symlinked path MEANS — the
+    link would be destroyed and replaced by a regular file, and whatever it pointed at would be
+    left behind holding the pre-edit content. Nothing in the resulting file's bytes reveals that,
+    which is why it is refused rather than handled.
+    """
+    real = tmp_path / "real-backlog.md"
+    real.write_text(make_doc([entry("A")]))
+    link = tmp_path / "BACKLOG.md"
+    link.symlink_to(real)
+
+    b = Backlog(link)
+    b.append_note("A", "  a note\n")
+    with pytest.raises(BacklogError, match="refusing to write through a symlink"):
+        b.save()
+
+    # The refusal must leave BOTH ends untouched — still a link, still the old content.
+    assert link.is_symlink()
+    assert "  a note" not in real.read_text()
+
+
+def test_a_directory_fsync_failure_after_the_replace_does_not_fail_the_save(
+    tmp_path, capsys, monkeypatch
+):
+    """The edit has already landed by then, so raising would be actively harmful.
+
+    A caller that sees a save raise will reasonably retry it, and the retry re-applies an edit
+    that is already on disk — `append_note` would double-append. The directory fsync buys
+    durability of the RENAME, never correctness of the FILE, so its failure is a warning.
+
+    This is the one ordering fact the call-order row cannot express: it asserts that the
+    directory fsync happens LAST, not what happens when it fails.
+    """
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    real_open = os.open
+
+    def refuse_directory(target, flags, *args, **kwargs):
+        if Path(target) == path.parent:
+            raise OSError(13, "simulated: cannot open the directory")
+        return real_open(target, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", refuse_directory)
+
+    b = Backlog(path)
+    b.append_note("A", "  a note\n")
+    report = b.save()  # must NOT raise
+
+    assert "  a note" in path.read_text()
+    assert report.snapshot is not None
+    assert "could not fsync" in capsys.readouterr().err

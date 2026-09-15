@@ -51,8 +51,10 @@ from __future__ import annotations
 
 import argparse
 import collections
+import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -130,6 +132,11 @@ class Report:
     closed_count: int
     lines_gained: int
     lines_lost: int
+    # Where the pre-edit bytes were preserved, or `None` when no snapshot could be written.
+    # A default, so every existing construction site keeps compiling; the one site in this
+    # module passes it explicitly. `None` is a FACT the caller can see and report, not an
+    # absence — a snapshot that failed silently would manufacture confidence.
+    snapshot: Path | None = None
 
 
 @dataclass
@@ -516,9 +523,10 @@ class Backlog:
                 f"{CLOSED_HEADING}, {len(strays_closed)} open entries below it"
             )
 
-        self.path.write_text(text)
+        snapshot = self._atomic_write(text)
         return Report(
             path=self.path,
+            snapshot=snapshot,
             open_count=sum(1 for ln in new_lines[:closed_at] if ln.startswith("- [ ]")),
             closed_count=sum(
                 1 for ln in new_lines[closed_at:] if ln.startswith("- [x]")
@@ -526,6 +534,115 @@ class Backlog:
             lines_gained=sum(gained.values()),
             lines_lost=sum(lost.values()),
         )
+
+    def _atomic_write(self, text: str) -> Path | None:
+        """Write `text` over `self.path` as one indivisible step, preserving the file's mode.
+
+        The target is an untracked, irreplaceable file with no other copy and no git history,
+        and the write it used to get was a single `write_text` — an interruption inside that
+        call leaves a TRUNCATED backlog with nothing to restore from. Here the new text goes to
+        a temp file in the target's own directory, is flushed and fsynced, and only then
+        replaces the target, so a reader ever sees either the whole old file or the whole new
+        one.
+
+        The durability claimed is against PROCESS DEATH — a crash, a kill, or an interpreter
+        torn down mid-write. It is NOT a claim about MEDIA LOSS: on macOS `os.fsync` does not
+        guarantee the data has reached the platter (`fcntl.F_FULLFSYNC` is what does), and this
+        write deliberately does not ask for that.
+
+        There is no missing-file branch. `__init__` has already `read_text()` the path, so a
+        save can never reach a target that does not exist — it raises `FileNotFoundError` at
+        construction. A branch for it would be inert code reading as a safety property.
+
+        Returns:
+            The snapshot's path, or `None` when no snapshot could be written.
+
+        Raises:
+            BacklogError: `self.path` is a symlink. `write_text` follows one and `os.replace`
+                would replace the LINK, so the write's semantics would silently change.
+            OSError: The temp write, the `chmod` or the `os.replace` failed. The target is
+                byte-identical to its pre-edit state in every one of those cases.
+        """
+        if self.path.is_symlink():
+            raise BacklogError(
+                f"refusing to write through a symlink: {self.path} — `os.replace` would "
+                f"replace the link itself, not the file it points at"
+            )
+        # Captured, never inherited: measured, `write_text` yields 0644 under umask 022 while
+        # `mkstemp` yields 0600, so a naive temp-and-replace SILENTLY changes the file's mode.
+        mode = self.path.stat().st_mode & 0o7777
+        directory = self.path.parent
+        # The temp file lives in the TARGET's own directory: `os.replace` is atomic only within
+        # a single filesystem, and a temp elsewhere makes the rename a cross-device copy. Its
+        # name can never end in `.md` — the harness ingests `*.md` from the memory directory,
+        # and a `SIGKILL` skips every cleanup path there is, so a stray temp must be inert.
+        handle_fd, tmp_name = tempfile.mkstemp(
+            dir=directory, prefix=".backlog-", suffix=".tmp"
+        )
+        tmp = Path(tmp_name)
+        snapshot: Path | None = None
+        try:
+            with os.fdopen(handle_fd, "w") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp, mode)
+            snapshot = self._write_snapshot(mode)
+            os.replace(tmp, self.path)
+        finally:
+            # `missing_ok=True` is load-bearing, not defensive: after a SUCCESSFUL `os.replace`
+            # the temp name is already gone, so an unconditional unlink here would raise
+            # `FileNotFoundError` on every good save.
+            tmp.unlink(missing_ok=True)
+        # The edit has ALREADY landed. Failing to fsync the directory costs durability of the
+        # rename, never correctness of the file — and raising here would invite a caller retry
+        # that re-applies an edit already on disk (`append` would double-append).
+        try:
+            dir_fd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError as exc:
+            print(
+                f"backlog: wrote {self.path} but could not fsync {directory}: {exc}",
+                file=sys.stderr,
+            )
+        return snapshot
+
+    def _write_snapshot(self, mode: int) -> Path | None:
+        """Copy the target's current on-disk bytes aside, one generation.
+
+        `os.replace` rules out a PARTIAL write; it does nothing about an edit that succeeds and
+        is logically wrong. This is the residual, and one generation bounds it by construction —
+        there is no retention policy to get wrong. `/debrief` runs this module as a separate
+        process per disposition, so a run with N dispositions performs N saves and this holds
+        only the LAST. Restoring is a deliberate manual `cp`, outside the sole-writer rule.
+
+        A byte copy of what is on DISK, never a dump of `self._original`: that text has been
+        through `read_text()`'s newline translation and `save()`'s rstrip-and-rejoin, so it is
+        not guaranteed equal to the bytes that were actually there.
+
+        Failure is non-fatal but never silent. Blocking a legitimate backlog edit because a
+        snapshot could not be written is worse than the risk the snapshot covers; a snapshot
+        that failed quietly is worse still, because it manufactures confidence.
+
+        Returns:
+            The snapshot's path, or `None` when it could not be written.
+        """
+        snapshot = self.path.parent / "backlog-snapshots" / f"{self.path.stem}.prev"
+        try:
+            snapshot.parent.mkdir(parents=True, exist_ok=True)
+            snapshot.write_bytes(self.path.read_bytes())
+            os.chmod(snapshot, mode)
+        except OSError as exc:
+            print(
+                f"backlog: no snapshot written to {snapshot} ({exc}) — the edit itself "
+                f"proceeds, but there is nothing to restore from",
+                file=sys.stderr,
+            )
+            return None
+        return snapshot
 
     @staticmethod
     def _describe(
