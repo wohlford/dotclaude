@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.108.0 — 2026-09-08
+- feat(backlog): add a retier operation with a compare-and-swap
+
 ## v0.107.2 — 2026-09-08
 - fix(backlog): make save() atomic and mode-preserving with a snapshot
 

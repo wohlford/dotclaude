@@ -31,12 +31,19 @@ Usage:
   backlog.py --path PATH close    NEEDLE          < note.md
   backlog.py --path PATH promote  NEEDLE --date YYYY-MM-DD [--reason TEXT]
   backlog.py --path PATH amend-head NEEDLE [--date YYYY-MM-DD] [--tier HIGH|MEDIUM|LOW]
+  backlog.py --path PATH retier NEEDLE --from TIER --to TIER --reason TEXT [--date YYYY-MM-DD]
 
 The first four cover every place `/debrief` mutates the file: the new entries steps 4 and 5 file
 (`add`) and step 0's three dispositions — keep leaves the entry alone, `promote` stamps it, `close` ticks and moves
 it, and `append` records evidence on any of them. `amend-head` is a repair tool, not a `/debrief`
 step: it inserts a date and/or tier a head is missing, deriving the new head from the old one
 rather than accepting caller-supplied head text — the caller passes only the values to insert.
+
+`retier` is the other half of that split, and the reason the two are separate operations:
+`amend-head` INSERTS a tier that is missing and refuses to overwrite one that is there, which is
+correct for what it is. Re-grading an entry is a different act — it replaces a judgement — so it
+gets its own operation, a compare-and-swap on the tier the head actually carries, and it records
+the reason inside the entry in the same write.
 
 NEEDLE is a substring that must match exactly one OPEN entry's head line; matching none or several
 is an error, never a guess. Notes are read from stdin verbatim, indentation included.
@@ -51,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import datetime
 import os
 import re
 import sys
@@ -99,8 +107,13 @@ NEW_ENTRY_HEAD_RE = re.compile(rf"^{DATED_HEAD_PREFIX}(?!{PROMOTED_STAMP})")
 # "This headline already carries a tier" — checked against `STAMPED_HEAD_RE`'s `rest` group,
 # where `amend_head` inserts a tier. Anchored at the front of `rest`, right inside the `**`
 # that opens it, which is exactly where `amend_head` would insert a new one.
+#
+# The token is CAPTURED, not just matched: `amend_head` asks only whether a tier is there, but
+# `retier` has to know which one and exactly where it sits, and a second regex spelling the same
+# thing is the drift this file has already been bitten by once. `amend_head` tests the match for
+# truth only, so the group is invisible to it.
 _TIER_TOKENS = ("HIGH", "MEDIUM", "LOW")
-_TIER_PREFIX_RE = re.compile(rf"^\*\*(?:{'|'.join(_TIER_TOKENS)}) — ")
+_TIER_PREFIX_RE = re.compile(rf"^\*\*(?P<tier>{'|'.join(_TIER_TOKENS)}) — ")
 
 
 class BacklogError(Exception):
@@ -192,6 +205,17 @@ def _is_subsequence(old: str, new: str) -> bool:
     """
     it = iter(new)
     return all(ch in it for ch in old)
+
+
+def _splice(text: str, start: int, end: int, replacement: str) -> str:
+    """Return `text` with the half-open span `[start, end)` replaced by `replacement`.
+
+    `retier`'s whole construction, in one named step. Naming it costs nothing and buys the only
+    way to prove that operation's shape postcondition is reachable: with the located span correct,
+    the postcondition can never fire, so its reachability row lies about THIS function while
+    leaving the location alone. A test written around a check that cannot fire pins nothing.
+    """
+    return text[:start] + replacement + text[end:]
 
 
 class Backlog:
@@ -452,6 +476,109 @@ class Backlog:
         self._stage(staged, collections.Counter([old]), collections.Counter([new]))
         self._expect_note_inside(needle, new)
 
+    def retier(
+        self, needle: str, from_tier: str, to_tier: str, reason: str, date: str
+    ) -> None:
+        """Change the tier an open entry's head already carries, and record why.
+
+        `amend_head` inserts a tier that is MISSING and refuses to overwrite one that is there.
+        Re-grading replaces a judgement, so it is this operation instead, and it carries a
+        compare-and-swap: `from_tier` must be what the head actually says, which is what makes a
+        repeated run refuse rather than re-apply.
+
+        The tier is located STRUCTURALLY — `STAMPED_HEAD_RE`'s `rest` group, then
+        `_TIER_PREFIX_RE`'s captured token, exactly where `amend_head` inserts one — never by
+        string replacement. Measured on the live file, naive `old.replace(from, to, 1)` agrees
+        with this on all 15 open HIGH heads, and that agreement is the reading to distrust: it
+        holds only because nothing preceding the tier can contain a tier token, an invariant
+        nothing in this module asserts.
+
+        The reason line is keyed on the NEW head, the idiom `add_entry` already uses. That is
+        load-bearing, not tidiness: keyed on the caller's needle instead, a needle that overlaps
+        the tier text no longer matches anything after the head is rewritten, and the note raises
+        `EntryNotFound`. Reordering does not fix it — noting first and rewriting second raises
+        `ShapeViolation` from the placement check. Keying on `new` dissolves both.
+
+        Args:
+            needle: Substring matching exactly one open entry's head.
+            from_tier: The tier the head is expected to carry now.
+            to_tier: The tier to write in its place.
+            reason: Why the tier changed. Recorded as a dated line inside the entry, in the
+                same `save()` as the head change.
+            date: Date for that reason line, `YYYY-MM-DD`.
+
+        Raises:
+            BacklogError: Either tier is not one of `_TIER_TOKENS`; the two are equal; the head
+                is not a dated entry head; the head carries no bold tier to change; or the head
+                carries a tier other than `from_tier`.
+            EntryNotFound: No open entry matches `needle`.
+            AmbiguousEntry: More than one open entry matches `needle`.
+        """
+        # Validated HERE and not only at the CLI: argparse `choices` protects the command line
+        # and nothing else, and a library caller reaches this method directly.
+        for label, value in (("--from", from_tier), ("--to", to_tier)):
+            if value not in _TIER_TOKENS:
+                raise BacklogError(
+                    f"{label} is not a known tier ({', '.join(_TIER_TOKENS)}): {value!r}"
+                )
+        if from_tier == to_tier:
+            raise BacklogError(
+                f"--from and --to are both {to_tier}: retier records a CHANGE of grade"
+            )
+
+        start, _ = self._find_open(needle)
+        old = self.lines[start]
+        match = STAMPED_HEAD_RE.match(old)
+        if not match:
+            raise BacklogError(
+                f"head is not a dated entry head, refusing to retier it: {old[:90]!r}"
+            )
+        rest = match["rest"]
+        located = _TIER_PREFIX_RE.match(rest)
+        if located is None:
+            # Deliberately does NOT route the operator to `amend-head`. Measured: 23 of the 91
+            # live open entries carry the plain `TIER — ` form, and `amend_head` refuses every
+            # one of them too (its `rest` has no `**`), so that advice is a circle. Name the
+            # form that is unsupported instead.
+            raise BacklogError(
+                "head carries no bold '**TIER — ' token to change, refusing to retier it — "
+                f"the plain 'TIER — ' form is not supported here: {old[:90]!r}"
+            )
+        current = located["tier"]
+        if current != from_tier:
+            raise BacklogError(
+                f"--from says {from_tier} but the head carries {current}, refusing to "
+                f"retier on a stale expectation: {old[:90]!r}"
+            )
+
+        span_start = match.start("rest") + located.start("tier")
+        span_end = match.start("rest") + located.end("tier")
+        new = _splice(old, span_start, span_end, to_tier)
+
+        # Shape postcondition, in three clauses because two are not enough. Measured: asserting
+        # only that the text around the span is untouched leaves the span itself unconstrained,
+        # and `**MEDIUN — `, `**medium — ` and `**       — ` all pass while silently destroying
+        # the tier. The third clause re-derives the head from `new` alone, carrying no offset
+        # from the construction — a mislocated offset fools the first two identically.
+        if (
+            new[:span_start] != old[:span_start]
+            or new[span_start + len(to_tier) :] != old[span_end:]
+        ):
+            raise BacklogError("retier changed head text outside the tier token")
+        if new[span_start : span_start + len(to_tier)] != to_tier:
+            raise BacklogError("retier did not write the requested tier into the token")
+        check = STAMPED_HEAD_RE.match(new)
+        rechecked = _TIER_PREFIX_RE.match(check["rest"]) if check else None
+        if rechecked is None or rechecked["tier"] != to_tier:
+            raise BacklogError(
+                f"re-reading the new head does not find {to_tier} at the front of rest"
+            )
+
+        staged = list(self.lines)
+        staged[start] = new
+        self._stage(staged, collections.Counter([old]), collections.Counter([new]))
+        self.append_note(new, f"  - {date} — {from_tier} → {to_tier}: {reason}")
+
     def close_entry(self, needle: str, note: str) -> None:
         """Tick the open entry `needle` identifies, append `note`, and move it under Closed."""
         note_lines = self._note_lines(note)
@@ -671,6 +798,15 @@ class Backlog:
 # ---------- CLI ----------
 
 
+def _today() -> str:
+    """Return today's date as `YYYY-MM-DD`, the CLI default for a `retier` reason line.
+
+    The library never calls this: `retier` takes its date as an argument, so a caller can
+    always pin one and every test is deterministic. Defaulting is a CLI convenience only.
+    """
+    return datetime.date.today().isoformat()
+
+
 def _read_note() -> str:
     """Read a note from stdin, refusing an empty one rather than writing a bare edit."""
     if sys.stdin.isatty():
@@ -712,6 +848,37 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--tier", default=None, choices=list(_TIER_TOKENS), help="tier to insert"
     )
+
+    p = sub.add_parser(
+        "retier",
+        help="change the tier an open entry's head already carries, recording why",
+    )
+    p.add_argument("needle", help="substring matching exactly one open entry's head")
+    # `choices` is DERIVED from the same tuple the method validates against, never re-spelled.
+    p.add_argument(
+        "--from",
+        dest="from_tier",
+        required=True,
+        choices=list(_TIER_TOKENS),
+        help="the tier the head is expected to carry now",
+    )
+    p.add_argument(
+        "--to",
+        dest="to_tier",
+        required=True,
+        choices=list(_TIER_TOKENS),
+        help="the tier to write in its place",
+    )
+    p.add_argument(
+        "--reason",
+        required=True,
+        help="why the grade changed; recorded inside the entry in the same write",
+    )
+    p.add_argument(
+        "--date",
+        default=_today(),
+        help="date for the reason line, YYYY-MM-DD (default: today)",
+    )
     return parser
 
 
@@ -735,6 +902,14 @@ def main(argv: list[str] | None = None) -> int:
             backlog.close_entry(args.needle, _read_note())
         elif args.command == "promote":
             backlog.stamp_promoted(args.needle, args.date, args.reason)
+        elif args.command == "retier":
+            backlog.retier(
+                args.needle,
+                args.from_tier,
+                args.to_tier,
+                args.reason,
+                args.date,
+            )
         else:
             backlog.amend_head(args.needle, date=args.date, tier=args.tier)
         report = backlog.save()

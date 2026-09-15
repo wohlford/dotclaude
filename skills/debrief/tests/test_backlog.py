@@ -14,6 +14,7 @@ check actually blocks a write instead of merely being present.
 from __future__ import annotations
 
 import collections
+import datetime
 import os
 import random
 import stat
@@ -1054,3 +1055,365 @@ def test_a_directory_fsync_failure_after_the_replace_does_not_fail_the_save(
     assert "  a note" in path.read_text()
     assert report.snapshot is not None
     assert "could not fsync" in capsys.readouterr().err
+
+
+# ---------- retier ----------
+#
+# `amend_head` INSERTS a tier that is missing and refuses to overwrite one; `retier` replaces a
+# tier that is there. The split is the point, so nothing below may be satisfied by `amend_head`'s
+# behaviour, and `amend_head`'s own rows above must stay green unchanged.
+
+
+def test_retier_replaces_the_tier_and_leaves_the_rest_of_the_head_untouched(tmp_path):
+    doc = make_doc([tiered_entry("A", "HIGH"), entry("B")])
+    path = write_doc(tmp_path, doc)
+    before = nonblank(doc)
+    old_head = next(ln for ln in doc.split("\n") if "**HIGH — A —" in ln)
+
+    b = Backlog(path)
+    b.retier("A —", "HIGH", "MEDIUM", "measured smaller than filed", "2026-09-08")
+    b.save()
+
+    text = path.read_text()
+    new_head = next(ln for ln in text.split("\n") if "**MEDIUM — A —" in ln)
+    assert new_head == "- [ ] 2026-07-01 — **MEDIUM — A — headline for A.**"
+    # Character-for-character: only the token moved, and only once.
+    assert new_head == old_head.replace("HIGH", "MEDIUM", 1)
+    after = nonblank(text)
+    assert before - after == collections.Counter({old_head: 1})
+    assert after - before == collections.Counter(
+        {
+            new_head: 1,
+            "  - 2026-09-08 — HIGH → MEDIUM: measured smaller than filed": 1,
+        }
+    )
+
+
+def test_retier_reason_line_lands_inside_the_retiered_entry(tmp_path):
+    # The fixture needs a FOLLOWING OPEN entry, or "landed outside" is not even expressible and
+    # the row cannot go red: with the target last in the Open section there is nowhere else in
+    # that half for the line to go.
+    doc = make_doc(
+        [
+            tiered_entry("A", "HIGH", body=["  a body line → [[slug-a]]"]),
+            entry("B", body=["  b body line"]),
+            entry("C"),
+        ]
+    )
+    path = write_doc(tmp_path, doc)
+
+    b = Backlog(path)
+    b.retier("A —", "HIGH", "LOW", "no longer urgent", "2026-09-08")
+    b.save()
+
+    reason = "  - 2026-09-08 — HIGH → LOW: no longer urgent"
+    blocks = blocks_of(path.read_text())
+    target = next(blk for head, blk in blocks.items() if "**LOW — A —" in head)
+    assert reason in target
+    for head, blk in blocks.items():
+        if "**LOW — A —" not in head:
+            assert reason not in blk, f"reason line leaked into {head!r}"
+
+
+def test_retier_keys_the_note_on_the_new_head_not_on_the_needle(tmp_path):
+    # The composition bug, measured: a needle that OVERLAPS the tier text stops matching the
+    # moment the head is rewritten, so a note keyed on the needle raises `EntryNotFound` (and
+    # noting first instead raises `ShapeViolation`). Keying the note on the new head dissolves
+    # it — which is why no guard refuses such a needle: `"HIGH-water"` is a legitimate one.
+    doc = make_doc([tiered_entry("A", "HIGH"), entry("B")])
+    path = write_doc(tmp_path, doc)
+
+    b = Backlog(path)
+    b.retier("**HIGH — A", "HIGH", "MEDIUM", "re-graded", "2026-09-08")
+    b.save()
+
+    text = path.read_text()
+    assert "**MEDIUM — A — headline for A.**" in text
+    assert "  - 2026-09-08 — HIGH → MEDIUM: re-graded" in text
+
+
+def test_retier_refuses_an_ambiguous_needle(tmp_path):
+    # Not ceremonial: measured on the live file, the needle "flake" matches TWO open entries, so
+    # an unrefused ambiguity re-grades the wrong one.
+    doc = make_doc([tiered_entry("dup1", "HIGH"), tiered_entry("dup2", "HIGH")])
+    path = write_doc(tmp_path, doc)
+    with pytest.raises(AmbiguousEntry):
+        Backlog(path).retier(
+            "headline for dup", "HIGH", "LOW", "ambiguous", "2026-09-08"
+        )
+    assert path.read_text() == doc
+
+
+def test_retier_refuses_a_from_that_the_head_does_not_carry(tmp_path):
+    # Compare-and-swap. It rests on the caller's belief, so it is weaker than the shape
+    # postcondition — it earns its place by making a REPEATED run refuse instead of re-applying.
+    doc = make_doc([tiered_entry("A", "MEDIUM"), entry("B")])
+    path = write_doc(tmp_path, doc)
+    with pytest.raises(
+        BacklogError, match=r"--from says HIGH but the head carries MEDIUM"
+    ):
+        Backlog(path).retier("A —", "HIGH", "LOW", "stale expectation", "2026-09-08")
+    assert path.read_text() == doc
+
+
+def test_retier_a_second_identical_run_refuses(tmp_path):
+    doc = make_doc([tiered_entry("A", "HIGH"), entry("B")])
+    path = write_doc(tmp_path, doc)
+
+    b = Backlog(path)
+    b.retier("A —", "HIGH", "MEDIUM", "re-graded", "2026-09-08")
+    b.save()
+    once = path.read_text()
+
+    with pytest.raises(
+        BacklogError, match=r"--from says HIGH but the head carries MEDIUM"
+    ):
+        Backlog(path).retier("A —", "HIGH", "MEDIUM", "re-graded", "2026-09-08")
+    assert path.read_text() == once
+
+
+def test_retier_refuses_when_from_equals_to(tmp_path):
+    doc = make_doc([tiered_entry("A", "HIGH")])
+    path = write_doc(tmp_path, doc)
+    with pytest.raises(BacklogError, match=r"--from and --to are both HIGH"):
+        Backlog(path).retier("A —", "HIGH", "HIGH", "no change at all", "2026-09-08")
+    assert path.read_text() == doc
+
+
+@pytest.mark.parametrize(
+    "from_tier,to_tier,flagged",
+    [
+        ("URGENT", "LOW", "--from"),
+        ("HIGH", "medium", "--to"),
+        ("HIGH", "", "--to"),
+    ],
+)
+def test_retier_validates_both_tiers_at_the_method_level(
+    tmp_path, from_tier, to_tier, flagged
+):
+    # argparse `choices` protects the COMMAND LINE and nothing else. A library caller reaches
+    # the method directly, and `--to medium` there would write a lower-case token into the head
+    # that no later `_TIER_PREFIX_RE` read could find.
+    doc = make_doc([tiered_entry("A", "HIGH")])
+    path = write_doc(tmp_path, doc)
+    with pytest.raises(BacklogError, match=rf"\{flagged} is not a known tier"):
+        Backlog(path).retier("A —", from_tier, to_tier, "bad tier", "2026-09-08")
+    assert path.read_text() == doc
+
+
+def test_retier_refuses_a_plain_form_head_without_routing_to_amend_head(tmp_path):
+    """A plain `TIER — ` head (no `**`) is refused, and the refusal names that form.
+
+    23 of the 91 open entries in the live backlog are written that way. `amend_head` refuses them
+    too — its `rest` has no `**` to insert inside — so a message telling the operator to reach for
+    `amend-head` would send them in a circle. Supporting the plain form is out of scope; saying so
+    is not.
+    """
+    head = "- [ ] 2026-08-31 — HIGH — a plain-form head carrying its tier unbolded"
+    path = write_doc(tmp_path, make_doc([[head]]))
+    doc = path.read_text()
+    with pytest.raises(
+        BacklogError, match=r"no bold '\*\*TIER — ' token to change"
+    ) as e:
+        Backlog(path).retier(
+            "plain-form head", "HIGH", "LOW", "re-graded", "2026-09-08"
+        )
+    assert "amend" not in str(e.value).lower()
+    assert "plain 'TIER — ' form" in str(e.value)
+    assert path.read_text() == doc
+
+
+def test_retier_refuses_a_head_with_no_date_prefix(tmp_path):
+    # `STAMPED_HEAD_RE` is the only thing that isolates `rest`; without a date prefix there is no
+    # `rest` to locate a tier inside, and guessing one is how a head gets silently rewritten.
+    head = "- [ ] **HIGH — an undated head that still carries a bold tier**"
+    path = write_doc(tmp_path, make_doc([[head]]))
+    doc = path.read_text()
+    with pytest.raises(BacklogError, match=r"not a dated entry head"):
+        Backlog(path).retier("undated head", "HIGH", "LOW", "re-graded", "2026-09-08")
+    assert path.read_text() == doc
+
+
+# ---------- retier: the shape postcondition is reachable, clause by clause ----------
+#
+# With the span located correctly the construction is a pure splice, so no realistic input can
+# reach any of these three clauses — deleting them changes no observable outcome, and all four of
+# `amend_head`'s postconditions survived mutation for exactly that reason. Each row below lies
+# about ONE thing so that exactly one clause can fire. Clauses 1 and 2 are reached by lying about
+# the CONSTRUCTION; clause 3 is unreachable that way (the first two pin `new` completely once the
+# offsets are right) and needs a lie about WHERE the tier sits — which is the case that motivates
+# it, since a mislocated offset fools the first two identically.
+
+
+def test_retier_postcondition_catches_text_changed_outside_the_token(
+    tmp_path, monkeypatch
+):
+    path = write_doc(tmp_path, make_doc([tiered_entry("A", "HIGH")]))
+    doc = path.read_text()
+    monkeypatch.setattr(
+        backlog,
+        "_splice",
+        lambda text, start, end, replacement: (
+            text[:start] + replacement + " MANGLED TAIL"
+        ),
+    )
+    with pytest.raises(BacklogError, match=r"outside the tier token"):
+        Backlog(path).retier("A —", "HIGH", "MEDIUM", "re-graded", "2026-09-08")
+    assert path.read_text() == doc
+
+
+def test_retier_postcondition_catches_a_near_miss_tier_token(tmp_path, monkeypatch):
+    # `**MEDIUN — ` is the measured case that a two-clause postcondition PASSES: the text either
+    # side of the span is untouched and the length is unchanged, and the entry silently loses its
+    # tier. Only the clause asserting the span EQUALS `--to` sees it.
+    path = write_doc(tmp_path, make_doc([tiered_entry("A", "HIGH")]))
+    doc = path.read_text()
+    monkeypatch.setattr(
+        backlog,
+        "_splice",
+        lambda text, start, end, replacement: text[:start] + "MEDIUN" + text[end:],
+    )
+    with pytest.raises(BacklogError, match=r"did not write the requested tier"):
+        Backlog(path).retier("A —", "HIGH", "MEDIUM", "re-graded", "2026-09-08")
+    assert path.read_text() == doc
+
+
+def test_retier_postcondition_catches_a_mislocated_span(tmp_path, monkeypatch):
+    # The clause that carries the weight: the span offset comes from the same match the
+    # construction used, so a MISLOCATED offset satisfies both earlier clauses perfectly. Here the
+    # located span is moved off the tier and onto the `X` beside it, so the write puts `MEDIUM`
+    # in the wrong place while `**HIGH — ` survives — and only a re-read of the finished head,
+    # carrying no offset from the construction, can tell.
+    path = write_doc(tmp_path, make_doc([tiered_entry("X", "HIGH")]))
+    doc = path.read_text()
+    real_re = backlog._TIER_PREFIX_RE
+
+    class _MislocatedSpan:
+        """The RIGHT tier token at the WRONG offsets — `rest[9:10]` is the `X`, not `HIGH`."""
+
+        def __getitem__(self, key):
+            return "HIGH"
+
+        def start(self, key):
+            return 9
+
+        def end(self, key):
+            return 10
+
+    class _LiesOnlyAboutTheHeadBeingEdited:
+        # Faithful everywhere else, and in particular for the postcondition's own re-read: after
+        # the (mislocated) write, `rest` starts `**HIGH — MEDIUM`, so it does not key here.
+        def match(self, s):
+            if s.startswith("**HIGH — X"):
+                return _MislocatedSpan()
+            return real_re.match(s)
+
+    monkeypatch.setattr(backlog, "_TIER_PREFIX_RE", _LiesOnlyAboutTheHeadBeingEdited())
+    with pytest.raises(
+        BacklogError, match=r"does not find MEDIUM at the front of rest"
+    ):
+        Backlog(path).retier("X —", "HIGH", "MEDIUM", "re-graded", "2026-09-08")
+    assert path.read_text() == doc
+
+
+# ---------- retier: the CLI ----------
+
+
+def test_retier_cli_applies_the_change(tmp_path):
+    path = write_doc(tmp_path, make_doc([tiered_entry("A", "HIGH"), entry("B")]))
+    rc = backlog.main(
+        [
+            "--path",
+            str(path),
+            "retier",
+            "A —",
+            "--from",
+            "HIGH",
+            "--to",
+            "LOW",
+            "--reason",
+            "re-graded from the CLI",
+            "--date",
+            "2026-09-08",
+        ]
+    )
+    assert rc == 0
+    text = path.read_text()
+    assert "- [ ] 2026-07-01 — **LOW — A — headline for A.**" in text
+    assert "  - 2026-09-08 — HIGH → LOW: re-graded from the CLI" in text
+
+
+def test_retier_cli_dates_the_reason_line_today_by_default(tmp_path):
+    # A test that supplies the option's own default cannot tell whether the option is read, so
+    # the row above passes a date DIFFERING from today and asserts on it; this one omits the
+    # option entirely and asserts the default is today rather than some fixed string.
+    path = write_doc(tmp_path, make_doc([tiered_entry("A", "HIGH")]))
+    rc = backlog.main(
+        [
+            "--path",
+            str(path),
+            "retier",
+            "A —",
+            "--from",
+            "HIGH",
+            "--to",
+            "LOW",
+            "--reason",
+            "dated by default",
+        ]
+    )
+    assert rc == 0
+    today = datetime.date.today().isoformat()
+    assert f"  - {today} — HIGH → LOW: dated by default" in path.read_text()
+
+
+@pytest.mark.parametrize("flag", ["--from", "--to"])
+def test_retier_cli_refuses_a_tier_outside_the_allowlist(tmp_path, flag):
+    # The allowlist is DERIVED from `_TIER_TOKENS`, never re-spelled, so a tier added or removed
+    # there cannot leave the CLI behind. argparse rejects before the module is even constructed.
+    path = write_doc(tmp_path, make_doc([tiered_entry("A", "HIGH")]))
+    doc = path.read_text()
+    argv = [
+        "--path",
+        str(path),
+        "retier",
+        "A —",
+        "--from",
+        "HIGH",
+        "--to",
+        "LOW",
+        "--reason",
+        "r",
+    ]
+    argv[argv.index(flag) + 1] = "URGENT"
+    with pytest.raises(SystemExit) as e:
+        backlog.main(argv)
+    assert e.value.code == 2
+    assert path.read_text() == doc
+
+
+@pytest.mark.parametrize("omit", ["--from", "--to", "--reason"])
+def test_retier_cli_requires_from_to_and_reason(tmp_path, omit):
+    # None of the three has a defensible default: a missing `--from` would turn a
+    # compare-and-swap into a blind overwrite, and a missing `--reason` leaves a re-grade whose
+    # cause no later reader can re-derive.
+    path = write_doc(tmp_path, make_doc([tiered_entry("A", "HIGH")]))
+    doc = path.read_text()
+    argv = [
+        "--path",
+        str(path),
+        "retier",
+        "A —",
+        "--from",
+        "HIGH",
+        "--to",
+        "LOW",
+        "--reason",
+        "r",
+    ]
+    at = argv.index(omit)
+    del argv[at : at + 2]
+    with pytest.raises(SystemExit) as e:
+        backlog.main(argv)
+    assert e.value.code == 2
+    assert path.read_text() == doc

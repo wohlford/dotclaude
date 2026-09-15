@@ -189,6 +189,79 @@ MUTATIONS = [
         "        if self.path.is_symlink():",
         "        if False:",
     ),
+    # ---- retier: changing a JUDGEMENT, where amend_head only inserts a missing FACT
+    mutate.Mutation(
+        "tier-allowlist-off: `retier` stops validating its tiers at the METHOD level. argparse "
+        "`choices` still guards the command line, so this is invisible from the CLI and open to "
+        "every library caller — which is exactly why the check is not left to argparse",
+        "            if value not in _TIER_TOKENS:",
+        "            if False:",
+    ),
+    mutate.Mutation(
+        "from-equals-to-ok: `retier` accepts `--from X --to X`, writing a reason line announcing "
+        "a change of grade that did not happen",
+        "        if from_tier == to_tier:",
+        "        if False:",
+    ),
+    mutate.Mutation(
+        "cas-off: the compare-and-swap stops checking that the head carries what `--from` claims, "
+        "so a stale expectation silently overwrites whatever is actually there — and a REPEATED "
+        "run re-applies instead of refusing",
+        "        if current != from_tier:",
+        "        if False:",
+    ),
+    mutate.Mutation(
+        "no-tier-guard-off: `retier` stops refusing a head with no bold tier to change. 23 of the "
+        "91 live open entries are that shape",
+        "        if located is None:",
+        "        if False:",
+    ),
+    mutate.Mutation(
+        "dated-head-guard-off: `retier` stops refusing a head that is not a dated entry head",
+        '                f"head is not a dated entry head, refusing to retier it: {old[:90]!r}"',
+        '                f"unused: {old[:90]!r}" if False else "x"',
+    ),
+    mutate.Mutation(
+        "note-keyed-on-needle: the reason line is keyed on the CALLER'S NEEDLE instead of the new "
+        "head. This is the composition bug the design exists to dissolve: a needle overlapping the "
+        "tier text no longer matches once the head is rewritten, so a CORRECT retier fails. "
+        "Reordering does not fix it — noting first raises ShapeViolation instead",
+        '        self.append_note(new, f"  - {date} — {from_tier} → {to_tier}: {reason}")',
+        '        self.append_note(needle, f"  - {date} — {from_tier} → {to_tier}: {reason}")',
+    ),
+    mutate.Mutation(
+        "structural-to-replace: the structural splice becomes a bare-token `str.replace`. The "
+        "DELIMITED form would be genuinely equivalent (a promoted stamp cannot contain `*`), but "
+        "the BARE token is not: a stamp reason or headline carrying a tier word is legal and would "
+        "be rewritten instead of the tier",
+        "        new = _splice(old, span_start, span_end, to_tier)",
+        "        new = old.replace(from_tier, to_tier, 1)",
+    ),
+    # The three postcondition clauses. A postcondition changes NO observable outcome while the
+    # construction is correct — all four of `amend_head`'s survived its campaign for exactly that
+    # reason. These are catchable only because the suite carries REACHABILITY rows that
+    # monkeypatch `_splice` to emit a deliberately wrong head. If one of these ever survives, the
+    # reachability row is what regressed, not the postcondition.
+    mutate.Mutation(
+        "postcond-1-off: the clause forbidding head text to change OUTSIDE the tier token no "
+        "longer raises",
+        '            raise BacklogError("retier changed head text outside the tier token")',
+        "            pass",
+    ),
+    mutate.Mutation(
+        "postcond-2-off: the clause requiring the span to EQUAL the requested tier no longer "
+        "raises. This is the one the obvious two-clause postcondition omits, and without it "
+        "`**MEDIUN — `, `**medium — ` and `**       — ` all pass while destroying the tier",
+        '            raise BacklogError("retier did not write the requested tier into the token")',
+        "            pass",
+    ),
+    mutate.Mutation(
+        "postcond-3-off: the independent re-derivation from `new` stops being consulted. It is "
+        "the only clause carrying no offset from the construction, so a MISLOCATED span — which "
+        "fools clauses 1 and 2 identically — is caught here or nowhere",
+        '        if rechecked is None or rechecked["tier"] != to_tier:',
+        "        if False:",
+    ),
 ]
 
 
