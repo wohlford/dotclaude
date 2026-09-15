@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.108.6 — 2026-09-11
+- test(publication-push-guard): pin the env axis by mutation
+
 ## v0.108.5 — 2026-09-11
 - fix(publication-push-guard): allowlist env names that reach git
 
