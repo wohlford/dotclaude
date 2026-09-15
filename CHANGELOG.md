@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.106.0 — 2026-09-04
+- feat(backlog): add amend-head and enforce a dated head contract
+
 ## v0.105.5 — 2026-09-04
 - docs(CLAUDE.md): split the input repairs from the logic repairs
 

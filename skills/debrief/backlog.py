@@ -30,10 +30,13 @@ Usage:
   backlog.py --path PATH append   NEEDLE          < note.md
   backlog.py --path PATH close    NEEDLE          < note.md
   backlog.py --path PATH promote  NEEDLE --date YYYY-MM-DD [--reason TEXT]
+  backlog.py --path PATH amend-head NEEDLE [--date YYYY-MM-DD] [--tier HIGH|MEDIUM|LOW]
 
-Those four cover every place `/debrief` mutates the file: the new entries steps 4 and 5 file
+The first four cover every place `/debrief` mutates the file: the new entries steps 4 and 5 file
 (`add`) and step 0's three dispositions — keep leaves the entry alone, `promote` stamps it, `close` ticks and moves
-it, and `append` records evidence on any of them.
+it, and `append` records evidence on any of them. `amend-head` is a repair tool, not a `/debrief`
+step: it inserts a date and/or tier a head is missing, deriving the new head from the old one
+rather than accepting caller-supplied head text — the caller passes only the values to insert.
 
 NEEDLE is a substring that must match exactly one OPEN entry's head line; matching none or several
 is an error, never a guess. Notes are read from stdin verbatim, indentation included.
@@ -56,14 +59,46 @@ from pathlib import Path
 OPEN_HEADING = "## Open"
 CLOSED_HEADING = "## Closed"
 HEAD_RE = re.compile(r"^- \[[ x]\] ")
+# The date prefix a WELL-FORMED head carries — hoisted to one constant so every regex that
+# needs to recognize "this head has a date" is built from the same pattern rather than a
+# shadowing inline copy. Deliberately NOT `HEAD_RE`: that one stays permissive (see its own
+# docstring) so a legacy undated head is still a boundary, never absorbed into the entry above it.
+DATED_HEAD_PREFIX = r"- \[[ x]\] \d{4}-\d{2}-\d{2} — "
+# What a promotion stamp looks like — hoisted for the same reason the date prefix is. TWO
+# readings consult it and they must never drift apart: `STAMPED_HEAD_RE` accepts a stamp,
+# `NEW_ENTRY_HEAD_RE` refuses one. Spelling it twice is itself the defect this file already
+# carried once, so it is spelled here and nowhere else.
+PROMOTED_STAMP = r"\*promoted [^*]*\* — "
 # A head is `- [ ] YYYY-MM-DD — rest`, optionally already carrying a `*promoted …* — ` stamp.
 # The stamp group is anchored right after the date so that prose merely *mentioning* promotion
 # later in the headline is not mistaken for one — the real file contains exactly that.
 STAMPED_HEAD_RE = re.compile(
-    r"^(?P<prefix>- \[[ x]\] \d{4}-\d{2}-\d{2} — )"
-    r"(?:\*promoted [^*]*\* — )?"
+    rf"^(?P<prefix>{DATED_HEAD_PREFIX})"
+    rf"(?:{PROMOTED_STAMP})?"
     r"(?P<rest>.*)$"
 )
+# TWO regexes, because there are two questions and merging them breaks one of the two callers.
+#
+# `DATED_HEAD_RE` — "does this head carry a date?" It ACCEPTS a promoted head, because an entry
+# that has been promoted still has a date and may still be amended. `amend_head` asks this one,
+# both to refuse overwriting an existing date and as its postcondition.
+#
+# `NEW_ENTRY_HEAD_RE` — "is this a legal head for a BRAND-NEW entry?" It REFUSES a promoted head:
+# `promote` applies that stamp later, as a disposition, so no new entry can legitimately arrive
+# already carrying one. `add_entry` asks this one, and only it.
+#
+# The lookahead is load-bearing and belongs to the second question ONLY: a bare date-prefix match
+# is unanchored, so it accepts any head merely STARTING with a date, stamp and all. Putting that
+# lookahead in the shared regex is measured, not hypothetical — it made `amend_head` fail its own
+# postcondition on every promoted entry, and the whole suite stayed green because no test amended
+# one. The real file contains exactly one.
+DATED_HEAD_RE = re.compile(rf"^{DATED_HEAD_PREFIX}")
+NEW_ENTRY_HEAD_RE = re.compile(rf"^{DATED_HEAD_PREFIX}(?!{PROMOTED_STAMP})")
+# "This headline already carries a tier" — checked against `STAMPED_HEAD_RE`'s `rest` group,
+# where `amend_head` inserts a tier. Anchored at the front of `rest`, right inside the `**`
+# that opens it, which is exactly where `amend_head` would insert a new one.
+_TIER_TOKENS = ("HIGH", "MEDIUM", "LOW")
+_TIER_PREFIX_RE = re.compile(rf"^\*\*(?:{'|'.join(_TIER_TOKENS)}) — ")
 
 
 class BacklogError(Exception):
@@ -139,6 +174,17 @@ def entry_blocks(lines: list[str]) -> list[tuple[int, int]]:
 def _nonblank(text: str) -> collections.Counter[str]:
     """Count the document's non-blank lines, which is the multiset the shape check compares."""
     return collections.Counter(ln for ln in text.split("\n") if ln.strip())
+
+
+def _is_subsequence(old: str, new: str) -> bool:
+    """Report whether every character of `old`, in order, occurs somewhere in `new`.
+
+    This is the insert-only postcondition for an edit that rewrites one line in place: it
+    passes for any edit that only ADDS characters, and fails the moment one is deleted or two
+    are reordered.
+    """
+    it = iter(new)
+    return all(ch in it for ch in old)
 
 
 class Backlog:
@@ -242,12 +288,16 @@ class Backlog:
             text: The whole entry — a `- [ ] ` head line, plus any indented continuation lines.
 
         Raises:
-            InvalidNote: The first line is not an open head, or a continuation line would open a
-                second entry or a section of its own.
+            InvalidNote: The first line is not an open head, the head carries no date, or a
+                continuation line would open a second entry or a section of its own.
         """
         lines = text.rstrip("\n").split("\n")
         if not lines[0].startswith("- [ ] "):
             raise InvalidNote(f"a new entry must open with '- [ ] ': {lines[0][:70]!r}")
+        if not NEW_ENTRY_HEAD_RE.match(lines[0]):
+            raise InvalidNote(
+                f"a new entry must carry a date, '- [ ] YYYY-MM-DD — ': {lines[0][:70]!r}"
+            )
         for ln in lines[1:]:
             if _is_head(ln):
                 raise InvalidNote(f"line would open a second entry: {ln[:70]!r}")
@@ -300,6 +350,100 @@ class Backlog:
         staged = list(self.lines)
         staged[start] = new
         self._stage(staged, collections.Counter([old]), collections.Counter([new]))
+
+    def amend_head(
+        self, needle: str, date: str | None = None, tier: str | None = None
+    ) -> None:
+        """Insert a missing date and/or tier into the open entry `needle` identifies.
+
+        The caller supplies only the VALUES to insert, never head text: `_stage` can prove
+        only which lines changed, never how one differs from another, so a caller-supplied
+        head would let this operation bless an arbitrary hand-edit dressed up as a
+        shape-checked one. `date` is inserted immediately after `- [ ] `. `tier` is inserted at
+        the front of the headline `STAMPED_HEAD_RE` isolates as `rest` — never found by
+        scanning for the first `**`, which a `*promoted …*` stamp sitting beside a separator
+        could defeat.
+
+        Args:
+            needle: Substring matching exactly one open entry's head.
+            date: Date to insert, `YYYY-MM-DD`, when the head does not already carry one.
+            tier: Tier token (`HIGH`, `MEDIUM`, or `LOW`) to insert, when the head does not
+                already carry one.
+
+        Raises:
+            BacklogError: Neither `date` nor `tier` was given; the head already carries the
+                value being inserted; the head does not open with `- [ ] `; or `rest` (the
+                headline with the date prefix and any stamp already removed) has no `**` to
+                insert a tier inside.
+            EntryNotFound: No open entry matches `needle`.
+            AmbiguousEntry: More than one open entry matches `needle`.
+        """
+        if date is None and tier is None:
+            raise BacklogError("amend_head requires date and/or tier")
+        start, _ = self._find_open(needle)
+        old = self.lines[start]
+        new = old
+        inserted_len = 0
+
+        if date is not None:
+            if DATED_HEAD_RE.match(new):
+                raise BacklogError(
+                    f"head already carries a date, refusing to overwrite: {old[:90]!r}"
+                )
+            prefix = "- [ ] "
+            if not new.startswith(prefix):
+                raise BacklogError(
+                    f"unrecognized entry head, refusing to guess: {old[:90]!r}"
+                )
+            stamp = f"{date} — "
+            new = new[: len(prefix)] + stamp + new[len(prefix) :]
+            inserted_len += len(stamp)
+
+        if tier is not None:
+            match = STAMPED_HEAD_RE.match(new)
+            if not match:
+                raise BacklogError(
+                    f"unrecognized entry head, refusing to guess: {new[:90]!r}"
+                )
+            rest = match["rest"]
+            if _TIER_PREFIX_RE.match(rest):
+                raise BacklogError(
+                    f"head already carries a tier, refusing to overwrite: {old[:90]!r}"
+                )
+            if not rest.startswith("**"):
+                raise BacklogError(
+                    "rest has no '**' to insert a tier inside, refusing to guess: "
+                    f"{old[:90]!r}"
+                )
+            tier_insert = f"{tier} — "
+            new = new[: match.start("rest")] + "**" + tier_insert + rest[2:]
+            inserted_len += len(tier_insert)
+
+        # Postconditions — each written so that deleting the one line that enforces it lets a
+        # defect through unnoticed rather than merely restating a check above.
+        if not _is_subsequence(old, new):
+            raise BacklogError(
+                "amend_head must only insert characters, never delete or reorder"
+            )
+        if len(new) - len(old) != inserted_len:
+            raise BacklogError(
+                "amend_head changed more or less than what it declared inserting"
+            )
+        if not DATED_HEAD_RE.match(new):
+            raise BacklogError(
+                "amend_head left the head without a well-formed date prefix"
+            )
+        if tier is not None:
+            check = STAMPED_HEAD_RE.match(new)
+            if check is None or not check["rest"].startswith(f"**{tier} — "):
+                raise BacklogError(
+                    "amend_head did not land the tier at the front of rest"
+                )
+
+        staged = list(self.lines)
+        staged[start] = new
+        self._stage(staged, collections.Counter([old]), collections.Counter([new]))
+        self._expect_note_inside(needle, new)
 
     def close_entry(self, needle: str, note: str) -> None:
         """Tick the open entry `needle` identifies, append `note`, and move it under Closed."""
@@ -441,6 +585,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("needle", help="substring matching exactly one open entry's head")
     p.add_argument("--date", required=True, help="promotion date, YYYY-MM-DD")
     p.add_argument("--reason", default=None, help="short reason shown inside the stamp")
+
+    p = sub.add_parser(
+        "amend-head",
+        help="insert a missing date and/or tier into an existing open entry's head",
+    )
+    p.add_argument("needle", help="substring matching exactly one open entry's head")
+    p.add_argument("--date", default=None, help="date to insert, YYYY-MM-DD")
+    p.add_argument(
+        "--tier", default=None, choices=list(_TIER_TOKENS), help="tier to insert"
+    )
     return parser
 
 
@@ -450,7 +604,10 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         0 when the edit landed and every postcondition held, 1 when it was refused.
     """
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "amend-head" and args.date is None and args.tier is None:
+        parser.error("amend-head requires --date and/or --tier")
     try:
         backlog = Backlog(args.path)
         if args.command == "add":
@@ -459,8 +616,10 @@ def main(argv: list[str] | None = None) -> int:
             backlog.append_note(args.needle, _read_note())
         elif args.command == "close":
             backlog.close_entry(args.needle, _read_note())
-        else:
+        elif args.command == "promote":
             backlog.stamp_promoted(args.needle, args.date, args.reason)
+        else:
+            backlog.amend_head(args.needle, date=args.date, tier=args.tier)
         report = backlog.save()
     except BacklogError as exc:
         print(f"backlog: {exc}", file=sys.stderr)

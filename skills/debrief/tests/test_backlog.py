@@ -16,10 +16,12 @@ from __future__ import annotations
 import collections
 import random
 
+import backlog
 import pytest
 from backlog import (
     AmbiguousEntry,
     Backlog,
+    BacklogError,
     EntryNotFound,
     InvalidNote,
     ShapeViolation,
@@ -32,6 +34,16 @@ from backlog import (
 def entry(token, date="2026-07-01", closed=False, body=()):
     box = "- [x]" if closed else "- [ ]"
     return [f"{box} {date} — **{token} — headline for {token}.**", *body]
+
+
+def undated_entry(token, body=()):
+    # Shaped like the real defect `amend_head --date` exists to repair: a head with no date.
+    return [f"- [ ] **{token} — headline for {token}.**", *body]
+
+
+def tiered_entry(token, tier, date="2026-07-01", body=()):
+    # A head that already carries a tier, for the "refuse rather than overwrite" tests.
+    return [f"- [ ] {date} — **{tier} — {token} — headline for {token}.**", *body]
 
 
 def make_doc(open_entries, closed_entries=()):
@@ -176,6 +188,16 @@ def test_add_entry_rejects_text_that_is_not_an_open_entry(tmp_path):
             Backlog(path).add_entry(bad)
 
 
+def test_add_entry_refuses_a_head_with_no_date(tmp_path):
+    # Shaped like the real defect: entry 23's head carries no date, which makes it permanently
+    # unpromotable (`promote` requires `- [ ] YYYY-MM-DD — `). `add` must refuse it up front
+    # rather than accept input it can never act on.
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    bad = "- [ ] **`install.sh --check` dies before it can report** — the rest"
+    with pytest.raises(InvalidNote):
+        Backlog(path).add_entry(bad)
+
+
 # ---------- append_note ----------
 
 
@@ -312,6 +334,196 @@ def test_stamping_preserves_a_headline_carrying_its_own_italics(tmp_path):
     assert out == (
         "- [ ] 2026-07-01 — *promoted 2026-07-29* — **X** — see *promoted work* — details"
     )
+
+
+# ---------- amend_head ----------
+
+
+def test_amend_head_inserts_a_date_only(tmp_path):
+    doc = make_doc([undated_entry("A"), entry("B")])
+    path = write_doc(tmp_path, doc)
+    before = nonblank(doc)
+    old_head = next(ln for ln in doc.split("\n") if "**A —" in ln)
+
+    bl = Backlog(path)
+    bl.amend_head("A —", date="2026-08-24")
+    bl.save()
+
+    after = nonblank(path.read_text())
+    assert before - after == collections.Counter({old_head: 1})
+    new_head = next(ln for ln in path.read_text().split("\n") if "**A —" in ln)
+    assert after - before == collections.Counter({new_head: 1})
+    assert new_head == "- [ ] 2026-08-24 — **A — headline for A.**"
+
+
+def test_amend_head_inserts_a_tier_only(tmp_path):
+    doc = make_doc([entry("A"), entry("B")])
+    path = write_doc(tmp_path, doc)
+    before = nonblank(doc)
+    old_head = next(ln for ln in doc.split("\n") if "**A —" in ln)
+
+    bl = Backlog(path)
+    bl.amend_head("A —", tier="HIGH")
+    bl.save()
+
+    after = nonblank(path.read_text())
+    assert before - after == collections.Counter({old_head: 1})
+    new_head = next(ln for ln in path.read_text().split("\n") if "HIGH — A —" in ln)
+    assert after - before == collections.Counter({new_head: 1})
+    assert new_head == "- [ ] 2026-07-01 — **HIGH — A — headline for A.**"
+
+
+def test_amend_head_inserts_date_and_tier_together_with_one_save(tmp_path):
+    # The whole point of "both insertions compute in memory, then stage ONCE": staging twice
+    # would declare an intermediate line that never exists on disk.
+    doc = make_doc([undated_entry("A"), entry("B")])
+    path = write_doc(tmp_path, doc)
+
+    bl = Backlog(path)
+    bl.amend_head("A —", date="2026-08-24", tier="MEDIUM")
+    bl.save()
+
+    new_head = next(ln for ln in path.read_text().split("\n") if "MEDIUM — A —" in ln)
+    assert new_head == "- [ ] 2026-08-24 — **MEDIUM — A — headline for A.**"
+
+
+def test_amend_head_requires_at_least_one_of_date_or_tier(tmp_path):
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    doc = path.read_text()
+    with pytest.raises(BacklogError):
+        Backlog(path).amend_head("A —")
+    assert path.read_text() == doc
+
+
+def test_amend_head_refuses_a_date_when_one_already_exists(tmp_path):
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    doc = path.read_text()
+    with pytest.raises(BacklogError):
+        Backlog(path).amend_head("A —", date="2026-08-24")
+    assert path.read_text() == doc
+
+
+def test_amend_head_refuses_a_tier_when_one_already_exists(tmp_path):
+    path = write_doc(tmp_path, make_doc([tiered_entry("A", "HIGH")]))
+    doc = path.read_text()
+    with pytest.raises(BacklogError):
+        Backlog(path).amend_head("A —", tier="MEDIUM")
+    assert path.read_text() == doc
+
+
+def test_amend_head_refuses_a_tier_when_rest_has_no_bold_delimiter(tmp_path):
+    # "A `rest` that does not start with `**` has no canonical insertion point: refuse, do not
+    # guess" — never fall back to scanning for the first `**` anywhere in the headline.
+    head = "- [ ] 2026-07-01 — plain text with no bold delimiter"
+    path = write_doc(tmp_path, make_doc([[head]]))
+    doc = path.read_text()
+    with pytest.raises(BacklogError):
+        Backlog(path).amend_head("plain text", tier="HIGH")
+    assert path.read_text() == doc
+
+
+def test_amend_head_ambiguous_needle_raises(tmp_path):
+    path = write_doc(tmp_path, make_doc([entry("dup1"), entry("dup2")]))
+    with pytest.raises(AmbiguousEntry):
+        Backlog(path).amend_head("headline for dup", tier="HIGH")
+
+
+def test_amend_head_shape_violation_leaves_file_byte_identical(tmp_path):
+    # A silent pass and a check that never ran are indistinguishable, so force a NEGATIVE
+    # firing on the SAME staging path amend_head uses, proving it is not exempt from the
+    # shared postcondition every other operation is held to.
+    doc = make_doc([undated_entry("A"), entry("B")])
+    path = write_doc(tmp_path, doc)
+    bl = Backlog(path)
+    bl.amend_head("A —", date="2026-08-24")
+    bl._expected_gained["bogus injected line"] += 1
+
+    with pytest.raises(ShapeViolation):
+        bl.save()
+    assert path.read_text() == doc
+
+
+# ---------- amend_head: the four postconditions are actually consulted ----------
+#
+# All four run only AFTER a correct derivation, so no realistic input reaches them — the
+# refusal tests above exercise the GUARD CLAUSES (already-dated, already-tiered, no `**`),
+# which are a different thing. To prove each postcondition is not dead code, lie to
+# `amend_head` about the exact fact it examines — via monkeypatch — while leaving the real
+# derivation untouched, so only the one targeted check can possibly fire.
+
+
+def test_amend_head_subsequence_postcondition_actually_fires(tmp_path, monkeypatch):
+    path = write_doc(tmp_path, make_doc([entry("A"), entry("B")]))
+    doc = path.read_text()
+    monkeypatch.setattr(backlog, "_is_subsequence", lambda old, new: False)
+
+    with pytest.raises(BacklogError, match="must only insert characters"):
+        Backlog(path).amend_head("A —", tier="HIGH")
+    assert path.read_text() == doc
+
+
+def test_amend_head_length_delta_postcondition_actually_fires(tmp_path, monkeypatch):
+    path = write_doc(tmp_path, make_doc([undated_entry("A"), entry("B")]))
+    doc = path.read_text()
+    real_len = len
+    stamp = "2026-08-24 — "
+
+    def lying_len(x):
+        # Lie only about the exact string `amend_head` accumulates into `inserted_len` for
+        # the date insertion. Every other len() call in the method — slicing the head apart,
+        # then computing len(new)/len(old) — sees the truth, so only the DECLARED insertion
+        # length goes wrong; the ACTUAL characters written are unaffected.
+        if x == stamp:
+            return real_len(x) + 1
+        return real_len(x)
+
+    monkeypatch.setattr(backlog, "len", lying_len, raising=False)
+    with pytest.raises(
+        BacklogError, match="changed more or less than what it declared"
+    ):
+        Backlog(path).amend_head("A —", date="2026-08-24")
+    assert path.read_text() == doc
+
+
+def test_amend_head_wellformed_postcondition_actually_fires(tmp_path, monkeypatch):
+    path = write_doc(tmp_path, make_doc([entry("A"), entry("B")]))
+    doc = path.read_text()
+
+    class _NeverMatches:
+        def match(self, s):
+            return None
+
+    # date=None here, so the OTHER use of DATED_HEAD_RE (the "already carries a date"
+    # guard, only reached when a date is being inserted) never runs — isolating the lie to
+    # the postcondition alone.
+    monkeypatch.setattr(backlog, "DATED_HEAD_RE", _NeverMatches())
+    with pytest.raises(BacklogError, match="well-formed date prefix"):
+        Backlog(path).amend_head("A —", tier="HIGH")
+    assert path.read_text() == doc
+
+
+def test_amend_head_tier_position_postcondition_actually_fires(tmp_path, monkeypatch):
+    path = write_doc(tmp_path, make_doc([entry("A"), entry("B")]))
+    doc = path.read_text()
+    real_re = backlog.STAMPED_HEAD_RE
+
+    class _LiesOnlyAfterInsertion:
+        # `STAMPED_HEAD_RE` is called twice in the tier path: once to extract `rest` BEFORE
+        # the tier lands (delegate faithfully, so the real edit is untouched), and once more
+        # by the postcondition to re-check `new` AFTER the tier landed (lie only there, by
+        # keying on the tier text the real edit would have just inserted).
+        def match(self, s):
+            m = real_re.match(s)
+            if m is not None and "**HIGH — " in s:
+                return {"rest": "**NOT-THE-TIER — lied about it"}
+            return m
+
+    monkeypatch.setattr(backlog, "STAMPED_HEAD_RE", _LiesOnlyAfterInsertion())
+    with pytest.raises(
+        BacklogError, match="did not land the tier at the front of rest"
+    ):
+        Backlog(path).amend_head("A —", tier="HIGH")
+    assert path.read_text() == doc
 
 
 # ---------- close_entry ----------
@@ -524,7 +736,7 @@ def test_every_operation_holds_its_shape_on_generated_documents(seed, tmp_path):
     doc, tokens = random_doc(rng)
     path = write_doc(tmp_path, doc, name=f"B{seed}.md")
     target = f"{rng.choice(tokens)} —"
-    op = rng.choice(["append", "stamp", "close"])
+    op = rng.choice(["append", "stamp", "close", "amend"])
     note = f"  **NOTE {seed}** — generated."
     before = nonblank(doc)
     head = next(ln for ln in doc.split("\n") if target in ln and ln.startswith("- [ ]"))
@@ -540,10 +752,16 @@ def test_every_operation_holds_its_shape_on_generated_documents(seed, tmp_path):
         expect_gained = collections.Counter(
             [head.replace(" — ", " — *promoted 2026-07-28* — ", 1)]
         )
-    else:
+    elif op == "close":
         bl.close_entry(target, note)
         expect_lost = collections.Counter([head])
         expect_gained = collections.Counter([head.replace("- [ ]", "- [x]", 1), note])
+    else:
+        # Every generated head is already dated (see `entry()`), so only a tier insertion can
+        # land here without a guaranteed refusal — `--date` is exercised by its own unit tests.
+        bl.amend_head(target, tier="HIGH")
+        expect_lost = collections.Counter([head])
+        expect_gained = collections.Counter([head.replace("**", "**HIGH — ", 1)])
     bl.save()
 
     after = nonblank(path.read_text())
@@ -562,3 +780,48 @@ def test_every_operation_holds_its_shape_on_generated_documents(seed, tmp_path):
     boundary = lines.index("## Closed")
     assert not [ln for ln in lines[:boundary] if ln.startswith("- [x]")]
     assert not [ln for ln in lines[boundary:] if ln.startswith("- [ ]")]
+
+
+def test_add_entry_refuses_a_head_that_already_claims_promotion(tmp_path):
+    # A brand-new entry can never legitimately arrive already stamped: `promote` applies that
+    # stamp later, as a disposition. The date-prefix check alone does NOT catch this — it is
+    # unanchored, so it matches any head that merely STARTS with a date.
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    stamped = "- [ ] 2026-09-04 — *promoted 2026-08-01* — **HIGH — pre-stamped**"
+    with pytest.raises(InvalidNote):
+        Backlog(path).add_entry(stamped)
+
+
+def test_amend_head_can_tier_an_already_promoted_entry(tmp_path):
+    # `add` must REFUSE a stamped head; `amend_head` must ACCEPT one. Two different questions,
+    # and collapsing them into a single regex breaks amending every promoted entry — caught
+    # only by running against real data, where exactly one such entry exists.
+    promoted = [
+        "- [ ] 2026-07-25 — *promoted 2026-07-25* — **PROTOTYPE EXISTS.** body",
+        "  a continuation line",
+    ]
+    path = write_doc(tmp_path, make_doc([promoted]))
+    b = Backlog(path)
+    b.amend_head("PROTOTYPE EXISTS", tier="MEDIUM")
+    b.save()
+    text = path.read_text()
+    assert "*promoted 2026-07-25* — **MEDIUM — PROTOTYPE EXISTS.**" in text
+    assert text.count("MEDIUM") == 1
+
+
+def test_amend_head_sees_the_date_on_an_already_promoted_head(tmp_path):
+    # The mirror of the test above, and it pins the OTHER half of the same split. If the
+    # "already carries a date" guard used the strict new-entry regex, a promoted head would read
+    # as UNDATED — the lookahead rejects it — and `--date` would insert a SECOND date ahead of
+    # the first. Every postcondition would still pass, because the result does begin with a
+    # valid date prefix, so this refusal is the only thing standing between that input and a
+    # corrupted head.
+    promoted = [
+        "- [ ] 2026-07-25 — *promoted 2026-07-25* — **PROTOTYPE EXISTS.** body",
+        "  a continuation line",
+    ]
+    path = write_doc(tmp_path, make_doc([promoted]))
+    doc = path.read_text()
+    with pytest.raises(BacklogError, match="already carries a date"):
+        Backlog(path).amend_head("PROTOTYPE EXISTS", date="2026-09-04")
+    assert path.read_text() == doc
