@@ -360,6 +360,10 @@ WRAPPERS = {
 # `_cd_command_position`, which classifies the cwd. The two read this set for DIFFERENT purposes,
 # and a membership change must be justified against BOTH before it lands.
 #
+# A THIRD reading lives in `_walk_context`'s argument-segment scan, which must NOT treat this set as
+# ending an argument list: behind an argument word none of these is a keyword to bash, so the scan
+# runs on to the next operator and only resumes at the nested `git`. See the comment at that scan.
+#
 # `_cd_command_position` returns None — UNRESOLVABLE — for a reserved word, and returning True
 # there would be wrong. Measured: reading a `cd` right after `if`/`while`/`!` as TRACKED makes
 # three EXISTING blocks disappear, because cwd tracking follows it into a directory with no
@@ -1644,11 +1648,36 @@ def _walk_context(
             ):
                 seg.append(tokens[k])
                 k += 1
+            # The stop at a nested command-position `git` is what cut argument lists short. Inside
+            # an argument list that `git` is reached through a reserved word -- walking back from a
+            # `git` otherwise meets an argument word first, and bash recognises a reserved word only
+            # in command position, so behind an argument it is an ordinary word and the rest of the
+            # line is still THIS command's argv -- or, rarely, through an env-assignment token that
+            # itself ends in `/git` (`X=/git`), which a backward walk steps over as an assignment and
+            # so reaches command position with no reserved word at all. Stopping there once cut the
+            # list short -- `git <push> origin main -o then HEAD:refs/heads/x/git dev` recorded
+            # `['origin', 'main', '-o', 'then']` and the publication guard never saw `dev`.
+            #
+            # So the argument list runs on to the next operator, while the walk still RESUMES at the
+            # nested `git` and records it. That phantom is deliberately kept: dropping it would be
+            # exact only while `is_op` never misses a real operator, and a missed operator would turn
+            # a dropped phantom into a real push hidden in another command's argv. Do not "fix" the
+            # phantom by recognising reserved words only in command position either -- that reading
+            # was measured to stop detecting `for NAME do`, `function NAME {` and `coproc NAME {`.
+            # The rule is recursive: each phantom's own list grows the same way.
+            resume = k
+            while k < n and not is_op(tokens[k]):
+                seg.append(tokens[k])
+                k += 1
             # THE SPAN RULE. Descend into every token this invocation consumes — its global-option
             # run AND its argument segment — not just the token in command position.
             # `git commit -m "$(git push origin dev)"` hides the push in the argument segment, and
-            # the walk jumps `i = k` straight past it.
-            _descend(tokens[i:k], cwd_state)
+            # the walk once jumped straight past it. The descent stops at `resume`, not at the end of
+            # the grown list: every token past `resume` belongs to the nested invocation the walk
+            # resumes at, and is descended once, in order, when the walk resumes there -- by that
+            # invocation's own walk, or by the main loop's per-token fallthrough -- so nested
+            # contexts keep their order.
+            _descend(tokens[i:resume], cwd_state)
             results.append(
                 Invocation(
                     cwd_state,
@@ -1658,7 +1687,7 @@ def _walk_context(
                     InvocationTokens(env_pre, tokens[i + 1 : j]),
                 )
             )
-            i = k
+            i = resume
             continue
 
         _descend([tok], cwd_state)

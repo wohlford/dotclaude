@@ -1335,3 +1335,173 @@ def test_only_dash_C_has_an_attached_short_form_because_only_dash_C_accepts_one(
     assert git_command.classify_global_opt("-c") == "value"
     assert git_command.classify_global_opt("-C/some/path") == "flag"
     assert git_command.classify_global_opt("-C") == "value"
+
+
+# ---------- a reserved word in ARGUMENT position ----------
+#
+# Bash recognises a reserved word only in command position. After an argument it is an ordinary
+# word, so everything behind it is still the same command's argv. The argument-segment scan once
+# stopped at any `git` that `_git_starts_command` placed after a reserved word, which cut the list
+# short: `git <push> origin main -o then HEAD:refs/heads/x/git dev` recorded only
+# `['origin', 'main', '-o', 'then']`, and the publication guard never saw `dev`. The property below
+# is CAPABILITY PRESERVATION: every recorded invocation equals the one recorded for its NEUTRAL
+# spelling -- the same text with every reserved word replaced by an ordinary word -- and each nested
+# `git` is still recorded on its own, grown by the same rule. A verdict that moves therefore lands on
+# one the neutral spelling already gets; nobody gains a command they could not already type.
+
+_ARG_VERB = "pu" + "sh"
+_NEUTRAL = "ZZ"
+# What may sit between the reserved word and the nested `git`: nothing, one of each kind of wrapper
+# spelling `_steps_as_wrapper` steps over, `exec` (a git-only wrapper), and an env assignment. (A
+# second reserved word is NOT a shape here: it would open a nested invocation in the neutral
+# spelling too.)
+_ARG_BETWEEN = ("", "eval ", "builtin ", "eval -- ", "sudo ", "exec ", "FOO=1 ")
+
+
+def _invs(command: str) -> list:
+    return git_command.iter_git_invocations_detailed(command, "/base")
+
+
+@pytest.mark.parametrize("between", _ARG_BETWEEN)
+@pytest.mark.parametrize("word", sorted(git_command.RESERVED_WORDS))
+def test_a_reserved_word_in_argument_position_does_not_cut_the_argument_list(
+    word, between
+):
+    command = (
+        f"git {_ARG_VERB} origin main -o {word} {between}HEAD:refs/heads/x/git dev"
+    )
+    neutral = (
+        f"git {_ARG_VERB} origin main -o {_NEUTRAL} {between}HEAD:refs/heads/x/git dev"
+    )
+    got, want = _invs(command), _invs(neutral)
+    # CONTROL: the neutral spelling really is neutral -- one invocation, the whole argv.
+    assert len(want) == 1, want
+    outer = got[0]
+    assert outer.subcommand == _ARG_VERB
+    renamed = [_NEUTRAL if t == word else t for t in outer.arg_tokens]
+    assert outer._replace(arg_tokens=renamed) == want[0]
+    assert outer.arg_tokens[-1] == "dev"
+    # The nested `git` (here the refspec ending in /git) is still recorded, as before.
+    assert [inv.subcommand for inv in got[1:]] == ["dev"]
+
+
+def _neutral(text: str) -> str:
+    return " ".join(
+        _NEUTRAL if t in git_command.RESERVED_WORDS else t for t in text.split(" ")
+    )
+
+
+def _renamed(inv, word: str):
+    # The cutting word can sit in the SUBCOMMAND slot as well as in the argument list.
+    def swap(t):
+        return _NEUTRAL if t == word else t
+
+    return inv._replace(
+        subcommand=swap(inv.subcommand), arg_tokens=[swap(t) for t in inv.arg_tokens]
+    )
+
+
+# Each slot is (prefix up to the cutting word, text after the word). The prefix never contains a
+# reserved word, so `_neutral` touches only the words this test inserts.
+_ARG_SLOTS = {
+    "argument": (f"git {_ARG_VERB} origin main", "git log x"),
+    "option_value": (f"git {_ARG_VERB} origin main -o", "HEAD:refs/heads/x/git dev"),
+    "subcommand": ("git", "git status x"),
+}
+
+
+@pytest.mark.parametrize("tail", [False, True])
+@pytest.mark.parametrize("between", _ARG_BETWEEN)
+@pytest.mark.parametrize("slot", sorted(_ARG_SLOTS))
+@pytest.mark.parametrize("word", sorted(git_command.RESERVED_WORDS))
+def test_every_record_reads_like_its_neutral_spelling(word, slot, between, tail):
+    prefix, after = _ARG_SLOTS[slot]
+    # Each nested command starts at `between` -- its env/wrapper tokens belong to it, not to the
+    # command before it -- and `tail` adds a SECOND cut inside the first nested command's argv.
+    nested = [f"{between}{after}"] + ([f"{between}git status dev"] if tail else [])
+    command = f"{prefix} {word} " + f" {word} ".join(nested)
+    got = _invs(command)
+    whole = _invs(_neutral(command))
+    # CONTROL: the neutral spelling is one invocation carrying the whole argv.
+    assert len(whole) == 1, whole
+    assert len(got) == 1 + len(nested), got
+    assert _renamed(got[0], word) == whole[0]
+    for index, _text in enumerate(nested, start=1):
+        rest = f" {word} ".join(nested[index - 1 :])
+        alone = _invs(_neutral(rest))
+        assert len(alone) == 1, alone
+        assert _renamed(got[index], word) == alone[0]
+    # Nothing is cut: every record's words run to the last token of the line. (A nested record can
+    # consist of its subcommand alone -- `… HEAD:refs/heads/x/git dev` records subcommand `dev`.)
+    last = command.split(" ")[-1]
+    assert all(([inv.subcommand] + inv.arg_tokens)[-1] == last for inv in got), got
+
+
+def test_a_reserved_word_in_the_subcommand_slot_does_not_cut_the_list():
+    got = _invs("git then git status dev")
+    assert [(inv.subcommand, inv.arg_tokens) for inv in got] == [
+        ("then", ["git", "status", "dev"]),
+        ("status", ["dev"]),
+    ]
+
+
+def test_an_operator_still_ends_the_argument_list():
+    got = _invs(f"git {_ARG_VERB} origin main && git log dev")
+    assert [(inv.subcommand, inv.arg_tokens) for inv in got] == [
+        (_ARG_VERB, ["origin", "main"]),
+        ("log", ["dev"]),
+    ]
+
+
+def test_a_phantom_inside_an_argument_list_is_still_recorded():
+    # Bash pushes nothing here: `then git <push> origin dev` are arguments of `git log`. The nested
+    # invocation is kept on purpose -- dropping it is exact only while `is_op` never misses a real
+    # operator, and a missed operator would turn a dropped phantom into a hidden real push.
+    got = _invs(f"git log x then git {_ARG_VERB} origin dev")
+    assert [(inv.subcommand, inv.arg_tokens) for inv in got] == [
+        ("log", ["x", "then", "git", _ARG_VERB, "origin", "dev"]),
+        (_ARG_VERB, ["origin", "dev"]),
+    ]
+
+
+def test_chained_phantoms_each_see_the_rest_of_the_argv():
+    got = _invs(f"git {_ARG_VERB} origin then git log then git status dev")
+    assert [(inv.subcommand, inv.arg_tokens) for inv in got] == [
+        (_ARG_VERB, ["origin", "then", "git", "log", "then", "git", "status", "dev"]),
+        ("log", ["then", "git", "status", "dev"]),
+        ("status", ["dev"]),
+    ]
+
+
+def test_the_grown_tail_is_descended_after_the_outer_record():
+    # The descent stops at `resume`, not at the end of the grown argument segment: every token past
+    # `resume` belongs to the nested invocation the walk resumes at, because nested contexts in the
+    # grown tail belong to that nested invocation, not to the outer one. They are therefore descended
+    # only once that nested invocation's own turn comes, so its record comes AFTER the outer one.
+    placeholder = git_command.PLACEHOLDER_PREFIX + "0" + git_command.PLACEHOLDER_SUFFIX
+    got = _invs(f'git log x then git log "$(git {_ARG_VERB} origin dev)" y')
+    assert [(inv.subcommand, inv.arg_tokens) for inv in got] == [
+        ("log", ["x", "then", "git", "log", placeholder, "y"]),
+        (_ARG_VERB, ["origin", "dev"]),
+        ("log", [placeholder, "y"]),
+    ]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"for x do git {_ARG_VERB} origin dev; done",
+        f"function f {{ git {_ARG_VERB} origin dev; }}; f",
+        f"coproc NAME {{ git {_ARG_VERB} origin dev; }}",
+        f"echo if git {_ARG_VERB} origin dev",
+    ],
+)
+def test_a_reserved_word_after_a_non_git_word_still_opens_a_command(command):
+    # These carry no outer git invocation, so the segment scan never reaches them; each must still
+    # record the push. A reading that honours reserved words ONLY in command position was measured
+    # to stop detecting the first three, each a push bash can run (`for x do` iterates the positional
+    # parameters, so it runs inside a script or function).
+    got = _invs(command)
+    assert [(inv.subcommand, inv.arg_tokens) for inv in got] == [
+        (_ARG_VERB, ["origin", "dev"])
+    ]

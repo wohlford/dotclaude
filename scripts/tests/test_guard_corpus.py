@@ -1342,6 +1342,42 @@ def _build_rows(
             "repo -- the same shape as eval_cwd_cd_into_adopted_from_other, one construct over",
         ),
         Row(
+            "reserved_arg_option_value_hides_dev_refspec",
+            _p("origin main -o then main:refs/heads/x/git dev"),
+            MUST_BLOCK,
+            "a LIVE fail-open on dev: `-o` swallowed `then`, the /git refspec read as a new git "
+            "command, and the argument list was cut before `dev` -- no unusual local refs needed. "
+            "The source is `main`, not HEAD: this fixture is on dev, so HEAD would block first and "
+            "the row would not depend on `dev` being judged. The frozen baseline read the whole "
+            "argv and blocked it; the reserved-word boundary is what shrank it",
+        ),
+        Row(
+            "reserved_arg_for_name_do_push",
+            f"for x do {P}; done",
+            MUST_BLOCK,
+            "bash runs this push whenever positional parameters exist (a script or function); a "
+            "reading that honours reserved words only in command position stops detecting it",
+        ),
+        Row(
+            "reserved_arg_function_brace_push",
+            f"function f {{ {P}; }}; f",
+            MUST_BLOCK,
+            "bash runs this push via f; `function NAME {` is not detected under that reading either",
+        ),
+        Row(
+            "reserved_arg_coproc_name_brace_push",
+            f"coproc NAME {{ {P}; }}",
+            MUST_BLOCK,
+            "bash runs this push in a coprocess; `coproc NAME {` is not detected under it either",
+        ),
+        Row(
+            "reserved_arg_phantom_push_kept",
+            f"git log x then {P}",
+            MUST_BLOCK,
+            "a DECIDED over-block: bash pushes nothing (these are git log's arguments), but the "
+            "nested invocation is kept so a real operator the tokenizer misses cannot hide a push",
+        ),
+        Row(
             "eval_allow_read",
             "eval git status",
             MUST_ALLOW,
@@ -2898,6 +2934,24 @@ def test_required_reserved_cd_axis_labels_are_present(rows: list[Row]) -> None:
         "These pin a fail-open that was live before fix/reserved-word-cd (a cd after a reserved "
         "word was ignored, so the guard went dormant while bash was back in the adopted repo); a "
         "row removed here is a hole no other assertion in this file can see."
+    )
+
+
+REQUIRED_RESERVED_ARG_AXIS_LABELS = frozenset(
+    {
+        "reserved_arg_option_value_hides_dev_refspec",
+        "reserved_arg_for_name_do_push",
+        "reserved_arg_function_brace_push",
+        "reserved_arg_coproc_name_brace_push",
+        "reserved_arg_phantom_push_kept",
+    }
+)
+
+
+def test_required_reserved_arg_axis_labels_are_present(rows: list[Row]) -> None:
+    missing = REQUIRED_RESERVED_ARG_AXIS_LABELS - {r.label for r in rows}
+    assert not missing, (
+        f"reserved-word argument-position rows removed: {sorted(missing)}"
     )
 
 

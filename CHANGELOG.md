@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.108.14 — 2026-09-14
+- fix(git_command): stop a reserved word cutting a git argument list
+
 ## v0.108.13 — 2026-09-14
 - docs(CLAUDE.md): add the staged-change text hazard
 

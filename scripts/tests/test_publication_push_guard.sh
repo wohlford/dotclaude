@@ -1348,5 +1348,40 @@ build_repo 1
 assert_blocks "git config core.hooksPath /dev/null" "$REPO" \
   "still refuses a local denied write in the adopted repo"
 
+# ---------- a reserved word in ARGUMENT position ----------
+# Bash recognises a reserved word only in command position, so after an argument `then`/`do`/... is
+# an ordinary word and everything behind it is still the push's argv. The tokenizer once cut the
+# argument list at a `git` behind such a word; an option value swallowing the word and a refspec
+# ending in /git were enough, with no unusual local refs. Measured ALLOWED (rc 0) before the fix.
+build_repo 1
+push_run "$REPO" "git ${VERB} origin main" 0 "control: a safe refspec is allowed"
+push_run "$REPO" "git ${VERB} origin main -o then HEAD:refs/heads/x/git dev" 2 \
+  "blocked: -o swallows 'then'; dev behind a /git refspec is still judged"
+push_run "$REPO" "git ${VERB} origin main -o ZZ HEAD:refs/heads/x/git dev" 2 \
+  "control: the neutral-word spelling of the row above blocks"
+push_run "$REPO" "for x do git ${VERB} origin dev; done" 2 "blocked: for NAME do opens a command (runs with positional params)"
+push_run "$REPO" "function f { git ${VERB} origin dev; }; f" 2 "blocked: function NAME { opens a command"
+push_run "$REPO" "coproc NAME { git ${VERB} origin dev; }" 2 "blocked: coproc NAME { opens a command"
+push_run "$REPO" "git log x then git ${VERB} origin dev" 2 \
+  "blocked: a phantom push inside another command's argv is kept (decided over-block)"
+
+# DECIDED TRADE, pinned beside its neutral spelling. `git config --unset then git config x.txt` was
+# once cut to `--unset then`, showing no section.key, and blocked as unjudgeable. Its full argv shows a
+# dotted token, exactly as the neutral spelling always did; git rejects that many positionals anyway.
+push_run "$REPO" "git config --unset core.hooksPath" 2 "control: unsetting a denied key blocks"
+push_run "$REPO" "git config --unset ZZ git config x.txt" 0 "trade control: neutral spelling -> allowed"
+push_run "$REPO" "git config --unset then git config x.txt" 0 "trade: full argv judged like its neutral spelling -> allowed"
+
+# DECIDED TRADE, pinned beside its neutral spelling. On `dev` with a local branch named `git`,
+# `git <push> then git` was once read as a bare push (argv cut to `then`) and blocked as pushing the
+# current branch. Bash sends refspec `git` to remote `then`; the full argv now gets exactly the
+# verdict its neutral spelling always got.
+build_repo 1
+gi "$REPO" branch -q git >/dev/null 2>&1
+gi "$REPO" checkout -q dev >/dev/null 2>&1
+push_run "$REPO" "git ${VERB} origin dev" 2 "control: a dev push from dev blocks"
+push_run "$REPO" "git ${VERB} ZZ git" 0 "trade control: neutral spelling, explicit refspec git -> allowed"
+push_run "$REPO" "git ${VERB} then git" 0 "trade: full argv judged like its neutral spelling -> allowed"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
