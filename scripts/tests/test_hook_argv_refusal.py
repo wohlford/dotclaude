@@ -39,6 +39,9 @@ REPO = Path(__file__).resolve().parent.parent.parent
 SETTINGS = REPO / "settings.json"
 PREFIX = "$HOME/.claude/scripts/"
 
+sys.path.insert(0, str(REPO / "scripts" / "lib"))
+import settings_hooks  # noqa: E402
+
 # A payload naming a path no hook acts on, so every hook exits 0 through its own cheap guard
 # rather than doing real work. Several of these hooks run entire test suites on a payload they
 # care about; this keeps the preserve rows fast without weakening them.
@@ -88,15 +91,22 @@ TRANSITIONAL = frozenset({"git-timing-guard.sh"})
 
 
 def registered_hooks():
-    """Basenames of every hook `settings.json` registers under the scripts directory."""
+    """Basenames of every hook `settings.json` registers under the scripts directory.
+
+    A filter over the shared walker in scripts/lib/settings_hooks.py — the raising behaviour on
+    malformed shape is now inherited from there rather than re-derived here. This used to be its
+    own silent-on-malformed-shape parse (a second spelling of the walk, alongside
+    scripts/settings-hooks-check.py's `_triples`); it no longer skips a group or entry it cannot
+    read, it raises, same as `_triples` does.
+    """
     doc = json.loads(SETTINGS.read_text())
     names = set()
-    for groups in doc["hooks"].values():
-        for group in groups:
-            for entry in group.get("hooks", []):
-                command = entry["command"]
-                if command.startswith(PREFIX):
-                    names.add(command[len(PREFIX) :].strip())
+    for _event, _matcher, command in settings_hooks.walk_hook_triples(
+        doc, str(SETTINGS)
+    ):
+        base = settings_hooks.hook_basename(command, PREFIX)
+        if base:
+            names.add(base)
     return names
 
 
