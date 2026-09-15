@@ -600,6 +600,9 @@ left legal.
   verdict it replaced, which the docs at least told the reader to relay as a coverage gap.
   **Enumerate the sentinel's preimage before promoting any of it**, and take the discriminator from
   the source the helper consulted — re-deriving it at the call site copies a rule that then drifts.
+
+#### Making the check handle more input carries an unpriced cost
+
 - **Widening a matcher to fix an under-report can make it NON-TERMINATING — and the check you would
   run next passes.** Not the narrowing hazard: nothing stops being matched here, and every answer it
   gives is still right; it just never finishes giving one. An alternation whose branches can split
@@ -610,6 +613,20 @@ left legal.
   matches* passes flawlessly, because the match SET only grew. Nor is the repair to narrow back — an
   unambiguous form that was wider still ran in 0.0000s. **Ask what a widened alternation costs in
   PARSES, not only in what it now matches.**
+
+- **A repair that makes malformed input PARSE by inserting characters relocates structural
+  boundaries, and relocating one hides whatever sat inside it.** Not the narrowing hazard above:
+  nothing stops being matched, and the change WIDENS what parses — the content simply moves out of
+  the span the scan walks. Measured three times on one change, three insertion strategies, one
+  failure mode: escaping the unterminated opener (the escape becomes the leading token and swallows
+  the one behind it, even across a space); closing that opener at the enclosing unit's edge (it
+  pairs with a closer OUTSIDE that unit, so the append orphans its partner); and closing against
+  the whole input while requiring the result to parse — **parseable is not unchanged**, and the
+  repaired text parses DIFFERENTLY. Each was found by adversarial measurement, none by reasoning,
+  and two passed a fully green sweep first. Note what does NOT rescue you: the narrowing bullet's
+  remedy is the right one, but a reader repairing INPUT reads "ask what stops being matched" as
+  inapplicable, since the matcher is untouched. **Ask what the un-repaired input EXPOSED that the
+  repaired one no longer does**, never whether it parses now.
 
 #### It answered its own question, not the one you are relying on
 

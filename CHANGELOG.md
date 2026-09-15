@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.105.5 — 2026-09-04
+- docs(CLAUDE.md): split the input repairs from the logic repairs
+
 ## v0.105.4 — 2026-09-04
 - test(git_command): pin the boundary-relocation fail-open class
 
