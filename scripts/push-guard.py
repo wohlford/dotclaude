@@ -43,12 +43,17 @@ any depth, and including one inside another git command's own argument span
 inside each context, matching the shell.
 
 CONCEDED RESIDUALS (deliberate; the same class `git_command.py`'s own docstring concedes): `push`
-hidden inside a string another program shell-executes (`bash -c 'git push'`, `eval`, `/bin/sh -c`,
-pipe-into-shell, a herestring) is invisible to the tokenizer, and a wrapper WITH its own arguments
-(`sudo -u deploy git push`, `timeout 60 git push`) is not stepped over — `starts_command` only
-steps over a *bare* wrapper. Backticks were listed here until nested contexts were covered; they
-are no longer a residual. Re-catching the wrapper class would reintroduce the false-positive class
-this detection exists to kill, and the class is open-ended rather than closed.
+hidden inside a string another program shell-executes (`bash -c 'git push'`, `/bin/sh -c`,
+pipe-into-shell, a herestring) is invisible to the tokenizer, and so is a QUOTED or otherwise
+single-token `eval` argument (`eval "git push origin main"`) — shlex collapses the whole phrase
+into one string token, so there is no standalone `git` token in THIS command's own stream to find.
+A BARE `eval git push` is no longer a residual: `eval` is a member of `git_command.py`'s `WRAPPERS`
+set (fix/eval-wrapper-bypass) and is stepped over like any other wrapper, so the invocation behind
+it is found and blocked. A wrapper WITH its own arguments (`sudo -u deploy git push`,
+`timeout 60 git push`) is also not stepped over — `starts_command` only steps over a *bare*
+wrapper. Backticks were listed here until nested contexts were covered; they are no longer a
+residual. Re-catching the remaining classes would reintroduce the false-positive class this
+detection exists to kill, and each is open-ended rather than closed.
 
 AMBIGUITY POSTURE — split, deliberately. A tokenizer `ValueError` on a command that MENTIONS git
 now BLOCKS (exit 2) rather than being swallowed: "I could not parse it" must not silently become

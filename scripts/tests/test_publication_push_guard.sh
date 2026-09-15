@@ -238,6 +238,12 @@ build_elsewhere
 push_run "$ELSEWHERE" "git -C $REPO push origin dev" 2 "blocked: git -C <adopted> push origin dev, from non-adopted cwd"
 push_run "$ELSEWHERE" "cd $REPO && git push origin dev" 2 "blocked: cd <adopted> && git push origin dev, from non-adopted cwd"
 
+# the eval family (fix/eval-wrapper-bypass): a cd reached through any wrapper leaves the cwd unresolvable
+push_run "$ELSEWHERE" "eval cd $REPO && git push origin dev" 2 "blocked: eval cd <adopted> from non-adopted cwd -- the cwd is unresolvable"
+push_run "$REPO" "nohup cd $ELSEWHERE ; git push origin dev" 2 "blocked: nohup cd runs in a child; the walk no longer follows it"
+push_run "$REPO" "eval cd $ELSEWHERE && git push origin main" 2 "blocked: unresolvable cwd refuses even a safe refspec (decided: 0 of 17,929 real cds go through a wrapper)"
+push_run "$REPO" "eval cd $ELSEWHERE && git status" 0 "allowed: an unresolvable cwd never blocks a read"
+
 # ================= BLOCKED: --git-dir / GIT_DIR= forces block regardless of an otherwise-safe target =================
 build_repo 1
 build_elsewhere

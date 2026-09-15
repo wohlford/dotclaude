@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.108.7 — 2026-09-11
+- fix(git_command): see git behind eval and fail closed on wrapped cd
+
 ## v0.108.6 — 2026-09-11
 - test(publication-push-guard): pin the env axis by mutation
 

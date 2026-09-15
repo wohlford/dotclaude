@@ -397,12 +397,29 @@ BYPASSES = [
     # The dropped-context backstop: strip_redirects deletes a redirect operator AND its target, so
     # this context never reaches the token loop -- but bash still executes it.
     ('git status > "$(git push origin dev)"', "context as a redirect target"),
+    # The UNQUOTED eval family and every wrapper's `--` (fix/eval-wrapper-bypass). Each ran git
+    # under a shim on bash 3.2.57 and 5.3.15 (`time --` under 5.3) and each yielded ZERO invocations
+    # before the fix. The QUOTED eval forms stay in CONCEDED_RESIDUALS below.
+    ("eval git push origin dev", "bare eval"),
+    ("builtin eval git push origin dev", "builtin eval"),
+    ("eval -- git push origin dev", "eval --"),
+    ("builtin -- eval -- git push origin dev", "builtin -- eval --"),
+    ("eval eval git push origin dev", "nested eval"),
+    ("command eval git push origin dev", "command eval"),
+    ("eval command git push origin dev", "eval command"),
+    ("command -- git push origin dev", "command --"),
+    ("exec -- git push origin dev", "exec --"),
+    ("sudo -- git push origin dev", "sudo --"),
+    ("env -- git push origin dev", "env --"),
+    ("time -- git push origin dev", "time --"),
 ]
 
 # CONCEDED RESIDUALS (spec 7b, operator-approved 2026-07-25). These are live fail-opens and
-# STAY that way: the exec-wrapper class is out of scope. Asserted here so current behavior is
-# pinned -- a future change that closes one shows up as a deliberate improvement, and the
-# concession can never be mistaken for an oversight. DO NOT move these into BYPASSES.
+# STAY that way: the NESTED-COMMAND-STRING class is out of scope -- for `eval`, its RE-PARSE (a
+# quoted word carrying whitespace or syntax, or an empty word); the bare `eval git …` form IS
+# followed since fix/eval-wrapper-bypass. Asserted here so current behavior is pinned -- a future
+# change that closes one shows up as a deliberate improvement, and the concession can never be
+# mistaken for an oversight. DO NOT move these into BYPASSES.
 CONCEDED_RESIDUALS = [
     ('sh -c "git push origin dev"', "sh -c"),
     ("bash -c 'git push origin dev'", "bash -c"),
@@ -411,6 +428,8 @@ CONCEDED_RESIDUALS = [
     ("/bin/sh -c 'git push origin dev'", "path-qualified shell"),
     ("echo 'git push origin dev' | sh", "pipe-into-shell"),
     ('sh <<< "git push origin dev"', "herestring"),
+    ("eval '' git push origin dev", "eval: an empty word, which eval's re-join drops"),
+    ("eval ':;' git push origin dev", "eval: a quoted word carrying syntax"),
 ]
 
 
@@ -593,6 +612,121 @@ def test_cd_in_the_outer_context_still_applies():
     assert push[0] == "/elsewhere"
 
 
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "eval cd",
+        "builtin cd",
+        "eval -- cd",
+        "command -- cd",
+        "command cd",
+        "time cd",
+        "time eval cd",
+        "nohup cd",
+        "env cd",
+        "sudo cd",
+        "env eval cd",
+        "nice eval cd",
+        "nohup builtin cd",
+        "builtin time cd",
+        "time time cd",
+        "FOO=1 time cd",
+        "env -- cd",
+        "time -- cd",
+        "eval pushd",
+    ],
+)
+def test_a_cd_behind_any_wrapper_makes_the_cwd_unresolvable(prefix):
+    """FAIL-CLOSED by design. Whether the shell moves depends on the whole chain -- `eval cd` moves
+    it, `nohup cd` and `env eval cd` do not, `time cd` moves only where `time` is still the keyword
+    (`builtin time cd` runs /usr/bin/time in a child). Two review rounds each found a fail-open in
+    a set that tried to enumerate the movers; an unresolvable cwd blocks every guarded operation
+    and no read, and 0 of 17,929 real cds went through a wrapper."""
+    result = git_command.iter_git_invocations_with_cwd(
+        f"{prefix} /elsewhere ; git push origin dev", "/repo"
+    )
+    push = next(r for r in result if r[2] == "push")
+    assert push[0] is None, (prefix, push)
+
+
+@pytest.mark.parametrize("prefix", ["cd", "FOO=1 cd", "A=1 B=2 cd", "FOO=1 pushd"])
+def test_a_cd_reached_over_env_assignments_only_is_still_exact(prefix):
+    """The exactness the fail-closed rule must NOT cost: a prefix assignment leaves the cd running
+    in this shell (measured), so the target is tracked, not made unresolvable."""
+    result = git_command.iter_git_invocations_with_cwd(
+        f"{prefix} /elsewhere ; git push origin dev", "/repo"
+    )
+    push = next(r for r in result if r[2] == "push")
+    assert push[0] == "/elsewhere", prefix
+
+
+@pytest.mark.parametrize("prefix", ["exec cd", "exec -- cd", "echo cd", "echo eval cd"])
+def test_a_cd_that_is_not_a_directory_change_leaves_the_cwd_alone(prefix):
+    """`exec cd` never continues -- the non-interactive shell exits, so nothing after it runs
+    (measured) -- and `echo cd` is an argument. Neither changes the cwd."""
+    result = git_command.iter_git_invocations_with_cwd(
+        f"{prefix} /elsewhere ; git push origin dev", "/repo"
+    )
+    push = next(r for r in result if r[2] == "push")
+    assert push[0] == "/repo", prefix
+
+
+@pytest.mark.parametrize("wrapper", ["builtin", "eval", "nohup", "command"])
+def test_a_popd_behind_any_wrapper_makes_the_cwd_unresolvable(wrapper):
+    """`builtin popd`/`eval popd` really pop (bash is back where it started) and were never SEEN
+    before this change -- `pushd OTHER ; builtin popd ; <push dev>` was judged from OTHER, a
+    fail-open. `nohup`/`command` were already seen; all four now agree."""
+    result = git_command.iter_git_invocations_with_cwd(
+        f"pushd /a ; {wrapper} popd ; git push origin dev", "/repo"
+    )
+    push = next(r for r in result if r[2] == "push")
+    assert push[0] is None, wrapper
+
+
+@pytest.mark.parametrize(
+    ("command", "env"),
+    [
+        ("GIT_CONFIG_COUNT=1 eval -- git status", ["GIT_CONFIG_COUNT=1"]),
+        ("eval GIT_CONFIG_COUNT=1 git status", ["GIT_CONFIG_COUNT=1"]),
+        ("HOME=/x builtin eval git status", ["HOME=/x"]),
+        ("GIT_CONFIG_COUNT=1 exec -- git status", ["GIT_CONFIG_COUNT=1"]),
+    ],
+)
+def test_env_prefix_is_collected_across_eval_and_its_dashdash(command, env):
+    """THE pin for `_env_prefix` using the shared predicate: give it its own spelling back and the
+    `--` stops that walk before the assignment, so `tokens.env` goes empty while the invocation is
+    still found. No guard-level row can pin this -- the export arm refuses a prefix in front of
+    eval independently (measured)."""
+    invs = git_command.iter_git_invocations_detailed(command, "/repo")
+    assert len(invs) == 1, f"the walk must find exactly one invocation: {invs!r}"
+    assert invs[0].subcommand == "status"
+    assert invs[0].tokens.env == env
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo eval git push origin dev",
+        "printf %s builtin eval git push origin dev",
+        "git log -- eval -- git push origin dev",
+        "eval -- -- git push origin dev",
+        "for w in eval git push; do :; done",
+        # Pins _steps_as_wrapper's `j > 0` guard on the `--`-owner lookup. Without it, a leading
+        # `--` at index 0 (`tokens[j]` with `j == 0`) would fall through to `owner = tokens[j - 1]`
+        # with `j - 1 == -1`; Python's negative indexing then makes the LAST token of the whole
+        # command -- here the trailing `eval` after `;` -- the `--`'s owner, so `_steps_as_wrapper`
+        # wrongly reports the leading `--` as wrapper-stepped and the walk manufactures a phantom
+        # push out of `-- git push origin dev`. `j > 0` refuses the lookup when there is no real
+        # preceding token, so this stays a bare `--` and `git` is its argument, not a command.
+        "-- git push origin dev ; eval",
+    ],
+)
+def test_eval_in_argument_position_manufactures_no_push(command):
+    """The phantom-invocation guard. `eval -- -- git` runs a command named `--` (measured): one
+    `--` per wrapper, so a `--` owned by another `--` is never stepped."""
+    assert "push" not in _subs(command), command
+
+
 def test_popd_makes_the_cwd_unresolvable():
     """Ported from publication-push-guard, whose own cwd walk Task 4 deletes.
 
@@ -743,9 +877,10 @@ def test_both_primitives_agree_on_the_same_string():
         assert walk_ok == streams_ok, command
 
 
-# REMOVED with Task 2: there is no eval modelling, so there is no eval cwd behavior to assert.
-# `eval "cd /elsewhere" && git push origin dev` is a conceded residual (spec 7b) -- the push
-# inside it is not seen at all, which is the concession, not a bug to test around.
+# The QUOTED form, `eval "cd /elsewhere" && git push origin dev`, is a conceded residual (spec 7b):
+# the cd inside the string is not seen at all. The BARE `eval cd /elsewhere` IS seen since
+# fix/eval-wrapper-bypass, and makes the cwd unresolvable -- see
+# test_a_cd_behind_any_wrapper_makes_the_cwd_unresolvable.
 
 
 def test_iter_git_invocations_sees_substitution_nested_push():

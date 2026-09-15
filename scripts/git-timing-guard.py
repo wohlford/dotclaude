@@ -46,8 +46,8 @@ segment). That is a decided behaviour change, not a silent side effect:
 
 CONCEDED RESIDUALS, matching `push-guard.py`'s documented posture for the identical reason —
 re-catching them reintroduces the false-positive class this rewrite exists to kill: a wrapper
-carrying its OWN arguments (`sudo -u deploy git push`, `timeout 60 git push`) — measured: all 12
-literal `WRAPPERS` names, invoked BARE, still block; only an argumented invocation drops — a
+carrying its OWN arguments (`sudo -u deploy git push`, `timeout 60 git push`) — measured: every
+literal `WRAPPERS` name, invoked BARE, still blocks; only an argumented invocation drops — a
 wrapper outside the
 closed `WRAPPERS` set (`flock git push`), a path-qualified wrapper spelling (`/usr/bin/sudo git
 push`), and a push hidden inside a single shlex token — a nested-shell string (`bash -c`/`eval`/pipe-

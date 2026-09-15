@@ -1721,9 +1721,10 @@ _SET_WORD = "set"
 # too. It is not the quoted `eval "git push …"` form the module documents as a residual: that one
 # is opaque to the tokenizer, this one is fully visible and was simply never considered.
 #
-# NOT `gitcmd.WRAPPERS`, deliberately. That set answers "where does a git invocation start" and
-# so carries `nohup`/`nice`/`sudo`/`env`, none of which preserve export, while OMITTING `builtin`
-# and `eval`, which do. Reusing it would be wrong in both directions at once.
+# NOT `gitcmd.WRAPPERS`, deliberately. That set answers "where does a git invocation start", and
+# now carries `builtin` and `eval` too (fix/eval-wrapper-bypass) -- it no longer leaves either one
+# out. But it still carries `nohup`/`nice`/`sudo`/`env`, none of which preserve export, so it
+# remains the wrong set to reuse here.
 _SHELL_BUILTIN_WRAPPERS = frozenset({"command", "builtin", "time", "eval"})
 
 # `_SEGMENT_SEPARATORS` USED TO LIVE HERE: a literal frozenset of seven operators, with a comment
@@ -2003,9 +2004,11 @@ def _exported_injection_reason(
                 # process and `export` is not a binary.
                 #
                 # This is why the set is enumerated here rather than taken from
-                # `gitcmd.WRAPPERS`: that set is for finding a git invocation, so it carries
-                # `nohup`/`nice`/`sudo`/`env` (which do not preserve export) and OMITS `builtin` and `eval`
-                # (which does). Reusing it would be wrong in both directions.
+                # `gitcmd.WRAPPERS`: that set is for finding a git invocation, and now carries
+                # `builtin` and `eval` too (fix/eval-wrapper-bypass) -- both are included there now.
+                # But it still carries `nohup`/`nice`/`sudo`/`env`, which do not preserve export.
+                # Reusing it would still be wrong: it would admit those four into an export-arm
+                # verdict they cannot actually produce.
                 #
                 # WITHOUT this, one word defeated the whole arm: `command export
                 # GIT_CONFIG_COUNT=1 ; git <push>` measured BLOCK on dev and ALLOW from the

@@ -196,6 +196,17 @@ assert 'ALLOW_PUSH=1 git push origin dev' 0 'override at top level is honored'
 assert 'x="$(ALLOW_PUSH=1 git push origin dev)"' 0 'override INSIDE a context is honored'
 assert 'ALLOW_PUSH=1 git push origin dev && git status' 0 'override + trailing benign git'
 
+# --- the eval family (fix/eval-wrapper-bypass): git reached THROUGH eval/builtin or a wrapper's `--` ---
+assert 'eval git push origin main' 2 'eval: the push behind it is found'
+assert 'builtin eval git push origin main' 2 'builtin eval'
+assert 'eval -- git push origin main' 2 'eval --'
+assert 'command -- git push origin main' 2 'command --'
+assert 'exec -- git push origin main' 2 'exec --'
+assert 'sudo -- git push origin main' 2 'an external wrapper -- is stepped too'
+assert 'ALLOW_PUSH=1 eval git push origin main' 0 'override BEFORE eval authorizes: bash passes it to the eval-ed push (measured)'
+assert 'eval ALLOW_PUSH=1 git push origin main' 2 'DECIDED over-block: the authorization walk never skips a WRAPPERS member, as with sudo, although bash would authorize'
+assert 'echo eval git push origin main' 0 'eval in argument position is not a command'
+
 # --- CONCEDED RESIDUALS (spec 7b): still ALLOW; pinning current behavior, not an aspiration ---
 # If one goes red, something CLOSED it -- investigate and move the row, never invert the assertion.
 assert 'sh -c "git push origin dev"' 0 'RESIDUAL: sh -c still allows'

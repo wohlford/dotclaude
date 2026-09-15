@@ -7,10 +7,15 @@ command (`git add -A && git commit`), behind an exec-wrapper (`sudo git commit`)
 env-assignment prefix (`ALLOW_PUSH=1 git push`).
 
 Known fail-open forms (a caller sees no invocation — degrading to *no gate*, never a false
-positive): a command reached only through a git alias (``git ci``), wrapped in ``sh -c "…"`` /
-``eval "…"``, run under a wrapper the ``WRAPPERS`` set does not list *with its own arguments*
+positive): a command reached only through a git alias (``git ci``), wrapped in ``sh -c "…"``, run
+under a wrapper the ``WRAPPERS`` set does not list *with its own arguments*
 (``timeout 60 git commit``), or an unknown leading word before `git` (``echo git commit`` is NOT
-in command position). Resolving aliases and nested command strings is out of scope here.
+in command position). The bare ``eval git …`` form IS followed since fix/eval-wrapper-bypass; the
+residual that remains is `eval`'s RE-PARSE — a quoted word carrying whitespace or syntax, or an
+empty word (``eval "git push origin dev"``, ``eval ':;' git push``) — which is opaque to this
+tokenizer exactly as ``sh -c "…"`` is. A `cd`/`pushd`/`popd` reached through any wrapper makes the
+tracked cwd UNRESOLVABLE rather than followed, since whether the shell really moves depends on the
+whole chain. Resolving aliases and nested command strings is out of scope here.
 """
 
 from __future__ import annotations
@@ -309,6 +314,29 @@ class Invocation(NamedTuple):
 # Exec-wrappers that run their argument as a command, so `git` right after one is still in command
 # position (`sudo git commit`, `time git commit`). Bounded on purpose — an unknown leading word
 # (`echo git commit`) is treated as NOT a command, preserving the phantom-commit guard.
+#
+# `eval` and `builtin` run their arguments too: measured under bash 3.2.57 and 5.3.15, `eval git …`
+# and `builtin eval git …` run git, and both were invisible to every consumer before
+# fix/eval-wrapper-bypass. `builtin git …` itself errors ("not a shell builtin"); reading it as an
+# invocation over-blocks a command that cannot run, the safe direction.
+#
+# A `cd`/`pushd`/`popd` reached through ANY member makes the tracked cwd UNRESOLVABLE — see
+# `_cd_command_position` — because whether the shell really moves depends on the whole chain.
+#
+# Adding a member moves consumers along the two axes `ENV_ASSIGN`'s comment names. SELECTION:
+# `git-timing-guard.py` now finds eval-reached pushes, in bash's own order — but that guard judges
+# only the FIRST push it finds in a command's token stream, so seeing an eval'd push can change
+# WHICH push gets judged: a push that would otherwise have been second (and so ignored either way)
+# can become the one this guard sees instead. Pre-existing, not introduced by this set gaining
+# `eval`; filed (see Ruling R8, design record 2026-09-11-eval-wrapper-bypass). TOKEN-PARSING:
+# push-guard's and the timing guard's `_leading_env_authorized` never skip a member of this set, so
+# an override placed BEHIND `eval` is refused there although bash would authorize it — a
+# safe-direction over-block, pinned in test_push_guard.sh and test_git_timing_guard.sh. Each guard
+# checks its OWN override token: `eval ALLOW_PUSH=1 git <push>` is refused by push-guard.py, and
+# `eval ALLOW_GIT_WRITE=1 <publish>` is refused by git-timing-guard.py — the two guards use
+# different token names (`ALLOW_PUSH=1` and `ALLOW_GIT_WRITE=1` respectively). An override placed
+# BEFORE `eval` (`ALLOW_PUSH=1 eval git <push>` / `ALLOW_GIT_WRITE=1 eval <publish>`) is authorized
+# by each guard, in each case because bash passes the assignment straight through to eval.
 WRAPPERS = {
     "time",
     "env",
@@ -322,12 +350,15 @@ WRAPPERS = {
     "command",
     "xargs",
     "timeout",
+    "eval",
+    "builtin",
 }
 
 # Reserved words that open a new command exactly as a control operator does: `if git push` puts
 # `git` in command position the same way `; git push` does. Consulted ONLY by `_git_starts_command`
-# — the `is_git(...)`-guarded call sites below — and never by the bare `starts_command` calls that
-# recognise `cd`/`pushd`/`popd`. That scoping is load-bearing, not incidental: widening it to cover
+# — the `is_git(...)`-guarded call sites below — and never by `_cd_command_position`, which
+# recognises `cd`/`pushd`/`popd` and likewise consults no reserved word. That scoping is
+# load-bearing, not incidental: widening it to cover
 # `cd`/`pushd`/`popd` too was measured to make three EXISTING blocks disappear. A `cd` right after
 # `if`/`while`/`!` would then itself be read as starting a command, cwd tracking would follow it
 # into a directory with no `.publication.toml`, and the guard would go dormant there —
@@ -346,11 +377,18 @@ RESERVED_WORDS = frozenset(
 )
 
 # `exec` replaces the shell with its argument, so `git` right after it is in command position
-# exactly as after `sudo`/`time`/etc. — but it is kept OUT of the shared `WRAPPERS` set and
-# consulted only by `_git_starts_command`, for the identical reason RESERVED_WORDS is scoped away
-# from `cd`/`pushd`/`popd`: folding it into WRAPPERS was measured to send
-# `exec cd OTHER ; <push>` from BLOCK to ALLOW, because a `cd` right after `exec` would then also
-# start being tracked into a directory with no marker.
+# exactly as after `sudo`/`time`/etc. — but it is kept OUT of the shared `WRAPPERS` set. Folding it
+# in was once measured to send `exec cd OTHER ; <push>` from BLOCK to ALLOW, because a `cd` right
+# after `exec` would then also start being TRACKED into a directory with no marker. That leak can
+# no longer occur: a `cd`/`pushd`/`popd` reached through any `WRAPPERS` member now makes the cwd
+# UNRESOLVABLE rather than tracked — see `_cd_command_position` — so `exec` staying out buys nothing
+# there any more.
+#
+# The set stays anyway, for a reason unrelated to cd tracking: `push-guard.py` and
+# `git-timing-guard.py` consult `gitcmd.GIT_ONLY_WRAPPERS` at the head of their own authorization
+# walks (push-guard.py:129, git-timing-guard.py:248), and folding `exec` into `WRAPPERS` would
+# change their reading of `exec ALLOW_PUSH=1 git …`. Within this module it is consulted by
+# `_git_starts_command` and by `_env_prefix`'s own wrapper walk.
 GIT_ONLY_WRAPPERS = frozenset({"exec"})
 
 # Inert marker substituted for each extracted nested context. It must tokenize as an ordinary word
@@ -1065,6 +1103,32 @@ def is_git(token: str) -> bool:
     return token == "git" or token.endswith("/git")
 
 
+def _steps_as_wrapper(
+    tokens: list[str], j: int, extra_wrappers: frozenset[str] = frozenset()
+) -> bool:
+    """True if `tokens[j]` is part of an exec-wrapper a backward walk steps over.
+
+    The ONE rule every backward walk consults — `starts_command`, `_env_prefix` and
+    `_cd_command_position` — so they cannot drift apart. A `WRAPPERS` member, or an
+    `extra_wrappers` member at the sites that pass them, qualifies; so does a `--` whose OWNER, the
+    token before it, qualifies the same way — the wrapper's end-of-options marker. Measured under
+    bash 3.2.57 and 5.3.15: `eval -- git …`, `builtin -- eval git …`, `command -- git …`,
+    `exec -- git …` and `env -- git …` all run git; `eval`/`builtin` take no other option.
+
+    One `--` per wrapper: `eval -- -- git …` runs a command named `--` (measured), so a `--` owned
+    by another `--` is not stepped. For git detection a stepped `--` can only ever ADD an
+    invocation — `time -- git …` runs `--` under bash 3.2 and git under 5.3, and `timeout -- git …`
+    fails before running anything — so the over-read is the safe direction.
+    """
+    tok = tokens[j]
+    if tok in WRAPPERS or tok in extra_wrappers:
+        return True
+    if tok == "--" and j > 0:
+        owner = tokens[j - 1]
+        return owner in WRAPPERS or owner in extra_wrappers
+    return False
+
+
 def starts_command(
     tokens: list[str],
     idx: int,
@@ -1079,9 +1143,11 @@ def starts_command(
     leading `2>&1 git commit` also resolves to command position.)
 
     `reserved_words` and `extra_wrappers` are both empty by default, so an unqualified call is
-    byte-for-byte the pre-existing behavior — this is what every `cd`/`pushd`/`popd` call site in
-    this module relies on. `_git_starts_command` is the only caller that passes them; see
-    `RESERVED_WORDS`'s docstring for why that scoping must not widen.
+    byte-for-byte the pre-existing behavior. `_git_starts_command` is the only caller that passes
+    them; see `RESERVED_WORDS`'s docstring for why that scoping must not widen. The
+    `cd`/`pushd`/`popd` sites this module tracks no longer call this function at all — they call
+    `_cd_command_position`, which classifies the fail-closed cwd behavior directly rather than
+    reusing this command-position predicate.
 
     Args:
         tokens: The token stream.
@@ -1096,7 +1162,7 @@ def starts_command(
         prev = tokens[j]
         if is_op(prev) or prev in reserved_words:
             return True
-        if ENV_ASSIGN.match(prev) or prev in WRAPPERS or prev in extra_wrappers:
+        if ENV_ASSIGN.match(prev) or _steps_as_wrapper(tokens, j, extra_wrappers):
             j -= 1
             continue
         return False
@@ -1112,12 +1178,13 @@ def _env_prefix(tokens: list[str], idx: int) -> list[str]:
     without being collected — `env FOO=1 git …` puts the assignment after the wrapper, and
     `sudo git …` carries no assignment at all.
 
-    Both wrapper sets are consulted BY NAME rather than restated. This walk previously hand-copied
-    `GIT_ONLY_WRAPPERS`'s single member as a literal `prev == "exec"`, directly beneath the sentence
-    above promising the two walks stay in step — undetectable while that set has one element, and
-    fail-open the moment it gains a second: `_git_starts_command` would still put `git` in command
-    position after the new wrapper while this walk stopped short of the assignments in front of it,
-    so a `GIT_CONFIG_*` prefix would vanish from every check scoped to these tokens.
+    This walk consults `_steps_as_wrapper` — the same rule `starts_command` consults — rather than
+    restating it. This walk previously hand-copied `GIT_ONLY_WRAPPERS`'s single member as a literal
+    `prev == "exec"`, directly beneath the sentence above promising the two walks stay in step —
+    undetectable while that set has one element, and fail-open the moment it gains a second:
+    `_git_starts_command` would still put `git` in command position after the new wrapper while
+    this walk stopped short of the assignments in front of it, so a `GIT_CONFIG_*` prefix would
+    vanish from every check scoped to these tokens.
     """
     out: list[str] = []
     j = idx - 1
@@ -1125,7 +1192,7 @@ def _env_prefix(tokens: list[str], idx: int) -> list[str]:
         prev = tokens[j]
         if ENV_ASSIGN.match(prev):
             out.append(prev)
-        elif not (prev in WRAPPERS or prev in GIT_ONLY_WRAPPERS):
+        elif not _steps_as_wrapper(tokens, j, GIT_ONLY_WRAPPERS):
             break
         j -= 1
     out.reverse()
@@ -1135,11 +1202,60 @@ def _env_prefix(tokens: list[str], idx: int) -> list[str]:
 def _git_starts_command(tokens: list[str], idx: int) -> bool:
     """`starts_command`, scoped for recognising a `git` invocation: reserved words (`if`, `!`, …)
     and `exec` both count as command-position boundaries here. Every `is_git(...)`-guarded call
-    site in this module must call this, not bare `starts_command` — see `RESERVED_WORDS` and
-    `GIT_ONLY_WRAPPERS` for why this scoping must never reach the `cd`/`pushd`/`popd` sites."""
+    site in this module must call this, not bare `starts_command` — see `RESERVED_WORDS` for why
+    that scoping is confined to `git` recognition. The `cd`/`pushd`/`popd` sites do not call this
+    function at all; they call `_cd_command_position` instead, which classifies the fail-closed
+    cwd behavior directly — see `GIT_ONLY_WRAPPERS` for why the leak this scoping once risked
+    (a `cd` right after `exec` being tracked rather than made unresolvable) can no longer occur."""
     return starts_command(
         tokens, idx, reserved_words=RESERVED_WORDS, extra_wrappers=GIT_ONLY_WRAPPERS
     )
+
+
+def _cd_command_position(tokens: list[str], i: int) -> bool | None:
+    """Classify the `cd`/`pushd`/`popd` at `tokens[i]` for the cwd walk.
+
+    True when it runs directly in THIS shell — reached from a command boundary over env assignments
+    only (`FOO=1 cd X` moves the shell) — so its target is tracked exactly. None when it is reached
+    through ANY wrapper or a wrapper's `--`, so the cwd becomes UNRESOLVABLE. False when it is an
+    argument (`echo cd X`) and not a directory change at all.
+
+    None is the fail-CLOSED answer, and it REPLACED a model. Whether the shell moves depends on the
+    whole chain: `eval cd` and `builtin cd` move it; `nohup cd` and `env eval cd` (env cannot run
+    eval) do not; `time cd` moves only where `time` is still the keyword, so `builtin time cd` runs
+    /usr/bin/time in a child. Two diverse-model review rounds each found a fail-open in a set that
+    tried to enumerate the movers — both in that one parameter, none in the rule. An unresolvable
+    cwd blocks every guarded operation and no read (measured), and 0 of 17,929 real commands
+    carrying a cd reached it through a wrapper: the precision protected nothing and cost two holes.
+
+    `exec` is not stepped: `exec cd` never continues — the non-interactive shell exits — so nothing
+    after it runs and no reading of it can leak. Reserved words are not boundaries here either;
+    see `RESERVED_WORDS`.
+
+    Consumers do not all read a None the same way, and this function does not decide that for them.
+    `publication-push-guard.py` (the security boundary keeping a `dev` branch private) treats it as
+    fail-CLOSED, per the paragraph above: it blocks every guarded operation and no read.
+    git-timing-guard.py instead falls back to the PAYLOAD cwd on None rather than blocking — a
+    DECIDED trade (Ruling R6, design record 2026-09-11-eval-wrapper-bypass), pinned in
+    test_git_timing_guard.sh, not a second fail-closed reading of the same value: a `cd` reached
+    through a wrapper leaves that guard scoped to the payload cwd, exactly as it was before this
+    module's `cd`-tracking existed.
+    """
+    j = i - 1
+    through_wrapper = False
+    while j >= 0:
+        prev = tokens[j]
+        if is_op(prev):
+            break
+        if ENV_ASSIGN.match(prev):
+            j -= 1
+            continue
+        if _steps_as_wrapper(tokens, j):
+            through_wrapper = True
+            j -= 1
+            continue
+        return False
+    return None if through_wrapper else True
 
 
 def _resolve_cd(cwd_state: str | None, target: str | None) -> str | None:
@@ -1274,7 +1390,10 @@ def _walk_context(
             i += 1
             continue
 
-        if tok in ("cd", "pushd") and starts_command(tokens, i):
+        cd_pos = (
+            _cd_command_position(tokens, i) if tok in ("cd", "pushd", "popd") else False
+        )
+        if tok in ("cd", "pushd") and cd_pos is not False:
             j = i + 1
             target = None
             while j < n and not is_op(tokens[j]):
@@ -1283,14 +1402,14 @@ def _walk_context(
                     break
                 j += 1
             _descend(tokens[i : j + 1], cwd_state)
-            cwd_state = _resolve_cd(cwd_state, target)
+            cwd_state = _resolve_cd(cwd_state, target) if cd_pos else None
             i += 1
             continue
 
         # `popd` is not tracked as a stack: any popd makes the cwd unresolvable. This mirrors the
         # rule a consumer gate implements today, and porting it is MANDATORY — that gate's own cwd
         # walk is deleted once it consumes this primitive, so omitting it opens a new hole.
-        if tok == "popd" and starts_command(tokens, i):
+        if tok == "popd" and cd_pos is not False:
             cwd_state = None
             i += 1
             continue

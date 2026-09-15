@@ -44,6 +44,7 @@ memory under `2026-09-03-heredoc-unbalanced-substitution`.
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 import tempfile
@@ -662,4 +663,94 @@ def test_no_boundary_relocation_shape_ever_silently_allows_a_dev_push():
     assert verdicts != {2}, (
         "every read-only case was refused too, so the push assertion is measuring the refusal "
         "rate rather than the guard -- the corpus has stopped discriminating"
+    )
+
+
+# ---------- eval transparency (fix/eval-wrapper-bypass) ----------
+#
+# A TOKENIZER-CONSISTENCY property over words eval re-joins to themselves: eval concatenates its
+# words with single spaces and parses them again, and a non-empty word drawn from
+# `_REPARSE_STABLE`'s alphabet comes back unchanged. Over that space, putting an eval-family
+# wrapper in front of the git command must leave every invocation record the walk reports
+# IDENTICAL. NOT a claim of bash fidelity beyond the alphabet -- `~`, globs, `$`, quotes and an
+# empty word all change meaning under a second parse (measured).
+#
+# The wrapper goes in front of GIT, never in front of the leading `cd`: a cd behind a wrapper makes
+# the cwd unresolvable by design, so a prefixed cd would differ on purpose.
+
+_REPARSE_STABLE = re.compile(r"^[A-Za-z0-9_./=:+-]+$")
+_T_OPERATORS = frozenset({"&&", ";", "|"})
+_T_LEAD = ["", "cd /y && "]
+_T_ENV = ["", "FOO=1 ", "GIT_CONFIG_COUNT=1 ", "A=1 B=2 ", "X+=y "]
+_T_OPTS = ["", "-C /x ", "-c a.b=c ", "--no-pager ", "-C /x -c a.b=c "]
+_T_SUBS = [
+    "push origin dev",
+    "push --no-verify origin main",
+    "status",
+    "commit -m msg",
+    "config --global core.hooksPath /dev/null",
+    "log --oneline -1",
+]
+_T_TAILS = ["", " && git status", " ; cd /z && git push origin dev", " | cat"]
+_T_PREFIXES = [
+    "eval ",
+    "builtin eval ",
+    "eval -- ",
+    "builtin -- eval -- ",
+    "eval eval ",
+    "command eval ",
+    "time eval ",
+]
+
+
+def _transparency_cases():
+    for lead in _T_LEAD:
+        for env in _T_ENV:
+            for opts in _T_OPTS:
+                for sub in _T_SUBS:
+                    for tail in _T_TAILS:
+                        yield lead, f"{env}git {opts}{sub}{tail}"
+
+
+def _records(command):
+    return [
+        (
+            i.effective_dir,
+            i.cdir,
+            i.subcommand,
+            i.arg_tokens,
+            i.tokens.env,
+            i.tokens.opts,
+        )
+        for i in git_command.iter_git_invocations_detailed(command, "/repo")
+    ]
+
+
+def test_the_transparency_space_is_large_enough_to_be_a_property():
+    assert sum(1 for _ in _transparency_cases()) > 1000
+
+
+def test_every_generated_word_is_reparse_stable():
+    """The property's premise, asserted rather than assumed."""
+    for lead, rest in _transparency_cases():
+        for word in (lead + rest).split(" "):
+            assert word in _T_OPERATORS or _REPARSE_STABLE.match(word), (
+                lead + rest,
+                word,
+            )
+
+
+def test_prefixing_an_eval_family_wrapper_changes_no_invocation():
+    failures = []
+    for lead, rest in _transparency_cases():
+        base = _records(lead + rest)
+        assert base, (
+            f"precondition: the base command must yield an invocation: {lead + rest!r}"
+        )
+        for prefix in _T_PREFIXES:
+            got = _records(lead + prefix + rest)
+            if got != base:
+                failures.append(f"{lead + prefix + rest!r}: {got!r} != {base!r}")
+    assert not failures, f"{len(failures)} case(s), first 5:\n" + "\n".join(
+        failures[:5]
     )

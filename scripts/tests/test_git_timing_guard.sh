@@ -199,6 +199,45 @@ check 2 "bare push is blocked"                 "$open_home" "$guarded" "git push
 check 2 "push --follow-tags is blocked"        "$open_home" "$guarded" "git push origin dev --follow-tags"
 check 2 "push via -C is blocked"               "$open_home" "$tmproot" "git -C $guarded push origin main"
 check 2 "push later in a chain is blocked"     "$open_home" "$guarded" "git commit -m 'x' && git push"
+check 2 "push behind eval is blocked in the window"      "$open_home" "$guarded" "eval git push origin main"
+check 2 "push behind builtin eval -- is blocked"          "$open_home" "$guarded" "builtin eval -- git push origin main"
+check 0 "ALLOW_GIT_WRITE=1 before eval authorizes"        "$open_home" "$guarded" "ALLOW_GIT_WRITE=1 eval git push origin main"
+
+# --- final whole-branch review pins (Rulings R6/R8, 2026-09-11-eval-wrapper-bypass) -------------
+# These five rows PIN decided or pre-existing behaviour found by the final review; none of them
+# reflects a code change here. Ruling R6 (I1): a `cd` reached through a wrapper (`command`, `time`,
+# `nohup`, ...) leaves effective_dir unresolvable to the tokenizer, and this guard's pinned rule for
+# an unknown cwd is to fall back to the PAYLOAD cwd -- exactly what `target="$cwd"` already did
+# before the tokenizer rewrite. That is a DECIDED trade, not a silent regression: re-enumerating
+# which wrapper chains move the shell's cwd is the parameter both design BLOCKERs on this branch
+# lived in, and changing the fallback would mean abandoning the guard's deliberately fail-open
+# posture for `cd "$VAR"` (see the M1 decision 3/4 CONTROL above). Exposure is bounded -- an
+# AUTHORIZED push (push-guard.py still requires ALLOW_PUSH=1) through a wrapper-reached cd, 0 of
+# 17,929 real cds sampled -- and is filed MEDIUM to revisit the posture, not fixed here.
+check 0 "DECIDED trade (fix/eval-wrapper-bypass): a cd reached through a wrapper leaves the cwd unknown, and this guard's pinned rule for an unknown cwd is the payload cwd — bash does push the guarded repo" \
+  "$open_home" "$foreign" "command cd $guarded && git push origin main"
+check 0 "DECIDED trade (fix/eval-wrapper-bypass): a cd reached through a wrapper leaves the cwd unknown, and this guard's pinned rule for an unknown cwd is the payload cwd — bash does push the guarded repo" \
+  "$open_home" "$foreign" "time cd $guarded && git push origin main"
+
+# The mirror, and an IMPROVEMENT over pre-fix behaviour rather than another instance of the trade
+# above: nohup runs the cd in a CHILD process, so the parent shell's own cwd never moves and the
+# push after `;` still executes in the guarded repo the payload cwd already names. This guard now
+# blocks it correctly; this exact shape was allowed before fix/eval-wrapper-bypass.
+check 2 "nohup runs the cd in a child: the push stays in the guarded repo (was allowed before fix/eval-wrapper-bypass)" \
+  "$open_home" "$guarded" "nohup cd $foreign ; git push origin main"
+
+# Ruling R8 (I2): PRE-EXISTING, not introduced by this branch. This guard judges only the FIRST push
+# it finds in a command's token stream (it is a timing gate on the publication boundary, not a full
+# per-push auditor; push-guard.py's own publication gate still covers every push regardless). eval
+# does not change that rule -- it only changes which push happens to be first, so it can make a push
+# that would otherwise have been judged second (and therefore ignored either way) visible instead.
+# Both rows below measure 0 with eval AND on the eval-free spelling (measured directly), which is
+# what makes this pre-existing rather than a regression introduced here.
+check 0 "PRE-EXISTING: this guard judges only the FIRST push; eval now makes that push visible (the eval-free spelling is allowed on every build)" \
+  "$open_home" "$foreign" "eval git -C $foreign push origin x ; git -C $guarded push origin main"
+check 0 "PRE-EXISTING: this guard judges only the FIRST push; eval now makes that push visible (the eval-free spelling is allowed on every build)" \
+  "$open_home" "$guarded" "ALLOW_GIT_WRITE=1 eval git push origin x ; git push origin main"
+
 check 2 "push -u is blocked"                   "$open_home" "$guarded" "git push -u origin feature"
 
 echo "--- shim/.py differential: the shim's exec plumbing must not disagree with what it execs into ---"
@@ -315,8 +354,8 @@ check 0 "/usr/bin/sudo <pub> is a conceded drop"  "$open_home" "$guarded" "/usr/
 #
 # Sub-class 2b — a bare wrapper OUTSIDE the literal WRAPPERS set entirely (flock,
 # caffeinate, ssh-agent, strace, unbuffer, faketime, ...). Even bare, it is never
-# stepped over — WRAPPERS is membership in a closed 12-name set, not "looks like
-# an exec-wrapper". Re-catching would mean widening WRAPPERS, which trades a
+# stepped over — WRAPPERS is membership in a closed, enumerated set, not "looks
+# like an exec-wrapper". Re-catching would mean widening WRAPPERS, which trades a
 # known, bounded set for an open-ended guess at what programs re-exec their
 # argument — the same "open-ended, not worth building" reasoning as sub-class 1.
 check 0 "flock <pub> is a conceded drop"          "$open_home" "$guarded" "flock git push origin main"

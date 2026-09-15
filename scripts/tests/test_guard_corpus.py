@@ -1142,9 +1142,9 @@ def _build_rows(
             "env_bypass_wrapper_builtin_export",
             f"builtin export HOME=/tmp/h ; git {PUSH_SAFE_ARGS}",
             MUST_BLOCK,
-            "`builtin` is NOT in gitcmd.WRAPPERS, which is exactly why that set could not be "
-            "reused here -- it omits a wrapper that preserves export and carries several that "
-            "do not (measured: nohup/nice/stdbuf do NOT export, because they exec an external "
+            "`builtin` is now in gitcmd.WRAPPERS (fix/eval-wrapper-bypass), but that set still "
+            "could not be reused here -- it still carries several wrappers that do not preserve "
+            "export (measured: nohup/nice/stdbuf do NOT export, because they exec an external "
             "process and `export` is not a binary)",
         ),
         Row(
@@ -1175,6 +1175,178 @@ def _build_rows(
             "really does turn allexport ON, so the FRESH name that follows reaches. Uses a "
             "fresh name deliberately -- HOME would block via _REACH_FLOOR regardless and so "
             "would pin nothing here",
+        ),
+        # --- the eval bypass (fix/eval-wrapper-bypass): git reached THROUGH eval/builtin or a
+        # wrapper's `--`, and a cwd walk that FAILS CLOSED on a cd reached through any wrapper ---
+        Row(
+            "eval_bypass_private_branch",
+            f"eval {P}",
+            MUST_BLOCK,
+            "`eval` was in no wrapper set, so the walk found ZERO invocations and every arm "
+            "returned before judging -- measured ALLOW on dev. Bash runs the push (shim-measured)",
+        ),
+        Row(
+            "eval_bypass_no_verify",
+            f"eval git {_VERB} --no-verify origin main",
+            MUST_BLOCK,
+            "no backstop: --no-verify deletes the judge the git-native hook is",
+        ),
+        Row(
+            "eval_bypass_global_hookspath_write",
+            "eval git config --global core.hooksPath /dev/null",
+            MUST_BLOCK,
+            "the other no-backstop spelling: disables the boundary for every LATER publish",
+        ),
+        Row(
+            "eval_bypass_dash_c_hookspath",
+            f"eval git -c core.hooksPath=/dev/null {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "safe refspec, so the refspec rule cannot decide it first -- the -c arm must fire",
+        ),
+        Row(
+            "eval_bypass_git_config_count_prefix",
+            f"eval GIT_CONFIG_COUNT=1 git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "an env prefix INSIDE the eval'd words: bash re-parses it as a real prefix (measured)",
+        ),
+        Row(
+            "eval_bypass_prefix_before_eval_dashdash",
+            f"GIT_CONFIG_COUNT=1 eval -- git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "a prefix in FRONT of eval reaches the eval'd git (measured). Defended twice -- the "
+            "inline env arm via tokens.env AND the export arm on its own -- so this row does NOT "
+            "pin `_env_prefix`; test_git_command.py's tokens.env row does (measured)",
+        ),
+        Row(
+            "eval_bypass_builtin_eval",
+            f"builtin eval {P}",
+            MUST_BLOCK,
+            "`builtin` runs eval in the current shell; not in the filed entry, found by "
+            "enumeration, and left open by the prescribed GIT_ONLY_WRAPPERS placement",
+        ),
+        Row(
+            "eval_bypass_eval_dashdash",
+            f"eval -- {P}",
+            MUST_BLOCK,
+            "eval's only option shape is `--` (measured: -x/-n are invalid)",
+        ),
+        Row(
+            "eval_bypass_builtin_dashdash_eval_dashdash",
+            f"builtin -- eval -- {P}",
+            MUST_BLOCK,
+            "two owners, two `--`s, each stepped with its own owner",
+        ),
+        Row(
+            "eval_bypass_command_dashdash",
+            f"command -- {P}",
+            MUST_BLOCK,
+            "`command -- git …` runs git (measured) -- a pre-existing sibling of the same rule",
+        ),
+        Row(
+            "eval_bypass_exec_dashdash",
+            f"exec -- {P}",
+            MUST_BLOCK,
+            "`exec` is in scope at git sites, so its `--` is stepped there",
+        ),
+        Row(
+            "eval_bypass_external_wrapper_dashdash",
+            f"env -- {P}",
+            MUST_BLOCK,
+            "an EXTERNAL wrapper's `--` is stepped too: for detection that can only add an "
+            "invocation, and `env -- git …` runs git (measured)",
+        ),
+        Row(
+            "eval_cwd_cd_into_adopted_from_other",
+            f"cd {other_s} && eval cd {adopted_s} && {P}",
+            MUST_BLOCK,
+            "a LIVE fail-open on dev: `eval cd` was never seen, so the push was judged from "
+            "`other` and the guard went dormant while bash was back in the adopted repo",
+        ),
+        Row(
+            "eval_cwd_nohup_cd_does_not_move",
+            f"nohup cd {other_s} ; {P}",
+            MUST_BLOCK,
+            "a LIVE fail-open on dev AND the frozen baseline: nohup runs the cd in a child, the "
+            "push runs in the adopted repo, but the walk followed the cd into `other`",
+        ),
+        Row(
+            "eval_cwd_env_eval_cd",
+            f"env eval cd {other_s} ; {P}",
+            MUST_BLOCK,
+            "the spec review's BLOCKER against revision 1: `env` cannot run `eval`, the shell stays",
+        ),
+        Row(
+            "eval_cwd_builtin_time_cd",
+            f"builtin time cd {other_s} ; {P}",
+            MUST_BLOCK,
+            "the plan review's BLOCKER against revision 2: behind `builtin`, `time` is not the "
+            "keyword -- /usr/bin/time runs the cd in a child, the shell stays",
+        ),
+        Row(
+            "eval_cwd_builtin_popd_back_into_adopted",
+            f"pushd {other_s} ; builtin popd ; {P}",
+            MUST_BLOCK,
+            "a LIVE fail-open on dev: bash pops back to the adopted repo, but `builtin popd` was "
+            "never seen, so the push was judged from `other`",
+        ),
+        Row(
+            "eval_cwd_unresolvable_blocks_safe_refspec",
+            f"eval cd {other_s} && git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "THE row that pins UNRESOLVABLE rather than merely UNTRACKED: an untracked cd leaves "
+            "the adopted repo in force and a main push is allowed there; an unresolvable cwd "
+            "blocks it. Decided over-block -- 0 of 17,929 real cds go through a wrapper",
+        ),
+        Row(
+            "eval_cwd_time_cd_now_unresolvable",
+            f"time cd {other_s} && git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "decided over-block: `time cd` was tracked before and is right at the head of a "
+            "command, but a rule that tracks it must model where `time` is a keyword -- the "
+            "revision-2 hole. Every wrapper, `time` included, now fails closed",
+        ),
+        Row(
+            "eval_allow_read",
+            "eval git status",
+            MUST_ALLOW,
+            "the control: eval before an ordinary read stays allowed",
+        ),
+        Row(
+            "eval_allow_eval_in_argument_position",
+            f"echo eval {P}",
+            MUST_ALLOW,
+            "eval as an ARGUMENT is not a wrapper -- the phantom-invocation guard",
+        ),
+        Row(
+            "eval_allow_dashdash_as_git_argument",
+            f"git log -- eval -- {P}",
+            MUST_ALLOW,
+            "a `--` whose owner is an argument is not stepped",
+        ),
+        Row(
+            "eval_allow_double_dashdash",
+            f"eval -- -- {P}",
+            MUST_ALLOW,
+            "bash runs a command NAMED `--` here (measured): one `--` per wrapper",
+        ),
+        Row(
+            "eval_allow_read_after_unresolvable_cwd",
+            f"eval cd {other_s} && git status",
+            MUST_ALLOW,
+            "an unresolvable cwd refuses guarded operations only, never a read (measured)",
+        ),
+        Row(
+            "eval_allow_env_prefixed_cd_still_exact",
+            f"FOO=1 cd {other_s} && {P}",
+            MUST_ALLOW,
+            "the exactness fail-closed must not cost: an env-prefixed cd runs in this shell, is "
+            "tracked into `other`, and the guard is rightly dormant there",
+        ),
+        Row(
+            "eval_allow_cd_as_an_argument",
+            f"echo cd {other_s} ; git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "`cd` as an argument is not a directory change -- it must not make the cwd unresolvable",
         ),
         Row(
             "shell_shape_time_before_git",
@@ -2516,9 +2688,9 @@ def test_xfail_today_rows_are_still_allowed(
     express "every named fail-open is now closed" without someone inventing a placeholder gap. The
     tripwire's force does not come from the list being non-empty -- it comes from every row IN it
     still being allowed, which is vacuously (and correctly) true of an empty list. The guard's
-    remaining residuals (`sh -c`, `eval`, an unlisted wrapper carrying its own arguments) are
-    ACCEPTED, not scheduled, so they do not belong here: XFAIL_TODAY names a task, and no task is
-    coming for those.
+    remaining residuals (`sh -c`, eval's RE-PARSE of a quoted or empty word, an unlisted wrapper
+    carrying its own arguments) are ACCEPTED, not scheduled, so they do not belong here: XFAIL_TODAY
+    names a task, and no task is coming for those.
     """
     xfail = [r for r in rows if r.category == XFAIL_TODAY]
     failures = [
@@ -2622,6 +2794,50 @@ def test_required_env_axis_labels_are_present(rows: list[Row]) -> None:
         f"{len(missing)} required env-axis row(s) missing: {sorted(missing)}. These pin a "
         "measured full-stack bypass and the mass false-block class its fix exposed; a row "
         "removed here is a hole no other assertion in this file can see."
+    )
+
+
+# Labels this branch's eval-axis work is required to carry (fix/eval-wrapper-bypass): git
+# reached through eval/builtin or a wrapper's `--`, and the fail-closed unresolvable-cwd rule
+# for a cd reached through any wrapper. Same declared-FLOOR rationale as the env-axis set above.
+REQUIRED_EVAL_AXIS_LABELS = frozenset(
+    {
+        "eval_bypass_private_branch",
+        "eval_bypass_no_verify",
+        "eval_bypass_global_hookspath_write",
+        "eval_bypass_dash_c_hookspath",
+        "eval_bypass_git_config_count_prefix",
+        "eval_bypass_prefix_before_eval_dashdash",
+        "eval_bypass_builtin_eval",
+        "eval_bypass_eval_dashdash",
+        "eval_bypass_builtin_dashdash_eval_dashdash",
+        "eval_bypass_command_dashdash",
+        "eval_bypass_exec_dashdash",
+        "eval_bypass_external_wrapper_dashdash",
+        "eval_cwd_cd_into_adopted_from_other",
+        "eval_cwd_nohup_cd_does_not_move",
+        "eval_cwd_env_eval_cd",
+        "eval_cwd_builtin_time_cd",
+        "eval_cwd_builtin_popd_back_into_adopted",
+        "eval_cwd_unresolvable_blocks_safe_refspec",
+        "eval_cwd_time_cd_now_unresolvable",
+        "eval_allow_read",
+        "eval_allow_eval_in_argument_position",
+        "eval_allow_dashdash_as_git_argument",
+        "eval_allow_double_dashdash",
+        "eval_allow_read_after_unresolvable_cwd",
+        "eval_allow_env_prefixed_cd_still_exact",
+        "eval_allow_cd_as_an_argument",
+    }
+)
+
+
+def test_required_eval_axis_labels_are_present(rows: list[Row]) -> None:
+    missing = REQUIRED_EVAL_AXIS_LABELS - {r.label for r in rows}
+    assert not missing, (
+        f"{len(missing)} required eval-axis row(s) missing: {sorted(missing)}. These pin git "
+        "reached through eval/builtin/a wrapper's `--`, and the fail-closed unresolvable-cwd "
+        "rule; a row removed here is a hole no other assertion in this file can see."
     )
 
 

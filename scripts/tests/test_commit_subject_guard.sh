@@ -54,6 +54,7 @@ assert "ALLOW_LONG_SUBJECT=1 git commit -m \"$S80\"" "$tmp/r1" 0 'override -> al
 assert "ALLOW_LONG_SUBJECT=1 git status && git commit -m \"$S80\"" "$tmp/r1" 2 'override on the WRONG segment -> still blocked'
 assert "git add . && git commit -m \"$S80\"" "$tmp/r1" 2 'compound segment commit -> blocked'
 assert "git commit --amend -m \"$S80\""    "$tmp/r1" 2 'amend with an over-long -m -> blocked'
+assert "eval git commit -m \"$S80\""       "$tmp/r1" 2 'a commit behind eval is measured too'
 
 # --- the /commit canonical heredoc form ---
 assert "git commit -m \"\$(cat <<'EOF'
