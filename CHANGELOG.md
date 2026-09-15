@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.106.2 — 2026-09-08
+- docs(CLAUDE.md): add the failures-cluster-in-one-parameter hazard
+
 ## v0.106.1 — 2026-09-04
 - fix(propagate): drop the false quoting warning from the marker block
 

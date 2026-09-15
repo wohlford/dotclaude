@@ -858,6 +858,19 @@ left legal.
   it read; the tool reports findings, not a manifest). A *precondition on its input* closed it in one
   move, needing nothing from the tool — ask **"what can I observe without this thing's cooperation?"**
   before "how do I word this better?". All three failures defaulted to *proceed*.
+- **When a check keeps failing review, ask WHERE the failures sit — clustered in one PARAMETER
+  while the rule itself never faults means the PARAMETER is the defect, and answering its question
+  again only relocates it one layer down.** The bullet above says change the instrument; this one
+  says notice the instrument is not what is broken. Measured across four adversarial rounds: 12
+  findings, every one in the machinery deciding whether the check APPLIED to a given target, **not
+  one in the rule it asserts**. Each fix seeded the next — a hard-coded config location became a
+  list, which then graded targets that merely REGISTER a thing without PROVIDING it, turning a skip
+  into a failure on three live targets; the provision gate that fixed *that* then SWALLOWED a
+  path-traversal finding behind itself, with a reason false on both halves. Deleting the parameter
+  and asserting the unchanged rule over the one target always in scope closed the class in one move.
+  **The clustering is the signal** — it separates *this parameter is the problem* from *this check
+  is hard*. Its own failure mode: removing a parameter narrows coverage, so name what stopped being
+  covered — here, targets measurement showed it had never validly judged.
 - **Clear by allowlist, since a blocklist admits every value you forgot.** Its own failure mode:
   a rule phrased *iff X* is an allowlist only where X is the PROPERTY. Where X is a cheap
   OBSERVABLE standing in for it, the rule READS as an allowlist and BEHAVES as a blocklist,
