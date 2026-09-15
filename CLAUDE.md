@@ -108,6 +108,10 @@ inside the artifact, so the condition you write is against the wrong one. Measur
 `until` loops in one session, the first exiting early because a still-RUNNING status matched its
 pattern, the second — narrowed to fix exactly that — never exiting at all, because the exclusion
 also removed the real terminal value; it spun for three hours against a job that had long finished.
+**And run that `--wait` through the Bash tool's `run_in_background`, never in the foreground** — a
+foreground waiter is killed at the tool timeout (rc 143), which reads exactly like the job dying,
+while a backgrounded one is a tracked task the operator can see and it notifies you when the job
+ends; measured four times in one session. Stopping it does not stop the job.
 Four wrappers were hand-written in one session before it existed, three byte-equivalent;
 the fourth still let a sweep that had run 4 checks of 15 read as a clean pass. Give it `--expect
 '<verdict regex>'` at LAUNCH too — the pattern is recorded INTO the artifact, so a run that

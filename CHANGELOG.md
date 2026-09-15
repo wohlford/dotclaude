@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.108.9 — 2026-09-11
+- docs(CLAUDE.md): background run-long's --wait so it is tracked
+
 ## v0.108.8 — 2026-09-11
 - test(git_command): pin the eval fix by mutation, each row by name
 
