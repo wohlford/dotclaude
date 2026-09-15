@@ -185,6 +185,11 @@ guarded=$(make_repo guarded https://github.com/wohlford/dotclaude.git)
 foreign=$(make_repo foreign https://github.com/someone/other.git)
 noremote=$(make_repo noremote -)
 
+# A real subdirectory of $guarded -- used as a literal `cd` target in the reserved-word-cd trade
+# rows below (never resolved by the guard, which only tokenizes the command text) and as the
+# payload cwd for that block's second CONTROL row (which IS resolved against the filesystem).
+mkdir -p "$guarded/sub"
+
 echo "--- the LOCAL half must pass: nothing leaves the machine ---"
 check 0 "local commit is allowed"              "$open_home" "$guarded" "git commit -m 'x'"
 check 0 "local commit -am is allowed"          "$open_home" "$guarded" "git commit -am 'x'"
@@ -460,7 +465,7 @@ check 2 "M1: the -C mirror -- last -C targets the guarded repo, closing a live f
 # --- RESERVED WORDS put git in command position, exactly as an operator does ------------
 # Found by the final whole-branch review, NOT by the generated corpus -- and the reason is worth
 # recording. The corpus was derived from `WRAPPERS` and the tokenizer's "known fail-open forms"
-# paragraph. `RESERVED_WORDS` sits fifteen lines below `WRAPPERS` in the same module and was never
+# paragraph. `RESERVED_WORDS` sits just below `WRAPPERS` in the same module and was never
 # read, so an entire class of REAL publishes went unrepresented. A generator cannot rescue a
 # generator seeded from an incomplete reading of the source.
 # These are NOT the conceded class. The publish is a bare git token in genuine command position in
@@ -487,6 +492,78 @@ check 0 "reserved: the override still authorizes inside a compound" \
 # word, so an assignment after one still does not authorize.
 check 2 "reserved: a wrapper is still not a reserved word" \
   "$open_home" "$guarded" "sudo ALLOW_GIT_WRITE=1 git push origin main"
+
+# --- reserved-word cd (fix/reserved-word-cd, Ruling R6): a DECIDED trade, PINNED not fixed here ----
+# `_cd_command_position` (scripts/lib/git_command.py) now returns None -- UNRESOLVABLE -- for a
+# cd/pushd/popd reached right after a reserved word ({, !, if, while, coproc, ...), exactly as it
+# already did for a cd reached through a wrapper (the "final whole-branch review pins" section
+# above, fix/eval-wrapper-bypass). Two consumers read that None differently.
+# publication-push-guard.py treats it as fail-CLOSED -- it blocks every guarded operation and no
+# read, so nothing there regresses (pinned separately in test_publication_push_guard.sh). THIS
+# guard instead falls back to the PAYLOAD cwd on an unresolvable cd -- Ruling R6, already decided
+# BEFORE this branch existed, see git-timing-guard.py's own module docstring -- and the five rows
+# below are exactly the shapes that fallback now reaches that it did not reach before.
+#
+# BEFORE this branch: the second `cd`/`popd` (the one after the reserved word) was invisible to
+# this guard's cd-tracking entirely, so the tracked cwd stayed wherever the FIRST `cd $guarded` --
+# which IS in command position, and so IS tracked -- had put it. That is $guarded in every row
+# below, so the verdict was BLOCK (rc=2) -- correctly, since bash really does run the push from
+# inside the guarded repo.
+#
+# AFTER this branch: the reserved-word cd is seen and classified UNRESOLVABLE, so this guard's
+# existing None -> payload-cwd fallback takes over -- and the payload cwd in every row below is
+# $foreign (an unguarded repo), so the verdict flips to ALLOW (rc=0). That is a real loss at THIS
+# gate: bash still runs the push INSIDE THE GUARDED REPO, but the guard now reads it as a push
+# from $foreign. All five rows are runnable bash -- the brace row's group is closed on purpose;
+# an unbalanced `{` is a syntax error (`bash -n` rc=2), so bash would execute nothing there and
+# the row would pin no loss at all. Where inside the guarded repo differs by row: the four `cd`
+# rows land in $guarded/sub, while the `! popd` row leaves the shell at $guarded itself -- the
+# dir stack is empty, so popd fails (and `!` swallows the nonzero) and the cwd never moves.
+#
+# The branch ROUTES one more shape onto an EXISTING fallback path; it does not create the
+# behaviour or the posture -- R6 was already decided, for the wrapper class, before this branch.
+#
+# THE ROW WORTH SINGLING OUT: "! popd" carries no `cd` token at all. `_cd_command_position`
+# classifies cd, pushd AND popd identically, so a reserved word before a bare popd takes the
+# identical UNRESOLVABLE path -- a shape the design reasoned about only in terms of `cd` and never
+# asked about; only the Task 4 review's end-to-end measurement (pre-change tree vs. post-change
+# tree, both controls holding) found it, not the design.
+#
+# ACCEPTED, not fixed here, because this is a WINDOW gate, not the publication boundary:
+# push-guard.py still refuses a bare push regardless of the window, and .git/hooks/pre-push
+# remains the load-bearing gate -- so the flip below alone reaches no remote. See
+# specs/2026-09-11-reserved-word-cd.md for the full measurement (0 of 27,998 real commands lose a
+# guarded operation at the publication guard; the loss is confined to this window gate).
+#
+# The two CONTROL rows below are not incidental: without them an inert guard -- e.g. a fixture repo
+# whose origin does not match GUARD_REPO_PATTERN -- would pass every ALLOW row above for a reason
+# having nothing to do with cwd resolution at all. Measured earlier this session: a guard fixture
+# with no matching remote returned "allow" on every row including its own positive control. Both
+# controls push bare, with no `cd` anywhere in the command text, and must still BLOCK: one with cwd
+# already AT the guarded repo's root, one with cwd already INSIDE it (the $guarded/sub fixture
+# above) -- proving the fixture's remote genuinely matches before trusting any ALLOW above.
+
+# The push verb, assembled rather than spelled contiguously so authoring this region does not
+# itself trip a guard that reads raw command text. This is LOCAL to the rows below, not a
+# whole-file rule -- the rest of this file spells the verb out freely. Named VERB to match
+# test_publication_push_guard.sh, which assembles it the same way for the same reason.
+VERB="pu""sh"
+
+check 0 "reserved-word cd trade: if/then opens with a reserved-word cd, payload cwd is foreign -- ALLOW (was BLOCK before this branch)" \
+  "$open_home" "$foreign" "cd $guarded && if cd sub; then git ${VERB} origin main; fi"
+check 0 "reserved-word cd trade: ! negation before cd, payload cwd is foreign -- ALLOW (was BLOCK before this branch)" \
+  "$open_home" "$foreign" "cd $guarded ; ! cd sub ; git ${VERB} origin main"
+check 0 "reserved-word cd trade: a brace group opens with cd, payload cwd is foreign -- ALLOW (was BLOCK before this branch)" \
+  "$open_home" "$foreign" "cd $guarded ; { cd sub ; git ${VERB} origin main ; }"
+check 0 "reserved-word cd trade: while/do loop opens with cd, payload cwd is foreign -- ALLOW (was BLOCK before this branch)" \
+  "$open_home" "$foreign" "cd $guarded ; while cd sub; do git ${VERB} origin main; done"
+check 0 "reserved-word cd trade: ! popd carries no cd token at all, payload cwd is foreign -- ALLOW (was BLOCK before this branch)" \
+  "$open_home" "$foreign" "cd $guarded ; ! popd ; git ${VERB} origin main"
+
+check 2 "reserved-word cd trade CONTROL: bare push, cwd already at the guarded repo's root -- still BLOCK" \
+  "$open_home" "$guarded" "git ${VERB}"
+check 2 "reserved-word cd trade CONTROL: bare push, cwd already inside the guarded repo -- still BLOCK" \
+  "$open_home" "$guarded/sub" "git ${VERB}"
 
 # --- unknown global option: the two-primitive split, pinned rather than incidental --------
 # Found by the final whole-branch review: _segment_contains_push (via iter_context_token_streams)

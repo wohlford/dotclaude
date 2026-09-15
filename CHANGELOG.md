@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.108.11 — 2026-09-14
+- test(git-timing-guard): pin the accepted reserved-word cd trade
+
 ## v0.108.10 — 2026-09-14
 - fix(git_command): make a cd after a reserved word unresolvable
 
