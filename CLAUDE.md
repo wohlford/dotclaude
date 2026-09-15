@@ -737,7 +737,7 @@ left legal.
   clears it, or the failure reads as a broken deploy rather than as the change arriving, which
   invites exactly the wrong repair.
 
-#### The check itself writes — what it leaves behind is the hazard
+#### An edit's effect is wider than the part you checked
 
 - **When you mutate a document programmatically, assert the SHAPE of the edit — not just that you
   found the right spot.** A script that located an entry by its first line, then scanned forward for
@@ -758,6 +758,22 @@ left legal.
   not delegable** — measured since: two model reviewers briefed to find exactly this both passed a
   sentence a deletion had orphaned, one reporting *no dangling references*. A reviewer reads for
   sense and finds some; only the removed word finds the wreckage.
+- **Rewriting a justification does not re-verify the SCOPE CLAIM inside it — and the scope claim is
+  the half you keep verbatim.** A note giving both a REASON and a scope ("this never occurs anywhere
+  in this file") holds two assertions in one paragraph, so when the reason goes stale you rewrite
+  that one and carry the other through untouched: it reads as unaffected by the change you just
+  made, and your attention is already spent on the half you rewrote. Measured: a convention's stated
+  reason went false once the tool it described changed class, and the replacement was measured and
+  written while the neighbouring sentence claiming the convention held THROUGHOUT the file went
+  unexamined — false, and always had been, contradicted about ninety times in that same file.
+  Neither adjacency remedy reaches it: the stale reason WAS deleted, but the surviving claim never
+  referenced it, so a grep for removed words comes back clean; and nothing was split, so there is no
+  added case to re-read a wrapper against. **Check a universal against the artifact it quantifies
+  over** — count the cases it forbids and require zero. Its own failure mode: that count answers
+  only for the file you ran it on; a claim quantified over a tree needs the tree.
+
+#### The check itself writes — what it leaves behind is the hazard
+
 - **A DEFAULT output path makes every run of a tool a writer of real state.** Measured twice, in
   opposite directions, neither found by review. **Outward:** a diagnostic log defaulted to the
   operator's own log directory, and long-standing suite rows reach exactly that branch, so **12

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.105.3 — 2026-09-02
+- docs(CLAUDE.md): split the edit hazards from the tool-writes group
+
 ## v0.105.2 — 2026-09-02
 - docs(tests): correct the guard rationale in two orphaned files
 
