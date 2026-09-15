@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.108.17 — 2026-09-14
+- refactor(settings_hooks): expose each hook entry and its timeout
+
 ## v0.108.16 — 2026-09-14
 - test(git_command): add the reserved-word argument mutation campaign
 

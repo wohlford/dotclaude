@@ -24,13 +24,16 @@ argument it cannot parse" hazards. The silent variant was the weaker of the two 
 
 from __future__ import annotations
 
+HARNESS_DEFAULT_TIMEOUT_SECS = 600
 
-def walk_hook_triples(doc, origin):
-    """Flatten a settings document into a set of (event, matcher, command) triples.
 
-    Shape errors raise ValueError rather than being skipped: a hooks block this function cannot
-    read is not an empty hooks block, and silently treating it as one would drop exactly the
-    registrations a caller exists to find.
+def walk_hook_entries(doc, origin):
+    """Flatten a settings document into a list of (event, matcher, entry) tuples.
+
+    `entry` is the registration's own dict, so a caller can read keys beyond `command` (such as
+    `timeout`) without a third parse of this shape. Shape errors raise ValueError rather than being
+    skipped: a hooks block this function cannot read is not an empty hooks block, and silently
+    treating it as one would drop exactly the registrations a caller exists to find.
 
     `origin` is a label for the document (a path, or a "ref:path" string) used only to make a
     raised message name where the bad shape was found.
@@ -38,7 +41,7 @@ def walk_hook_triples(doc, origin):
     hooks = doc.get("hooks", {})
     if not isinstance(hooks, dict):
         raise ValueError("%s: 'hooks' is not an object" % origin)
-    out = set()
+    out = []
     for event, groups in hooks.items():
         if not isinstance(groups, list):
             raise ValueError("%s: hooks.%s is not a list" % (origin, event))
@@ -68,8 +71,37 @@ def walk_hook_triples(doc, origin):
                         "%s: an entry under hooks.%s has a non-string command (%r)"
                         % (origin, event, command)
                     )
-                out.add((event, matcher, command))
+                out.append((event, matcher, entry))
     return out
+
+
+def walk_hook_triples(doc, origin):
+    """Flatten a settings document into a set of (event, matcher, command) triples.
+
+    A projection of `walk_hook_entries`, which owns the shape validation — see its docstring.
+    """
+    return {
+        (event, matcher, entry["command"])
+        for event, matcher, entry in walk_hook_entries(doc, origin)
+    }
+
+
+def entry_timeout(entry, origin):
+    """The timeout, in seconds, the harness applies to one registration.
+
+    An absent `timeout` is the harness default, never "unbounded" — the harness applies its default
+    whether or not the key is written. A value the harness would not honour as a duration (a bool,
+    a string, zero, a negative) raises ValueError rather than being read as some number.
+    """
+    if "timeout" not in entry:
+        return HARNESS_DEFAULT_TIMEOUT_SECS
+    value = entry["timeout"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise ValueError(
+            "%s: hook %r has a timeout the harness cannot honour (%r)"
+            % (origin, entry.get("command"), value)
+        )
+    return value
 
 
 def hook_basename(command, prefix):
