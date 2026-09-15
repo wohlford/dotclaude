@@ -855,7 +855,7 @@ left legal.
   baseline misfired on a real case needing 10.6x), and make an overrun report INDETERMINATE rather
   than a verdict, so too tight a bound costs attention rather than a score.
 
-#### Building a check that holds
+#### When a check keeps failing, you are fixing the wrong layer
 
 - **When a check keeps springing leaks, change its INSTRUMENT CLASS, not its wording.** Three rounds
   of sharpening a *postcondition on an opaque tool's output* gave: a vague test, then a precise one
@@ -877,6 +877,9 @@ left legal.
   **The clustering is the signal** — it separates *this parameter is the problem* from *this check
   is hard*. Its own failure mode: removing a parameter narrows coverage, so name what stopped being
   covered — here, targets measurement showed it had never validly judged.
+
+#### Building a check that holds
+
 - **Clear by allowlist, since a blocklist admits every value you forgot.** Its own failure mode:
   a rule phrased *iff X* is an allowlist only where X is the PROPERTY. Where X is a cheap
   OBSERVABLE standing in for it, the rule READS as an allowlist and BEHAVES as a blocklist,

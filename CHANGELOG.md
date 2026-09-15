@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.108.2 — 2026-09-08
+- docs(CLAUDE.md): split the check-building group at its seam
+
 ## v0.108.1 — 2026-09-08
 - docs(CLAUDE.md): send waiters to run-long's own --wait mode
 
