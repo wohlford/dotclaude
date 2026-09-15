@@ -4,10 +4,13 @@ set -euo pipefail
 # Script: recast-test.sh
 # Purpose: PostToolUse hook — run the matching recast test file when a recast source changes
 # Usage: Called by Claude Code hooks with JSON on stdin
+# Ownership sentinel (do not remove): dotclaude-test-runner-hook
 #
 # Exit codes:
-#   0 — no action needed, or the matched test file passed (silent / brief note)
-#   2 — the matched test file failed (stderr fed back to Claude to fix)
+#   0 — no action needed; or the suite is absent/unrunnable in a repo that does not own this hook;
+#       or the matched test file passed (silent / brief note)
+#   2 — the matched test file failed; or this repo owns the hook and its suite is missing or cannot
+#       be run (stderr fed back to Claude to fix)
 #
 # Global hook: fires on every Edit|Write in every repo, so it exits 0 fast for anything that is not a
 # recast source in a repo that carries the suite. Fast feedback only: it runs the ONE test file
@@ -59,14 +62,39 @@ case "$base" in
     ;;
 esac
 
-# ---------- Resolve repo root; act only where the matching test file lives ----------
+# ---------- Resolve repo root ----------
 root=$(git -C "$(dirname "$file_path")" rev-parse --show-toplevel 2>/dev/null || true)
-if [[ -z "$root" ]] || [[ ! -f "$root/skills/$sub/tests/$testfile" ]]; then
+
+# Environment fail-open: not a git repo at all. Deliberate, unchanged.
+if [[ -z "$root" ]]; then
   exit 0
 fi
 
-# ---------- Availability guard: no pytest → can't test, never falsely block ----------
-if ! python3 -c 'import pytest' >/dev/null 2>&1; then
+# A suite that is MISSING and one that is PRESENT-but-unrunnable (no pytest) are the same event:
+# the gate did not run. Collected before either branch below, so the ownership check decides
+# whether to alarm — a machine without pytest, or a repo that simply doesn't carry this suite, is
+# never blocked in a repo that does not own this hook.
+missing=""
+if [[ ! -f "$root/skills/$sub/tests/$testfile" ]]; then
+  missing="no skills/$sub/tests/$testfile for $base"
+elif ! python3 -c 'import pytest' >/dev/null 2>&1; then
+  missing="skills/$sub/tests/$testfile is present, but pytest is unavailable"
+fi
+
+# ---------- Ownership guard: alarm only where this repo owns this hook ----------
+# Ownership is proven by the hook finding its OWN source at its own relative path — nothing is
+# required from the absent/unrunnable suite, so a deletion cannot conceal itself. Unlike its
+# siblings, recast's trigger set is OPEN (*/skills/recast/*.sh) and its suite is derived PER FILE,
+# so "the hook was deleted" is not the likely cause here: the ordinary trigger is a new
+# skills/recast/recast-x.sh written before its test — TDD-consistent, and intended to alarm.
+if [[ -n "$missing" ]]; then
+  if grep -q 'dotclaude-test-runner-hook' "$root/scripts/$(basename "$0")" 2>/dev/null; then
+    printf '%s\n' \
+      "GATE DID NOT RUN — this repo owns $(basename "$0") but ${missing}." \
+      "If $base is new, write skills/$sub/tests/$testfile before continuing." \
+      "If the suite was removed deliberately, remove $(basename "$0")'s settings.json registration, then re-run /sync-docs." >&2
+    exit 2
+  fi
   exit 0
 fi
 

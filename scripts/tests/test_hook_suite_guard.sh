@@ -5,6 +5,15 @@ set -uo pipefail
 # Purpose: Regression tests — a test-runner hook must not report success when a suite it exists
 #          to run has been DELETED, yet must stay inert in repos that never had it.
 # Usage:   ./scripts/tests/test_hook_suite_guard.sh
+#
+# commit-subject-test.sh and recast-test.sh both gate on "is pytest importable", but the same
+# mutation (deleting that check) fails them in OPPOSITE directions. commit-subject-test.sh alarms
+# BEFORE running anything, so losing the check degrades it to a silent SKIP (the suite quietly
+# never runs, exit 0). recast-test.sh has no such backstop: on an owned repo it still exits 2 (the
+# missing-suite branch alone covers that), but on a NON-owner it falls through past the (skipped)
+# ownership guard and actually attempts the run — degrading to an OVER-ALARM that blocks a foreign
+# repo which never had a stake in this hook. See the recast-specific fixture near the end of this
+# file for the row that pins the second direction.
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 hooks="$here/../../scripts"
@@ -69,6 +78,9 @@ sync-docs|sync-docs-test.sh|skills/sync-docs/sync_docs.py|skills/sync-docs/tests
 commit-subject|commit-subject-test.sh|scripts/lib/commit_subject.py|scripts/tests/test_commit_subject_guard.sh scripts/tests/test_commit_subject.py scripts/tests/test_py39_compat.sh
 ppg-guard-only|publication-push-guard-test.sh|scripts/publication-push-guard.py|scripts/tests/test_publication_push_guard.sh
 ppg-shared-dep|publication-push-guard-test.sh|scripts/lib/git_command.py|scripts/tests/test_git_command.py scripts/tests/test_git_command_properties.py scripts/tests/test_publication_push_guard.sh scripts/tests/test_recast_hooks.sh
+env-claims-check|env-claims-check-test.sh|scripts/env-claims-check.py|scripts/tests/test_env_claims_check.py
+mutation-anchors-check|mutation-anchors-check-test.sh|scripts/mutation-anchors-check.py|scripts/tests/test_mutation_anchors_check.py
+recast|recast-test.sh|skills/recast/recast-recon-history.sh|skills/recast/tests/test_recast_recon_history.py
 "
 
 i=0
@@ -195,6 +207,44 @@ printf '{"tool_input":{"file_path":"%s"}}' "$unrun/scripts/lib/commit_subject.py
 check_eq "$unrun_rc" 2 'owner + suite present but pytest UNAVAILABLE -> exit 2 (gate did not run)'
 check_eq "$(drive commit-subject-test.sh "$unrun/scripts/lib/commit_subject.py")" 0 \
   'owner + same repo with pytest available -> exit 0'
+
+# recast-test.sh is UNLIKE every hook above: when "missing" comes back empty it runs the matched
+# test regardless of OWNERSHIP (the ownership guard only gates the ALARM branch — recast's trigger
+# set is open and its suite is resolved per-file, so any repo carrying the suite gets it run). That
+# means the fixture above (commit-subject) cannot stand in for recast: its shim only has to fool
+# the AVAILABILITY PROBE, because commit-subject's ownership check runs first and exits before ever
+# reaching a real `pytest` invocation — so that shim's fallback to the genuinely-installed pytest
+# never gets exercised. recast's mutant (elif deleted) DOES reach that invocation on a non-owner,
+# so a shim that only fakes the probe would let the REAL pytest quietly pass the stub test and the
+# row would read exit 0 under the mutant too — decoration, not a pin. This shim instead fails any
+# invocation naming "pytest" outright (not just the `-c 'import pytest'` probe), which is what a
+# machine that truly lacks pytest looks like from every call site, while still delegating every
+# other python3 invocation (the `import xdist` probe here) to the real interpreter — resolved by
+# ABSOLUTE PATH rather than through `env`, since `env python3` under this PATH would just re-find
+# the shim and recurse.
+recast_foreign="$tmp/recast_foreign_unrunnable"
+mkrepo "$recast_foreign"
+mkdir -p "$recast_foreign/skills/recast/tests" "$recast_foreign/shim"
+printf 'x\n' > "$recast_foreign/skills/recast/recast-recon-history.sh"
+write_stub_suite "$recast_foreign/skills/recast/tests/test_recast_recon_history.py"
+real_python3="$(command -v python3)"
+# shellcheck disable=SC2016  # $a/$@ belong to the generated shim, not to this script
+{
+  printf '#!/bin/sh\n'
+  printf 'for a in "$@"; do\n'
+  printf '  if [ "$a" = "pytest" ] || [ "$a" = "import pytest" ]; then\n'
+  printf '    echo "ModuleNotFoundError: No module named '"'"'pytest'"'"'" >&2\n'
+  printf '    exit 1\n'
+  printf '  fi\n'
+  printf 'done\n'
+  printf 'exec "%s" "$@"\n' "$real_python3"
+} > "$recast_foreign/shim/python3"
+chmod +x "$recast_foreign/shim/python3"
+recast_rc=0
+printf '{"tool_input":{"file_path":"%s"}}' "$recast_foreign/skills/recast/recast-recon-history.sh" \
+  | PATH="$recast_foreign/shim:$PATH" bash "$hooks/recast-test.sh" >/dev/null 2>&1 || recast_rc=$?
+check_eq "$recast_rc" 0 \
+  'recast: NON-owner + suite PRESENT + pytest UNAVAILABLE -> exit 0 (inert; the discriminating row)'
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
