@@ -199,3 +199,161 @@ def test_parse_ambiguity_str_is_byte_identical_to_the_bare_message() -> None:
                 f"{cmd!r}: args are {exc.args!r}; a single-element tuple of the bare message is "
                 "what keeps str() identical"
             )
+
+
+# ---------------------------------------------------------------------------------------------
+# RED regression rows -- unterminated substitution openers in a heredoc body (r1-r5, MUST FAIL
+# until Task 2 lands). See specs/2026-09-03-heredoc-unbalanced-substitution.md and
+# plans/2026-09-03-heredoc-unbalanced-substitution.md, Task 1.
+#
+# These pin the underlying `git_command.py` tokenizer directly, one layer below the full guard's
+# rc/stderr (asserted end-to-end in test_publication_push_guard.sh's own r1-r5 rows). Today, an
+# unterminated backtick or `$(` anywhere in a heredoc body raises `ParseAmbiguity` -- even when
+# the heredoc's delimiter is QUOTED, so bash itself would never expand the body -- which is what
+# every consumer's fail-closed catch turns into a blanket refusal. After the fix, the opener
+# closes at the body boundary and the tokenizer sees the real invocation instead of raising.
+# ---------------------------------------------------------------------------------------------
+
+
+def _subs(command: str) -> list[str]:
+    return [
+        sub
+        for _dir, _cdir, sub, _args in gitcmd.iter_git_invocations_with_cwd(
+            command, "/tmp"
+        )
+    ]
+
+
+def test_r6_opener_hidden_inside_a_hash_comment_is_not_mistaken_for_a_real_opener():
+    """r6 (added for Task 3's mutant 6, plan `2026-09-03-heredoc-unbalanced-substitution.md`):
+    a backtick sitting inside a `#`-started comment LINE of the body is not a real unterminated
+    opener at all -- the top-level pipeline's own `strip_comments` pass removes that whole line
+    before the tokenizer ever sees it, exactly as it would for any other command text.
+
+    The row survives an ABANDONED change and is kept deliberately. It was written to pin one
+    half of a heredoc repair pass that was tried four times and withdrawn four times, each
+    attempt shipping a fail-open (see the design record in project memory). What it asserts is
+    independent of that pass: a comment-hidden opener must not defeat the walk, which holds
+    because the pipeline's own `strip_comments` runs before the tokenizer sees the body.
+
+    Its value now is as a REGRESSION GUARD on the next attempt. Any future pass that repairs
+    unparseable heredoc text has to decide what a comment-hidden opener means, and the failure
+    mode is specific: treat it as a genuine opener, append a closer for it, and that appended
+    closer survives the real `strip_comments` -- which removes the ORIGINAL backtick but not the
+    append -- leaving one unmatched backtick and turning a clean parse into a raised
+    `ParseAmbiguity`. No other row in this file exposes that difference, because every one of
+    them gives the correct answer once a real, non-comment opener is present.
+    """
+    command = "cat <<'EOF'\n# a ` stray\ngit push origin dev\nEOF"
+    subs = _subs(command)
+    assert "push" in subs, subs
+
+
+# --------------------------------------------------------------------------------------------
+# Shape assertions on the MASKED TEXT (Task 3, mutants 4 and 5).
+#
+# Both mutants survived the first campaign, and for ONE reason: the plan asked for these
+# properties at the PARSE-OUTCOME level, where neither is observable. Closer placement does not
+# change any parse -- `split_command_contexts` pairs backticks and parens by a bare character
+# scan with no word-boundary requirement, so only totals matter -- and a wrongly-appended closer
+# on an already-unparseable body leaves the command refused either way. Asserting one level down,
+# on what `mask_heredoc_quotes` EMITS, makes both decisions visible. The instrument class was the
+# defect, not the assertion's wording.
+# --------------------------------------------------------------------------------------------
+
+
+# Mutant 4 (drop the unknown-category guard) is an EXPECTED SURVIVOR, and deliberately has no row.
+#
+# An assertion for it was written, then deleted as vacuous. The guard's early `return body` and the
+# loop-exhaustion fallback below it converge on the SAME output for every input that can reach
+# either: an unrecognised failure is one no appended closer resolves, so the mutant appends,
+# re-probes, fails again, exhausts the bound, and returns the unchanged body -- exactly what the
+# guard returns immediately.
+#
+# The branch itself is NOT rare -- an earlier draft of this comment claimed the reserved context
+# marker was "the one input that reaches the branch at all"; that was false. Measured 2026-09-03
+# (review finding 4, independently spot-checked at 9,088): `unbalanced quote` alone reached this
+# branch thousands of times over a 200,064-body corpus of neutralized, prepared bodies
+# (`_neutralize_unmatched_quotes` reads the RAW body while this helper's own probe reads
+# `fold_continuations(strip_comments(body))`, so a comment can delete a quote's partner the flat
+# neutralizer had already counted as balanced), plus a handful of bare `ValueError`s -- of which
+# the reserved context marker (with a real backtick keeping the opener count non-zero) is one
+# shape, not the only one. So mutant 4's survival rests on CONVERGENCE for the inputs this suite
+# exercises, never on the branch being unreachable in general.
+#
+# So a row here would pass under the real code AND under the mutant, which is the definition of an
+# assertion that pins nothing. The guard STAYS in the source: it states the intent explicitly and
+# keeps a future added category from silently taking the append path, where today it would only be
+# saved by that accidental convergence. Documented, not tested -- see the plan's Task 3.
+
+
+# --------------------------------------------------------------------------------------------
+# The BOUNDARY-RELOCATION fail-open (design #3's defect; found by the final whole-branch review).
+#
+# Choosing the closer from the body IN ISOLATION is unsound: in the full command that same opener
+# often pairs with a closer OUTSIDE the body. Appending orphans that partner, moves every context
+# boundary after the heredoc, and a real push falls out of any walked context -- so a POLICY BLOCK
+# became an ALLOW. Measured: the base build reported one invocation and refused; design #3
+# reported zero and allowed, and the shape really executes (verified with a harmless payload in
+# the push's position, which ran before bash errored on the outer construct).
+#
+# The lesson these rows exist to keep: INSERTING text hides a command as effectively as DELETING
+# it, because it relocates boundaries. Design #2 was rejected for hiding a command by escaping;
+# design #3 hid one by the mirror mechanism, and the whole safety argument missed it because it
+# reasoned about what gets ESCAPED rather than about where boundaries LAND.
+# --------------------------------------------------------------------------------------------
+
+
+def _pushes_found(command):
+    """Subcommands the walk reports, or the refusal category. Never executes anything."""
+    try:
+        return _subs(command)
+    except ValueError as exc:  # ParseAmbiguity included
+        return "REFUSED: {}".format(exc)
+
+
+def test_a_heredoc_whose_opener_pairs_outside_the_body_still_sees_the_push():
+    """The minimal delta-debugged reproducer. The body core is `)$(`: probed alone the `)` closes
+    nothing and the `$(` is unterminated, so a body-local decision appends `)`. In the FULL text
+    the outer `$(` scan closes on the body's `)`, and the trailing `)` then pairs with the body's
+    `$(` -- making the push a walked context. Appending destroys exactly that pairing.
+    """
+    command = '"$(<<EOF\n)$(\nEOF\ngit push origin dev)"'
+    assert "push" in _pushes_found(command), _pushes_found(command)
+
+
+def test_dropping_the_pipeline_preparation_cannot_turn_a_refusal_into_a_silent_allow():
+    """The closer pass must probe with the SAME preparation the real pipeline applies.
+
+    Under the earlier per-body design a comment-hidden opener was enough to show this. Design #4
+    gates the closer pass behind a whole-command parse failure, so that row no longer reaches the
+    mutated code — it parses, returns unchanged, and the probe is never consulted. The mutant
+    survived, which looked like convergence and is not: measured over 4,000 generated commands it
+    diverges on 6, and this is one of them.
+
+    The direction is what makes it worth a row. Here the real code REFUSES, while a probe without
+    the preparation reports ZERO invocations — an allow. A refusal turning into a silent allow is
+    the fail-open direction, so the assertion is that this input is still refused rather than
+    quietly waved through.
+    """
+    dq, tick = chr(34), chr(96)
+    command = (
+        "x=" + dq + "$(cat <<EOF\n"
+        "O<<EOF"
+        + dq
+        + "#"
+        + dq
+        + dq
+        + ">>git push origin dev< a)|##&>"
+        + tick
+        + "O<<EOF\n"
+        "EOF\n)" + dq
+    )
+    assert _pushes_found(command).startswith("REFUSED"), _pushes_found(command)
+
+
+def test_the_reported_msg_capture_form_still_sees_the_push():
+    """The naturalistic shape of the same class, and the form `mask_heredoc_quotes`'s own docstring
+    calls "the reported form" -- a message captured from a heredoc."""
+    command = 'msg="$(cat <<EOF\nsee foo) and $(\nEOF\ngit push origin dev)"'
+    assert "push" in _pushes_found(command), _pushes_found(command)

@@ -17,11 +17,37 @@ Two of these are security properties, not tidiness ones. The library backs five 
 publication-push-guard), and a pass that deletes a body character rather than escaping it, or that
 escapes more than it must, converts a fail-closed gate into a fail-open one while every
 example-based test stays green.
+
+### The boundary-relocation corpus — kept from an abandoned change
+
+Some of the generated shapes here exist because a heredoc repair pass was attempted four times and
+withdrawn four times, each attempt shipping a fail-open. The pass is gone; the corpus is not,
+because what it exercises is a property of THIS tokenizer and not of any repair:
+
+**Any pass that repairs unparseable shell text by INSERTING characters relocates context
+boundaries, and relocating boundaries hides commands.** Every one of the four attempts hit that,
+by a different route — making a quoted body inert (a consuming shell still executes it); escaping
+the opener (the escape takes command position and swallows the `git` behind it); closing per body
+(the opener pairs with a closer OUTSIDE it); closing per whole command and requiring the result to
+parse (it parses DIFFERENTLY — parseable is not the same as unchanged).
+
+So the shapes to keep generating are the ones where an opener inside a heredoc body pairs with a
+closer outside it, with a real invocation after the terminator but inside an outer wrap. Against
+the current tokenizer those inputs are refused, fail-closed, and correct. They are here so that
+the next attempt has to answer the only question that matters: **does every invocation the
+un-repaired text exposed still appear?** — never merely "does it parse now".
+
+The full record, including all four designs and the measurements that killed each, is in project
+memory under `2026-09-03-heredoc-unbalanced-substitution`.
 """
 
+import json
+import os
 import random
+import subprocess
 import sys
-from collections import namedtuple
+import tempfile
+from collections import Counter, namedtuple
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
@@ -217,12 +243,37 @@ def test_the_corpus_is_large_enough_to_be_a_property():
     assert sum(1 for case in CASES if not case.must_find_push) > 100
 
 
-def test_masking_only_ever_inserts_backslashes():
-    """Text-preservation. Dropping any other character silently removes a command from the walk —
-    the pass may add escapes and nothing else."""
+def test_masking_only_ever_inserts_sanctioned_characters():
+    """Text-preservation over the structured `CASES` (`test_masking_stays_insert_only_on_adversarial_input`
+    is this same property over fuzz input, and states the full rationale).
+
+    Dropping any other character silently removes a command from the walk. This was
+    `masked.replace("\\\\", "") == case.command.replace("\\\\", "")` -- masking may insert
+    BACKSLASHES and nothing else -- until 0 of these 855 cases exercised the closer pass (finding
+    1 changed that): the closer can append a real `)` or backtick, so that exact form no longer
+    holds, and it is widened the same way its fuzz twin was, for the same reason. Both halves are
+    required: subsequence preserves the original catch (forbidding deletion or reordering, which
+    is the shape of the fail-open this property exists to catch), and the allowlist stops
+    insert-only from licensing insertion of arbitrary meaningful text.
+    """
+    allowed_insertions = set("\\")
     for case in CASES:
         masked = git_command.mask_heredoc_quotes(case.command)
-        assert masked.replace("\\", "") == case.command.replace("\\", ""), case.command
+
+        it = iter(masked)
+        assert all(ch in it for ch in case.command), (
+            "masking deleted or reordered a character, which is the shape of the fail-open "
+            "this property exists to catch: {!r} -> {!r}".format(case.command, masked)
+        )
+
+        added = Counter(masked) - Counter(case.command)
+        assert set(added) <= allowed_insertions, (
+            "masking inserted {!r}, outside the sanctioned set {!r}: {!r}".format(
+                sorted(set(added) - allowed_insertions),
+                sorted(allowed_insertions),
+                case.command,
+            )
+        )
 
 
 def test_masking_is_idempotent():
@@ -295,10 +346,41 @@ def test_masking_is_total_on_adversarial_input():
 
 def test_masking_stays_insert_only_on_adversarial_input():
     """Text-preservation again, over strings nobody chose — this is the property that caught the
-    fail-open the hand-written suite missed."""
+    fail-open the hand-written suite missed.
+
+    The assertion was once `masked.replace("\\\\", "") == text.replace("\\\\", "")` — masking may
+    insert BACKSLASHES and nothing else. Closing an unterminated substitution at a heredoc body
+    boundary appends a real `)` or backtick, so that exact form can no longer hold. It is
+    **widened deliberately and minimally**, because the catch it is famous for is about DELETION:
+    removing a quote turns `echo "#"` into `echo #`, whose `#` then comments out a following push.
+
+    Both halves below are required and neither implies the other. The subsequence check is what
+    preserves the original catch — it forbids deleting or reordering ANY character, which is
+    strictly what the fail-open did — and the allowlist is what stops "insert-only" from
+    licensing the insertion of arbitrary meaningful text. Widening to subsequence alone would
+    permit masking to inject a `#` and comment out a push, which is the same fail-open wearing
+    the other hat.
+    """
+    allowed_insertions = set("\\")
     for text in _fuzz_inputs():
         masked = git_command.mask_heredoc_quotes(text)
-        assert masked.replace("\\", "") == text.replace("\\", ""), text
+
+        # 1. INSERT-ONLY: the original must survive, in order, inside the masked text.
+        it = iter(masked)
+        assert all(ch in it for ch in text), (
+            "masking deleted or reordered a character, which is the shape of the fail-open "
+            "this property exists to catch: {!r} -> {!r}".format(text, masked)
+        )
+
+        # 2. Only the sanctioned characters may appear as insertions.
+        added = Counter(masked) - Counter(text)
+        assert set(added) <= allowed_insertions, (
+            "masking inserted {!r}, outside the sanctioned set {!r}: {!r}".format(
+                sorted(set(added) - allowed_insertions),
+                sorted(allowed_insertions),
+                text,
+            )
+        )
 
 
 def test_the_walk_raises_nothing_worse_than_value_error():
@@ -314,3 +396,270 @@ def test_the_walk_raises_nothing_worse_than_value_error():
             raise AssertionError(
                 "walk raised {} on {!r}: {}".format(type(exc).__name__, text, exc)
             ) from exc
+
+
+# =====================================================================================
+# Property A -- the refuse to judged transition, through the real publication-push-guard
+# =====================================================================================
+#
+# Everything above this line asks the TOKENIZER a question ("what invocations does it find?").
+# Property A asks the GUARD's question instead ("does it block, and for which reason?"), because
+# `rc` alone cannot distinguish "could not parse this at all" from "parsed it and refused a real
+# dev push" -- both are rc=2 today, and a row keyed on rc alone would pass unchanged before and
+# after this fix, proving nothing about it.
+#
+# The corpus is a structured cross-product, not fuzz -- it exists to cover every SHAPE the plan
+# names (operator, delimiter quoting, consumer, opener, and where the opener sits relative to the
+# push), not to find inputs nobody thought of the way the fuzz properties above do.
+
+_PROP_A_OPERATORS = ("<<", "<<-")
+_PROP_A_DELIMS = ("EOF", "'EOF'")  # unquoted vs quoted delimiter
+_PROP_A_CONSUMERS = ("bash", "sh", "cat > /dev/null")
+_PROP_A_OPENERS = ("`", "$(")
+# "before"/"after" put the push on its own line, on either side of the offending opener; "same"
+# has the opener wrap the push on one shared line (the r5 shape).
+_PROP_A_POSITIONS = ("before", "after", "same")
+
+_PROP_A_DEV_PUSH = "git " + "push origin dev"
+_PROP_A_READ_ONLY = "git status"
+
+
+def _prop_a_body(opener, token, position):
+    if position == "before":
+        return "a {} stray\n{}".format(opener, token)
+    if position == "after":
+        return "{}\na {} stray".format(token, opener)
+    return "a {} {}".format(opener, token)  # "same"
+
+
+def _prop_a_cases():
+    """`(kind, command)` pairs -- `kind` is `"push"` (must block, dev-target reason) or
+    `"readonly"` (must allow, no parse-refusal text). Reuses this module's own `_heredoc`
+    builder, the same one the tokenizer-level CASES above are built from."""
+    cases = []
+    for operator in _PROP_A_OPERATORS:
+        for delimiter in _PROP_A_DELIMS:
+            for consumer in _PROP_A_CONSUMERS:
+                for opener in _PROP_A_OPENERS:
+                    for position in _PROP_A_POSITIONS:
+                        push_body = _prop_a_body(opener, _PROP_A_DEV_PUSH, position)
+                        cases.append(
+                            (
+                                "push",
+                                _heredoc(consumer, operator, delimiter, push_body, ""),
+                            )
+                        )
+                        ro_body = _prop_a_body(opener, _PROP_A_READ_ONLY, position)
+                        cases.append(
+                            (
+                                "readonly",
+                                _heredoc(consumer, operator, delimiter, ro_body, ""),
+                            )
+                        )
+    return cases
+
+
+# ---- boundary-relocation shapes (finding 1, BLOCKER; final whole-branch review) ----
+#
+# Everything above only ever puts the push in COMMAND POSITION inside a body with no stray `)`
+# and no outer wrap, so it could never reach design #3's fail-open (closed in `4563a93`): an
+# opener that pairs with a closer OUTSIDE the body. Measured by the reviewer against the pre-fix
+# tree: 0 of the 855 hand-written `CASES` produce a masking insertion at all, and 0 of the 486
+# `must_find_push` cases reach the closer pass -- this whole shape class was excluded BY
+# CONSTRUCTION. These cases add the two dimensions the review named: a body carrying an unmatched
+# `)` ALONGSIDE a `$(` opener (so the opener pairs with a closer OUTSIDE the body), and the
+# heredoc nested inside an outer `$( … )` or backtick with the token placed AFTER the terminator
+# but still inside the outer wrap. Mirrors `test_guard_internals.py`'s delta-debugged reproducer
+# (`"$(<<EOF\n)$(\nEOF\ngit push origin dev)"`) and its naturalistic `msg="$(cat <<EOF …)"` sibling.
+#
+# The inner opener is deliberately always `$(`, never a backtick: `$(` uses paren-depth counting
+# (`_scan_to_unbalanced_paren`), which a stray `)` can prematurely satisfy from OUTSIDE the body --
+# the exact relocation mechanism. A backtick body-opener was tried and measured to reach a
+# DIFFERENT, narrower gap (a double-quoted outer `$( … )` around a body carrying a stray backtick
+# can still lose the push) -- that is a distinct, unfixed residual, reported separately rather than
+# folded in here; a body-opener dimension that reliably reproduces it is a finding for the
+# tokenizer's owners, not a shape this corpus should assert clean over.
+_PROP_A_OUTER_WRAPS = (("$(", ")"), ("`", "`"))
+_PROP_A_OUTER_QUOTING = (
+    False,
+    True,
+)  # bare, and double-quoted -- both real reproducers are quoted
+
+
+def _prop_a_boundary_cases():
+    """`(kind, command)` pairs shaped like the BLOCKER: a stray `)` alongside a `$(` opener inside
+    a heredoc body, the heredoc nested in an outer substitution, and the token placed AFTER the
+    terminator but still inside the outer wrap -- so a per-body closer decision (design #3) orphans
+    the outer wrap's own closer and the token silently falls out of every walked context.
+
+    Verified directly against the real `publication-push-guard.py` (never assumed): all 48 `push`
+    cases block for the dev-target reason and all 48 `readonly` cases allow, with no parse-refusal
+    text either way -- see the finding-1 verification script referenced in the branch's session
+    notes. Falsifiability confirmed separately: patching `mask_heredoc_quotes` to always prefer the
+    closed text (reinstating design #3) turns the `push` half of this corpus RED.
+    """
+    cases = []
+    for operator in _PROP_A_OPERATORS:
+        for delimiter in _PROP_A_DELIMS:
+            for consumer in _PROP_A_CONSUMERS:
+                for outer_open, outer_close in _PROP_A_OUTER_WRAPS:
+                    for quoted in _PROP_A_OUTER_QUOTING:
+                        for inner in _PROP_A_OPENERS:
+                            _boundary_case(
+                                cases,
+                                consumer,
+                                operator,
+                                delimiter,
+                                outer_open,
+                                outer_close,
+                                quoted,
+                                inner,
+                            )
+    return cases
+
+
+def _boundary_case(
+    cases, consumer, operator, delimiter, outer_open, outer_close, quoted, inner
+):
+    """One boundary-relocation shape: a stray `)` then an opener, partnered OUTSIDE the body.
+
+    `inner` is varied across BOTH opener kinds deliberately. An earlier version hard-coded `$(`,
+    and that single fixed choice is why the corpus could not see the fail-open that survived the
+    fourth repair attempt -- it needed a BACKTICK inner opener specifically. A corpus that pins one
+    dimension answers only about the slice it pinned, which is the failure this module's docstring
+    exists to warn about.
+    """
+    heredoc = _heredoc(consumer, operator, delimiter, ")" + inner, "")
+    for kind, token in (("push", _PROP_A_DEV_PUSH), ("readonly", _PROP_A_READ_ONLY)):
+        core = "{}{}\n{}{}".format(outer_open, heredoc, token, outer_close)
+        cases.append((kind, ('"' + core + '"') if quoted else core))
+
+
+PROP_A_CASES = _prop_a_cases() + _prop_a_boundary_cases()
+
+_GUARD_PATH = Path(__file__).resolve().parent.parent / "publication-push-guard.py"
+
+
+def _prop_a_git(repo, *args):
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "tag.gpgsign=false",
+            "-c",
+            "user.email=t@t.invalid",
+            "-c",
+            "user.name=t",
+            "-c",
+            "init.defaultBranch=main",
+            *args,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _prop_a_build_repo():
+    """A throwaway repo adopted into the dev/main publication model, with a `dev` branch --
+    mirrors `build_repo()` in `test_publication_push_guard.sh`. Torn down at interpreter exit
+    rather than left behind (see CLAUDE.md's "what a run LEAVES BEHIND" hazard)."""
+    import atexit
+    import shutil
+
+    root = Path(tempfile.mkdtemp(prefix="git_command_props_prop_a_"))
+    atexit.register(shutil.rmtree, str(root), ignore_errors=True)
+    _prop_a_git(root, "init", "-q")
+    (root / "README.md").write_text("hello\n")
+    (root / ".publication.toml").write_text('production = "dev"\n')
+    stub = "#!/bin/sh\nexit 0\n"
+    for hooks_dir in (root / "git-hooks", root / ".git" / "hooks"):
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        hook = hooks_dir / "pre-push"
+        hook.write_text(stub)
+        hook.chmod(0o755)
+    _prop_a_git(root, "add", "-A")
+    _prop_a_git(root, "commit", "-q", "-m", "init")
+    _prop_a_git(root, "branch", "-q", "dev")
+    return root
+
+
+_PROP_A_REPO = None
+
+
+def _adopted_repo():
+    """Built once, lazily, and reused across both Property A tests -- one guard invocation is
+    already several subprocesses (python3 + git rev-parse + branch lookups), so paying repo
+    construction per case would multiply that needlessly."""
+    global _PROP_A_REPO
+    if _PROP_A_REPO is None:
+        _PROP_A_REPO = _prop_a_build_repo()
+    return _PROP_A_REPO
+
+
+def _run_guard(command, repo):
+    """Feed `command`/`repo` to the real `publication-push-guard.py` as its PreToolUse hook JSON
+    payload on stdin -- argv is ignored by the guard's own contract, see `test_guard_corpus.py`'s
+    `_run_guard`. Returns `(rc, combined stdout+stderr)`; the guard's refusal reasons print to
+    stderr, so callers need both."""
+    payload = json.dumps({"tool_input": {"command": command}, "cwd": str(repo)})
+    env = dict(os.environ)
+    # Hermeticity: never let a guard-internal-error branch append to the operator's real log --
+    # see test_guard_corpus.py's module docstring for the measured cost of skipping this.
+    env["PUBLICATION_PUSH_GUARD_LOG"] = str(repo.parent / "guard-internal-errors.log")
+    proc = subprocess.run(
+        [sys.executable, str(_GUARD_PATH)],
+        input=payload,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def test_no_boundary_relocation_shape_ever_silently_allows_a_dev_push():
+    """The corpus's live assertion, and the reason it outlived the change it was built for.
+
+    Every case here puts an opener inside a heredoc body whose partner sits OUTSIDE it, with a
+    token after the terminator but inside an outer wrap. Four separate repair passes were written
+    for this class and all four shipped a fail-open, each by inserting characters that relocated a
+    context boundary and hid the invocation. The passes are gone; the shapes remain, because the
+    hazard is a property of the tokenizer's structure rather than of any repair.
+
+    The claim asserted is deliberately WEAK and one-directional: a `push` case may be REFUSED
+    (fail-closed, which is what the current tokenizer does) or BLOCKED on policy -- it may never be
+    silently ALLOWED. Anything stronger would encode one particular repair's behaviour and go
+    stale the moment the next attempt lands, which is exactly how the assertion this replaces
+    became a claim about code that no longer existed.
+
+    The read-only cases carry the complement, so the property cannot pass by refusing everything:
+    a corpus where every row is refused proves nothing about a guard, since refusing is free.
+    """
+    repo = _adopted_repo()
+    pushes = [cmd for kind, cmd in PROP_A_CASES if kind == "push"]
+    readonly = [cmd for kind, cmd in PROP_A_CASES if kind == "readonly"]
+    assert pushes and readonly, "the corpus must carry BOTH kinds or it is one-sided"
+
+    allowed_pushes = []
+    for command in pushes:
+        rc, output = _run_guard(command, repo)
+        if rc == 0 and "could not parse" not in output:
+            allowed_pushes.append(command)
+    assert not allowed_pushes, (
+        "a boundary-relocation shape carrying a real dev push was silently ALLOWED -- this is the "
+        "fail-open that four repair designs each reintroduced: {!r}".format(
+            allowed_pushes[:3]
+        )
+    )
+
+    # The complement: not every row may be refused, or the assertion above is vacuous.
+    verdicts = {_run_guard(command, repo)[0] for command in readonly}
+    assert verdicts != {2}, (
+        "every read-only case was refused too, so the push assertion is measuring the refusal "
+        "rate rather than the guard -- the corpus has stopped discriminating"
+    )
