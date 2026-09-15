@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.108.15 — 2026-09-14
+- test(recast-commit-gate): pin reserved words in commit argv
+
 ## v0.108.14 — 2026-09-14
 - fix(git_command): stop a reserved word cutting a git argument list
 

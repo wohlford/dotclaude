@@ -222,6 +222,21 @@ printf 'changed\n' >>"$REPO/skills/recast/recast-state.sh"
 gi "$REPO" add skills/recast/recast-state.sh >/dev/null 2>&1
 gate_run "$REPO" "git commit --dry-run -m x" 0 "gate: --dry-run creates no commit -> 0"
 
+# DECIDED TRADES, each pinned beside its neutral spelling. The reserved word sits in the `-m` VALUE
+# slot on purpose: a bare word after `-m x` is already a pathspec to the gate, which narrows the scope
+# and exits 0 whether or not the list is cut, so such a row can never move. With `-m then`, the gate
+# once cut the argv at the reserved word and gated a commit on its staged change. Its full argv is a
+# dry run (no commit) in the first row, and names pathspecs `git`/`status` that match nothing staged
+# in the second -- exactly what the neutral spellings always got.
+build_repo fail
+printf 'changed\n' >>"$REPO/skills/recast/recast-state.sh"
+gi "$REPO" add skills/recast/recast-state.sh >/dev/null 2>&1
+gate_run "$REPO" "git commit -m then" 2 "gate: control, a message of 'then' is still gated -> 2"
+gate_run "$REPO" "git commit -m ZZ git status --dry-run" 0 "gate: trade control, neutral spelling is a dry run -> 0"
+gate_run "$REPO" "git commit -m then git status --dry-run" 0 "gate: trade, --dry-run behind a reserved word -> 0"
+gate_run "$REPO" "git commit -m ZZ git status" 0 "gate: trade control, neutral pathspecs narrow the scope -> 0"
+gate_run "$REPO" "git commit -m then git status" 0 "gate: trade, pathspecs behind a reserved word narrow the scope -> 0"
+
 # review MAJOR: pathspecs are cwd-relative — a subdirectory invocation must still be gated
 build_repo fail
 printf 'changed\n' >>"$REPO/skills/recast/recast-state.sh"   # broken, unstaged
