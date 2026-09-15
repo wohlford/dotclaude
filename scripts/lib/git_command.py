@@ -123,7 +123,50 @@ def classify_global_opt(opt: str) -> str:
     return "unknown"
 
 
-ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# `\+?=` (not just `=`): a `VAR+=val` append-form prefix is legal bash and, before this widened,
+# was invisible here -- `starts_command`/`_env_prefix` read `git` in `FOO+=1 git push` as being in
+# ARGUMENT position (the append token matched neither this regex nor a known wrapper), so
+# `iter_git_invocations_detailed` returned ZERO invocations for the whole command. Nothing
+# downstream -- publication-push-guard.py, git-timing-guard.py, and every other consumer of this
+# walk -- could judge what it never saw. Widening only GROWS the match set, so no token that was a
+# command word stops being one; the audited risk is a caller that extracts a NAME via
+# `token.split("=", 1)[0]`, which now yields `"VAR+"` for an append token instead of `"VAR"` --
+# every such call site in this repo was audited when this widened (see the branch history), and
+# the THREE that consume env-prefix tokens (`_config_scope_is_local`, `_config_injection_reason`
+# and `_exported_injection_reason`'s walker) use `_assign_name`/`_is_assign_token` rather than a bare
+# split.
+#
+# THAT AUDIT WAS INCOMPLETE. Consumers are exposed in TWO distinct ways, and this audit had only
+# looked at one of them:
+#
+#   SELECTION -- takes a decision from "the FIRST push found", so it changes purely because the
+#     walk now RETURNS MORE INVOCATIONS. `git-timing-guard.py` is the one in this repo:
+#       ALLOW_GIT_WRITE=1 FOO+=1 git <push> … && git <push> …
+#         dev     -> 1 invocation; the FIRST push is invisible and runs unjudged
+#         widened -> 2 invocations, and its target directory is read from the first
+#   TOKEN-PARSING -- reads the leading assignment run itself. `push-guard.py` is this, not a
+#     selection consumer: its own docstring says it "Consumes `iter_context_token_streams`, NOT
+#     `iter_git_invocations_with_cwd`". Its verdict moved because ENV_ASSIGN now matches
+#     `FOO+=1` inside `_leading_env_authorized`'s scan. (An earlier version of this paragraph
+#     filed it under SELECTION -- wrong, and it deleted the timing-guard example that was the
+#     real selection case, leaving the file asserting two of a kind with evidence for neither.)
+#
+# Measured END TO END on `push-guard.py`, by exit code rather than a helper's return value:
+#
+#   FOO+=1 ALLOW_PUSH=1 git <push> origin dev   dev rc=0 -> now rc=0   (unchanged)
+#   FOO+=1 git <push> origin dev                dev rc=0 -> now rc=2   (MOVED, safe direction)
+#   FOO=1 ... (control, both spellings)                    unchanged
+#
+# So the widening makes that gate STRICTLY STRONGER: on `dev` an unauthorized push behind a `+=`
+# prefix was invisible and allowed; it is now caught. `_leading_env_authorized` does read
+# differently on the two builds, but the composed verdict never becomes more permissive -- which
+# is why a helper's reading is not the thing to quote.
+#
+# Two lessons for the next person widening this. Ask what changes for consumers that SELECT among
+# invocations AND for those that PARSE the leading run -- they are different exposures and a
+# consumer is usually only one of them. And read the composed VERDICT: a helper's return moving
+# is not the gate's answer moving, and the two pointed opposite ways here.
+ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 
 
 class ParseAmbiguity(ValueError):

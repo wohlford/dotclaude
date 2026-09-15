@@ -357,3 +357,35 @@ def test_the_reported_msg_capture_form_still_sees_the_push():
     calls "the reported form" -- a message captured from a heredoc."""
     command = 'msg="$(cat <<EOF\nsee foo) and $(\nEOF\ngit push origin dev)"'
     assert "push" in _pushes_found(command), _pushes_found(command)
+
+
+def test_append_assign_re_stays_a_subset_of_the_shared_env_assign() -> None:
+    """`_APPEND_ASSIGN_RE` must never match a token `gitcmd.ENV_ASSIGN` does not.
+
+    This is the branch's THIRD instance of one defect class made loud. Twice a local predicate
+    silently diverged from the shared one it duplicated -- `_looks_like_unresolvable_expansion`
+    wired into one of two sites, and a literal separator frozenset that a comment CLAIMED matched
+    `is_op` and did not. Both were fail-opens, and neither had a local tell.
+
+    The coupling this pins is the last one of that shape. `_assign_name` strips the `+` from an
+    append-form token, and it only ever sees such a token because `ENV_ASSIGN` admits it. Narrow
+    `ENV_ASSIGN` back to `=`-only and the guard stops seeing the whole invocation (measured: ZERO
+    invocations for `FOO+=1 git <verb>`), while this narrower regex keeps matching -- so nothing
+    here would fail. That is exactly the silent divergence this asserts against.
+    """
+    import itertools
+
+    matched = 0
+    for n in range(1, 5):
+        for token in ("".join(c) for c in itertools.product("aB_9+=", repeat=n)):
+            if guard._APPEND_ASSIGN_RE.match(token):
+                matched += 1
+                assert gitcmd.ENV_ASSIGN.match(token), (
+                    f"{token!r} matches the guard's append-form regex but NOT the shared "
+                    "gitcmd.ENV_ASSIGN -- the two have diverged, and `_assign_name` is now "
+                    "reachable for a token the tokenizer never collects"
+                )
+    assert matched > 0, (
+        "the enumeration matched no append-form token at all -- a vacuous pass, so the "
+        "subset assertion above proved nothing"
+    )

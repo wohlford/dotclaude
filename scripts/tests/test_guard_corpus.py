@@ -125,6 +125,16 @@ def _load_baseline_gitcmd() -> ModuleType:
 # in the module docstring above.
 LOG_ENV_VAR = "PUBLICATION_PUSH_GUARD_LOG"
 
+# Task 3b: the guard's `_name_carries_export_attribute` consults `os.environ`, so `_run_guard`
+# below pins a FIXED environment rather than inheriting one -- otherwise every row that touches
+# reach would vary by whichever machine runs this suite. These two names are what make that pin
+# falsifiable rather than merely plausible: one is deliberately present in the pinned env (so a
+# reach rule stuck at "always True" cannot be distinguished from a working one without it), and
+# one is deliberately absent (so a reach rule stuck at "always False" cannot be either). See
+# env_bypass_corpus_exported_probe / env_allow_corpus_absent_probe below.
+CORPUS_EXPORTED_PROBE = "CORPUS_EXPORTED_PROBE"
+CORPUS_ABSENT_PROBE = "CORPUS_ABSENT_PROBE"
+
 # sha256 of the vendored baseline, computed from `git show 782039d:<path>` at the moment it was
 # copied into fixtures/prechange/. Re-verified at runtime by `_verify_baseline_frozen` below --
 # see the module docstring's WHY-vendored note for why a mutated baseline makes every comparison
@@ -707,7 +717,7 @@ def _build_rows(
             "DELIBERATE over-block: without `set -a` git never sees these, but the rule cannot "
             "tell the two apart and the safe direction is to refuse",
         ),
-        # ---------- T1 (D3): the inverted `GIT_*` allowlist, consulted by BOTH env arms ---------
+        # ---------- T1 (D3): the whole-namespace env allowlist, consulted by BOTH env arms ------
         # `GIT_COMMON_DIR` moves where git resolves `hooks/pre-push` (branch design record, finding
         # F2) exactly like `GIT_DIR`, but the coarse whole-command `GITDIR_RE` above only matches
         # `GIT_DIR=` -- so before this allowlist, NEITHER env arm denied it at all. Both rows below
@@ -746,9 +756,9 @@ def _build_rows(
             "reserved_word_no_injection_control",
             f"if true; then echo hi ; fi ; git {PUSH_SAFE_ARGS}",
             MUST_ALLOW,
-            "the negative control for T3's matrix: a reserved word ahead of an ordinary, "
-            "non-GIT_*-shaped command must stay allowed -- the fix must not turn every "
-            "reserved word into a block",
+            "the negative control for T3's matrix: a reserved word ahead of an ordinary "
+            "command with no env assignment at all must stay allowed -- the fix must not turn "
+            "every reserved word into a block",
         ),
         # ---------- MUST_ALLOW: allowed today, must stay allowed (an over-block guard) ----------
         Row(
@@ -822,8 +832,12 @@ def _build_rows(
         Row(
             "export_of_an_unrelated_var_beside_git",
             f"export EDITOR=vim && git {_VERB} origin main",
-            MUST_ALLOW,
-            "an ordinary export must not be caught by the name-keyed check",
+            MUST_BLOCK,
+            "EDITOR names a program git EXECUTES, so it fails the allowlist's property. This "
+            "row asserted the opposite until the env axis became an allowlist -- kept, with "
+            "its expectation flipped, rather than deleted, because the flip IS the behaviour "
+            "change and deleting it would hide it. Its original purpose, that an ordinary "
+            "export is not caught, is now carried by env_allow_control_plane_allow_push_exported",
         ),
         Row(
             "denied_name_only_inside_a_quoted_argument",
@@ -909,12 +923,686 @@ def _build_rows(
             "an implementer who left the old prefix-deny check ahead of the allowlist consult in "
             "the export arm -- that ordering mistake would newly block this exact command",
         ),
+        # --- non-GIT_ env axis: CLOSED; these rows are what keep it closed -----
+        # Each of these was ALLOWED before this branch and is a measured bypass, not a
+        # hypothetical: a hostile HOME moved core.hooksPath, the boundary hook did not run,
+        # and the push returned rc=0 against rc=1 with a clean env. They entered as
+        # XFAIL_TODAY -- the category asserting a row is still ALLOWED -- so the suite was
+        # green evidence the hole was open, and the same test was the tripwire that forced
+        # this reclassification the moment it closed.
+        Row(
+            "env_bypass_home_inline",
+            f"HOME=/tmp/hostile git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "a hostile HOME's .gitconfig sets core.hooksPath, the boundary hook does not run, "
+            "and the push SUCCEEDS -- measured full-stack, rc=0 against rc=1 with a clean env",
+        ),
+        Row(
+            "env_bypass_xdg_config_home_inline",
+            f"XDG_CONFIG_HOME=/tmp/h git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the second config-relocation spelling; git reads $XDG_CONFIG_HOME/git/config and "
+            "the hooks path moves (measured, isolated with a clean HOME)",
+        ),
+        Row(
+            "env_bypass_path_inline",
+            f"PATH=/tmp/hostile git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "NOT config relocation -- PATH replaces the git BINARY outright (measured with a "
+            "shim; a clean-PATH control did not reach it). The class the backlog entry's "
+            "prescribed name-blocklist remedy structurally cannot reach",
+        ),
+        Row(
+            "env_bypass_ld_preload_inline",
+            f"LD_PRELOAD=/tmp/e.so git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "code injection into the git process -- same class as PATH",
+        ),
+        Row(
+            "env_bypass_reach_floor_xdg_standalone",
+            f"XDG_CONFIG_HOME=/tmp/h ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "THE ROW THAT PINS _REACH_FLOOR, and one of only three. Every other reach row uses "
+            "HOME, which this harness pins into the guard's own environment, so `name in "
+            "os.environ` satisfies them and the floor could be DELETED with nothing going red -- "
+            "measured. XDG_CONFIG_HOME is absent from the pinned env, so only the floor makes it "
+            "reach. The floor exists for exactly the case os.environ cannot cover (a session "
+            "launched without the shell profile); without this row that case was unguarded",
+        ),
+        Row(
+            "env_bypass_reach_floor_ld_preload_standalone",
+            f"LD_PRELOAD=/x.so ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the second floor member in standalone form -- measured to flip to ALLOW when the "
+            "floor is deleted. The inline-prefix LD_PRELOAD row cannot pin this: an inline "
+            "prefix takes reaches_git_env=True directly and never consults the reach rule",
+        ),
+        Row(
+            "env_bypass_reach_floor_dyld_standalone",
+            f"DYLD_INSERT_LIBRARIES=/x.dylib ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the floor's PREFIX arm (`DYLD_`), which had no row at all in either direction. "
+            "Measured to flip to ALLOW when the floor is deleted",
+        ),
+        Row(
+            "env_bypass_wrapper_command_export_git_name",
+            f"command export GIT_CONFIG_COUNT=1 ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "THE REGRESSION ROW. `dev` BLOCKS this; the commit that added the command-position "
+            "gate ALLOWED it, and every later commit inherited that -- one word in front of "
+            "`export` ended command-prefix position and the whole arm went dark. Measured "
+            "across all seven trees. The commit claimed to change no verdict; it lost this true "
+            "positive, and the three benign de-over-blocks it did make are what hid it. A GIT_ "
+            "name is deliberate: `dev` BLOCKS it, so this row records a true REGRESSION "
+            "rather than only an unclosed gap -- which a non-GIT_ name could not have "
+            "shown. Do NOT credit the shrink assertion here: it compares against the "
+            "FROZEN fixture, which predates this arm entirely and returns 0 for this "
+            "row, so it passes for free. The pin is the mutation, not the shrink",
+        ),
+        Row(
+            "shell_shape_expansion_program_with_export_argument",
+            "$TOOL export secrets.json ; git status",
+            MUST_BLOCK,
+            "A DELIBERATE OVER-BLOCK, pinned so the trade cannot widen unnoticed. The program "
+            "name is an expansion and its first argument happens to be the literal word "
+            "`export`, so the possibly-vanishing rule fires and refuses a command that does not "
+            "export anything. Kept rather than narrowed: narrowing the predicate to exclude "
+            "tokens carrying literal text would re-open `$(echo command) export HOME=/x ; git "
+            "<verb>`, a MEASURED bypass -- the narrowing-drops-true-positives hazard exactly. "
+            "Boundary measured and bounded: `./mytool export …`, `mytool export …`, `$(which "
+            "doppler) secrets export` and `$TOOL set -a` all stay ALLOWED, so this is not the "
+            "expansion arm over-firing generally. Named in the module's documented residuals",
+        ),
+        Row(
+            "shell_shape_expansion_program_without_export_argument",
+            "$TOOL build --release ; git status",
+            MUST_ALLOW,
+            "THE CONTROL bounding the row above: the same expansion-shaped program name, with an "
+            "ordinary argument. If this ever blocks, the over-block stopped being about the word "
+            "`export` and became an expansion-shaped program name being refused outright",
+        ),
+        Row(
+            "env_bypass_fused_operator_before_export",
+            f"(true)&&export GIT_CONFIG_COUNT=1 ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "THE FOURTH REGRESSION ROW, and the third dimension. shlex GROUPS operator runs, so "
+            "`)&&` arrives as ONE token; the old literal seven-member separator set matched none "
+            "of `)&&`, `)||`, `;;`, `;&`, `;;&`, and the fused token then read as a command word "
+            "and ended prefix position. dev BLOCKS this. The tokenizer's own `is_op` is "
+            "character-based for exactly this reason and its comment warns of exactly this "
+            "shape -- the guard kept a weaker local copy anyway, with a comment claiming the two "
+            "agreed. THIRD finding on this branch of that shape; the fix DELETES the duplicate",
+        ),
+        Row(
+            "env_bypass_case_terminator_standalone_home",
+            f"case x in (x) HOME=/tmp/hostile ;; esac ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the other half of the same defect, at the other call site. `;;` is not a separator "
+            "to the old set, so a STANDALONE assignment run read as scoped-to-a-command-word and "
+            "reach was forced False before the name was consulted. Allowed on EVERY build until "
+            "now, while the module docstring asserted this class closed",
+        ),
+        Row(
+            "env_bypass_case_terminator_standalone_ld_preload",
+            f"case x in (x) LD_PRELOAD=/tmp/e.so ;; esac ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "a reach-floor name through the same hole -- so it pins the fix against the floor "
+            "as well as against the separator set",
+        ),
+        Row(
+            "shell_shape_case_terminator_allows_allowlisted_export",
+            "case x in (x) export ALLOW_PUSH=1 ;; esac ; git status",
+            MUST_ALLOW,
+            "THE FALSE BLOCK the same defect caused, in the opposite direction: `;;` did not "
+            "reset `exporting`, so the OPERATOR ITSELF was judged as a variable name and the "
+            'refusal read "add ;; to _ENV_ALLOWLIST". This is the repo\'s own authorization '
+            "override being refused inside a case statement. Both directions from one root "
+            "cause, which is why one predicate swap fixes both",
+        ),
+        Row(
+            "shell_shape_case_terminator_ordinary",
+            'case "$1" in (a) : ;; esac ; git status',
+            MUST_ALLOW,
+            "the CONTROL: an ordinary case statement with no assignment at all must stay "
+            "allowed, so a fix that treated every fused operator as significant is caught here",
+        ),
+        Row(
+            "env_bypass_expansion_before_export_git_name",
+            f"$(echo command) export GIT_CONFIG_COUNT=1 ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "THE THIRD REGRESSION ROW, and the one that is NOT about a missing word. The wrapper "
+            "SET is complete -- 68 candidate words measured against real bash, only "
+            "command/builtin/time/eval qualify (`!` is a reserved word, handled elsewhere). This "
+            "hole is a different dimension: an EXPANSION in command-prefix position, which no "
+            "word list can enumerate. Measured: `$(echo command) export X=1`, `$UNSET export "
+            "X=1` and `$(true) export X=1` all really export, because bash runs the assignment "
+            "in the CURRENT shell when no command name survives expansion. The module already "
+            "owned `_looks_like_unresolvable_expansion` and consulted it at only ONE of the two "
+            "sites that needed it -- two spellings of one intent, the weaker guarding the arm "
+            "that matters",
+        ),
+        Row(
+            "env_bypass_expansion_unset_var_before_export",
+            f"$UNSETW export GIT_CONFIG_COUNT=1 ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the vanishing spelling rather than the expands-to-a-wrapper one. An unset variable "
+            "collapses to nothing, so `export` is the command word after all",
+        ),
+        Row(
+            "env_bypass_expansion_before_export_home",
+            f"$(echo command) export HOME=/tmp/h ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the same spelling against this branch's OWN headline closure -- dev never blocked "
+            "this, so it pins the expansion handling against the new mechanism, not only "
+            "against the dev regression",
+        ),
+        Row(
+            "env_bypass_expansion_before_allexport",
+            f"$(echo command) set -a ; FRESHNAME=1 ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "an expansion in front of the MODE switch. Fresh name deliberately: HOME would block "
+            "via _REACH_FLOOR regardless and pin nothing here",
+        ),
+        Row(
+            "shell_shape_real_command_word_before_export",
+            "echo export FOO=1 ; git status",
+            MUST_ALLOW,
+            "THE CONTROL for the expansion handling: a REAL command word must still end "
+            "command-prefix position. Measured -- `echo export FOO=1` does NOT export, so this "
+            "must stay allowed. A fix that treated every non-assignment token as possibly-"
+            "vanishing would swallow this row",
+        ),
+        Row(
+            "env_bypass_wrapper_eval_export_git_name",
+            f"eval export GIT_CONFIG_COUNT=1 ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "THE SECOND REGRESSION ROW, and the reason this set is enumerated from measurement "
+            "rather than intuition. `eval` runs the builtin in the current shell and really "
+            "exports (measured; `eval set -a` enables allexport too), but the first pass at the "
+            "wrapper set omitted it -- so the commit that FIXED the wrapper regression left the "
+            "same regression open through one more spelling. dev BLOCKS this; that commit "
+            'ALLOWED it. NOT the documented `eval "git push …"` residual: that form is opaque '
+            "to the tokenizer, this one is fully visible and was never considered",
+        ),
+        Row(
+            "env_bypass_wrapper_eval_home",
+            f"eval export HOME=/tmp/h ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the same spelling against a name only THIS branch closes -- so it pins the wrapper "
+            "set against the branch's own new mechanism, not only against the dev regression",
+        ),
+        Row(
+            "env_bypass_wrapper_eval_allexport",
+            f"eval set -a ; FRESHNAME=1 ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "`eval` in front of the MODE switch rather than an export word. Fresh name "
+            "deliberately: HOME would block via _REACH_FLOOR regardless and pin nothing",
+        ),
+        Row(
+            "env_bypass_wrapper_builtin_export",
+            f"builtin export HOME=/tmp/h ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "`builtin` is NOT in gitcmd.WRAPPERS, which is exactly why that set could not be "
+            "reused here -- it omits a wrapper that preserves export and carries several that "
+            "do not (measured: nohup/nice/stdbuf do NOT export, because they exec an external "
+            "process and `export` is not a binary)",
+        ),
+        Row(
+            "env_bypass_wrapper_time_export",
+            f"time export HOME=/tmp/h ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "`time` is a shell keyword, not an external program, so the builtin behind it runs "
+            "in the current shell and really exports (measured)",
+        ),
+        Row(
+            "env_bypass_wrapper_command_dash_p",
+            f"command -p export HOME=/tmp/h ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the wrapper's OWN option. Measured to export. Pins that options are skipped while "
+            "still inside the wrapper rather than ending command-prefix position",
+        ),
+        Row(
+            "env_bypass_wrapper_nested",
+            f"command command export HOME=/tmp/h ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "nested wrappers, measured to export. Pins that the transparency is not one-deep",
+        ),
+        Row(
+            "env_bypass_wrapper_command_allexport",
+            f"command set -a ; FRESHNAME=1 ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the wrapper in front of `set -a` rather than `export`. Measured: `command set -a` "
+            "really does turn allexport ON, so the FRESH name that follows reaches. Uses a "
+            "fresh name deliberately -- HOME would block via _REACH_FLOOR regardless and so "
+            "would pin nothing here",
+        ),
+        Row(
+            "shell_shape_time_before_git",
+            "time git status",
+            MUST_ALLOW,
+            "THE CONTROL for wrapper transparency: a wrapper before an ordinary git read must "
+            "stay allowed. If this blocks, the wrapper handling stopped being about export "
+            "constructs and started swallowing commands",
+        ),
+        Row(
+            "shell_shape_wrapper_word_not_at_prefix",
+            "echo command export FOO=1 && git status",
+            MUST_ALLOW,
+            "`command` in ARGUMENT position, after `echo` has already ended command-prefix "
+            "position -- it is a string being printed, not a wrapper. The mirror of the "
+            "`git config set` false-block, one construct over",
+        ),
+        Row(
+            "env_bypass_home_exported",
+            f"export HOME=/tmp/hostile ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the EXPORT arm's spelling. The two arms share one predicate and the source forbids "
+            "splitting them, so this row proves the second arm was reached, not assumed",
+        ),
+        Row(
+            "env_bypass_editor_exported",
+            f"export EDITOR=/tmp/evil ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "EDITOR names a program git EXECUTES, so it fails the stated property. This row is "
+            "the deliberate counterpart to export_of_an_unrelated_var_beside_git, whose "
+            "MUST_ALLOW expectation Task 3 changes -- the pair is what keeps that change "
+            "visible instead of silent",
+        ),
+        Row(
+            "env_bypass_home_beside_allowlisted_name",
+            f"GIT_PAGER=cat HOME=/tmp/h git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "an allowlisted name ahead of a denied one -- pins that the loop does not stop at "
+            "the first cleared assignment",
+        ),
+        Row(
+            "env_bypass_home_via_env_wrapper",
+            f"env HOME=/tmp/hostile git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the OPTION-LESS `env` wrapper. Measured: the tokenizer collects this as "
+            "env=['HOME=/tmp/hostile'], so it is judged. `env` with ANY option, and "
+            "`/usr/bin/env`, yield no invocation at all and are a documented residual -- this "
+            "row is what keeps the judged form from being confused with the unjudged one",
+        ),
+        Row(
+            "env_bypass_home_allexport_bundled",
+            f"set -ao allexport; HOME=/tmp/hostile; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "SHORT OPTIONS BUNDLE. Measured against real bash: `set -ao allexport`, `set -ea` "
+            "and `set -xa` all turn allexport ON, and `set -ea; N=1` really does put N in the "
+            "environment, while `set -e`, `set -x` and `set do -a` leave it OFF. A tracker "
+            "matching the exact token `-a` misses every bundled spelling and CLEARS the HOME= "
+            "that follows -- a fail-OPEN one keystroke from env_bypass_home_allexport. Found by "
+            "the Task 2 review; this row is what stops it coming back",
+        ),
+        Row(
+            "env_bypass_home_allexport_bundled_leading",
+            f"set -ea; HOME=/tmp/hostile; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the bundled form with `a` NOT first, so a tracker keying on the option's first "
+            "character misses it too. Its controls are shell_shape_set_x_no_allexport and "
+            "shell_shape_set_dashdash, which must stay ALLOW",
+        ),
+        Row(
+            "env_bypass_home_declare_x",
+            f"declare -x HOME=/tmp/hostile ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the EXPORTING form of declare. Measured: `declare -x N=1` DOES put N in the "
+            "environment while `declare -r N=1` does not, so this must block where "
+            "shell_shape_declare_option must not. The pair is what keeps the -x test from "
+            "being simplified away in either direction",
+        ),
+        Row(
+            "env_bypass_home_allexport",
+            f"set -a; HOME=/tmp/hostile; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "set -a exports bare assignments that follow. The sibling row "
+            "exported_injection_set_allexport already pins this shape for a GIT_ name; this is "
+            "the non-GIT_ name Task 2's allexport tracking must keep reaching",
+        ),
+        Row(
+            "env_bypass_home_in_non_adopted_repo",
+            f"cd {other_s} && HOME=/tmp/hostile git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "THE ROW THAT MOVES IF ANYONE RE-INTRODUCES ADOPTION GATING. Measured: a hostile "
+            "HOME alias invoked from a NON-adopted cwd pushed an ADOPTED repo's private branch "
+            "(rc=0, '[new branch] dev') while a direct push was refused by the boundary hook. "
+            "Adoption is judged from where the command STARTS; the env prefix decides where it "
+            "ENDS. Deleting this row is how that refuted design comes back",
+        ),
+        # --- Task 3b: REACH belongs to the NAME, not the construct. `declare`/`typeset`/
+        # `readonly` WITHOUT `-x`, `+=`, and a redirection-only (no command word) simple command
+        # all still put an ALREADY-EXPORTED name into git's environment -- measured against real
+        # bash, the exact thing `_name_carries_export_attribute` now tests for. Each was ALLOWED
+        # before this branch (the `-x` test and the allexport test were the only reach checks).
+        Row(
+            "env_bypass_home_declare_no_x",
+            f"declare HOME=/x ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "`declare HOME=/x` carries NO `-x` -- the construct itself does not export -- but "
+            "HOME already carries the export attribute, so bash still puts it in a later git "
+            "invocation's environment. Its counterpart shell_shape_declare_option (`declare -r "
+            "N=1`, a FRESH name) is what proves this isn't just 'declare always blocks now'",
+        ),
+        Row(
+            "env_bypass_home_typeset_no_x",
+            f"typeset HOME=/x ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the `typeset` spelling of env_bypass_home_declare_no_x -- same construct family, "
+            "same already-exported name, same measured reach",
+        ),
+        Row(
+            "env_bypass_home_readonly",
+            f"readonly HOME=/x ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "`readonly` joins the export-word family in this branch. It has no `-x` option at "
+            "all, so before this branch it was not even RECOGNISED as an export-family word -- "
+            "the bare name walk would have judged 'HOME=/x' as a plain command-prefix "
+            "assignment instead, which is a different code path but the same measured reach",
+        ),
+        Row(
+            "env_bypass_home_append",
+            f"HOME+=ZZ ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the `+=` append form, in its own segment. HOME already carries the export "
+            "attribute, so the appended value reaches a later git invocation. NOTE the history, "
+            "because this `why` said the opposite for one commit: `+=` WAS first matched by a "
+            "local regex to avoid touching the shared `gitcmd.ENV_ASSIGN`, and that was WRONG -- "
+            "the shared regex is what `starts_command` consults, so an inline `+=` prefix made "
+            "the whole invocation invisible (measured: ZERO invocations). The shared regex was "
+            "widened, and the local clause became inert and was deleted. Do not narrow "
+            "`ENV_ASSIGN` back on the strength of a stale comment; see its own block for the "
+            "audit that widening owed",
+        ),
+        Row(
+            "env_bypass_home_redirect_no_command_word",
+            f"HOME=/x >/dev/null ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "a redirection with NO command word. Measured: the shared tokenizer's own "
+            "`strip_redirects` already removes the `>` operator and its target before this "
+            "walker ever sees them, so the stream reduces to 'HOME=/x' alone in its segment -- "
+            "a STANDALONE bare assignment, not a prefix to a command. This row is what proves "
+            "that reduction, rather than assuming it",
+        ),
+        Row(
+            "env_bypass_home_andand_standalone",
+            f"HOME=/x && git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the `&&` spelling of a standalone bare assignment -- HOME=/x is the entire first "
+            "segment, terminated by a separator rather than a command word, so it persists in "
+            "the shell and keeps its export attribute. The semicolon spelling is pinned "
+            "separately by env_bypass_corpus_exported_probe below",
+        ),
+        Row(
+            "env_bypass_corpus_exported_probe",
+            f"{CORPUS_EXPORTED_PROBE}=1 ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the determinism sentinel's BLOCK arm. _run_guard pins a fixed environment carrying "
+            "this name (see the module-level comment beside CORPUS_EXPORTED_PROBE); it is not "
+            "on the allowlist, so a reach rule that actually consults that pinned environment "
+            "must deny it. Paired with env_allow_corpus_absent_probe below, the two move OPPOSITE "
+            "arms of the computation, so a rule stuck at either value is caught. Do NOT read "
+            "this as sole-pin status: an earlier `why` here claimed a rule stuck at 'always "
+            "False' would move only this row, and that is measured FALSE -- `declare HOME=/x`, "
+            "`typeset HOME=/x`, `readonly HOME=/x`, `HOME+=ZZ` and the XDG row flip too. The "
+            "overclaim mattered in one direction: it would license deleting a neighbour",
+        ),
+        Row(
+            "env_allow_corpus_absent_probe",
+            f"{CORPUS_ABSENT_PROBE}=1 ; git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "the determinism sentinel's ALLOW arm. This name is deliberately NOT in the pinned "
+            "environment _run_guard builds and is not on `_REACH_FLOOR`, so it cannot reach git "
+            "regardless of what real machine runs this suite. Without it, a rule that consults "
+            "os.environ unconditionally reads as correct on every row that uses an already-"
+            "exported name. Not a sole pin either: measured, a rule stuck at 'always True' also "
+            "flips `x=1 ; git status` and `declare -r N=1 ; git status`. Both sentinel `why` "
+            "strings claimed sole-pin status and both were wrong -- the value here is covering "
+            "the arm nothing else covers, not being the only row that moves",
+        ),
+        Row(
+            "env_bypass_allexport_bundled_pins_the_matcher",
+            f"set -ea; FRESHNAME=1; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "ONE OF THE TWO ROWS THAT PIN THE BUNDLED-ALLEXPORT MATCHER (its `-ao` sibling "
+            "below is the other; an earlier version of this string claimed sole-pin "
+            "status and was measured wrong). It exists because the OBVIOUS row does not "
+            "pin it: env_bypass_home_allexport_bundled uses HOME, which is on "
+            "_REACH_FLOOR and therefore reaches whether or not allexport was ever detected -- "
+            "two independent paths, so it pins NEITHER. Measured: revert the bundled `-a` "
+            "matching to exact-token and the HOME rows still BLOCK, while this row flips to "
+            "ALLOW. A FRESH name is what makes reach depend solely on the matcher. Its control "
+            "is env_allow_freshname_standalone, which must stay ALLOW",
+        ),
+        Row(
+            "env_bypass_allexport_bundled_o_pins_the_matcher",
+            f"set -ao allexport; FRESHNAME=1; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the bundled `-o` spelling of the row above -- `-ao` carries BOTH the allexport "
+            "flag and the `-o` whose argument follows. Measured to flip to ALLOW under the "
+            "same revert, so it pins the bundled-o half specifically",
+        ),
+        Row(
+            "env_allow_freshname_standalone",
+            "FRESHNAME=1 ; git status",
+            MUST_ALLOW,
+            "a genuinely fresh name, standalone (own segment, no command word) -- the CONTROL "
+            "for the whole reach-by-name change. It must stay allowed precisely because "
+            "FRESHNAME is not already exported; if this blocks, the reach rule stopped "
+            "consulting the name at all and started blocking every standalone assignment",
+        ),
+        Row(
+            "env_allow_home_prefix_scoped_to_other_command",
+            f"HOME=/x true && git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "HOME=/x here is a PREFIX to `true`, not a standalone assignment -- bash scopes it "
+            "to that one command's environment only (measured) and it does not persist to "
+            "reach the later git invocation. Without _leading_assign_run_is_scoped's lookahead, "
+            "reach-by-name alone would misjudge this exactly like a standalone HOME=/x and "
+            "block an invocation the boundary hook never needed to see",
+        ),
+        # --- Task 3c: two fail-opens the Task 3b review found, both pre-existing on dev ----------
+        # 3c-1: `gitcmd.ENV_ASSIGN` did not match `VAR+=val` (append), so `starts_command` read
+        # `git` as being in ARGUMENT position after such a prefix and `iter_git_invocations_detailed`
+        # returned ZERO invocations for the whole command -- measured, rc=0 against rc=2 for a
+        # `FOO=1`-prefixed control. Nothing downstream could judge what it never saw.
+        Row(
+            "env_bypass_append_inline_prefix_reaches_refspec_rule",
+            f"FOO+=1 git {PUSH_ARGS}",
+            MUST_BLOCK,
+            "targets `dev` DELIBERATELY -- the point of this row is not the env allowlist (FOO "
+            "is not a real env name and carries no reach significance of its own), it is that "
+            "the whole pipeline, the dev-target refspec rule included, gets a chance to look at "
+            "this invocation at all now that the widened `gitcmd.ENV_ASSIGN` makes `starts_command` "
+            "see `git` in command position again. Before the widening, `iter_git_invocations_detailed` "
+            "returned zero invocations and every downstream check was skipped silently (rc=0, "
+            "measured against dev). Its safe-branch sibling is env_bypass_home_append_inline_prefix",
+        ),
+        Row(
+            "env_bypass_home_append_inline_prefix",
+            f"HOME+=ZZ git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the append-form INLINE PREFIX (no separator before `git`) -- distinct from "
+            "env_bypass_home_append above, which is a STANDALONE `HOME+=ZZ ; git ...` in its own "
+            "segment. Before 3c-1's widening of the shared `gitcmd.ENV_ASSIGN`, this shape was "
+            "invisible to the tokenizer entirely, so it never reached `_config_injection_reason`'s "
+            "env loop at all. On the SAFE branch so a block here is attributable to the env arm, "
+            "not the refspec rule -- HOME already carries the export attribute and is not on "
+            "`_ENV_ALLOWLIST`. Also pins that extracting the name via `_assign_name` (not a bare "
+            '`split("=", 1)[0]`, which would read the name as `HOME+`) still finds `HOME`',
+        ),
+        # 3c-2: `_leading_assign_run_is_scoped` read ANY non-separator, non-reserved-word token
+        # following an assignment run as proof a real command word survives -- but bash's own rule
+        # is that if no command name survives expansion, the assignment affects the CURRENT shell,
+        # so it is standalone and reaches. A command-substitution placeholder and a bare `$`-led
+        # token are both statically "a following word" while being exactly the shape that can
+        # expand to nothing.
+        Row(
+            "env_bypass_home_command_substitution_standalone",
+            f"HOME=/x $(true) ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "measured open before the fix: `$(true)` follows the assignment run and is not a "
+            "separator or reserved word, so the lookahead read it as a real command word and "
+            "called this scoped -- ALLOW, wrongly, since `$(true)` expands to nothing and `HOME=/x` "
+            "is really standalone in its own segment. Its control is "
+            "env_allow_home_prefix_scoped_to_other_command_semicolon, the same shape with a REAL "
+            "word (`true`) instead of a substitution",
+        ),
+        Row(
+            "env_bypass_home_unset_var_expansion_standalone",
+            f"HOME=/x $UNSET_VAR ; git {PUSH_SAFE_ARGS}",
+            MUST_BLOCK,
+            "the bare `$`-led spelling of env_bypass_home_command_substitution_standalone -- an "
+            "unset-variable expansion is not resolved to a placeholder context by the tokenizer "
+            'the way `$(...)` is, so this pins the `token.startswith("$")` half of the fix '
+            "separately from the placeholder half",
+        ),
+        Row(
+            "env_allow_home_prefix_scoped_to_other_command_semicolon",
+            "HOME=/x true ; git status",
+            MUST_ALLOW,
+            "the `;`-separated, non-push sibling of env_allow_home_prefix_scoped_to_other_command "
+            "-- `true` is a REAL command word, not an expansion, so this must stay ALLOW. Without "
+            "it, a fix for the two rows above that over-fires (treating every token after an "
+            "assignment run as unresolvable) would misjudge this exactly like a standalone "
+            "HOME=/x and block an invocation the boundary hook never needed to see",
+        ),
+        # --- over-block guards for the deny surface Task 3 widens ---------------
+        Row(
+            "env_allow_control_plane_allow_push",
+            f"ALLOW_PUSH=1 git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "HARD CONSTRAINT: this repo's authorization override, the exact CLAUDE.md spelling, "
+            "776 uses in real transcripts. If this blocks, authorized pushing is impossible",
+        ),
+        Row(
+            "env_allow_control_plane_allow_push_exported",
+            f"export ALLOW_PUSH=1 ; git {PUSH_SAFE_ARGS}",
+            MUST_ALLOW,
+            "the same override through the EXPORT arm -- pins the two coupled arms separately",
+        ),
+        Row(
+            "env_allow_control_plane_git_write",
+            "ALLOW_GIT_WRITE=1 git commit -m x",
+            MUST_ALLOW,
+            "repo control plane, read by this repo's hooks and never by git (269 uses)",
+        ),
+        Row(
+            "env_allow_control_plane_nonexec",
+            "ALLOW_NONEXEC=1 git status",
+            MUST_ALLOW,
+            "repo control plane (98 uses)",
+        ),
+        Row(
+            "env_allow_locale_lc_all",
+            "LC_ALL=C git status",
+            MUST_ALLOW,
+            "data only. Checked: the boundary hook parses no localized text -- cat-file -e, "
+            "for-each-ref --format, rev-parse --verify, merge-base --is-ancestor",
+        ),
+        Row(
+            "env_allow_locale_tz",
+            "TZ=UTC git log --oneline -1",
+            MUST_ALLOW,
+            "data only -- names no path git executes and no config location",
+        ),
+        Row(
+            "env_allow_pager_plain",
+            "PAGER=cat git log",
+            MUST_ALLOW,
+            "pager class, cleared on the same measured ground as GIT_PAGER: git does not page "
+            "without a TTY, verified with a pty.fork() POSITIVE control, and -p / --paginate / "
+            "-c pager.<cmd>= were each measured NOT to defeat it. ENVIRONMENTAL, not intrinsic",
+        ),
+        # --- shell shapes with NO env prefix on git: the mass false-block class --
+        # Each is ALLOW today. A naive inversion turned all of them into BLOCK (measured),
+        # blaming '-e', '-euo', 'x', 'branch', 'DEBUG', '-r' and 'rerere.enabled'. These rows
+        # are what make Task 2's repair falsifiable rather than asserted.
+        Row(
+            "shell_shape_set_e",
+            "set -e ; git status",
+            MUST_ALLOW,
+            "`-e` is an OPTION to set, never a variable name. Measured refusal without Task 2: "
+            "\"'-e' is exported into the environment of a git invocation\"",
+        ),
+        Row(
+            "shell_shape_set_euo_pipefail",
+            "set -euo pipefail && git status",
+            MUST_ALLOW,
+            "the bundled-option spelling of shell_shape_set_e; blamed '-euo'",
+        ),
+        Row(
+            "shell_shape_bare_assignment_other_segment",
+            "x=1 ; git status",
+            MUST_ALLOW,
+            "a shell-local variable in another segment. Bash does not export it, so it never "
+            "reaches git's environment -- absent allexport, which env_bypass_home_allexport "
+            "covers separately",
+        ),
+        Row(
+            "shell_shape_command_substitution",
+            "branch=$(git rev-parse --abbrev-ref HEAD) && git status",
+            MUST_ALLOW,
+            "THE /propagate SHAPE. Blamed 'branch' without Task 2 -- this repo's own documented "
+            "procedure would have been refused by its own guard",
+        ),
+        Row(
+            "shell_shape_env_prefix_on_a_non_git_command",
+            "DEBUG=1 npm test && git status",
+            MUST_ALLOW,
+            "the assignment belongs to npm, not to git; it is not git's environment at all",
+        ),
+        Row(
+            "shell_shape_set_x_no_allexport",
+            "set -x ; x=1 ; git status",
+            MUST_ALLOW,
+            "THE CONTROL for the bundled-allexport rows. `-x` contains no `a`, so allexport "
+            "stays OFF (measured) and the bare x=1 that follows never reaches git. A matcher "
+            "widened to catch `-ao`/`-ea` must not start firing here -- without this row, "
+            "'match any short option' would pass the bypass rows and nothing would object",
+        ),
+        Row(
+            "shell_shape_set_dashdash",
+            "set -- a b ; git status",
+            MUST_ALLOW,
+            "`set --` ends option parsing; `a` and `b` are positional parameters, not options "
+            "and not variable names. The second control on the bundled matcher: a rule keying "
+            "on a leading dash alone would read `--` as an option run containing 'a'",
+        ),
+        Row(
+            "shell_shape_export_functions",
+            "f() { :; } ; export -f f ; git status",
+            MUST_ALLOW,
+            "`export -f` operates on FUNCTIONS. Measured against real bash: after "
+            "`export -f f`, `f=` is absent from the environment, so `f` is not a variable "
+            "name and must not be judged as one",
+        ),
+        Row(
+            "shell_shape_declare_option",
+            "declare -r N=1 ; git status",
+            MUST_ALLOW,
+            "TWO mechanisms must both hold for this to pass. `-r` is an OPTION to declare, "
+            "never a variable name (blamed '-r' before the repair); and `declare` WITHOUT "
+            "`-x` does not export at all -- measured against real bash, `declare N=1`, "
+            "`declare -r N=1` and `typeset N=1` all leave N absent from the environment. A "
+            "repair that skips the option but treats every declare as exporting still blocks "
+            "this row, blaming 'N'. Its counterpart env_bypass_home_declare_x is what proves "
+            "the -x form is still caught",
+        ),
+        Row(
+            "shell_shape_config_set_subcommand",
+            "git config set rerere.enabled true",
+            MUST_ALLOW,
+            "`set` in ARGUMENT position is git's own subcommand (real in git 2.55), not the "
+            "shell builtin. Blamed 'rerere.enabled' without Task 2. The sibling row "
+            "config_allow_set_subcmd asserts the same command for a different reason",
+        ),
         Row(
             "bare_push_to_main_no_env",
             f"git {PUSH_SAFE_ARGS}",
             MUST_ALLOW,
             "no env prefix at all, on a refspec layer 1 allows -- the allowlist change must not "
-            "touch an invocation that carries no GIT_* assignment whatsoever",
+            "touch an invocation that carries no env assignment whatsoever",
         ),
         # ---------- ACCIDENTAL: blocked today, but NOT by real detection ----------
         Row(
@@ -1652,10 +2340,23 @@ def rows(sandbox: Sandbox) -> list[Row]:
 def _run_guard(guard: Path, command: str, cwd: Path, log_path: Path) -> int:
     """Feed `command`/`cwd` to `guard` on stdin as the PreToolUse hook JSON payload and return its
     exit code. Running the guard with argv instead examines nothing and exits 0 -- see the guard's
-    own `main()` contract check -- so this always goes through stdin."""
+    own `main()` contract check -- so this always goes through stdin.
+
+    PINNED, not inherited (Task 3b). `_name_carries_export_attribute` consults `os.environ`
+    inside the guard process, so `dict(os.environ)` here would make every row that touches reach
+    depend on whichever variables happen to be exported on the machine running this suite --
+    the exact machine-dependence the earlier `_verify_baseline_frozen`/hermeticity design in the
+    module docstring exists to keep out of every OTHER axis. Carry only what the guard's own
+    internal `subprocess.run(["git", ...])` calls need (`PATH` to resolve the binary, `HOME` for
+    git's own config resolution) plus the log var and ONE deliberately-exported sentinel.
+    """
     payload = json.dumps({"tool_input": {"command": command}, "cwd": str(cwd)})
-    env = dict(os.environ)
-    env[LOG_ENV_VAR] = str(log_path)  # hermeticity -- see the module docstring
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", str(cwd)),
+        LOG_ENV_VAR: str(log_path),  # hermeticity -- see the module docstring
+        CORPUS_EXPORTED_PROBE: "1",
+    }
     proc = subprocess.run(
         [sys.executable, str(guard)],
         input=payload,
@@ -1828,6 +2529,99 @@ def test_xfail_today_rows_are_still_allowed(
     ]
     assert not failures, (
         "XFAIL_TODAY row(s) no longer match today's behavior:\n" + "\n".join(failures)
+    )
+
+
+# Labels this branch's env-axis work is required to carry. A declared FLOOR: the row list is
+# built by a function, so a row silently dropped in a refactor is invisible to every other
+# assertion here -- each of them quantifies over whatever rows happen to exist.
+REQUIRED_ENV_AXIS_LABELS = frozenset(
+    {
+        "env_bypass_home_inline",
+        "env_bypass_xdg_config_home_inline",
+        "env_bypass_path_inline",
+        "env_bypass_ld_preload_inline",
+        "env_bypass_home_exported",
+        "env_bypass_reach_floor_xdg_standalone",
+        "env_bypass_reach_floor_ld_preload_standalone",
+        "env_bypass_reach_floor_dyld_standalone",
+        "env_bypass_wrapper_command_export_git_name",
+        "shell_shape_expansion_program_with_export_argument",
+        "shell_shape_expansion_program_without_export_argument",
+        "env_bypass_fused_operator_before_export",
+        "env_bypass_case_terminator_standalone_home",
+        "env_bypass_case_terminator_standalone_ld_preload",
+        "shell_shape_case_terminator_allows_allowlisted_export",
+        "shell_shape_case_terminator_ordinary",
+        "env_bypass_expansion_before_export_git_name",
+        "env_bypass_expansion_unset_var_before_export",
+        "env_bypass_expansion_before_export_home",
+        "env_bypass_expansion_before_allexport",
+        "shell_shape_real_command_word_before_export",
+        "env_bypass_wrapper_eval_export_git_name",
+        "env_bypass_wrapper_eval_home",
+        "env_bypass_wrapper_eval_allexport",
+        "env_bypass_wrapper_builtin_export",
+        "env_bypass_wrapper_time_export",
+        "env_bypass_wrapper_command_dash_p",
+        "env_bypass_wrapper_nested",
+        "env_bypass_wrapper_command_allexport",
+        "shell_shape_time_before_git",
+        "shell_shape_wrapper_word_not_at_prefix",
+        "env_bypass_editor_exported",
+        "env_bypass_home_beside_allowlisted_name",
+        "env_bypass_home_via_env_wrapper",
+        "env_bypass_home_allexport",
+        "env_bypass_home_declare_x",
+        "env_bypass_home_in_non_adopted_repo",
+        "env_allow_control_plane_allow_push",
+        "env_allow_control_plane_allow_push_exported",
+        "env_allow_control_plane_git_write",
+        "env_allow_control_plane_nonexec",
+        "env_allow_locale_lc_all",
+        "env_allow_locale_tz",
+        "env_allow_pager_plain",
+        "shell_shape_set_e",
+        "shell_shape_set_euo_pipefail",
+        "shell_shape_bare_assignment_other_segment",
+        "shell_shape_command_substitution",
+        "shell_shape_env_prefix_on_a_non_git_command",
+        "shell_shape_declare_option",
+        "shell_shape_config_set_subcommand",
+        "shell_shape_export_functions",
+        "shell_shape_set_x_no_allexport",
+        "shell_shape_set_dashdash",
+        "env_bypass_home_allexport_bundled",
+        "env_bypass_home_allexport_bundled_leading",
+        # -- Task 3b: reach is a property of the NAME, not the construct --------------------
+        "env_bypass_home_declare_no_x",
+        "env_bypass_home_typeset_no_x",
+        "env_bypass_home_readonly",
+        "env_bypass_home_append",
+        "env_bypass_home_redirect_no_command_word",
+        "env_bypass_home_andand_standalone",
+        "env_bypass_corpus_exported_probe",
+        "env_allow_corpus_absent_probe",
+        "env_allow_freshname_standalone",
+        "env_bypass_allexport_bundled_pins_the_matcher",
+        "env_bypass_allexport_bundled_o_pins_the_matcher",
+        "env_allow_home_prefix_scoped_to_other_command",
+        # -- Task 3c: the append-inline-prefix and expansion-lookahead fail-opens ------------
+        "env_bypass_append_inline_prefix_reaches_refspec_rule",
+        "env_bypass_home_append_inline_prefix",
+        "env_bypass_home_command_substitution_standalone",
+        "env_bypass_home_unset_var_expansion_standalone",
+        "env_allow_home_prefix_scoped_to_other_command_semicolon",
+    }
+)
+
+
+def test_required_env_axis_labels_are_present(rows: list[Row]) -> None:
+    missing = REQUIRED_ENV_AXIS_LABELS - {r.label for r in rows}
+    assert not missing, (
+        f"{len(missing)} required env-axis row(s) missing: {sorted(missing)}. These pin a "
+        "measured full-stack bypass and the mass false-block class its fix exposed; a row "
+        "removed here is a hole no other assertion in this file can see."
     )
 
 

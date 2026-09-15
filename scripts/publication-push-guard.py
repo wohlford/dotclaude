@@ -38,13 +38,14 @@ without this split is the kind of claim that reads as a guarantee and is not one
 
 Configuration is a THIRD axis, and it is a deny list scoped to each invocation's own env prefix and
 global-option run (`_config_injection_reason`): `core.hooksPath`, `include.path`/`includeIf`, any
-`^GIT_` environment assignment outside a small allowlist of names verified boundary-inert (author
-and committer identity, `GIT_PAGER`, `GIT_TERMINAL_PROMPT`, `GIT_CONFIG_NOSYSTEM`), plus any `-c`
+environment assignment outside an allowlist of names verified boundary-inert (this repo's own
+control-plane variables, author and committer identity, locale/timezone, `PAGER`, `GIT_PAGER`,
+`GIT_TERMINAL_PROMPT`, `GIT_CONFIG_NOSYSTEM`), plus any `-c`
 value that does not resolve to a literal `key=value`. These are refused whatever the command goes
 on to do, because they can relocate or silence the `pre-push` hook — and a command that disables
 layer 2 while carrying a refspec layer 1 allows was measured to defeat the whole stack in one line.
 A second, COMMAND-scoped check (`_exported_injection_reason`) extends the same allowlist past that
-one-invocation prefix, to a denied `GIT_*` name that reaches a git invocation via an `export` in a
+one-invocation prefix, to a denied name that reaches a git invocation via an `export` in a
 different segment of the same command, an `export NAME` naming an already-assigned variable, or
 `set -a`/`set -o allexport` — shapes the prefix walk cannot see by construction. It is still not
 whole-environment: an export that happened in an earlier, separately-allowed command (a shell
@@ -70,15 +71,38 @@ these as the reason the `pre-push` hook exists, not as a short list of edge case
     expansion time is invisible here in principle, not by oversight.
   - `sh -c "git push …"` / `eval "git push …"`: the nested command string is opaque to the
     tokenizer, so these are NOT detected (same accepted gap as git_command's own WRAPPERS scope).
-  - **`HOME=` and `XDG_CONFIG_HOME=` relocate the boundary, and are NOT denied.** The env
-    allowlist below is keyed on a `^GIT_` name shape, so it closes the `GIT_*` part of the env
-    axis and nothing else. Both of these redirect where git reads its GLOBAL config, which can
-    carry `core.hooksPath` — measured: with a hostile `HOME`, `--git-path hooks/pre-push` moves,
-    the real hook does not run, and this gate ALLOWS the invocation. `_hook_integrity_reason`
-    cannot see it by construction: that probe runs in THIS process's environment, never the
-    proposed command's. Pre-existing (the narrower `^GIT_CONFIG_` matcher this allowlist replaced
-    cleared them too) and deliberately not closed here, because widening the deny beyond `GIT_*`
-    needs its own false-block measurement. **Do not read the allowlist as closing the env axis.**
+  - **The env axis is an ALLOWLIST over every name, not a `GIT_*` shape.** `HOME=`,
+    `XDG_CONFIG_HOME=`, `PATH=`, `LD_PRELOAD=`, `DYLD_*=` and every other unlisted name are
+    DENIED where they reach a git invocation. This closed a measured full-stack bypass: a
+    hostile `HOME` moved `core.hooksPath`, the real hook did not run, and the push returned
+    rc=0. REACH is a property of the NAME, not the construct: a STANDALONE bare assignment (no
+    command word ends its segment -- `HOME=/x ; git …`), `declare`/`typeset`/`readonly`/`local`
+    without `-x`, and `+=` all reach git's environment when the name ALREADY carries the export
+    attribute (measured against real bash — `HOME`, `PATH`, `XDG_CONFIG_HOME`, `LD_PRELOAD` and
+    anything already in `os.environ`), even with allexport off and no `-x`/`export`. A FRESH
+    name in one of those shapes, or a bare assignment scoped as a PREFIX to a different,
+    non-git command (`HOME=/x true` — bash gives it only to `true`'s environment), keeps only
+    the older `^GIT_` over-block.
+  - `env` with ANY OPTION (`env -i`, `env -u`, `env -S`), and `env` by ABSOLUTE PATH
+    (`/usr/bin/env`), yield no git invocation from the tokenizer at all, so no arm sees them --
+    the refspec rule included. The OPTION-LESS `env NAME=v git <verb>` IS parsed and IS judged.
+    Same accepted class as `sh -c` above, named here rather than left undocumented.
+  - **An OVER-BLOCK, accepted deliberately rather than narrowed away.** An expansion-shaped token
+    IMMEDIATELY followed by an export-family word is treated as possibly-vanishing, so a command
+    whose program name is an expansion and whose first argument happens to be the literal word
+    `export` is refused: `$TOOL export secrets.json`, `$HOME/bin/mytool export data.csv`,
+    `"$TOOL" export data.csv`. All three measured rc=2. The trigger is narrow and the boundary is
+    measured: `./mytool export …`, `mytool export …`, `$(which doppler) secrets export` (the word
+    is not adjacent) and `$TOOL set -a` all stay ALLOWED.
+    **Not narrowed on purpose.** The predicate exists because an expansion in command-prefix
+    position may vanish or become a wrapper, and bash then runs `export` in the current shell --
+    that is a measured bypass (`$(echo command) export HOME=/x ; git <verb>`). Narrowing the
+    predicate to exclude tokens carrying literal text (`$HOME/bin/tool`) would re-open exactly
+    that shape, which is this module's recorded narrowing hazard: the repair for a false positive
+    silently drops true positives, and the author writes tests from the false positive rather
+    than from what quietly left. The refusal names the offending token and the remedy, and
+    `shell_shape_expansion_program_with_export_argument` pins this trade so it cannot widen
+    unnoticed.
   - Alias resolution chases the chain recursively (matching real git), bounded by a depth cap and
     cycle guard (both fail closed if hit). A chain that resolves — at ANY depth — to `push` is
     BLOCKED unconditionally: this hook does not attempt to reproduce git's own alias-argument
@@ -1329,15 +1353,15 @@ def _config_action_is_unjudgeable(seg: list[str]) -> str | None:
 # Env assignments that redirect where `git config` WRITES. Measured: both landed a
 # write in an unrelated repo's config from a cwd with no relationship to it.
 #
-# These three are ALSO denied upstream, by the `^GIT_`-shaped env arms (see
-# `_git_env_name_is_cleared`), so this set is no longer the only thing standing between them and a
+# These three are ALSO denied upstream, by the env-allowlist arms (see
+# `_env_name_is_cleared`), so this set is no longer the only thing standing between them and a
 # redirected write -- it answers a different question (which SCOPE does this `git config` write
 # target) and is kept for that. Do not fold the two together: an earlier, narrower env matcher
 # missed bare `GIT_CONFIG` and `GIT_COMMON_DIR` entirely, which is the F2 finding, and the presence
 # of those names HERE is what made that gap read as already covered.
 #
 # EXPECTED MUTATION SURVIVORS, recorded so the next campaign is not misread. Because the env arms
-# now deny every non-allowlisted `^GIT_` name BEFORE `_config_scope_is_local` is reached, its loop
+# now deny every non-allowlisted name BEFORE `_config_scope_is_local` is reached, its loop
 # over this set can no longer return False on any input that arrives through `_find_block_reason`.
 # A campaign will therefore report mutations to that loop as SURVIVED. **That is not licence to
 # delete it.** The obvious reading -- "dead code, remove it" -- is a NARROWING: the function is
@@ -1363,7 +1387,7 @@ def _config_scope_is_local(seg: list[str], env: list[str]) -> bool:
     its only error is over-blocking a scope word that appears as a VALUE.
     """
     for assignment in env:
-        if assignment.split("=", 1)[0] in _CONFIG_REDIRECT_ENV:
+        if _assign_name(assignment) in _CONFIG_REDIRECT_ENV:
             return False
     for tok in seg:
         base = tok.split("=", 1)[0]
@@ -1452,53 +1476,115 @@ def _repo_is_adopted(effective_dir: str | None) -> bool:
     return _repo_is_adopted_root(root)
 
 
-# Names of `GIT_*` env assignments cleared to reach a git invocation -- each verified individually
-# (this branch's design record, finding F2 / decision D3) as boundary-INERT: git's own resolution
-# of the `pre-push` hook path is unchanged under it, and the repo's own hook still runs. Every
-# OTHER `GIT_`-prefixed assignment name is denied by BOTH env arms below -- the own-prefix loop in
-# `_config_injection_reason` and the command-scoped walk in `_exported_injection_reason`. Those two
-# arms are coupled by `if token in claimed: continue`, so consulting this allowlist from only one
-# of them leaves the other form open -- a regression, not partial progress, and this must not be
-# split across separate changes.
+# Environment-assignment names cleared to reach a git invocation. An ALLOWLIST over the WHOLE
+# namespace, not a `^GIT_` shape rule -- the shape rule is what failed. It cleared every
+# non-GIT_ name, so `HOME=`, `XDG_CONFIG_HOME=`, `PATH=` and `LD_PRELOAD=` were waved through;
+# measured full-stack, a hostile HOME moved the hooks path, the boundary hook did not run, and
+# the push SUCCEEDED (rc=0, against rc=1 with a clean env).
 #
-# NEVER reuse or extend `_CONFIG_REDIRECT_ENV` (below, consulted only by `_config_scope_is_local`)
-# for this: it answers a different question -- where does `git config` WRITE -- and already
-# contains `GIT_COMMON_DIR`. That overlap is coincidental, not a signal the two sets should merge;
-# treating it as "already handled" is exactly the trap this allowlist exists to avoid.
-_GIT_ENV_ALLOWLIST = frozenset(
+# THE PROPERTY each member satisfies, stated ADDITIVELY: the name cannot make git read a config
+# source, run a hook, act on a repository, or execute a program it otherwise would not.
+# (`GIT_CONFIG_NOSYSTEM` only ever REMOVES a source, which is why the additive phrasing matters.)
+# Values are not examined. Membership is ENUMERATED -- never a prefix (`ALLOW_*`) or a shape.
+#
+# DENIED by not being here, which is the whole point: HOME, XDG_CONFIG_HOME (relocate the global
+# config, hence core.hooksPath); PATH, LD_PRELOAD, DYLD_* (replace or subvert the binary);
+# EDITOR, VISUAL, GIT_EDITOR, GIT_SSH*, GIT_EXEC_PATH (name a program git executes); GIT_DIR,
+# GIT_COMMON_DIR, GIT_CONFIG*.
+#
+# NEVER reuse or extend `_CONFIG_REDIRECT_ENV`: it answers where `git config` WRITES, and the
+# overlap is coincidental. See its own comment.
+_ENV_ALLOWLIST = frozenset(
     {
+        # -- repo control plane: read by THIS repo's hooks, never by git ------------
+        # ALLOW_PUSH is a HARD CONSTRAINT: the authorization override CLAUDE.md prescribes,
+        # 776 uses across real transcripts. Omitting it makes authorized pushing impossible.
+        "ALLOW_PUSH",
+        "ALLOW_GIT_WRITE",
+        "ALLOW_NONEXEC",
+        "ALLOW_LONG_SUBJECT",
+        "PUBLICATION_PUSH_GUARD_LOG",
+        # -- data only -------------------------------------------------------------
         "GIT_AUTHOR_NAME",
         "GIT_AUTHOR_EMAIL",
         "GIT_AUTHOR_DATE",
         "GIT_COMMITTER_NAME",
         "GIT_COMMITTER_EMAIL",
         "GIT_COMMITTER_DATE",
-        "GIT_PAGER",
         "GIT_TERMINAL_PROMPT",
         "GIT_CONFIG_NOSYSTEM",
+        # Locale/timezone. Checked before clearing: the boundary hook parses no localized
+        # text, so a locale cannot alter what it decides.
+        "TZ",
+        "LANG",
+        "LC_ALL",
+        "LC_COLLATE",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        "LC_TIME",
+        # -- pager class -----------------------------------------------------------
+        # These NAME a command git executes, cleared on measured ground rather than by feel:
+        # git does not page without a TTY on stdout and a PreToolUse hook's commands never have
+        # one. Verified with a pty.fork() POSITIVE control; `-p`, `--paginate` and
+        # `-c pager.<cmd>=` were each measured NOT to defeat it. The justification is
+        # ENVIRONMENTAL, not intrinsic -- these are the first entries to revisit if a hook ever
+        # sees a TTY.
+        "PAGER",
+        "GIT_PAGER",
     }
 )
 
-# Broad by design: every `GIT_`-prefixed name, not only the narrower `^GIT_CONFIG_` shape this
-# replaced (that constant is gone -- once both arms consulted the allowlist it had no consumer left,
-# and a compiled regex with no caller reads as an active matcher while deciding nothing).
-# `GIT_COMMON_DIR` and bare `GIT_CONFIG` are exactly what the narrower shape missed -- see the
-# design record's F2 finding. `GIT_DIR` also matches here,
-# redundantly and safely, with the coarse whole-command `GITDIR_RE` above; this predicate stays
-# correct standing alone rather than depending on that separate, differently-scoped check.
-_GIT_ENV_NAME_RE = re.compile(r"^GIT_")
+# Names still refused by SHAPE wherever a construct CANNOT put the name in git's environment.
+# There are TWO such places, not one:
+#
+#   1. an assignment run scoped as a prefix to another command word (`DEBUG=1 npm test && git
+#      status`) -- bash scopes it to that command and it never persists; and
+#   2. a bare or declare-family assignment whose NAME does not already carry the export
+#      attribute, with allexport off (`x=1 ; git status`, `declare -r N=1 ; git status`).
+#
+# The second clause is the one that is easy to state wrongly. An earlier draft of this comment
+# said "a bare assignment in another segment, with allexport off" full stop -- FALSE, and
+# measured so: `HOME=/x ; git <push>` is exactly that shape and BLOCKS, because HOME already
+# carries the export attribute and therefore reaches. Reach is a property of the NAME, not of the
+# construct; see `_name_carries_export_attribute`.
+#
+# Judging the unreachable cases against the full allowlist instead would refuse `x=1 ; git
+# status` -- measured, with `set -e` and command substitution, as a mass false-block class. The
+# `^GIT_` refusal here is a deliberate conservative over-block that predates this change and that
+# the corpus pins (assigned_but_never_exported_is_also_blocked); it costs no new false blocks and
+# no new false allows.
+_UNREACHABLE_DENY_RE = re.compile(r"^GIT_")
 
 
-def _git_env_name_is_cleared(name: str) -> bool:
-    """Whether `name` is cleared to reach a git invocation's environment.
+def _env_name_is_cleared(name: str, *, reaches_git_env: bool) -> bool:
+    """Whether `name` is cleared, given whether the construct puts it in git's environment.
 
-    True for any name that is not `GIT_`-shaped at all (an ordinary env var this check has no
-    opinion on) and for the nine names in `_GIT_ENV_ALLOWLIST` above. False for every other `^GIT_`
-    name. The single predicate both env arms below consult before denying an assignment -- the
-    allowlist is the only place "which names are safe" is answered, never a per-arm literal or a
-    second frozenset.
+    `reaches_git_env=True` -- the construct really does put `name` in git's environment. Judged
+    against `_ENV_ALLOWLIST`: cleared ONLY if enumerated there, whatever the name's shape. The
+    cases, all measured against real bash:
+      - an inline prefix on the invocation (`HOME=/x git <verb>`);
+      - `export NAME=v` (unless `-f`, which names a function), or `declare`/`typeset` WITH `-x`;
+      - any bare or declare-family assignment while allexport is on;
+      - any bare or declare-family assignment whose NAME already carries the export attribute --
+        `HOME=/x ; git <verb>` reaches with no `export` and no allexport at all.
+
+    `reaches_git_env=False` -- the construct cannot reach git, so only the pre-existing `^GIT_`
+    over-block applies. Two cases: an assignment run scoped as a prefix to another command word
+    (bash scopes it there and it never persists), and a bare or declare-family assignment of a
+    name that does NOT already carry the attribute, with allexport off (`x=1 ; git status`,
+    `declare -r N=1 ; git status`).
+
+    Do not restate either list as "a bare assignment with allexport off". That was this
+    docstring's own earlier wording and it is false: it describes the construct when the rule is
+    about the NAME.
+
+    ONE function, so "which names are safe" is still answered in exactly one place. The reach is
+    an explicit PARAMETER rather than a second frozenset: the two populations are genuinely
+    different, and collapsing them either reopens the bypass or refuses ordinary shell.
     """
-    return not _GIT_ENV_NAME_RE.match(name) or name in _GIT_ENV_ALLOWLIST
+    if not reaches_git_env:
+        return not _UNREACHABLE_DENY_RE.match(name)
+    return name in _ENV_ALLOWLIST
 
 
 def _config_injection_reason(
@@ -1525,12 +1611,14 @@ def _config_injection_reason(
     flag together with `gitdir_override`).
     """
     for assignment in tokens.env:
-        name = assignment.split("=", 1)[0]
-        if _git_env_name_is_cleared(name):
-            continue  # not GIT_-shaped, or on _GIT_ENV_ALLOWLIST -- see _git_env_name_is_cleared
+        name = _assign_name(assignment)
+        if _env_name_is_cleared(name, reaches_git_env=True):
+            continue  # on _ENV_ALLOWLIST -- see _env_name_is_cleared
         return (
-            f"it sets {name}, a `GIT_*` name outside the small allowlist of names verified "
-            "boundary-inert -- git may honour it in ways that relocate or silence the hooks path",
+            f"it sets {name}, which is not on this gate's environment allowlist -- an "
+            "assignment reaching a git invocation can relocate the config git reads, the "
+            "hooks it runs, or the binary that runs as git. Either drop the prefix, or add "
+            f"{name} to _ENV_ALLOWLIST with its property class recorded",
             True,
         )
 
@@ -1592,26 +1680,175 @@ def _config_injection_reason(
     return None
 
 
-# Command words whose whole job is to export or already-exported-mark the assignments that follow
-# them (`export FOO=1`, `export FOO` naming an already-assigned var, `declare -x`, `set -a`). Kept
-# separate from `WRAPPERS`/`GIT_ONLY_WRAPPERS` in git_command.py: those mark the WORD AFTER them as
-# still being in command position (`sudo git …`); these mark everything AFTER them, up to the next
-# segment separator, as an argument to the export construct itself — a different relationship, not
-# a stronger version of the same one.
-_EXPORT_WORDS = frozenset({"export", "declare", "typeset", "set"})
+# Command words whose ARGUMENTS are variable names (`export FOO=1`, `export FOO` naming an
+# already-assigned var, `declare -x FOO=1`).
+#
+# `set` is deliberately ABSENT, and this branch is what REMOVED it -- `git show dev:` gives
+# `frozenset({"export", "declare", "typeset", "set"})`, so it was a member until now. (An earlier
+# draft of this comment said it "never was in the set below": false, and the kind of history claim
+# that is cheap to check and easy to assert.) `set` names no variable -- `set -e`, `set --`,
+# `set -- a b` name none -- and treating its arguments as names is what made
+# `git config set rerere.enabled true` refuse, blaming 'rerere.enabled'. What `set` CAN do is
+# switch ALLEXPORT on (`set -a`, `set -o allexport`), a MODE affecting later bare assignments,
+# tracked separately. The corpus row exported_injection_set_allexport already said exactly this
+# in prose -- "set -a exports bare assignments that follow; it assigns nothing itself" -- while
+# the code did the opposite.
+#
+# `readonly` and `local` joined `declare`/`typeset` here: they take names as arguments the same
+# way and, like declare/typeset, do NOT export by shape alone. Whether an assignment through any
+# of them reaches git's environment is a property of the NAME (see
+# `_name_carries_export_attribute` below), not of the construct.
+#
+# Kept separate from `WRAPPERS`/`GIT_ONLY_WRAPPERS` in git_command.py: those mark the WORD AFTER
+# them as still being in command position (`sudo git …`); these mark everything AFTER them, up to
+# the next segment separator, as an argument to the export construct itself -- a different
+# relationship, not a stronger version of the same one.
+_EXPORT_WORDS = frozenset({"export", "declare", "typeset", "readonly", "local"})
+_SET_WORD = "set"
 
-# Command/segment boundaries `_exported_injection_reason` resets its position tracking on. `;`,
-# `&&`, `||`, `|`, `&` all end one command and (for `;`/`&&`/`||`/`&`) start another at the shell's
-# top level; `(`/`)` bound a subshell. Deliberately the same operator set `is_op` recognises, but
-# named here rather than imported as a function, because this walk tests membership token-by-token
-# against a frozenset, not a predicate call per token.
-_SEGMENT_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "(", ")"})
+# Wrappers that run the BUILTIN in the CURRENT shell, so an export-family word behind one still
+# exports. ENUMERATED from measurement against real bash, not guessed -- and the enumeration was
+# run twice, because the first pass missed a member and shipped a live hole:
+#
+#   EXPORT:      command, builtin, time, eval   (also `command -p`, and nesting to any depth)
+#   DO NOT:      nohup, nice, stdbuf, setsid, env, sudo  (they exec an external process, and
+#                `export` is not a binary), `source` / `.` (no effect on a following word)
+#   `exec export X=1` errors outright ("not found"), so allowing it is correct.
+#
+# `eval` was the member the first pass missed. `eval export GIT_CONFIG_COUNT=1 ; git <verb>`
+# measured dev=BLOCK, branch=ALLOW -- the SAME regression class this set was added to fix,
+# reintroduced by an incomplete enumeration one commit later. `eval set -a` enables allexport
+# too. It is not the quoted `eval "git push …"` form the module documents as a residual: that one
+# is opaque to the tokenizer, this one is fully visible and was simply never considered.
+#
+# NOT `gitcmd.WRAPPERS`, deliberately. That set answers "where does a git invocation start" and
+# so carries `nohup`/`nice`/`sudo`/`env`, none of which preserve export, while OMITTING `builtin`
+# and `eval`, which do. Reusing it would be wrong in both directions at once.
+_SHELL_BUILTIN_WRAPPERS = frozenset({"command", "builtin", "time", "eval"})
+
+# `_SEGMENT_SEPARATORS` USED TO LIVE HERE: a literal frozenset of seven operators, with a comment
+# claiming it was "deliberately the same operator set `is_op` recognises". It was not, and the
+# gap was invisible because the claim read as a design note rather than an assertion.
+#
+# shlex's `punctuation_chars` GROUPS operator runs, so `)&&`, `)||`, `;;`, `;&` and `;;&` each
+# arrive as ONE token and matched none of the seven. Measured consequences, both directions:
+#   `(true)&&export GIT_CONFIG_COUNT=1 ; git <verb>`     dev BLOCK -> branch ALLOW  (regression)
+#   `case x in (x) HOME=/tmp/h ;; esac ; git <verb>`      allowed on every build     (open class)
+#   `case x in (x) export ALLOW_PUSH=1 ;; esac ; …`       branch BLOCKED it, blaming `;;` as a
+#                                                        variable name -- refusing the repo's own
+#                                                        authorization override
+#
+# `git_command.is_op` is CHARACTER-based and was written for exactly this: its own tokenizer
+# comment warns that `(cd /x && ls)&&git push` arrives as `)&&` and that "a check written against
+# the spaced, depth-1 form passes its own test and leaks everywhere else". Both call sites now use
+# it, and the duplicate is deleted rather than extended -- a second, weaker spelling of one
+# predicate is the defect itself, not a performance convenience. This is the THIRD finding on this
+# branch with that shape (`_looks_like_unresolvable_expansion` wired into one of two sites was the
+# second); the lesson is to reach for the shared predicate, never to re-state it locally.
+
+# `VAR+=value` (append). `gitcmd.ENV_ASSIGN` now matches this shape too (widened -- see its own
+# comment -- to fix a tokenizer fail-open where `FOO+=1 git push` produced ZERO invocations at
+# all). This local regex remains because matching the SHAPE is not enough: `token.split("=",
+# 1)[0]` on `"FOO+=1"` still yields `"FOO+"`, not `"FOO"`. `_assign_name` below uses this to strip
+# the `+` and recover the real name; matching alone is delegated to `gitcmd.ENV_ASSIGN`.
+_APPEND_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+=")
+
+# Names whose export attribute this hook may not assume it can see. `os.environ` is a good proxy
+# for the shell's exported set -- the hook is a child of the same session -- but it is a PROXY,
+# and it goes stale in exactly one direction that matters: a session launched without the
+# operator's shell profile (a GUI or IDE launcher) may lack a name the profile exports. These
+# four are the ones that relocate what git reads or runs, so they are asserted rather than
+# discovered. This is the repo's derive-plus-declared-FLOOR rule applied to REACH, not to safety
+# -- which is why it does not put a second safety verdict inside `_env_name_is_cleared`.
+_REACH_FLOOR = frozenset({"HOME", "PATH", "XDG_CONFIG_HOME", "LD_PRELOAD"})
+_REACH_FLOOR_PREFIX = "DYLD_"
+
+
+def _name_carries_export_attribute(name: str) -> bool:
+    """Whether assigning to `name` would land in a later command's environment.
+
+    Measured: bash keeps the export attribute on assignment, so `HOME=/x` in its own segment
+    reaches a later git invocation with no `export` and no allexport, while a FRESH name does
+    not. That is a property of the NAME, not of the construct -- which is why `declare`,
+    `typeset`, `readonly`, a function-local assignment and `+=` all reach too.
+    """
+    return (
+        name in os.environ
+        or name in _REACH_FLOOR
+        or name.startswith(_REACH_FLOOR_PREFIX)
+    )
+
+
+def _is_assign_token(token: str, gitcmd: ModuleType) -> bool:
+    """Whether `token` is a `VAR=...` or `VAR+=...` assignment shape (the two forms
+    `_exported_injection_reason`'s walker must treat as assignments).
+
+    One clause, deliberately. This carried `or _APPEND_ASSIGN_RE.match(token)` while
+    `gitcmd.ENV_ASSIGN` still lacked the append form; once that was widened the clause became
+    INERT -- verified by enumeration, no token matches the append pattern that `ENV_ASSIGN` does
+    not. An inert clause in a security predicate reads as a safety property while unable to
+    change any outcome, and a test written around it would pass forever and pin nothing, so it
+    is deleted rather than kept "for clarity". `_APPEND_ASSIGN_RE` itself is NOT dead -- it still
+    does real work in `_assign_name`, which must strip the `+` the widened regex now admits.
+    """
+    return gitcmd.ENV_ASSIGN.match(token) is not None
+
+
+def _assign_name(token: str) -> str:
+    """The variable name a `VAR=...` or `VAR+=...` assignment token names."""
+    if _APPEND_ASSIGN_RE.match(token):
+        return token.split("+=", 1)[0]
+    return token.split("=", 1)[0]
+
+
+def _looks_like_unresolvable_expansion(token: str, gitcmd: ModuleType) -> bool:
+    """Whether `token` is shaped like something bash may expand to NOTHING: a command-substitution
+    placeholder (`iter_context_token_streams` replaces `$(...)`/`` `...` ``/`<(...)`/`>(...)` with
+    one of these before this walker ever sees them) or a bare `$`-led expansion (`$UNSET_VAR`,
+    `${X}`, `$((1+1))`). Bash's own rule for a command PREFIX is that if no command name survives
+    expansion, the assignment affects the CURRENT shell -- so such a token is not proof a real
+    command word follows, the same posture `_config_injection_reason` already takes for `-c "$K"`:
+    unresolvable means refuse to guess, not clear it.
+    """
+    return token.startswith("$") or gitcmd.PLACEHOLDER_PREFIX in token
+
+
+def _leading_assign_run_is_scoped(
+    stream: list[str], i: int, gitcmd: ModuleType
+) -> bool:
+    """Whether the run of leading `VAR=...`/`VAR+=...` assignments starting at `stream[i]` is a
+    PREFIX to a command word within the same simple command, rather than a STANDALONE bare
+    assignment with no command word at all.
+
+    Measured against real bash: `HOME=/x true` gives `HOME` only to `true`'s environment and
+    does not reach a later `git` invocation, while `HOME=/x` alone in its segment (followed by a
+    separator or nothing) persists in the shell and keeps whatever export attribute `HOME`
+    already carries. Scans forward only past further assignment-shaped tokens (`VAR1=1 VAR2=2
+    cmd` is one prefix run) to the first token that is not one.
+
+    The token that ends the run must also be a token that CANNOT vanish under expansion --
+    `HOME=/x $(true) ; git …` and `HOME=/x $UNSET_VAR ; git …` both end their run on a token that
+    is statically a "following word" but can expand to nothing, in which case bash gives the
+    assignment to the CURRENT shell rather than to a command that never materializes. Such a
+    token is therefore not proof of a following command word; see
+    `_looks_like_unresolvable_expansion`.
+    """
+    j = i + 1
+    while j < len(stream) and _is_assign_token(stream[j], gitcmd):
+        j += 1
+    if j >= len(stream):
+        return False
+    return (
+        not gitcmd.is_op(stream[j])
+        and stream[j] not in gitcmd.RESERVED_WORDS
+        and not _looks_like_unresolvable_expansion(stream[j], gitcmd)
+    )
 
 
 def _exported_injection_reason(
     command: str, invocations: list, gitcmd: ModuleType
 ) -> str | None:
-    """A denied `GIT_*` name reaching a git invocation from OUTSIDE its own env prefix.
+    """A denied name reaching a git invocation from OUTSIDE its own env prefix.
 
     `_env_prefix` deliberately collects only the assignments immediately preceding one invocation
     -- the env the shell would apply to THAT command -- and must stay in step with
@@ -1640,9 +1877,25 @@ def _exported_injection_reason(
     for stream in gitcmd.iter_context_token_streams(command):
         exporting = False  # command word of the current segment is export-family
         at_prefix = True  # still in the segment's command-prefix position
-        for token in stream:
-            if token in _SEGMENT_SEPARATORS:
-                exporting, at_prefix = False, True
+        in_set = False  # command word of the current segment is `set`
+        in_wrapper = False  # inside a wrapper word: its options, not names
+        allexport = False  # `set -a` / `set -o allexport` is in effect -- persists across segments
+        prev_set_opt = (
+            ""  # previous token, to catch the two-token `-o allexport` spelling
+        )
+        export_exports = False  # the current export-family construct actually exports (not `declare N=1`)
+        export_is_functions = (
+            False  # `export -f` -- its arguments are function names, not variables
+        )
+        # Whether the CURRENT run of leading VAR=... assignments has already been classified as
+        # scoped (a prefix to a command word) or standalone (Task 3b) -- computed once per run,
+        # on its first token, and reused for every assignment token after it in the same run.
+        in_assign_run = False
+        assign_run_is_scoped = False
+        for i, token in enumerate(stream):
+            if gitcmd.is_op(token):
+                exporting, at_prefix, in_set, prev_set_opt = False, True, False, ""
+                in_assign_run = False
                 continue
             if token in gitcmd.RESERVED_WORDS:
                 # Command-PREFIX position only -- never `exporting`. Folding this into the
@@ -1654,26 +1907,154 @@ def _exported_injection_reason(
                 # else-branch below used to clear `at_prefix` on the reserved word itself (it is
                 # not an assignment), so the assignment immediately after it was never checked.
                 at_prefix = True
+                in_assign_run = False
                 continue
-            name = token.split("=", 1)[0]
-            is_assign = gitcmd.ENV_ASSIGN.match(token) is not None
-            if at_prefix and is_assign:
-                pass  # a bare VAR=... in command-prefix position
+            name = _assign_name(token)
+            is_assign = _is_assign_token(token, gitcmd)
+            here_at_prefix = at_prefix
+
+            if here_at_prefix and is_assign:
+                # A bare VAR=... (or VAR+=...) in command-prefix position. Task 3b: whether it
+                # reaches git's environment is no longer just "was allexport on" -- a construct
+                # that leaves the assignment STANDALONE (no command word terminates its run; see
+                # `_leading_assign_run_is_scoped`) persists in the shell, keeping any export
+                # attribute the name already carries (`HOME=/x ; git …`). A construct that scopes
+                # it to another command (`HOME=/x true`) never reaches git regardless of the
+                # name -- bash gives the assignment only to that one command's environment. The
+                # `^GIT_` arm below still refuses an unreachable GIT_* name regardless -- a
+                # deliberate, corpus-pinned over-block (assigned_but_never_exported_is_also_blocked)
+                # that this repair preserves.
+                if not in_assign_run:
+                    assign_run_is_scoped = _leading_assign_run_is_scoped(
+                        stream, i, gitcmd
+                    )
+                    in_assign_run = True
+                if assign_run_is_scoped:
+                    reaches_git_env = False
+                else:
+                    reaches_git_env = allexport or _name_carries_export_attribute(name)
             elif exporting:
-                pass  # an argument to export/declare/typeset/set
+                if token.startswith("-"):
+                    # OPTIONS, never variable names. Two of them change what the construct
+                    # MEANS and are tracked rather than merely skipped -- both measured
+                    # against real bash, not reasoned:
+                    #   -x  `declare`/`typeset` do NOT export without it: `declare N=1`,
+                    #       `declare -r N=1`, `declare -i N=1`, `typeset N=1` all leave N
+                    #       absent from the environment; only the `-x` forms put it there.
+                    #       Without this, `declare -r N=1 ; git status` blocks blaming 'N'.
+                    #   -f  `export -f` operates on FUNCTIONS, whose names never become
+                    #       variables: after `export -f f`, `f=` is absent from env.
+                    if "x" in token[1:]:
+                        export_exports = True
+                    if "f" in token[1:]:
+                        export_is_functions = True
+                    continue
+                if export_is_functions:
+                    continue  # a function name, not a variable
+                # Task 3b: an export-family construct that does not itself export (`declare N=1`,
+                # `readonly N=1`, no `-x`) still reaches git's environment if `N` already carries
+                # the export attribute -- assigning to an already-exported name keeps it exported
+                # regardless of the construct that does the assigning (measured against real
+                # bash). `export_exports` (unconditional for `export`, or set by `-x` above) and
+                # `allexport` each still force it on their own.
+                reaches_git_env = (
+                    export_exports or allexport or _name_carries_export_attribute(name)
+                )
+            elif in_set:
+                # `set` names no variables. Only its allexport switches matter here.
+                #
+                # Short options BUNDLE, so `-a` must be matched as a CHARACTER, never as a whole
+                # token. Measured against real bash: `set -ao allexport`, `set -ea` and `set -xa`
+                # all turn allexport ON, and `set -ea; N=1` really does put N in the environment,
+                # while `set -e`, `set -x` and `set do -a` leave it OFF. Matching the exact token
+                # `-a` missed every bundled spelling, so a following `HOME=` was judged
+                # unreachable and CLEARED -- a fail-OPEN one keystroke from the pinned `set -a`
+                # form, reopening the very bypass this module was changed to close.
+                #
+                # This mirrors the `"x" in token[1:]` technique used for declare/typeset above;
+                # exact-token matching here was the one place that did not.
+                #
+                # `+a` is deliberately NOT honoured as a disable, and allexport is never reset:
+                # both leave the gate over-blocking, which is the accepted direction. Same for a
+                # reserved word mid-construct (`set do -a`), which real bash treats as ending the
+                # option run. Refusing a command bash would have allowed costs one turn; clearing
+                # one it would have exported costs the boundary.
+                if token.startswith("-") and not token.startswith("--"):
+                    if "a" in token[1:]:
+                        allexport = True
+                    # A bundled `o` means the NEXT token is `-o`'s argument (`set -ao allexport`).
+                    prev_set_opt = "-o" if "o" in token[1:] else token
+                else:
+                    if prev_set_opt == "-o" and token == "allexport":
+                        allexport = True
+                    prev_set_opt = token
+                continue
             else:
+                # Either a real command word, or an assignment-shaped token past the
+                # command-prefix position (already an argument, never judged). Either way any
+                # pending leading-assignment run is over -- reset so the next one is classified
+                # fresh rather than reusing a stale verdict.
+                in_assign_run = False
+                # A wrapper that runs the BUILTIN in the current shell keeps command-prefix
+                # position. Measured against real bash: `command export X=1`, `command -p export
+                # X=1`, `builtin export X=1`, `time export X=1` and nested `command command
+                # export X=1` ALL export, and `command set -a` really enables allexport --
+                # whereas `nohup`, `nice` and `stdbuf` do NOT, because they exec an external
+                # process and `export` is not a binary.
+                #
+                # This is why the set is enumerated here rather than taken from
+                # `gitcmd.WRAPPERS`: that set is for finding a git invocation, so it carries
+                # `nohup`/`nice`/`sudo`/`env` (which do not preserve export) and OMITS `builtin` and `eval`
+                # (which does). Reusing it would be wrong in both directions.
+                #
+                # WITHOUT this, one word defeated the whole arm: `command export
+                # GIT_CONFIG_COUNT=1 ; git <push>` measured BLOCK on dev and ALLOW from the
+                # commit that added the command-position gate -- a REGRESSION, and the `no
+                # verdict changes` claim that commit made was false. Found by whole-branch
+                # review; the three benign de-over-blocks it did make are what hid it.
+                if here_at_prefix and token in _SHELL_BUILTIN_WRAPPERS:
+                    in_wrapper = True
+                    continue  # at_prefix deliberately NOT cleared
+                if in_wrapper and token.startswith("-"):
+                    continue  # an option to the wrapper, e.g. `command -p export X=1`
+                # An UNRESOLVABLE EXPANSION in command-prefix position is not a command word.
+                # It may vanish (`$UNSET export X=1`) or expand to a wrapper (`$(echo command)
+                # export X=1`) -- measured, both really export, because bash's rule is that if no
+                # command name survives expansion the assignment runs in the CURRENT shell.
+                # Treating it as a command word ended prefix position and the whole arm went dark.
+                #
+                # This module already owned the right predicate and consulted it at only ONE of
+                # the two sites that need it -- `_leading_assign_run_is_scoped` had it,
+                # this arm did not. That is the repo's own "derive both readings from ONE
+                # predicate" hazard: two spellings of one intent, with the weaker reading
+                # guarding the arm that matters. No word list could have closed this: the wrapper
+                # SET is complete (68 candidates measured), and the missing members were not
+                # words at all.
+                if here_at_prefix and _looks_like_unresolvable_expansion(token, gitcmd):
+                    continue  # keep command-prefix position; refuse to guess what it becomes
+                in_wrapper = False
                 if not is_assign:
                     at_prefix = False
-                if token in _EXPORT_WORDS:
+                # COMMAND position only. Without this test, `git config set k v` reads `set`
+                # as an exporter and judges `k`.
+                if here_at_prefix and token in _EXPORT_WORDS:
+                    # `export` exports by default; `declare`/`typeset` only with -x.
                     exporting, at_prefix = True, False
+                    export_exports = token == "export"
+                    export_is_functions = False
+                elif here_at_prefix and token == _SET_WORD:
+                    in_set, at_prefix, prev_set_opt = True, False, ""
                 continue
+
             if token in claimed:
                 continue  # already judged as this invocation's inline prefix
-            if _git_env_name_is_cleared(name):
-                continue  # same allowlist the inline arm consults -- see _git_env_name_is_cleared
+            if _env_name_is_cleared(name, reaches_git_env=reaches_git_env):
+                continue  # same allowlist the inline arm consults -- see _env_name_is_cleared
             return (
-                f"'{name}' is exported into the environment of a git invocation in this "
-                "same command, which can relocate or silence the boundary hook"
+                f"'{name}' reaches the environment of a git invocation in this same command "
+                "and is not on this gate's environment allowlist -- it can relocate the config "
+                "git reads, the hooks it runs, or the binary that runs as git. Either drop it, "
+                f"or add {name} to _ENV_ALLOWLIST with its property class recorded"
             )
     return None
 
@@ -1716,7 +2097,7 @@ def _find_block_reason(command: str, cwd: str) -> Block | None:
         # hardcoding False here would route every one of these through the "no push was
         # identified" branch even when one of the invocations in `invocations` is a literal push.
         carries_push = any(s == "push" for _d, _c, s, _g, _t in invocations)
-        # `boundary_unverifiable=True` -- this refusal is about the GATE (a denied `GIT_*` name
+        # `boundary_unverifiable=True` -- this refusal is about the GATE (a denied name
         # reaching a git invocation via export), never about the target, exactly like the inline
         # env-prefix arm below: both arms answer the identical question -- can this reach a git
         # invocation and move or silence the boundary hook -- so leaving only the inline arm
