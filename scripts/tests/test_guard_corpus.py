@@ -283,9 +283,12 @@ def _reserved_word_preserve_rows(other: Path) -> list[Row]:
                     command,
                     MUST_BLOCK,
                     f"derived preserve row: a {cd_cmd} placed directly after the reserved word "
-                    f"'{word}' must stay UN-tracked (approach (a)'s scoping), so the push still "
-                    "judges against the adopted repo's own cwd rather than a directory with no "
-                    "marker",
+                    f"'{word}' is now UNRESOLVABLE (fail-closed) rather than UN-tracked "
+                    "(approach (a)'s old scoping) -- the push still blocks, but for a different "
+                    "reason: before this branch the cd was ignored and the push judged the "
+                    "adopted repo's own cwd directly; now the cd itself makes the cwd "
+                    "unresolvable and that is what blocks it. The verdict does not move, only "
+                    "the reason",
                 )
             )
     return rows
@@ -443,7 +446,7 @@ def _build_rows(
             "bang_P",
             f"! {P}",
             MUST_BLOCK,
-            "`!` is a RESERVED_WORDS command boundary (F1) -- scoped to `_git_starts_command` only",
+            "`!` is a RESERVED_WORDS command boundary (F1)",
         ),
         Row(
             "brace_group_P",
@@ -1304,6 +1307,39 @@ def _build_rows(
             "decided over-block: `time cd` was tracked before and is right at the head of a "
             "command, but a rule that tracks it must model where `time` is a keyword -- the "
             "revision-2 hole. Every wrapper, `time` included, now fails closed",
+        ),
+        # --- fix/reserved-word-cd: a cd whose token before it is a RESERVED_WORD (`if`, `{`,
+        # `!`) was IGNORED by `_cd_command_position`, one construct over from the eval axis
+        # above -- same shape (`eval cd` was never seen, the guard went dormant while bash was
+        # back in the adopted repo), different mechanism (a reserved word, not eval/a wrapper).
+        # Each row is PREFIXED with `cd {other_s} &&` to actually leave the adopted repo first:
+        # `verdicts` runs every row from `sandbox.repo` (the adopted fixture) and `Row` carries no
+        # cwd field, so an unprefixed row would be judged from INSIDE the adopted repo, where the
+        # old ignored-cd behaviour already blocked it -- green before and after, pinning
+        # nothing.
+        Row(
+            "reserved_cd_if_then_from_other",
+            f"cd {other_s} && if cd {adopted_s}; then {P}; fi",
+            MUST_BLOCK,
+            "a LIVE fail-open on dev: the cd right after `if` was IGNORED, so the push was "
+            "judged from `other` and the guard went dormant while bash was back in the adopted "
+            "repo -- the same shape as eval_cwd_cd_into_adopted_from_other, one construct over",
+        ),
+        Row(
+            "reserved_cd_brace_from_other",
+            f"cd {other_s} && {{ cd {adopted_s}; {P}; }}",
+            MUST_BLOCK,
+            "a LIVE fail-open on dev: the cd right after `{` was IGNORED, so the push was "
+            "judged from `other` and the guard went dormant while bash was back in the adopted "
+            "repo -- the same shape as eval_cwd_cd_into_adopted_from_other, one construct over",
+        ),
+        Row(
+            "reserved_cd_bang_from_other",
+            f"cd {other_s} && ! cd {adopted_s} ; {P}",
+            MUST_BLOCK,
+            "a LIVE fail-open on dev: the cd right after `!` was IGNORED, so the push was "
+            "judged from `other` and the guard went dormant while bash was back in the adopted "
+            "repo -- the same shape as eval_cwd_cd_into_adopted_from_other, one construct over",
         ),
         Row(
             "eval_allow_read",
@@ -2838,6 +2874,30 @@ def test_required_eval_axis_labels_are_present(rows: list[Row]) -> None:
         f"{len(missing)} required eval-axis row(s) missing: {sorted(missing)}. These pin git "
         "reached through eval/builtin/a wrapper's `--`, and the fail-closed unresolvable-cwd "
         "rule; a row removed here is a hole no other assertion in this file can see."
+    )
+
+
+# Labels this branch's work is required to carry (fix/reserved-word-cd): a cd whose token before
+# it is a RESERVED_WORD (`if`, `{`, `!`) was ignored, a live fail-open one construct over
+# from the eval axis above, closed by that branch. Same declared-FLOOR rationale as the
+# eval/env-axis sets: discovery cannot detect ABSENCE, so this row list may only ever GROW past
+# these three.
+REQUIRED_RESERVED_CD_AXIS_LABELS = frozenset(
+    {
+        "reserved_cd_if_then_from_other",
+        "reserved_cd_brace_from_other",
+        "reserved_cd_bang_from_other",
+    }
+)
+
+
+def test_required_reserved_cd_axis_labels_are_present(rows: list[Row]) -> None:
+    missing = REQUIRED_RESERVED_CD_AXIS_LABELS - {r.label for r in rows}
+    assert not missing, (
+        f"{len(missing)} required reserved-word-cd-axis row(s) missing: {sorted(missing)}. "
+        "These pin a fail-open that was live before fix/reserved-word-cd (a cd after a reserved "
+        "word was ignored, so the guard went dormant while bash was back in the adopted repo); a "
+        "row removed here is a hole no other assertion in this file can see."
     )
 
 

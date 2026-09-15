@@ -493,7 +493,7 @@ def test_exec_echo_git_is_still_a_phantom():
     assert _subs("exec echo git push origin dev") == []
 
 
-# ---------- F1's guard: the reserved-word boundary must not leak into cd/pushd/popd tracking ----
+# ---------- A cd right after a reserved word must be UNRESOLVABLE, not ignored or tracked --------
 
 # One shape per RESERVED_WORDS member that places a `cd`/`pushd`/`popd` immediately after the
 # reserved word -- DERIVED from the constant itself, not hand-listed, because hand-listing this
@@ -528,15 +528,35 @@ def _reserved_word_cd_family_cases():
 
 
 @pytest.mark.parametrize("command", list(_reserved_word_cd_family_cases()))
-def test_reserved_word_boundary_does_not_enable_cd_tracking(command):
-    """Approach (a): the reserved-word boundary is scoped to `_git_starts_command` only. A
-    `cd`/`pushd`/`popd` immediately after a reserved word must stay UN-tracked, so the push that
-    follows is still judged against the cwd the command started in, not `/other`."""
+def test_a_cd_after_a_reserved_word_is_unresolvable(command):
+    """A `cd`/`pushd`/`popd` immediately after a reserved word (`if`, `!`, `{`, ...) really runs --
+    reaching it through a reserved word does not stop the shell moving -- so the tracked cwd must
+    become UNRESOLVABLE (None). Of the three possible outcomes here, only None is safe:
+
+    - unresolvable (None): the required outcome asserted below.
+    - ignored (False): the old bug. The cd is read as a plain argument even though it really moves
+      the shell, so the push that follows is judged against a cwd the shell already left.
+    - tracked (the target directory): the three-blocks regression `RESERVED_WORDS`'s docstring
+      documents -- `! cd OTHER ; <push>` and its `if`/`while` siblings would flip BLOCK to ALLOW.
+    """
     invocations = git_command.iter_git_invocations_with_cwd(command, "/adopted")
     assert invocations, command
-    assert invocations[-1][0] == "/adopted", (
-        f"cd tracking leaked through a reserved-word boundary: {command}"
+    assert invocations[-1][0] is None, (
+        f"cd after a reserved word must be unresolvable, not ignored or tracked: {command}"
     )
+
+
+def test_a_cd_after_a_non_boundary_word_is_untouched():
+    """CONTROL: these nine words must leave `_cd_command_position` returning False, unchanged by
+    the fix above -- proving the reserved-word fix does not widen past `RESERVED_WORDS` itself.
+    `for`/`case`/`select`/`function` are included deliberately even though none of them is in
+    `RESERVED_WORDS`: the failure this guards is a future branch consulting a SUPERSET
+    (`RESERVED_WORDS | {"for"}`), which would make `for cd in a b` unresolvable. Neither
+    `test_reserved_word_wrap_shapes_cover_every_member`'s equality assert nor the derived matrix
+    above can see that regression; only a must-remain-False row like this one can."""
+    for word in ("in", "}", "fi", "done", "esac", "for", "case", "select", "function"):
+        tokens = git_command.tokenize(f"{word} cd /tmp")
+        assert git_command._cd_command_position(tokens, 1) is False, word
 
 
 def test_protected_baselines_expose_no_push():

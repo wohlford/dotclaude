@@ -355,23 +355,41 @@ WRAPPERS = {
 }
 
 # Reserved words that open a new command exactly as a control operator does: `if git push` puts
-# `git` in command position the same way `; git push` does. Consulted ONLY by `_git_starts_command`
-# — the `is_git(...)`-guarded call sites below — and never by `_cd_command_position`, which
-# recognises `cd`/`pushd`/`popd` and likewise consults no reserved word. That scoping is
-# load-bearing, not incidental: widening it to cover
-# `cd`/`pushd`/`popd` too was measured to make three EXISTING blocks disappear. A `cd` right after
-# `if`/`while`/`!` would then itself be read as starting a command, cwd tracking would follow it
-# into a directory with no `.publication.toml`, and the guard would go dormant there —
+# `git` in command position the same way `; git push` does. Consulted by BOTH `_git_starts_command`
+# — the `is_git(...)`-guarded call sites below, recognising a `git` invocation — and
+# `_cd_command_position`, which classifies the cwd. The two read this set for DIFFERENT purposes,
+# and a membership change must be justified against BOTH before it lands.
+#
+# `_cd_command_position` returns None — UNRESOLVABLE — for a reserved word, and returning True
+# there would be wrong. Measured: reading a `cd` right after `if`/`while`/`!` as TRACKED makes
+# three EXISTING blocks disappear, because cwd tracking follows it into a directory with no
+# `.publication.toml` and the guard goes dormant there —
 # `! cd OTHER ; <push>`, `if cd OTHER ; then :; fi ; <push>` and
-# `while cd OTHER ; do break; done ; <push>` all flip BLOCK -> ALLOW under the wider scoping, even
-# though the push invocation is still *detected* (a detection-only property passes while this
-# happens — the property that matters here is that the BLOCKED SET does not shrink).
+# `while cd OTHER ; do break; done ; <push>` all flip BLOCK -> ALLOW under a TRACKED reading, even
+# though the push invocation is still *detected*. A detection-only property passes while that
+# happens: the property that matters here is that the BLOCKED SET does not shrink AT THE
+# PUBLICATION GUARD. That is a per-consumer property — the TIMING guard's blocked set DOES shrink
+# for this class, because that guard maps an unresolvable cwd onto the PAYLOAD cwd instead of
+# blocking (pinned by the "reserved-word cd trade" rows in scripts/tests/test_git_timing_guard.sh;
+# the full per-consumer table is in `specs/2026-09-11-reserved-word-cd.md`).
+#
+# That three-block measurement is exactly WHY the answer is None and not True: None keeps all
+# three BLOCKED, since an unresolvable cwd is fail-closed for the publication guard, while ALSO
+# closing the opposite direction that False left open — `if cd ADOPTED; then <push>; fi` from a
+# plain repo, measured rc 0 before this branch and rc 2 after. Do not re-derive the old conclusion
+# from the three rows above: they argue against TRACKING, never against this set being consulted
+# at all.
 #
 # `in` and `;;` are deliberately excluded: both are followed by a *pattern*, not a command, so
 # treating them as boundaries would let `for f in git; do …` manufacture a phantom `git` invocation
 # out of a loop list item. `}`, `fi`, `done`, `esac` are also excluded: each ENDS a block, and bash
 # treats a command placed directly after one — with no `;` or newline between — as a syntax error,
 # so admitting them as boundaries would add no real detection.
+#
+# For `_cd_command_position` those same exclusions are right for DIFFERENT reasons. `in` is
+# followed by a pattern, so `for f in cd; do …` runs no `cd` at all and must not be made
+# unresolvable. `}`, `fi`, `done` and `esac` cannot be followed directly by a command, so no `cd`
+# can sit after one for this function to classify.
 RESERVED_WORDS = frozenset(
     {"{", "!", "if", "then", "elif", "else", "while", "until", "do", "coproc"}
 )
@@ -1143,8 +1161,10 @@ def starts_command(
     leading `2>&1 git commit` also resolves to command position.)
 
     `reserved_words` and `extra_wrappers` are both empty by default, so an unqualified call is
-    byte-for-byte the pre-existing behavior. `_git_starts_command` is the only caller that passes
-    them; see `RESERVED_WORDS`'s docstring for why that scoping must not widen. The
+    byte-for-byte the pre-existing behavior. `_git_starts_command` is the only caller IN THIS
+    MODULE that passes them — `push-guard.py` and `git-timing-guard.py` pass
+    `reserved_words=gitcmd.RESERVED_WORDS` at their own detection sites; see `RESERVED_WORDS` for
+    the two different purposes that set now serves. The
     `cd`/`pushd`/`popd` sites this module tracks no longer call this function at all — they call
     `_cd_command_position`, which classifies the fail-closed cwd behavior directly rather than
     reusing this command-position predicate.
@@ -1202,11 +1222,12 @@ def _env_prefix(tokens: list[str], idx: int) -> list[str]:
 def _git_starts_command(tokens: list[str], idx: int) -> bool:
     """`starts_command`, scoped for recognising a `git` invocation: reserved words (`if`, `!`, …)
     and `exec` both count as command-position boundaries here. Every `is_git(...)`-guarded call
-    site in this module must call this, not bare `starts_command` — see `RESERVED_WORDS` for why
-    that scoping is confined to `git` recognition. The `cd`/`pushd`/`popd` sites do not call this
-    function at all; they call `_cd_command_position` instead, which classifies the fail-closed
-    cwd behavior directly — see `GIT_ONLY_WRAPPERS` for why the leak this scoping once risked
-    (a `cd` right after `exec` being tracked rather than made unresolvable) can no longer occur."""
+    site in this module must call this, not bare `starts_command` — see `RESERVED_WORDS` for what
+    this reading of that set is for, and how `_cd_command_position`'s differs. The `cd`/`pushd`/
+    `popd` sites do not call this function at all; they call `_cd_command_position` instead, which
+    classifies the fail-closed cwd behavior directly — see `GIT_ONLY_WRAPPERS` for why the leak
+    this scoping once risked (a `cd` right after `exec` being tracked rather than made
+    unresolvable) can no longer occur."""
     return starts_command(
         tokens, idx, reserved_words=RESERVED_WORDS, extra_wrappers=GIT_ONLY_WRAPPERS
     )
@@ -1217,8 +1238,11 @@ def _cd_command_position(tokens: list[str], i: int) -> bool | None:
 
     True when it runs directly in THIS shell — reached from a command boundary over env assignments
     only (`FOO=1 cd X` moves the shell) — so its target is tracked exactly. None when it is reached
-    through ANY wrapper or a wrapper's `--`, so the cwd becomes UNRESOLVABLE. False when it is an
-    argument (`echo cd X`) and not a directory change at all.
+    through ANY wrapper or a wrapper's `--`, AND None when the token in front of it is a member of
+    `RESERVED_WORDS` (`if`, `!`, `{`, `while`, `then`, `coproc`, …); either way the cwd becomes
+    UNRESOLVABLE. False when it is an argument (`echo cd X`) and not a directory change at all. A
+    None on the reserved-word path is therefore the designed answer, not a bug — the paragraph
+    below says why it is neither True nor False.
 
     None is the fail-CLOSED answer, and it REPLACED a model. Whether the shell moves depends on the
     whole chain: `eval cd` and `builtin cd` move it; `nohup cd` and `env eval cd` (env cannot run
@@ -1229,17 +1253,48 @@ def _cd_command_position(tokens: list[str], i: int) -> bool | None:
     carrying a cd reached it through a wrapper: the precision protected nothing and cost two holes.
 
     `exec` is not stepped: `exec cd` never continues — the non-interactive shell exits — so nothing
-    after it runs and no reading of it can leak. Reserved words are not boundaries here either;
-    see `RESERVED_WORDS`.
+    after it runs and no reading of it can leak.
+
+    A reserved word before the `cd` yields None as a DELIBERATE, UNIFORM OVER-BLOCK. Do not read
+    it as a claim that each member is individually unknowable: the set does NOT divide that way,
+    and saying it does invites a maintainer to falsify the sentence in a minute and then "repair"
+    it by deciding per word. Measured, with `cd /usr; <shape>; pwd`: after `if cd /bin; then :;
+    fi`, `while cd /bin; do break; done`, `until cd /bin; do break; done` and `! cd /bin` the
+    shell really is at /bin — for those four the `cd` provably DOES run here, and True would be
+    the accurate per-word answer. The others go the other way, also measured: `coproc cd /bin`
+    forks a subshell and the shell stays at /usr; `then`/`do`/`else`/`elif` run the `cd` only on a
+    branch actually taken (`if false; then cd /bin; fi` runs none at all); a `{` opening a
+    function BODY runs it only when the function is CALLED, never at definition time (`f() { cd
+    /bin; }`). What IS uniform across all ten is that False — "an argument, never a directory
+    change", the `echo cd X` answer — is wrong, since the word puts the `cd` in command position.
+    So the real choice is between deciding per word and answering one way for every member; the
+    paragraph below is why this module does not decide per word, and None is the uniform answer
+    because it is the one that cannot be got wrong, not because the shell's behaviour is a
+    mystery.
+
+    Enumerating which words move this shell is the SAME parameter deleted in the paragraph above
+    for wrappers, and it is deliberately not re-introduced here: EVERY member of `RESERVED_WORDS`
+    yields None. Nor may the branch be narrowed to the words where the `cd` might not run at all —
+    that re-opens what this closed: `if true; then cd ADOPTED; git <push> origin dev; fi` from a
+    plain cwd measured rc 0 before and rc 2 after. The cost is measured and small — 2 of 17,326
+    real cd-bearing commands are reached this way, and 0 of 27,998 lose a guarded op AT THE
+    PUBLICATION GUARD. That figure is per-consumer, not a whole-system claim: the TIMING guard maps
+    an unresolvable cwd onto the PAYLOAD cwd instead of blocking, so ITS blocked set does shrink
+    for this class — measured, and pinned by the "reserved-word cd trade" rows in
+    scripts/tests/test_git_timing_guard.sh; the full per-consumer table is in
+    `specs/2026-09-11-reserved-word-cd.md`.
 
     Consumers do not all read a None the same way, and this function does not decide that for them.
     `publication-push-guard.py` (the security boundary keeping a `dev` branch private) treats it as
     fail-CLOSED, per the paragraph above: it blocks every guarded operation and no read.
     git-timing-guard.py instead falls back to the PAYLOAD cwd on None rather than blocking — a
-    DECIDED trade (Ruling R6, design record 2026-09-11-eval-wrapper-bypass), pinned in
-    test_git_timing_guard.sh, not a second fail-closed reading of the same value: a `cd` reached
-    through a wrapper leaves that guard scoped to the payload cwd, exactly as it was before this
-    module's `cd`-tracking existed.
+    DECIDED trade (Ruling R6, design records 2026-09-11-eval-wrapper-bypass and
+    2026-09-11-reserved-word-cd), pinned in test_git_timing_guard.sh, not a second fail-closed
+    reading of the same value: a `cd` reached through a wrapper OR after a reserved word leaves
+    that guard scoped to the payload cwd, exactly as it was before this module's `cd`-tracking
+    existed. Both routes reach it, and they are NOT comparably rare — the wrapper route was
+    measured at 0 of 17,929 real commands, while the reserved-word route is constructible (`if cd
+    sub; then …`) and was measured to move that guard's verdict.
     """
     j = i - 1
     through_wrapper = False
@@ -1254,6 +1309,8 @@ def _cd_command_position(tokens: list[str], i: int) -> bool | None:
             through_wrapper = True
             j -= 1
             continue
+        if prev in RESERVED_WORDS:
+            return None
         return False
     return None if through_wrapper else True
 

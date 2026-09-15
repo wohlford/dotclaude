@@ -244,6 +244,47 @@ push_run "$REPO" "nohup cd $ELSEWHERE ; git push origin dev" 2 "blocked: nohup c
 push_run "$REPO" "eval cd $ELSEWHERE && git push origin main" 2 "blocked: unresolvable cwd refuses even a safe refspec (decided: 0 of 17,929 real cds go through a wrapper)"
 push_run "$REPO" "eval cd $ELSEWHERE && git status" 0 "allowed: an unresolvable cwd never blocks a read"
 
+# ================= CLOSED FAIL-OPEN: cd right after a reserved word (if / { / !) used to be
+# untracked rather than unresolvable (fix/reserved-word-cd, design record
+# 2026-09-11-reserved-word-cd) =================
+# `_cd_command_position` (scripts/lib/git_command.py) USED TO return False -- "argument, ignore it"
+# -- for a cd immediately preceded by a reserved word (`if`, `{`, `!`). The cd was NOT tracked at
+# all, so the walk's cwd never left the directory the guard started in. From a PLAIN (non-adopted)
+# cwd, bash really does cd into ADOPTED and push a private 'dev' branch there, while the guard read
+# its own frozen cwd (still PLAIN, no .publication.toml) and ALLOWED -- a live fail-open, measured
+# rc=0 before this branch. fix/reserved-word-cd made `_cd_command_position` return None
+# (unresolvable) there instead of False, which is fail-closed at this guard. The three rows below
+# pin that closure: each must BLOCK (rc=2), and each goes red again the moment a reserved-word cd
+# stops being classified unresolvable.
+build_repo 1
+ADOPTED="$REPO"
+build_elsewhere
+push_run "$ELSEWHERE" "if cd $ADOPTED; then git ${VERB} origin dev; fi" 2 \
+  "CLOSED FAIL-OPEN (blocked since fix/reserved-word-cd): if cd <adopted>; then <push> dev; fi, from plain cwd"
+push_run "$ELSEWHERE" "{ cd $ADOPTED; git ${VERB} origin dev; }" 2 \
+  "CLOSED FAIL-OPEN (blocked since fix/reserved-word-cd): { cd <adopted>; <push> dev; }, from plain cwd"
+push_run "$ELSEWHERE" "! cd $ADOPTED ; git ${VERB} origin dev" 2 \
+  "CLOSED FAIL-OPEN (blocked since fix/reserved-word-cd): ! cd <adopted> ; <push> dev, from plain cwd"
+
+# CONTROL: these three are the "three EXISTING blocks" that git_command.py's RESERVED_WORDS comment
+# names as the reason cd-tracking must never widen to treat a reserved word as a command boundary.
+# cwd starts ADOPTED (marker present); each cd's target is the PLAIN $ELSEWHERE, no marker at all.
+# Before fix/reserved-word-cd `_cd_command_position` returned False here (argument, not tracked),
+# so the walk's cwd never left ADOPTED and the guard blocked -- correctly, but for the wrong
+# reason. The fix changed that answer to None (unresolvable), which ALSO blocks (unresolvable is
+# fail-closed for this guard), so all three stayed green across it -- measured green both before
+# and after. They would only go red under a third possible answer, True (cd tracked into
+# $ELSEWHERE) -- which is exactly why the fix returns None and not True: True would resolve the
+# walk's cwd to a directory with no marker at all and flip all three of these from BLOCK to ALLOW,
+# re-opening the hole RESERVED_WORDS' comment describes. That is what these three still guard
+# against.
+push_run "$ADOPTED" "! cd $ELSEWHERE ; git ${VERB} origin dev" 2 \
+  "PRESERVE (control, green before+after): ! cd <plain> ; <push> dev, from adopted cwd"
+push_run "$ADOPTED" "if cd $ELSEWHERE; then :; fi ; git ${VERB} origin dev" 2 \
+  "PRESERVE (control, green before+after): if cd <plain>; then :; fi ; <push> dev, from adopted cwd"
+push_run "$ADOPTED" "while cd $ELSEWHERE; do break; done ; git ${VERB} origin dev" 2 \
+  "PRESERVE (control, green before+after): while cd <plain>; do break; done ; <push> dev, from adopted cwd"
+
 # ================= BLOCKED: --git-dir / GIT_DIR= forces block regardless of an otherwise-safe target =================
 build_repo 1
 build_elsewhere
