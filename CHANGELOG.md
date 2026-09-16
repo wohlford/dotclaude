@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.108.22 — 2026-09-15
+- fix(propagate): carry lowered hook timeouts named by the checker
+
 ## v0.108.21 — 2026-09-15
 - fix(settings-hooks-check): fail a lowered runtime hook timeout
 

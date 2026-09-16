@@ -243,11 +243,14 @@ test -f "$(git rev-parse --show-toplevel)/.publication.toml"
      runtime modification — which is the whole reason this bullet exists. (A standalone probe would
      have to lift the flag first: `update-index --no-skip-worktree settings.json`, then
      `git diff --name-only HEAD`, then re-set it — the merge error is cheaper and already in hand.)
-     Then: park it, fast-forward, restore it so the runtime prefs (`model`,
-     `enabledPlugins`) survive, then hand-add any new hook entries the committed version gained —
-     enumerate them with `git -C "$live" diff FETCH_HEAD -- settings.json` after the restore (the
-     runtime file vs the incoming commit: copy over missing `hooks` entries, keep the runtime
-     `model`/`enabledPlugins` values):
+     Then: park it, fast-forward, restore it so the runtime prefs (`model`, `enabledPlugins`)
+     survive, then carry into it every missing hook registration and every hook `timeout` the
+     runtime has LOWER than the committed version. Enumerate them with
+     `"$live/scripts/settings-hooks-check.py" --scope "$live" --ref FETCH_HEAD` after the restore
+     — it names each missing registration, and each timeout the runtime file has LOWER than the
+     commit with both values — and never with `git diff FETCH_HEAD -- settings.json`, which reads
+     clean once `skip-worktree` is set. Keep the runtime `model`/`enabledPlugins` values, and
+     re-run the checker until it passes:
 
    ```bash
    git -C "$live" update-index --no-skip-worktree settings.json
@@ -425,10 +428,11 @@ test -f "$(git rev-parse --show-toplevel)/.publication.toml"
      `settings.json` was **not** in the range; **skipped** when it was, since the hand-add below
      changes the file by design.
    - `stash-empty` and `skip-worktree` — nothing left parked, and the flag still set. Both arms.
-   - `hooks-registered` — every committed registration is present in the runtime file, via
-     `settings-hooks-check.py` (resolved beside the postcheck, whose path it prints). **This runs on
-     both arms on purpose:** gating it on the range would let a mis-determined range hide a dropped
-     registration, which is the very failure the branch decision exists to prevent.
+   - `hooks-registered` — every committed registration is present in the runtime file, and no
+     runtime hook `timeout` is lower than the committed one, via `settings-hooks-check.py` (resolved
+     beside the postcheck, whose path it prints). **This runs on both arms on purpose:** gating it on
+     the range would let a mis-determined range hide a dropped registration or a lowered timeout,
+     which is the very failure the branch decision exists to prevent.
    - `pre-push-installed` — the installed `.git/hooks/pre-push` copy is present, a regular file,
      executable, and byte-identical to the tracked `git-hooks/pre-push`. **Adopted repos only** —
      it SKIPs where no `refs/heads/*` carries `.publication.toml`, which is exactly when the
@@ -459,8 +463,9 @@ test -f "$(git rev-parse --show-toplevel)/.publication.toml"
    the postcheck, and proceed on `RESULT: PASS`. Every later promote installs before it asserts.
 
    On a `hooks-registered` failure it names every registration the commit carries and the runtime
-   lacks; add those to the runtime file by hand, keeping its `model`/`enabledPlugins` values, and
-   re-run until it passes.
+   lacks, and every hook `timeout` the runtime holds lower than the commit with both values; add the
+   missing registrations and raise each lowered timeout to its committed value in the runtime file
+   by hand, keeping its `model`/`enabledPlugins` values, and re-run until it passes.
 
    **Do not substitute a count**, and do not read agreeing counts as agreement. Measured: a promote
    where runtime and commit both held 24 entries while differing in *both* directions at once — a
