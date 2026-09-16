@@ -387,6 +387,21 @@ drive_ppg "$r" PATH="$r/shim:$PATH"
 check_eq "$ppg_rc" 2 'ppg: owner + pytest UNAVAILABLE -> exit 2 (gate did not run)'
 check_has "$ppg_err" 'pytest is unavailable' 'ppg: the unavailable runner is named'
 
+# THE LIBRARY: the bounded-run code lives in scripts/lib/hook_budget.sh beside the hook. A hook copied
+# somewhere without it has a broken install and must say so — never pass, and never die as set -e's
+# rc 1, which the harness treats as non-blocking noise. The MESSAGE is the assertion: exit 2 alone is
+# also produced by the missing-suite branch.
+nolib="$tmp/nolib_hooks"
+mkdir -p "$nolib"
+cp "$hooks/$ppg" "$nolib/$ppg"
+r="$tmp/ppg_nolib"
+ppg_owner_fixture "$r"
+ppg_rc=0
+ppg_err=$(printf '{"tool_input":{"file_path":"%s"}}' "$r/scripts/lib/git_command.py" \
+  | bash "$nolib/$ppg" 2>&1 >/dev/null) || ppg_rc=$?
+check_eq "$ppg_rc" 2 'ppg: library absent beside the hook -> exit 2'
+check_has "$ppg_err" 'bounded-run library' 'ppg: the absent library is named'
+
 # The BUDGET: the first suite outlives a lowered budget and spawns a child that would outlive it.
 # The row asserts the overrun path (not "never started"), the bound, and that no process from the
 # suite's tree survives — rc and message alone cannot tell "killed the tree" from "abandoned it".
@@ -477,6 +492,93 @@ drive_ppg "$r"
 check_eq "$ppg_rc" 2 'ppg: a candidate path git prints quoted -> exit 2 (discovery fails closed)'
 check_has "$ppg_err" 'discovery of the files that depend on git_command failed' \
   'ppg: the quoted-path failure is named'
+
+# ---------- audit-test.sh's budget ----------
+# audit_fixture DIR — an owning repo holding the audit engine and, unless the row writes its own, no suite.
+audit_fixture() {
+  mkrepo "$1"
+  mkdir -p "$1/skills/audit" "$1/scripts/tests"
+  printf 'x\n' > "$1/skills/audit/audit.sh"
+  mark_owner "$1/scripts/audit-test.sh"
+}
+# drive_audit DIR HOOKDIR [NAME=VALUE ...] — drive an audit.sh edit; sets audit_rc and audit_err (stderr only).
+drive_audit() {
+  local r="$1" hookdir="$2"
+  shift 2
+  audit_rc=0
+  audit_err=$(printf '{"tool_input":{"file_path":"%s"}}' "$r/skills/audit/audit.sh" \
+    | env "$@" bash "$hookdir/audit-test.sh" 2>&1 >/dev/null) || audit_rc=$?
+}
+
+# THE BUDGET: the suite outlives a lowered budget and starts a child that ignores TERM. The row asserts
+# the overrun report, the bound, and that nothing from the suite's tree survives.
+r="$tmp/audit_overrun"
+audit_fixture "$r"
+audit_marker="AUDIT_OVERRUN_MARKER_$$_$RANDOM"
+# shellcheck disable=SC2016  # the generated suite's own text
+printf '#!/usr/bin/env bash\npython3 -c "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)" %s &\nsleep 20\n' \
+  "$audit_marker" > "$r/scripts/tests/test_audit.sh"
+audit_t0=$SECONDS
+drive_audit "$r" "$hooks" AUDIT_TEST_BUDGET=3
+audit_elapsed=$((SECONDS - audit_t0))
+check_eq "$audit_rc" 2 'audit: a suite running past the budget -> exit 2'
+check_has "$audit_err" 'GATE DID NOT COMPLETE' 'audit: the overrun is reported as an incomplete gate'
+check_has "$audit_err" 'killed mid-run: scripts/tests/test_audit.sh' 'audit: the overrun names the suite it killed'
+if [ "$audit_elapsed" -lt 15 ]; then
+  pass_line "audit: the budget bound the run (${audit_elapsed}s)"
+else
+  fail_line "audit: the budget did not bind (took ${audit_elapsed}s against a 3s budget)"
+fi
+sleep 1
+if pgrep -f "$audit_marker" >/dev/null 2>&1; then
+  fail_line 'audit: a process from the killed suite tree SURVIVED the overrun'
+  pkill -f "$audit_marker" >/dev/null 2>&1 || true
+else
+  pass_line 'audit: no process from the killed suite tree survived'
+fi
+
+# The override may only LOWER the budget: a value above the declared budget is ignored, so a fast
+# failing suite still reports as a failure, not as an overrun or a pass.
+r="$tmp/audit_override_high"
+audit_fixture "$r"
+printf '#!/usr/bin/env bash\necho audit-suite-said-no\nexit 1\n' > "$r/scripts/tests/test_audit.sh"
+drive_audit "$r" "$hooks" AUDIT_TEST_BUDGET=1000
+check_eq "$audit_rc" 2 'audit: a failing suite under an ignored override -> exit 2'
+check_has "$audit_err" 'audit engine test suite FAILED' 'audit: the failure is reported as a failure'
+check_has "$audit_err" 'audit-suite-said-no' 'audit: the failing suite output is relayed'
+
+# THE LIBRARY, absent beside the hook -> refuse by name.
+mkdir -p "$tmp/nolib_hooks"
+cp "$hooks/audit-test.sh" "$tmp/nolib_hooks/audit-test.sh"
+r="$tmp/audit_nolib"
+audit_fixture "$r"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$r/scripts/tests/test_audit.sh"
+drive_audit "$r" "$tmp/nolib_hooks"
+check_eq "$audit_rc" 2 'audit: library absent beside the hook -> exit 2'
+check_has "$audit_err" 'bounded-run library' 'audit: the absent library is named'
+
+# python3 cannot start a suite session (the launcher needs os.setsid) -> the gate did not run. The shim
+# fails every python3 call, so without the probe this would surface as a misattributed suite failure.
+r="$tmp/audit_no_python"
+audit_fixture "$r"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$r/scripts/tests/test_audit.sh"
+mkdir -p "$r/shim"
+printf '#!/bin/sh\nexit 1\n' > "$r/shim/python3"
+chmod +x "$r/shim/python3"
+drive_audit "$r" "$hooks" PATH="$r/shim:$PATH"
+check_eq "$audit_rc" 2 'audit: owner + python3 cannot start a session -> exit 2'
+check_has "$audit_err" 'cannot start a suite session' 'audit: the unusable python3 is named'
+
+# The same, in a repo that does NOT own the hook -> inert.
+r="$tmp/audit_no_python_nonowner"
+mkrepo "$r"
+mkdir -p "$r/skills/audit" "$r/scripts/tests" "$r/shim"
+printf 'x\n' > "$r/skills/audit/audit.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$r/scripts/tests/test_audit.sh"
+printf '#!/bin/sh\nexit 1\n' > "$r/shim/python3"
+chmod +x "$r/shim/python3"
+drive_audit "$r" "$hooks" PATH="$r/shim:$PATH"
+check_eq "$audit_rc" 0 'audit: NON-owner + python3 cannot start a session -> exit 0 (inert)'
 
 # CONTROL — green before AND after this change by construction; it earns its keep by going red the
 # day a real gate imports the tokenizer without a DEPENDENTS row. It copies this repo's WHOLE

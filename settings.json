@@ -128,7 +128,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/audit-test.sh",
-            "timeout": 120
+            "timeout": 600
           },
           {
             "type": "command",

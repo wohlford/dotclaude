@@ -9,7 +9,8 @@ set -euo pipefail
 # Exit codes:
 #   0 — no action needed, or every suite this edit requires ran and passed (brief note on stdout)
 #   2 — a suite failed; a required suite is absent or unrunnable; a file depends on the tokenizer
-#       with no suite wired for it; or the run did not finish inside its budget (stderr to Claude)
+#       with no suite wired for it; the bounded-run library is unreadable; or the run did not
+#       finish inside its budget (stderr to Claude)
 #
 # WHAT RUNS. DEPENDENTS, below, is the one declaration of which suites test each gate built on
 # scripts/lib/git_command.py. An edit to a gate, or to one of its suites, runs that gate's row. An
@@ -40,6 +41,8 @@ set -euo pipefail
 # HOOK_BUDGET_SECS below it) and reports an overrun as exit 2. Each suite runs in its own session,
 # so an overrun stops its whole process tree — TERM to the group, then KILL to whatever in it
 # ignored TERM (a descendant that starts a session of its own escapes both).
+# The mechanism lives in scripts/lib/hook_budget.sh beside this hook; without it the hook refuses
+# rather than run unbounded.
 # PUBLICATION_PUSH_GUARD_TEST_BUDGET may LOWER the budget (the guard suite uses it); any other
 # value is ignored. A stray export lowers it on real edits too — the loud direction. Measured
 # 2026-09-14, driving this hook on a tokenizer edit: 345 s on a quiet machine, and 341 s in ONE
@@ -326,7 +329,9 @@ if [[ "$tokenizer" -eq 1 && "$owner" -eq 1 ]]; then
 fi
 
 # ---------- Budget ----------
-# SECONDS counts from this shell's start, so the deadline covers everything above as well.
+# SECONDS counts from this shell's start, so the deadline covers everything above as well. An
+# environment-exported SECONDS shifts that origin (measured: `env SECONDS=1000 bash -c 'echo $SECONDS'`
+# prints 1000 on bash 3.2 and 5).
 HOOK_BUDGET_SECS=540
 budget=$HOOK_BUDGET_SECS
 override=${PUBLICATION_PUSH_GUARD_TEST_BUDGET:-}
@@ -341,45 +346,34 @@ esac
 deadline=$budget
 
 # ---------- Run ----------
+# The bounded-run library is resolved from this hook's own directory, so its absence is a broken
+# install of the hook rather than a property of the edited repo: alarm whatever repo was edited.
+hook_lib="$(dirname "$0")/lib/hook_budget.sh"
+if [[ ! -r "$hook_lib" ]]; then
+  printf '%s\n' \
+    "GATE DID NOT RUN — $(basename "$0") cannot read its bounded-run library $hook_lib, so it cannot run suites below its registered timeout." \
+    "The hook's install is broken: restore scripts/lib/hook_budget.sh beside it." >&2
+  exit 2
+fi
+# shellcheck source=lib/hook_budget.sh
+. "$hook_lib"
+
 tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/ppg-test.XXXXXX" 2>/dev/null) \
   || refuse "GATE DID NOT RUN — could not create a temporary directory for suite output."
 
-# kill_suite PID — stop one suite launched by run_suite, and everything it started. TERM goes to the
-# group. That FAILS in the brief window between launch and os.setsid(), when PID is not yet a group
-# leader — so fall back to the process itself, which has started nothing yet. Then poll the GROUP,
-# not just its leader, for a few seconds and escalate to KILL if anything in it is still alive: a
-# descendant that ignores TERM outlives its leader, and polling the leader alone would miss it. A
-# process-group id cannot be reused while any member is alive; once the group is empty it can be,
-# so a signal can reach a reused id only within one poll interval — a residual accepted, not closed.
-kill_suite() {
-  local pid=$1
-  kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if ! kill -0 -- "-$pid" 2>/dev/null && ! kill -0 "$pid" 2>/dev/null; then
-      return 0
-    fi
-    sleep 0.5
-  done
-  kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
-  return 0
-}
-
-# `live` holds the running suite's pid — also its process-group id once os.setsid() has run — and is
-# cleared right after `wait`. Bash reaps a finished background child as soon as it exits, before
-# `wait` runs, so between an exit and the next poll the id can already be free; see kill_suite for
-# what that leaves.
+# `live` holds the running suite's pid while hb_run_bounded polls it, so the EXIT trap can stop a
+# suite this hook is interrupted in the middle of.
 live=""
+suite_rc=""
 # shellcheck disable=SC2329  # invoked via the EXIT trap
 cleanup() {
   if [[ -n "$live" ]]; then
-    kill_suite "$live"
+    hb_kill_suite "$live"
   fi
   rm -rf "$tmpdir"
 }
 trap cleanup EXIT
 trap 'exit 2' TERM INT
-
-SESSION_EXEC='import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])'
 
 ran=()
 failures=()
@@ -390,7 +384,7 @@ killed=""
 # recorded in ran/failures/not_run/killed; a non-zero status never escapes (set -e would turn it
 # into rc 1, which the harness treats as noise).
 run_suite() {
-  local rel=$1 out rc=0
+  local rel=$1 out
   if [[ -n "$killed" || "$SECONDS" -ge "$deadline" ]]; then
     not_run+=("$rel")
     return 0
@@ -398,25 +392,15 @@ run_suite() {
   out="$tmpdir/${rel//\//_}.out"
   ran+=("${rel##*/}")
   if [[ "$rel" == *.py ]]; then
-    (cd "$root" && exec python3 -c "$SESSION_EXEC" python3 -m pytest -p no:cacheprovider -q "$rel") \
-      >"$out" 2>&1 &
+    hb_run_bounded suite_rc live "$deadline" "$root" "$out" python3 -m pytest -p no:cacheprovider -q "$rel"
   else
-    (cd "$root" && exec python3 -c "$SESSION_EXEC" bash "$rel") >"$out" 2>&1 &
+    hb_run_bounded suite_rc live "$deadline" "$root" "$out" bash "$rel"
   fi
-  live=$!
-  while kill -0 "$live" 2>/dev/null; do
-    if [[ "$SECONDS" -ge "$deadline" ]]; then
-      kill_suite "$live"
-      wait "$live" 2>/dev/null || true
-      live=""
-      killed=$rel
-      return 0
-    fi
-    sleep 0.5
-  done
-  wait "$live" || rc=$?
-  live=""
-  if [[ "$rc" -ne 0 ]]; then
+  if [[ "$suite_rc" == killed ]]; then
+    killed=$rel
+    return 0
+  fi
+  if [[ "$suite_rc" -ne 0 ]]; then
     failures+=("${rel##*/}")
     printf '%s FAILED after editing %s:\n' "${rel##*/}" "$file_path" >&2
     tail -20 "$out" >&2 || true

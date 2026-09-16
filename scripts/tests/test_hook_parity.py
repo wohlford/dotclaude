@@ -44,8 +44,8 @@ sys.path.insert(0, str(REPO / "scripts" / "lib"))
 import settings_hooks  # noqa: E402
 
 # (a) The convention. NOT load-bearing at runtime and labelled so: every armed hook contains the
-# sentinel phrase TWICE — this header line, and the grep line below that searches for it — so a
-# hook's own `grep -q` succeeds off its grep line alone. Measured: strip this header from
+# sentinel phrase at least twice — this header line, and the grep line below that searches for
+# it — so a hook's own `grep -q` succeeds off its grep line alone. Measured: strip this header from
 # audit-test.sh and `grep -q` still returns 0. Match the EXACT line, or the check is satisfied by
 # any file carrying (b) and asserts nothing.
 HEADER_LINE = "# Ownership sentinel (do not remove): dotclaude-test-runner-hook"

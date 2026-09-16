@@ -3,7 +3,12 @@
 
 Deliberately NOT named `test_*`: it mutates a tracked file in place, so pytest must not collect it.
 Run it on demand — `./scripts/tests/mutate_publication_push_guard_test.py` — never while editing the
-hook, since the restore would clobber the edit, and never while another suite is running.
+hook, since the restore would clobber the edit, and never while another suite is running. And never
+alongside mutate_hook_budget.py: the hook sources scripts/lib/hook_budget.sh, so a live library
+mutant would score this campaign's rows as false catches. Nor alongside mutate_audit_test.py: both
+campaigns share this suite, test_hook_suite_guard.sh, which drives the REAL scripts/audit-test.sh
+and scripts/publication-push-guard-test.sh directly from the working tree, so a live mutant in
+either hook's own file corrupts the other campaign's rows too.
 
 Each row deletes or weakens ONE mechanism the hook's header claims, and names the guard-suite row
 that must catch it. A mutant the suite survives is a claim nothing tests.
@@ -64,33 +69,12 @@ MUTATIONS = [
         "listing=$(git -C \"$root\" -c core.quotePath=false ls-files -co --exclude-standard -- '*.py') || return 1",
         "listing=$(git -C \"$root\" -c core.quotePath=false ls-files -co --exclude-standard -- '*.py') || listing=''",
     ),
-    # The rows below cover the overrun path's kill — `kill_suite`: TERM to the group, a pid fallback
-    # before os.setsid(), then KILL to whatever in the group ignored TERM — and the rule that a quoted
-    # `git ls-files` entry fails discovery.
-    mutate.Mutation(
-        "an overrun no longer stops the suite — caught by the survivor and elapsed rows",
-        '      kill_suite "$live"\n      wait "$live" 2>/dev/null || true\n',
-        '      wait "$live" 2>/dev/null || true\n',
-    ),
-    mutate.Mutation(
-        "the pre-setsid fallback is dropped — caught by the launch-window elapsed row",
-        'kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true',
-        'kill -TERM -- "-$pid" 2>/dev/null || true',
-    ),
-    mutate.Mutation(
-        "kill_suite polls only the leader, so a TERM-ignoring descendant survives — caught by the overrun survivor row",
-        '    if ! kill -0 -- "-$pid" 2>/dev/null && ! kill -0 "$pid" 2>/dev/null; then',
-        '    if ! kill -0 "$pid" 2>/dev/null; then',
-    ),
+    # The rule that a quoted git ls-files entry fails discovery. The overrun path's kill moved to
+    # scripts/lib/hook_budget.sh and is mutated by scripts/tests/mutate_hook_budget.py.
     mutate.Mutation(
         "a quoted ls-files entry is skipped instead of failing discovery — caught by both quoted-path rows",
         '      \\"*) return 1 ;;\n',
         "",
-    ),
-    mutate.Mutation(
-        "the deadline is never checked while a suite runs — caught by the overrun rows",
-        '    if [[ "$SECONDS" -ge "$deadline" ]]; then\n      kill_suite',
-        "    if false; then\n      kill_suite",
     ),
     mutate.Mutation(
         "pytest unavailability becomes a silent skip — caught by the pytest-unavailable MESSAGE row (its rc row still reads 2: the shim fails every .py suite)",

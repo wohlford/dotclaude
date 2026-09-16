@@ -30,7 +30,7 @@ import settings_hooks  # noqa: E402
 
 # Named so that a hook LOSING its budget line alarms — a derivation over "hooks that declare a
 # budget" silently shrinks to nothing and passes.
-FLOOR = frozenset({"publication-push-guard-test.sh"})
+FLOOR = frozenset({"audit-test.sh", "publication-push-guard-test.sh"})
 
 # The overrun path runs PAST the budget before it can report: a suite's TERM→KILL escalation takes up
 # to ~5.5 s, then the hook prints its report. A budget closer to the timeout than this lets the

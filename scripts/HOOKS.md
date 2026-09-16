@@ -141,12 +141,13 @@ hook whose suites can take minutes must bound itself **below** its registration 
 as exit `2`: launch each suite as its own session leader (through
 `python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])'`), poll it against
 the deadline, and on overrun signal the whole group — TERM, then KILL to whatever is still alive. Two
-traps the worked example handles: a suite stopped before its launcher reaches `os.setsid()` is not yet
+traps the library handles: a suite stopped before its launcher reaches `os.setsid()` is not yet
 a group leader, so fall back to signalling the process itself; and a descendant that ignores TERM
-outlives its leader, so poll the group, not the leader. `kill_suite` in
-`publication-push-guard-test.sh` is the worked example, and `scripts/tests/test_hook_budget.py` pins
-the `HOOK_BUDGET_SECS` of every registered `*-test.sh` hook at least 30 s below its `settings.json`
-timeout.
+outlives its leader, so poll the group, not the leader. `scripts/lib/hook_budget.sh` is that
+mechanism, sourced by `publication-push-guard-test.sh` and `audit-test.sh`; source it rather than
+copy it. `scripts/tests/test_hook_budget.py` pins the `HOOK_BUDGET_SECS` of every registered
+`*-test.sh` hook that declares one — and requires one of a named floor — at least 30 s below its
+`settings.json` timeout.
 
 ## Wiring
 
