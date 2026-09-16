@@ -111,7 +111,11 @@ also removed the real terminal value; it spun for three hours against a job that
 **And run that `--wait` through the Bash tool's `run_in_background`, never in the foreground** — a
 foreground waiter is killed at the tool timeout (rc 143), which reads exactly like the job dying,
 while a backgrounded one is a tracked task the operator can see and it notifies you when the job
-ends; measured four times in one session. Stopping it does not stop the job.
+ends; measured four times in one session. Stopping it does not stop the job. **That notification
+reaches only the session that armed the waiter — a subagent is never re-invoked by it**, so a
+delegate that backgrounds its waiter ends its turn with no verdict: inside a delegate, wait in the
+foreground within the tool timeout, or leave the long job to the controller. Measured: six
+delegates ended their turns with a run in flight, two of them with a background waiter armed.
 Four wrappers were hand-written in one session before it existed, three byte-equivalent;
 the fourth still let a sweep that had run 4 checks of 15 read as a clean pass. Give it `--expect
 '<verdict regex>'` at LAUNCH too — the pattern is recorded INTO the artifact, so a run that
