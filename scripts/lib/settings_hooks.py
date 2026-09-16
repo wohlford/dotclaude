@@ -3,18 +3,20 @@
 The repo had TWO independent parses of this shape before this module existed:
 `scripts/tests/test_hook_argv_refusal.py::registered_hooks` (silent on malformed shape — a
 group or entry of the wrong type is simply skipped) and
-`scripts/settings-hooks-check.py::_triples` (raises `ValueError` naming what it found instead).
+`scripts/settings-hooks-check.py::_triples` (raised `ValueError` naming what it found instead).
 Adding a checker with its own third parse would be the two-spellings defect this repo keeps
 hitting, so this module is that parse, and `registered_hooks` now filters over it.
 
-**`settings-hooks-check.py::_triples` is deliberately NOT converted, and this is the trap to read
-before you "finish the job".** Making it delegate here looks like the obvious tidy-up and is
-measured to be wrong: three of `scripts/tests/mutate_settings_hooks_check.py`'s `Mutation.old`
-anchors are string literals inside `_triples`'s own body, so moving that body drops the campaign
-from `caught=7` to `caught=4 survived=3` — a verification tool quietly losing half its teeth while
-every suite stays green. Deduplicating requires re-anchoring that campaign FIRST, as its own
-change. Until then the two functions are duplicates that must be kept in step by hand, and that
-cost is deliberate rather than overlooked.
+**`settings-hooks-check.py::_triples` was converted on 2026-09-15, together with its campaign.**
+Its duplicate `_triples` parse had carried three campaign anchors, which is why the conversion
+waited: moving the body without re-anchoring them first measured `caught=4 survived=3` — a
+verification tool quietly losing half its teeth while every suite stayed green. Once the checker
+started reading timeouts through this walker (`entry_timeout`, for the lowered-runtime-timeout
+check), the duplicate's own validation could no longer change any outcome the checker's suite
+could observe, so the conversion stopped being optional — a mutation of `_triples`'s shape checks
+would have survived regardless of what it did. The identity rows re-anchored to the checker's
+projection over this walker's output; the shape-validation rows moved to
+`scripts/tests/mutate_settings_hooks_lib.py`, whose subject is this module.
 
 The raising behaviour is the one that survives. A hooks block a parser cannot read is not an
 empty hooks block, and silently treating it as one would drop exactly the registrations a

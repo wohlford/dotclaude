@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # Script: settings-hooks-check.py
-# Purpose: Verify a promoted runtime settings.json kept every hook registration the commit added
+# Purpose: Verify a promoted runtime settings.json kept every hook registration and never lowered a committed timeout
 # Usage: settings-hooks-check.py --scope <repo> [--ref <ref>]
-"""Assert that every hook registration in a COMMITTED settings.json is present in the RUNTIME one.
+"""Assert every hook registration in a COMMITTED settings.json is present in the RUNTIME one, and no runtime timeout is lower than committed.
 
 `/propagate` promotes by fast-forwarding production. `settings.json` is marked `skip-worktree`
 there — it carries machine-local preferences (`model`, `enabledPlugins`) that must survive a
@@ -34,11 +34,21 @@ Runtime-only entries are therefore REPORTED (they are worth seeing) but never fa
 event, is a different registration that fires on different things — treating the command alone as
 the identity would wave through a hook silently rewired to match nothing.
 
+## A lowered timeout is a missing registration in slow motion
+
+The harness kills a hook that outlives its `timeout` and tells nobody, so a runtime timeout LOWER than
+the committed one re-opens exactly the dead-gate defect above for any run that needs the difference.
+The promote's restore puts that back too: the parked copy predates a commit that raised a timeout. For
+every triple present in both files the EFFECTIVE timeout is compared — absent means the harness
+default, and a triple registered more than once counts its minimum, the earliest kill. Lower is a
+FAIL; higher is reported, never failed, by the same one-directional rule as extra registrations.
+
 ## Statuses are an allowlist
 
-`PASS` (nothing missing), `FAIL` (at least one committed registration absent), `ERROR` (the check
-could not be made at all — unreadable or malformed input, or a committed file declaring zero
-registrations). ERROR is not FAIL: it means no verdict was reached about the runtime file.
+`PASS` (nothing missing and nothing lowered), `FAIL` (at least one committed registration absent, or registered with a
+lower timeout), `ERROR` (the check could not be made at all — unreadable or malformed input, or a
+committed file declaring zero registrations). ERROR is not FAIL: it means no verdict was reached
+about the runtime file.
 
 Zero committed registrations is an ERROR rather than a vacuous PASS. A comparison whose expected
 set is empty succeeds against literally any runtime file, and reads exactly like a clean promote.
@@ -61,43 +71,30 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+try:
+    import settings_hooks
+except ImportError as exc:  # reported as ERROR by main(): no walker, no verdict
+    settings_hooks = None
+    _IMPORT_ERROR = exc
+
 SETTINGS = "settings.json"
 
 
-def _triples(doc, origin):
-    """Flatten a settings document into a set of (event, matcher, command) triples.
+def _registrations(doc, origin):
+    """Map each (event, matcher, command) triple in a settings document to its EFFECTIVE timeout.
 
-    Shape errors raise ValueError rather than being skipped: a hooks block this function cannot
-    read is not an empty hooks block, and silently treating it as one would drop exactly the
-    registrations the check exists to find.
+    One parse, through `settings_hooks.walk_hook_entries`, which owns the shape validation: a hooks
+    block it cannot read raises ValueError rather than reading as an empty one, and silently treating
+    it as empty would drop exactly the registrations this check exists to find. The timeout is the
+    harness default when `timeout` is absent, and the MINIMUM when one document registers the same
+    triple more than once — the earliest kill.
     """
-    hooks = doc.get("hooks", {})
-    if not isinstance(hooks, dict):
-        raise ValueError("%s: 'hooks' is not an object" % origin)
-    out = set()
-    for event, groups in hooks.items():
-        if not isinstance(groups, list):
-            raise ValueError("%s: hooks.%s is not a list" % (origin, event))
-        for group in groups:
-            if not isinstance(group, dict):
-                raise ValueError(
-                    "%s: a group under hooks.%s is not an object" % (origin, event)
-                )
-            matcher = group.get("matcher")
-            entries = group.get("hooks", [])
-            if not isinstance(entries, list):
-                raise ValueError("%s: hooks.%s[].hooks is not a list" % (origin, event))
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    raise ValueError(
-                        "%s: an entry under hooks.%s is not an object" % (origin, event)
-                    )
-                command = entry.get("command")
-                if command is None:
-                    raise ValueError(
-                        "%s: an entry under hooks.%s has no command" % (origin, event)
-                    )
-                out.add((event, matcher, command))
+    out = {}
+    for event, matcher, entry in settings_hooks.walk_hook_entries(doc, origin):
+        key = (event, matcher, entry["command"])
+        seconds = settings_hooks.entry_timeout(entry, origin)
+        out[key] = min(seconds, out.get(key, seconds))
     return out
 
 
@@ -137,11 +134,23 @@ def main(argv=None):
     scope = Path(opts.scope)
     runtime_path = scope / SETTINGS
 
+    if settings_hooks is None:
+        sys.stdout.write(
+            "cannot import settings_hooks from %s — %s\n"
+            % (Path(__file__).resolve().parent / "lib", _IMPORT_ERROR)
+        )
+        sys.stdout.write("RESULT: ERROR rc=2\n")
+        return 2
+
     try:
-        committed = _triples(
+        committed_t = _registrations(
             _committed(scope, opts.ref), "%s:%s" % (opts.ref, SETTINGS)
         )
-        runtime = _triples(json.loads(runtime_path.read_text()), str(runtime_path))
+        runtime_t = _registrations(
+            json.loads(runtime_path.read_text()), str(runtime_path)
+        )
+        committed = set(committed_t)
+        runtime = set(runtime_t)
     except (OSError, ValueError) as exc:
         # json.JSONDecodeError subclasses ValueError.
         sys.stdout.write("%s\n" % exc)
@@ -159,6 +168,13 @@ def main(argv=None):
 
     missing = sorted(committed - runtime)
     extra = sorted(runtime - committed)
+    lowered = []
+    raised = []
+    for t in sorted(committed & runtime):
+        if runtime_t[t] < committed_t[t]:
+            lowered.append((t, committed_t[t], runtime_t[t]))
+        elif runtime_t[t] > committed_t[t]:
+            raised.append((t, committed_t[t], runtime_t[t]))
 
     sys.stdout.write(
         "runtime:   %s (%d registrations)\n" % (runtime_path, len(runtime))
@@ -174,6 +190,15 @@ def main(argv=None):
         for t in extra:
             sys.stdout.write("  + %s\n" % _fmt(t))
 
+    if raised:
+        sys.stdout.write(
+            "\nruntime timeout HIGHER than committed, NOT a failure (a machine-local choice):\n"
+        )
+        for t, want, got in raised:
+            sys.stdout.write(
+                "  + %s: committed %gs, runtime %gs\n" % (_fmt(t), want, got)
+            )
+
     if missing:
         sys.stdout.write("\nMISSING FROM RUNTIME — committed but not registered:\n")
         for t in missing:
@@ -184,10 +209,34 @@ def main(argv=None):
             % runtime_path
         )
 
+    if lowered:
+        sys.stdout.write(
+            "\nTIMEOUT LOWERED IN RUNTIME — the runtime kills these hooks sooner than committed:\n"
+        )
+        for t, want, got in lowered:
+            sys.stdout.write(
+                "  - %s: committed %gs, runtime %gs\n" % (_fmt(t), want, got)
+            )
+        sys.stdout.write(
+            "\nA hook killed at its timeout reports nothing, so each is a gate that can silently not\n"
+            "run. Set each timeout in %s to the committed value, then re-run this check.\n"
+            % runtime_path
+        )
+
     status, rc = ("FAIL", 1) if missing else ("PASS", 0)
+    if lowered:
+        status, rc = ("FAIL", 1)
     sys.stdout.write(
-        "RESULT: %s rc=%d missing=%d extra=%d committed=%d runtime=%d\n"
-        % (status, rc, len(missing), len(extra), len(committed), len(runtime))
+        "RESULT: %s rc=%d missing=%d lowered=%d extra=%d committed=%d runtime=%d\n"
+        % (
+            status,
+            rc,
+            len(missing),
+            len(lowered),
+            len(extra),
+            len(committed),
+            len(runtime),
+        )
     )
     return rc
 

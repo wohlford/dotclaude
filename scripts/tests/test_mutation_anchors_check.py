@@ -32,6 +32,8 @@ CHECKER = REPO / "scripts" / "mutation-anchors-check.py"
 # covers whatever is added and silently stops covering whatever is removed; this floor is the
 # half a glob cannot supply. Adding a campaign here is correct — removing one needs a reason.
 FLOOR = (
+    "mutate_audit_test.py",
+    "mutate_hook_budget.py",
     "mutate_lib_mutate.py",
     "mutate_markdownlint_config.py",
     "mutate_mutation_anchors_check.py",
@@ -39,6 +41,7 @@ FLOOR = (
     "mutate_publication_push_guard_test.py",
     "mutate_run_long.py",
     "mutate_settings_hooks_check.py",
+    "mutate_settings_hooks_lib.py",
 )
 
 CAMPAIGN_HEAD = '''\

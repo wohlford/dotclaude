@@ -51,7 +51,7 @@ for how the index below stays in sync.
 | `ruff-check.sh`                  | PostToolUse hook — run ruff lint+format check on edited Python in ruff projects                                            |
 | `run-long.sh`                    | Launch a long job in the background and record its real exit status inside the artifact                                    |
 | `script-header-check.py`         | Verify every scripts/ file carries a Purpose header sync-docs' extractor can read whole                                    |
-| `settings-hooks-check.py`        | Verify a promoted runtime settings.json kept every hook registration the commit added                                      |
+| `settings-hooks-check.py`        | Verify a promoted runtime settings.json kept every hook registration and never lowered a committed timeout                 |
 | `shellcheck-check.sh`            | PostToolUse hook — run shellcheck on edited shell scripts                                                                  |
 | `style-check-test.sh`            | PostToolUse hook — run the style-check test suite when style-check changes                                                 |
 | `style-check.sh`                 | Global PostToolUse hook — validate file edits against STYLE.md                                                             |

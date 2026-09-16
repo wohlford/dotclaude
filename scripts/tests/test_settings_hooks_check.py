@@ -210,6 +210,10 @@ MALFORMED = [
     pytest.param({"hooks": {"PreToolUse": "nope"}}, id="event-not-a-list"),
     pytest.param({"hooks": {"PreToolUse": ["nope"]}}, id="group-not-an-object"),
     pytest.param(
+        {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": ["nope"]}]}},
+        id="entry-not-an-object",
+    ),
+    pytest.param(
         {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": "nope"}]}},
         id="entries-not-a-list",
     ),
@@ -360,3 +364,85 @@ def test_non_repo_scope_is_an_error(tmp_path):
     # Demand the verdict LINE, not just the status. A missing interpreter target also exits 2,
     # so rc alone made this row pass while the tool did not exist — caught on the RED run.
     assert "RESULT: ERROR" in verdict(proc)
+
+
+def with_timeout(doc, command, seconds, nth=0):
+    """Set `timeout` on the nth registration of COMMAND in a hooks() document; returns the document."""
+    seen = 0
+    for groups in doc["hooks"].values():
+        for g in groups:
+            for entry in g["hooks"]:
+                if entry["command"] == command:
+                    if seen == nth:
+                        entry["timeout"] = seconds
+                        return doc
+                    seen += 1
+    raise AssertionError("no registration %d of %s" % (nth, command))
+
+
+def test_lowered_runtime_timeout_fails(sandbox):
+    """The defect: the promote restores a runtime file whose timeout predates the commit's raise."""
+    commit_settings(sandbox, with_timeout(hooks(A, B), "guard-a.sh", 600))
+    set_runtime(sandbox, with_timeout(hooks(A, B), "guard-a.sh", 120))
+    proc = run(sandbox)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "RESULT: FAIL" in verdict(proc)
+    assert "lowered=1" in verdict(proc)
+    assert "missing=0" in verdict(proc)
+    assert "guard-a.sh: committed 600s, runtime 120s" in proc.stdout
+
+
+def test_absent_timeout_is_the_harness_default(sandbox):
+    """No `timeout` key means 600, never unbounded — so an explicit 120 in the runtime is lower."""
+    commit_settings(sandbox, hooks(A, B))
+    set_runtime(sandbox, with_timeout(hooks(A, B), "guard-a.sh", 120))
+    proc = run(sandbox)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "lowered=1" in verdict(proc)
+
+
+def test_explicit_default_against_absent_is_not_lowered(sandbox):
+    commit_settings(sandbox, with_timeout(hooks(A, B), "guard-a.sh", 600))
+    set_runtime(sandbox, hooks(A, B))
+    proc = run(sandbox)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "lowered=0" in verdict(proc)
+
+
+def test_raised_runtime_timeout_is_reported_not_failed(sandbox):
+    """One-directional, like extra registrations: a longer runtime timeout is a machine-local choice."""
+    commit_settings(sandbox, with_timeout(hooks(A, B), "guard-a.sh", 120))
+    set_runtime(sandbox, with_timeout(hooks(A, B), "guard-a.sh", 600))
+    proc = run(sandbox)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "RESULT: PASS" in verdict(proc)
+    assert "lowered=0" in verdict(proc)
+    assert "guard-a.sh: committed 120s, runtime 600s" in proc.stdout
+
+
+def test_duplicate_runtime_registration_takes_the_minimum(sandbox):
+    """Registered twice, the harness kills at the shorter timeout, so that is the one compared."""
+    commit_settings(sandbox, with_timeout(hooks(A, B), "guard-a.sh", 600))
+    runtime = hooks(A, A, B)
+    with_timeout(runtime, "guard-a.sh", 600, nth=0)
+    with_timeout(runtime, "guard-a.sh", 120, nth=1)
+    set_runtime(sandbox, runtime)
+    proc = run(sandbox)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "lowered=1" in verdict(proc)
+
+
+def test_unimportable_lib_is_an_error_not_a_verdict(tmp_path, sandbox):
+    """A checker that cannot load its walker has judged nothing: ERROR, with a verdict line."""
+    commit_settings(sandbox, hooks(A, B))
+    lone = Path(tmp_path).resolve() / "lone" / "scripts"
+    lone.mkdir(parents=True)
+    copy = lone / "settings-hooks-check.py"
+    copy.write_text(TOOL.read_text())
+    proc = subprocess.run(
+        [sys.executable, str(copy), "--scope", str(sandbox)],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert verdict(proc).startswith("RESULT: ERROR rc=2")

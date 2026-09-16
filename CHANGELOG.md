@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.108.21 — 2026-09-15
+- fix(settings-hooks-check): fail a lowered runtime hook timeout
+
 ## v0.108.20 — 2026-09-15
 - fix(audit-test): bound the audit suite via a shared hook_budget lib
 

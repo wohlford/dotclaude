@@ -96,8 +96,9 @@ def registered_hooks():
     A filter over the shared walker in scripts/lib/settings_hooks.py — the raising behaviour on
     malformed shape is now inherited from there rather than re-derived here. This used to be its
     own silent-on-malformed-shape parse (a second spelling of the walk, alongside
-    scripts/settings-hooks-check.py's `_triples`); it no longer skips a group or entry it cannot
-    read, it raises, same as `_triples` does.
+    scripts/settings-hooks-check.py's `_triples`, which raised on malformed shape); it no longer
+    skips a group or entry it cannot read, it raises — same as the checker's `_registrations`
+    does now, a projection over `settings_hooks.walk_hook_entries` that replaced `_triples`.
     """
     doc = json.loads(SETTINGS.read_text())
     names = set()

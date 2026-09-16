@@ -37,8 +37,9 @@ set -uo pipefail
 #
 # ## The hooks check runs on BOTH branches, on purpose
 #
-# `hooks-registered` is not gated on the branch. If it ran only on the in-range arm, a
-# mis-determined range would once again hide a dropped registration — the very failure the branch
+# `hooks-registered` is not gated on the branch. It also fails when a runtime hook `timeout` is
+# lower than the committed one. If it ran only on the in-range arm, a mis-determined range would
+# once again hide a dropped registration or a lowered timeout — the very failure the branch
 # decision exists to prevent. Running it unconditionally means the range determination now affects
 # only which DIAGNOSIS you get, never whether a dead gate can ship unnoticed. It is safe to run
 # unconditionally because it is one-directional: it reports runtime-only entries without failing

@@ -3,7 +3,12 @@
 
 Deliberately NOT named `test_*`: it mutates a tracked file in place, so pytest must not collect
 it. Run it on demand — `./scripts/tests/mutate_settings_hooks_check.py` — and never while editing
-the subject, since the restore would clobber your edits.
+the subject, since the restore would clobber your edits. And never CONCURRENTLY with
+`mutate_settings_hooks_lib.py`: the two subjects are disjoint files, so their restores do not
+clobber each other — the real hazard runs both ways. This subject,
+`scripts/settings-hooks-check.py`, IMPORTS `scripts/lib/settings_hooks.py`, so a live walker mutant
+makes this campaign's rows score as false catches; and the other campaign's suite runs this
+subject, so a live mutant here corrupts that campaign's rows. Run the two campaigns one at a time.
 
 This subject is a CHECK, which is the case where mutation testing earns the most. Every failure
 mode below turns it into an instrument that passes while a dead gate ships — the precise shape
@@ -46,13 +51,13 @@ MUTATIONS = [
     ),
     mutate.Mutation(
         "identity drops the MATCHER, so a hook rewired to match nothing reads as present",
-        "out.add((event, matcher, command))",
-        "out.add((event, None, command))",
+        '    key = (event, matcher, entry["command"])',
+        '    key = (event, None, entry["command"])',
     ),
     mutate.Mutation(
         "identity drops the EVENT, so a hook moved to a different trigger reads as present",
-        "out.add((event, matcher, command))",
-        "out.add((None, matcher, command))",
+        '    key = (event, matcher, entry["command"])',
+        '    key = (None, matcher, entry["command"])',
     ),
     mutate.Mutation(
         "an empty expected set becomes a vacuous PASS instead of an ERROR",
@@ -65,10 +70,24 @@ MUTATIONS = [
         '        sys.stdout.write("RESULT: PASS rc=0\\n")\n        return 0\n\n    if not committed:',
     ),
     mutate.Mutation(
-        "a malformed hooks block is silently treated as an empty one, dropping registrations",
-        "        if not isinstance(groups, list):\n"
-        '            raise ValueError("%s: hooks.%s is not a list" % (origin, event))',
-        "        if not isinstance(groups, list):\n            continue",
+        "a lowered timeout stops being a failure — caught by the lowered and absent-default rows",
+        '    if lowered:\n        status, rc = ("FAIL", 1)',
+        '    if False:\n        status, rc = ("FAIL", 1)',
+    ),
+    mutate.Mutation(
+        "the timeout comparison flips direction — caught by the lowered and raised rows",
+        "        if runtime_t[t] < committed_t[t]:",
+        "        if runtime_t[t] > committed_t[t]:",
+    ),
+    mutate.Mutation(
+        "a duplicate registration counts its LONGEST timeout — caught by the duplicate row",
+        "out[key] = min(seconds, out.get(key, seconds))",
+        "out[key] = max(seconds, out.get(key, seconds))",
+    ),
+    mutate.Mutation(
+        "an unimportable walker reads as a verdict — caught by the unimportable row",
+        '        sys.stdout.write("RESULT: ERROR rc=2\\n")\n        return 2\n\n    try:',
+        '        sys.stdout.write("RESULT: PASS rc=0\\n")\n        return 0\n\n    try:',
     ),
 ]
 
