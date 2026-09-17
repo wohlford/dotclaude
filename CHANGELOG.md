@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.109.1 — 2026-09-16
+- test(hook-machinery-test): add hook and selection mutation campaigns
+
 ## v0.109.0 — 2026-09-16
 - feat(hook-machinery-test): gate edits to the test-runner hooks
 

@@ -34,6 +34,8 @@ CHECKER = REPO / "scripts" / "mutation-anchors-check.py"
 FLOOR = (
     "mutate_audit_test.py",
     "mutate_hook_budget.py",
+    "mutate_hook_machinery_test.py",
+    "mutate_hook_suite_guard_selection.py",
     "mutate_lib_mutate.py",
     "mutate_markdownlint_config.py",
     "mutate_mutation_anchors_check.py",
