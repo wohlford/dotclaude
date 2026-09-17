@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.110.0 — 2026-09-16
+- feat(publish-brick): build re-derivation bricks onto dev with --dev
+
 ## v0.109.3 — 2026-09-16
 - docs(CLAUDE.md): admit the performed-versus-carried matcher hazard
 

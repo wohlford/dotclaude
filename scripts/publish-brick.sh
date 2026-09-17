@@ -2,9 +2,11 @@
 set -uo pipefail
 
 # Script: publish-brick.sh
-# Purpose: Materialise, prove, commit and tag ONE recast brick onto the published branch
+# Purpose: Materialise, prove and commit ONE brick, tagged onto main or re-derived onto dev
 # Usage:   publish-brick.sh [--scope <path>] [--artifact-dir <path>] \
 #            <version> <endpoint-commit> <subject> [folded-constituent...]
+#          publish-brick.sh --dev [--final] [--scope <path>] [--artifact-dir <path>] \
+#            <oracle-commit> <subject> <file>...
 #
 # This is the per-brick engine of /propagate's adopted publish path (step 3-4). ONE brick per
 # invocation, on purpose: the operator drives the loop, so the per-brick checkpoint that makes
@@ -46,13 +48,29 @@ set -uo pipefail
 # AFTER the commit lands prints the recovery and runs none of it — resetting a branch and
 # deleting tags is the mutating class the publish path keeps human-checkpointed.
 #
+# DEV MODE (--dev). The same engine builds one brick of /feature's adopted re-derivation onto `dev`:
+# the ORACLE is the frozen feature tip, and the brick's files are listed explicitly, because that
+# re-derivation partitions one tree BY FILE rather than by constituent commits. What changes:
+#   * preconditions — branch `dev`; the oracle is a commit; a PROGRESS INVARIANT (every path dev has
+#     changed since it last shared history with the oracle already equals the oracle, which catches
+#     dev having moved after the branch was cut, and an earlier brick that diverged — the one failure
+#     tip convergence cannot see, since it passes by reverting dev's interim work); every listed file
+#     differs between HEAD and the oracle; the subject is conventional and under the repo's
+#     .commit-conventions.toml ADVISE threshold, because a commit made inside this script never
+#     reaches the PreToolUse subject guard that /commit's path relies on
+#   * no CHANGELOG entry, no tag, no version
+#   * after the audit it reports how many paths still differ; `--final` asserts there are none
+# Renames need no refusal here: a rename is its two paths, listed, and presence at the oracle
+# already checks out the new one and removes the old.
+#
 # Exit codes:
-#   0 — the brick is applied, proven, committed and tagged
+#   0 — the brick is applied, proven and committed (and, in publish mode, tagged)
 #   1 — an assertion failed; the brick is NOT proven
 #   2 — usage error (bad flags/arguments, unreadable scope, not an adopted repo)
 #   129/130/143 — died on a trapped signal (HUP/INT/TERM)
 #
 # Terminal verdict line: as its LAST line of stdout, `RESULT: <STATUS> rc=<n> brick=<version>`
+# (`brick=dev` in dev mode)
 # where STATUS is PASS | FAIL | ERROR (nothing ran) | INCOMPLETE (died partway). Clean is
 # EXACTLY `RESULT: PASS` — an allowlist. The line cannot be emitted on SIGKILL, so its ABSENCE
 # never means clean: it means the run did not complete.
@@ -61,6 +79,18 @@ set -uo pipefail
 
 script_name="$(basename "${BASH_SOURCE[0]}")"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# git_lit runs a PATHSPEC-BEARING git call with literal pathspecs. A brick file named `a[1].txt` is
+# otherwise a glob that also matches `a1.txt`, and a checkout of it materialises both (measured
+# 2026-09-16). Deliberately a wrapper and NOT an exported environment variable: that reaches every
+# child, and the audit discovers files with pathspec globs — under it the real audit skipped 6 of 17
+# checks as "nothing to check" and still printed RESULT: PASS (measured 2026-09-16). git itself
+# still passes literal-pathspec mode down to any hook or filter driven BY these calls (a
+# clean/smudge filter, a checkout hook) — that reach is unavoidable and not what this wrapper
+# guards against. What it guarantees is narrower and load-bearing: the AUDIT is a SEPARATE process
+# this script spawns, never a child of these git calls, so it never inherits literal-pathspec mode
+# through them either way.
+git_lit() { git --literal-pathspecs -C "$scope" "$@"; }
 
 # Model constants, not configuration: the publication model fixes both branch names.
 readonly PUBLISHED_BRANCH=main
@@ -73,6 +103,12 @@ endpoint=""
 subject=""
 audit_path=""
 lib_path="$script_dir/lib/changelog_entry.py"
+subject_lib="$script_dir/lib/commit_subject.py"
+mode=publish
+final=no
+dev_hint=""
+dev_note=""
+files_raw=""
 constituents=""
 files_list=""
 files=()
@@ -84,6 +120,8 @@ committed=no
 
 usage() {
   printf 'Usage: %s [--scope <path>] [--artifact-dir <path>] <version> <endpoint> <subject> [constituent...]\n' \
+    "$script_name" >&2
+  printf '       %s --dev [--final] [--scope <path>] [--artifact-dir <path>] <oracle> <subject> <file>...\n' \
     "$script_name" >&2
 }
 
@@ -122,20 +160,29 @@ rollback_worktree() {
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     if git -C "$scope" cat-file -e "HEAD:$f" 2>/dev/null; then
-      git -C "$scope" checkout -q HEAD -- "$f" 2>/dev/null
+      git_lit checkout -q HEAD -- "$f" 2>/dev/null
     else
-      git -C "$scope" reset -q HEAD -- "$f" 2>/dev/null
+      git_lit reset -q HEAD -- "$f" 2>/dev/null
       rm -f -- "$scope/$f"
     fi
   done < "$files_list"
   if [ "$changelog_written" = yes ]; then
-    git -C "$scope" checkout -q HEAD -- CHANGELOG.md 2>/dev/null
+    git_lit checkout -q HEAD -- CHANGELOG.md 2>/dev/null
   fi
 }
 
 fail_brick() { # message
   printf 'FAIL %s\n' "$1"
-  if [ "$committed" = yes ]; then
+  if [ "$committed" = yes ] && [ "$mode" = dev ] && [ -n "$dev_note" ]; then
+    printf '  the brick commit landed on %s. %s\n' "$WORKING_BRANCH" "$dev_note"
+  elif [ "$committed" = yes ] && [ "$mode" = dev ]; then
+    printf '  the brick commit ALREADY LANDED on %s. Recovery (run it yourself):\n' "$WORKING_BRANCH"
+    if [ -n "$dev_hint" ]; then
+      printf '    %s\n' "$dev_hint"
+    else
+      printf '    git -C %s reset --hard HEAD~1   # drop the brick, fix the cause, re-run\n' "$scope"
+    fi
+  elif [ "$committed" = yes ]; then
     printf '  the brick commit ALREADY LANDED on %s. Recovery (run it yourself):\n' "$PUBLISHED_BRANCH"
     printf '    git -C %s tag -d %s   # only if the tag was minted\n' "$scope" "$version"
     printf '    git -C %s reset --hard HEAD~1\n' "$scope"
@@ -171,6 +218,99 @@ assert_applicable() {
   done
 }
 
+# assert_dev_progress is the adopted finish's "dev must not have moved" precondition, checked at
+# EVERY brick rather than once at freeze time. Every path dev has changed since it last shared history
+# with the oracle must already equal the oracle: a commit landing on dev after the branch was cut
+# breaks that, and so does an earlier brick that diverged.
+assert_dev_progress() {
+  local base f names
+  local progress_files=() diverged_files=()
+  base="$(git -C "$scope" merge-base HEAD "$endpoint" 2>/dev/null)" \
+    || fail_brick "HEAD and the oracle $endpoint share no history — there is nothing to re-derive onto"
+  # NUL-separated (-z), not newline-separated: git's default name-only output QUOTES a path
+  # holding non-ASCII bytes (e.g. `café.txt` -> "caf\303\251.txt"), which then never matches the
+  # literal pathspec built from it below — silently dropping the path from the diverged set
+  # (measured 2026-09-16). -z also disables that quoting. A bash variable cannot hold an embedded
+  # NUL (command substitution silently drops the byte, concatenating entries), so each list goes to
+  # a file and is read from there. A FILE, not a process substitution: `< <(git …)` discards git's
+  # exit status, so a diff that errored would read as an empty list — "nothing changed" — and the
+  # invariant would pass having measured nothing.
+  names="$(mktemp)"
+  git -C "$scope" diff -z --name-only --no-renames "$base" HEAD > "$names" \
+    || { rm -f "$names"; fail_brick "progress: could not list what $WORKING_BRANCH changed since $base"; }
+  while IFS= read -r -d '' f; do
+    [ -n "$f" ] && progress_files[${#progress_files[@]}]="$f"
+  done < "$names"
+  rm -f "$names"
+  [ "${#progress_files[@]}" -gt 0 ] || return 0
+  names="$(mktemp)"
+  git_lit diff -z --name-only --no-renames "$endpoint" HEAD -- "${progress_files[@]}" > "$names" \
+    || { rm -f "$names"; fail_brick "progress: could not compare $WORKING_BRANCH's changed paths with the oracle $endpoint"; }
+  while IFS= read -r -d '' f; do
+    [ -n "$f" ] && diverged_files[${#diverged_files[@]}]="$f"
+  done < "$names"
+  rm -f "$names"
+  [ "${#diverged_files[@]}" -gt 0 ] || return 0
+  for f in "${diverged_files[@]}"; do
+    printf '  diverged: %s\n' "$f"
+  done
+  fail_brick "progress: $WORKING_BRANCH changed the paths above since it last met the oracle, and they no longer match it — $WORKING_BRANCH moved after the branch was cut (rebase the branch and re-freeze), or an earlier brick diverged"
+}
+
+# check_dev_subject supplies what /commit and the PreToolUse subject guard supply on the ordinary
+# commit path, neither of which ever sees a commit made inside this script. The length policy is the
+# repo's own, read through the shared library. It refuses at the ADVISE threshold rather than only at
+# BLOCK because the post-commit advisor that would flag 72-79 never sees this commit; ALLOW_LONG_SUBJECT=1
+# is honoured for both tiers, exactly as /commit documents it.
+check_dev_subject() {
+  local re='^(feat|fix|docs|style|refactor|perf|test|chore|ci|revert)(\([^)]+\))?!?: [^[:space:]]'
+  local grade
+  [[ "$subject" =~ $re ]] \
+    || fail_brick "the subject is not conventional — want <type>[(scope)][!]: <subject>, got: $subject"
+  case "$subject" in
+    *.) fail_brick 'the subject must not end with a period' ;;
+  esac
+  [ -f "$subject_lib" ] || fail_brick "missing helper library: $subject_lib"
+  grade="$(python3 - "$scope" "$subject" "$(dirname "$subject_lib")" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[3])
+import commit_subject as cs
+policy = cs.load_policy(sys.argv[1])
+print("inert" if policy is None else cs.classify(sys.argv[2], policy))
+PY
+)"
+  case "$grade" in
+    inert|ok) ;;
+    advise|block)
+      if [ "${ALLOW_LONG_SUBJECT:-}" = 1 ]; then
+        printf '  subject: %s characters, over the policy threshold — allowed by ALLOW_LONG_SUBJECT=1\n' "${#subject}"
+      else
+        fail_brick "the subject is ${#subject} characters, at or over this repo's .commit-conventions.toml threshold — shorten it, or lead with ALLOW_LONG_SUBJECT=1 as /commit allows"
+      fi ;;
+    *) fail_brick "the subject policy check reached no verdict (got: ${grade:-nothing})" ;;
+  esac
+}
+
+# report_dev_convergence runs after a PROVEN dev brick. It always says how much of the oracle is
+# still outstanding; under --final it asserts nothing is.
+report_dev_convergence() {
+  local remaining n f
+  remaining="$(git -C "$scope" diff --name-only --no-renames "$endpoint" HEAD)"
+  n="$(grep -c . <<<"$remaining")"
+  printf '  remaining: %s path(s) still differ from the oracle %s\n' "$n" "$endpoint"
+  [ "$final" = yes ] || return 0
+  if [ -n "$remaining" ]; then
+    while IFS= read -r f; do
+      [ -n "$f" ] && printf '  still differs: %s\n' "$f"
+    done <<EOF
+$remaining
+EOF
+    dev_note="The brick itself is proven and stays; build another brick from the paths above, with --final on the last one."
+    fail_brick "--final: HEAD does not converge on the oracle $endpoint"
+  fi
+  printf '  converged: HEAD tree == oracle %s\n' "$endpoint"
+}
+
 # The audit belonging to the tree being proven, read as an allowlist over its own verdict line.
 run_audit() { # artifact-path
   local artifact="$1" out err arc verdict
@@ -203,6 +343,7 @@ run_audit() { # artifact-path
 main() {
   local c date_str changed f sig signing head_subject artifact
   local checkout_files=() rm_files=()
+  local head_type end_type audit_mode
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -212,22 +353,40 @@ main() {
       --artifact-dir)
         [ $# -ge 2 ] || fatal 'the --artifact-dir flag needs a path'
         artifact_dir="$2"; shift 2 ;;
+      --dev) mode=dev; shift ;;
+      --final) final=yes; shift ;;
       --) shift; break ;;
       -*) fatal "unknown argument: $1" ;;
       *)  break ;;
     esac
   done
 
-  [ $# -ge 3 ] || fatal 'need <version> <endpoint> <subject>'
-  version="$1"; endpoint="$2"; subject="$3"; shift 3
-  # The remaining arguments are the folded constituents; the endpoint joins them as the last.
-  # Duplicates are dropped, keeping first-seen order.
-  constituents="$(printf '%s\n' "$@" "$endpoint" | grep -v '^$' | awk '!seen[$0]++')"
+  if [ "$mode" = dev ]; then
+    [ $# -ge 3 ] || fatal 'dev mode needs <oracle> <subject> <file>...'
+    endpoint="$1"; subject="$2"; shift 2
+    version=dev
+    for f in "$@"; do
+      case "$f" in
+        *$'\n'*) fatal 'a brick file name must not contain a newline' ;;
+        # `--*` only: the engine has no short flags, so a single leading dash (a legitimate file
+        # name like `-x.txt`) is never a flag lookalike worth refusing.
+        --*) fatal "brick file $f looks like a flag — flags go before <oracle>" ;;
+      esac
+    done
+    files_raw="$(printf '%s\n' "$@")"
+  else
+    [ "$final" = no ] || fatal 'the --final flag belongs to --dev mode only'
+    [ $# -ge 3 ] || fatal 'need <version> <endpoint> <subject>'
+    version="$1"; endpoint="$2"; subject="$3"; shift 3
+    # The remaining arguments are the folded constituents; the endpoint joins them as the last.
+    # Duplicates are dropped, keeping first-seen order.
+    constituents="$(printf '%s\n' "$@" "$endpoint" | grep -v '^$' | awk '!seen[$0]++')"
 
-  case "$version" in
-    v[0-9]*.[0-9]*.[0-9]*) ;;
-    *) fatal "version must look like vX.Y.Z, got: $version" ;;
-  esac
+    case "$version" in
+      v[0-9]*.[0-9]*.[0-9]*) ;;
+      *) fatal "version must look like vX.Y.Z, got: $version" ;;
+    esac
+  fi
   [ -n "$subject" ] || fatal 'the subject must not be empty'
   case "$subject" in
     *$'\n'*) fatal 'the subject must be a single line' ;;
@@ -249,36 +408,103 @@ main() {
     artifact_dir="$(mktemp -d)"
   fi
   mkdir -p "$artifact_dir" || fatal "cannot create the artifact directory: $artifact_dir"
-  artifact="$artifact_dir/audit-$version.txt"
+  if [ "$mode" = dev ]; then
+    # One artifact per brick: dev bricks share no version, so name each for the HEAD it builds on.
+    artifact="$artifact_dir/audit-dev-$(git -C "$scope" rev-parse --short HEAD 2>/dev/null || printf 'nohead').txt"
+  else
+    artifact="$artifact_dir/audit-$version.txt"
+  fi
 
   phase=checking
 
-  printf 'brick %s <- %s\n' "$version" "$(printf '%s' "$constituents" | tr '\n' ' ')"
+  if [ "$mode" = dev ]; then
+    printf 'brick dev <- oracle %s\n' "$endpoint"
+  else
+    printf 'brick %s <- %s\n' "$version" "$(printf '%s' "$constituents" | tr '\n' ' ')"
+  fi
   printf '  scope:   %s\n' "$scope"
   printf '  audit:   %s (the tree being proven)\n' "$audit_path"
   printf '  helper:  %s (this tool, not the tree)\n' "$lib_path"
 
   # ---------- preconditions ----------
-  [ "$(git -C "$scope" rev-parse --abbrev-ref HEAD)" = "$PUBLISHED_BRANCH" ] \
-    || fail_brick "not on branch $PUBLISHED_BRANCH — a brick is appended to the published branch only"
+  if [ "$mode" = dev ]; then
+    [ "$(git -C "$scope" rev-parse --abbrev-ref HEAD)" = "$WORKING_BRANCH" ] \
+      || fail_brick "not on branch $WORKING_BRANCH — a re-derivation brick lands on $WORKING_BRANCH only"
+  else
+    [ "$(git -C "$scope" rev-parse --abbrev-ref HEAD)" = "$PUBLISHED_BRANCH" ] \
+      || fail_brick "not on branch $PUBLISHED_BRANCH — a brick is appended to the published branch only"
+  fi
   [ -z "$(git -C "$scope" status --porcelain)" ] \
     || fail_brick 'the working tree is not clean — materialisation needs a clean base to be provable'
-  git -C "$scope" rev-parse --verify -q "refs/tags/$version" >/dev/null \
-    && fail_brick "tag $version already exists — refusing to move a tag that may already be published"
+  if [ "$mode" = dev ]; then
+    [ -x "$audit_path" ] \
+      || fail_brick "no executable audit at $audit_path — this repo has no audit.sh of its own, so a dev brick cannot be proven; re-derive by hand with the installed /audit"
+    git -C "$scope" rev-parse --verify -q "$endpoint^{commit}" >/dev/null \
+      || fail_brick "the oracle $endpoint is not a commit in $scope"
+    check_dev_subject
+    assert_dev_progress
+  else
+    git -C "$scope" rev-parse --verify -q "refs/tags/$version" >/dev/null \
+      && fail_brick "tag $version already exists — refusing to move a tag that may already be published"
 
-  assert_applicable
+    assert_applicable
+  fi
 
   # ---------- file set: the UNION of every constituent's paths ----------
   files_list="$(mktemp)"
-  for c in $constituents; do
-    git -C "$scope" show --name-only --format= "$c"
-  done | grep -v '^$' | sort -u > "$files_list"
+  if [ "$mode" = dev ]; then
+    printf '%s\n' "$files_raw" | grep -v '^$' | sort -u > "$files_list"
+  else
+    for c in $constituents; do
+      git -C "$scope" show --name-only --format= "$c"
+    done | grep -v '^$' | sort -u > "$files_list"
+  fi
   [ -s "$files_list" ] || fail_brick 'the brick has an empty file set'
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     files[${#files[@]}]="$f"
     printf '  file: %s\n' "$f"
   done < "$files_list"
+
+  # ---------- dev: every listed file must differ between HEAD and the oracle ----------
+  # A path in neither tree, a typo, and a file an earlier brick already landed all read as "nothing
+  # to do" to a checkout; each is refused by name instead of becoming a silently smaller brick.
+  if [ "$mode" = dev ]; then
+    for f in "${files[@]}"; do
+      case "$f" in
+        /*|..|../*|*/..|*/../*) fail_brick "brick file $f must be a path relative to the repo root" ;;
+        .|./) fail_brick "brick file $f is a directory — list its files" ;;
+      esac
+      # A directory listed as a pathspec still MATCHES (it is not a glob, so --literal-pathspecs
+      # does not exclude it) — everything under it, which shape B then trips over one un-listed
+      # path at a time rather than refusing the directory by name (measured 2026-09-16, leaving a
+      # staged leftover behind on the FAIL path). Refuse only when the path is a TREE on at least
+      # one side and neither side is a blob: a blob on HEAD's side is a file becoming a directory
+      # (`a.txt` becoming `a.txt/in`, both listed), which builds. What this does NOT make buildable,
+      # measured by review: a directory becoming a file (`d d/in`) passes here and then fails closed
+      # in the `git rm` arm — build it as two bricks, `d/in` then `d`; and a gitlink reads as ABSENT
+      # to `cat-file -t` when its commit is not in this repository, so the `commit` exceptions below
+      # rarely fire and a gitlink beside a tree is refused as a directory (fail closed).
+      head_type="$(git -C "$scope" cat-file -t "HEAD:$f" 2>/dev/null)"
+      end_type="$(git -C "$scope" cat-file -t "$endpoint:$f" 2>/dev/null)"
+      if { [ "$head_type" = tree ] || [ "$end_type" = tree ]; } \
+        && [ "$head_type" != blob ] && [ "$head_type" != commit ] \
+        && [ "$end_type" != blob ] && [ "$end_type" != commit ]; then
+        fail_brick "brick file $f is a directory — list its files"
+      fi
+      if git_lit diff --quiet --no-renames HEAD "$endpoint" -- "$f"; then
+        fail_brick "brick file $f already matches the oracle at HEAD — a typo, a path in neither tree, or one an earlier brick landed"
+      fi
+      # run_audit below reads the SCOPE's live skills/audit/audit.sh, which still exists until the
+      # commit lands — a brick that deletes it or drops its exec bit would pass that check and
+      # only fail once committed, with nothing left able to prove the NEXT brick either.
+      if [ "$f" = skills/audit/audit.sh ]; then
+        audit_mode="$(git -C "$scope" ls-tree "$endpoint" -- skills/audit/audit.sh | awk '{print $1}')"
+        [ "$audit_mode" = 100755 ] \
+          || fail_brick "brick file skills/audit/audit.sh would leave no executable audit to prove this brick — land it in a brick with the audit's replacement, or re-derive by hand"
+      fi
+    done
+  fi
 
   # ---------- materialise: split the file set by presence at the endpoint ----------
   # A path present at the endpoint is checked out; a path absent there was deleted by the
@@ -304,17 +530,17 @@ main() {
   # restoring what already landed.
   materialised=yes
   if [ "${#checkout_files[@]}" -gt 0 ] \
-    && ! git -C "$scope" checkout "$endpoint" -- "${checkout_files[@]}"; then
+    && ! git_lit checkout "$endpoint" -- "${checkout_files[@]}"; then
     fail_brick "could not materialise the brick from $endpoint"
   fi
   if [ "${#rm_files[@]}" -gt 0 ] \
-    && ! git -C "$scope" rm -q -- "${rm_files[@]}"; then
+    && ! git_lit rm -q -- "${rm_files[@]}"; then
     fail_brick "could not remove a deleted path from the brick"
   fi
 
   # ---------- shape A: the brick's files ARE the endpoint's ----------
   # `git diff` has no --pathspec-from-file, so the pathspecs are passed as arguments.
-  if ! git -C "$scope" diff --quiet "$endpoint" -- "${files[@]}"; then
+  if ! git_lit diff --quiet "$endpoint" -- "${files[@]}"; then
     fail_brick "shape A: the brick's files do not match $endpoint after materialisation"
   fi
 
@@ -332,7 +558,9 @@ EOF
 
   # ---------- changelog, inside the brick commit ----------
   date_str="$(git -C "$scope" log -1 --format=%ad --date=short "$endpoint")"
-  if [ -f "$scope/CHANGELOG.md" ]; then
+  if [ "$mode" = dev ]; then
+    printf '  changelog: dev mode writes none — versioning is %s-only\n' "$PUBLISHED_BRANCH"
+  elif [ -f "$scope/CHANGELOG.md" ]; then
     python3 "$lib_path" "$scope/CHANGELOG.md" "$version" "$date_str" "$subject" \
       || fail_brick 'the changelog entry was refused'
     changelog_written=yes
@@ -344,10 +572,10 @@ EOF
   # `git rm` above already staged its own arm; staging it again with `git add` on a path that
   # no longer exists in the worktree fatals (rc=128, "did not match any files"). Only the
   # checkout arm still needs staging.
-  if [ "${#checkout_files[@]}" -gt 0 ] && ! git -C "$scope" add -- "${checkout_files[@]}"; then
+  if [ "${#checkout_files[@]}" -gt 0 ] && ! git_lit add -- "${checkout_files[@]}"; then
     fail_brick 'could not stage the brick'
   fi
-  [ "$changelog_written" = yes ] && git -C "$scope" add -- CHANGELOG.md
+  [ "$changelog_written" = yes ] && git_lit add -- CHANGELOG.md
   git -C "$scope" commit -q -m "$subject" || fail_brick 'the brick commit failed'
   committed=yes
 
@@ -369,7 +597,18 @@ EOF
   fi
 
   # ---------- prove ----------
+  if [ "$mode" = dev ]; then
+    dev_hint="git -C $scope reset --hard HEAD~1   # the brick's files already equal the oracle; read the audit artifact first — a split holistic pair means re-plan the boundary, while a machine-dependent check or a killed audit is not fixed by re-planning"
+  fi
   run_audit "$artifact"
+
+  if [ "$mode" = dev ]; then
+    dev_hint=""
+    report_dev_convergence
+    rm -f "$files_list"
+    result_line PASS 0
+    return 0
+  fi
 
   # ---------- tag, and assert it exists: `git tag -a` can fail SILENTLY mid-run ----------
   git -C "$scope" tag -a "$version" -m "$subject" || fail_brick "git tag -a $version failed"

@@ -57,7 +57,11 @@ check_lacks() { # haystack needle label
 AUDIT_STUB='#!/usr/bin/env bash
 # Stub standing in for skills/audit/audit.sh. $AUDIT_MODE selects the verdict shape.
 case "${AUDIT_MODE-pass}" in
-  pass)   printf "PASS format-tabs\n"; printf "RESULT: PASS rc=0 checks=1/0/0\n"; exit 0 ;;
+  pass)
+    # A leak detector: the engine must never hand the audit a literal-pathspec environment, under
+    # which the real audit skips every file-discovering check and still prints PASS.
+    if [ -n "${GIT_LITERAL_PATHSPECS:-}" ]; then printf "RESULT: FAIL rc=1 envleak\n"; exit 1; fi
+    printf "PASS format-tabs\n"; printf "RESULT: PASS rc=0 checks=1/0/0\n"; exit 0 ;;
   fail)   printf "FAIL ruff — scripts/x.py:1:1 E999\n"; printf "RESULT: FAIL rc=1 checks=0/1/0\n"; exit 1 ;;
   killed) printf "PASS format-tabs\n"; exit 143 ;;
   weird)  printf "RESULT: SPLENDID rc=0 checks=1/0/0\n"; exit 0 ;;
@@ -303,6 +307,27 @@ out="$(cd "$r" && AUDIT_MODE=killed bash "$engine" --artifact-dir "$adir2" v0.2.
 check_has "$(cat "$adir2/audit-v0.2.0.txt" 2>/dev/null)" 'AUDIT_EXIT_STATUS=143' \
   'a killed audit records rc=143 inside the artifact'
 
+# ---------- pathspecs are LITERAL ----------
+# A brick file whose name holds glob characters must not materialise its lookalikes. `g[1].txt` is a
+# glob matching `g1.txt`; without literal pathspecs `git checkout <endpoint> -- 'g[1].txt'` stages
+# BOTH (measured 2026-09-16), and shape B then refuses the brick. The lookalike is bumped on dev in an
+# EARLIER commit than the brick's endpoint so it differs at the endpoint while not being one of the
+# brick's files — the only arrangement where an overreach is observable.
+r="$tmproot/glob"; mk "$r"
+git -C "$r" checkout -q dev
+printf '1\n' > "$r/g1.txt"; printf '1\n' > "$r/g[1].txt"
+git -C "$r" add -A && git -C "$r" commit -qm 'c5 add lookalikes'
+g5="$(sha_of "$r" dev)"
+printf '2\n' > "$r/g1.txt"; git -C "$r" commit -qam 'c6 bump g1'
+printf '2\n' > "$r/g[1].txt"; git -C "$r" commit -qam 'c7 bump the bracketed file'
+g7="$(sha_of "$r" dev)"; git -C "$r" checkout -q main
+prior_out="$(cd "$r" && bash "$engine" v0.1.5 "$g5" 'feat(g): add lookalikes' 2>&1)" \
+  || { printf 'FIXTURE BROKEN: could not land the lookalikes on main:\n%s\n' "$prior_out"; exit 1; }
+out="$(cd "$r" && bash "$engine" v0.2.0 "$g7" 'feat(g): bump the bracketed file' 2>&1)"; rc=$?
+check_eq "$rc" 0 'a brick file named with glob characters builds'
+check_eq "$(git -C "$r" show main:'g[1].txt')" '2' 'the glob-named file takes the endpoint content'
+check_eq "$(git -C "$r" show main:g1.txt)" '1' 'its glob lookalike g1.txt is left untouched'
+
 # ---------- usage ----------
 
 r="$tmproot/usage"; mk "$r"
@@ -337,6 +362,272 @@ else
 fi
 heads="$(git -C "$r" show main:CHANGELOG.md | grep -c '^## v')"
 check_eq "$heads" 4 'the changelog gained one section per brick'
+
+# ============================== DEV MODE ==============================
+# `--dev` builds a re-derivation brick onto `dev` from an ORACLE (the frozen feature tip) and an
+# explicit file list: no version, no CHANGELOG entry, no tag.
+
+# mkdev DIR [policy] -> an adopted repo on `dev` with one base commit and a branch `feat` whose tip is
+# the oracle. The oracle modifies a.txt and b.txt, deletes gone.txt, renames old.txt -> new.txt, sets
+# tool.sh's exec bit, and bumps BOTH g[1].txt and its glob lookalike g1.txt. The base carries a
+# CHANGELOG.md so "dev mode writes no entry" is observable. With `policy`, the base also carries a
+# .commit-conventions.toml advising at 40 characters and blocking at 60.
+mkdev() {
+  local d="$1" f
+  mkdir -p "$d/skills/audit"
+  git init -q -b dev "$d"
+  git -C "$d" config user.email test@test.invalid
+  git -C "$d" config user.name test
+  git -C "$d" config commit.gpgsign false
+  git -C "$d" config tag.gpgsign false
+  printf 'production = "dev"\n' > "$d/.publication.toml"
+  printf '%s' "$AUDIT_STUB" > "$d/skills/audit/audit.sh"
+  chmod +x "$d/skills/audit/audit.sh"
+  for f in a.txt b.txt gone.txt old.txt g1.txt 'g[1].txt'; do printf '1\n' > "$d/$f"; done
+  printf '#!/bin/sh\n' > "$d/tool.sh"
+  printf '# Changelog\n\n## v0.1.0 — 2026-01-01\n- feat(a): the first brick\n' > "$d/CHANGELOG.md"
+  if [ "${2:-}" = policy ]; then
+    printf 'subject_advise = 40\nsubject_block = 60\n' > "$d/.commit-conventions.toml"
+  fi
+  git -C "$d" add -A
+  git -C "$d" commit -qm 'base'
+  git -C "$d" checkout -q -b feat
+  for f in a.txt b.txt g1.txt 'g[1].txt'; do printf '2\n' > "$d/$f"; done
+  git -C "$d" rm -q gone.txt
+  git -C "$d" mv old.txt new.txt
+  chmod +x "$d/tool.sh"
+  git -C "$d" add -A
+  git -C "$d" commit -qm 'feat: everything'
+  git -C "$d" checkout -q dev
+}
+
+count_commits() { git -C "$1" rev-list --count dev; }
+porcelain_lines() { git -C "$1" status --porcelain | wc -l | tr -d ' '; }
+
+# ---------- dev: a two-brick re-derivation converges ----------
+r="$tmproot/dev-happy"; mkdev "$r"; oracle="$(sha_of "$r" feat)"
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(a): bump a and b' a.txt b.txt 2>&1)"; rc=$?
+check_eq "$rc" 0 'dev brick 1 exits 0'
+check_has "$out" 'RESULT: PASS rc=0 brick=dev' 'dev brick 1 prints the dev PASS verdict'
+check_eq "$(git -C "$r" rev-parse --abbrev-ref HEAD)" 'dev' 'dev brick leaves HEAD on dev'
+check_eq "$(git -C "$r" log -1 --format=%s dev)" 'feat(a): bump a and b' 'dev brick commit subject'
+check_eq "$(git -C "$r" show --name-only --format= dev | LC_ALL=C sort | tr '\n' ' ')" 'a.txt b.txt ' \
+  'dev brick 1 touches exactly its files'
+check_eq "$(git -C "$r" tag -l | wc -l | tr -d ' ')" 0 'dev brick mints no tag'
+check_eq "$(git -C "$r" rev-parse dev:CHANGELOG.md)" "$(git -C "$r" rev-parse dev~1:CHANGELOG.md)" \
+  'dev brick writes no CHANGELOG entry'
+check_has "$out" 'remaining: 6 path(s) still differ from the oracle' 'dev brick reports what remains'
+
+out="$(cd "$r" && bash "$engine" --dev --final "$oracle" 'feat(tree): drop, move and chmod the rest' \
+  gone.txt old.txt new.txt tool.sh g1.txt 'g[1].txt' 2>&1)"; rc=$?
+check_eq "$rc" 0 'dev brick 2 with --final exits 0'
+check_has "$out" "converged: HEAD tree == oracle $oracle" 'dev --final reports convergence'
+if git -C "$r" diff --quiet "$oracle" dev; then
+  pass_line 'two dev bricks converge dev on the oracle'
+else
+  fail_line 'two dev bricks converge dev on the oracle'
+fi
+check_eq "$(git -C "$r" ls-tree dev tool.sh | cut -c1-6)" '100755' 'dev brick carries the exec bit'
+check_eq "$(porcelain_lines "$r")" 0 'dev bricks leave the tree clean'
+check_eq "$(count_commits "$r")" 3 'two dev bricks made exactly two commits'
+
+# ---------- dev: literal pathspecs ----------
+r="$tmproot/dev-glob"; mkdev "$r"; oracle="$(sha_of "$r" feat)"
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(g): bump the bracketed file' 'g[1].txt' 2>&1)"; rc=$?
+check_eq "$rc" 0 'dev brick named with glob characters builds'
+check_eq "$(git -C "$r" show dev:g1.txt)" '1' 'dev glob-named brick leaves its lookalike untouched'
+
+# ---------- dev: the progress invariant ----------
+# dev moved after the branch was cut, on a path the oracle also changes
+r="$tmproot/dev-moved"; mkdev "$r"; oracle="$(sha_of "$r" feat)"
+printf 'interim\n' > "$r/b.txt"; git -C "$r" commit -qam 'chore(b): interim work on dev'
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(a): bump a' a.txt 2>&1)"; rc=$?
+check_eq "$rc" 1 'dev mode refuses when dev moved on a path the oracle changes'
+check_has "$out" '  diverged: b.txt' 'dev-moved refusal names the diverged path'
+check_eq "$(count_commits "$r")" 2 'dev-moved refusal created no commit'
+check_eq "$(porcelain_lines "$r")" 0 'dev-moved refusal leaves the tree clean'
+
+# dev moved on a path the oracle never touches — the shape tip convergence would silently REVERT
+r="$tmproot/dev-moved-elsewhere"; mkdev "$r"; oracle="$(sha_of "$r" feat)"
+printf 'interim\n' > "$r/extra.txt"; git -C "$r" add extra.txt
+git -C "$r" commit -qm 'chore(extra): interim file on dev'
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(a): bump a' a.txt 2>&1)"; rc=$?
+check_eq "$rc" 1 'dev mode refuses when dev moved on a path the oracle never touches'
+check_has "$out" '  diverged: extra.txt' 'the untouched-path refusal names that path'
+
+# a non-ASCII path: git's default name-only output quotes/escapes it (e.g. "caf\303\251.txt"),
+# which then never matches the literal pathspec passed to git_lit — so without NUL-separated
+# names this divergence built RESULT: PASS (measured by the reviewer 2026-09-16)
+r="$tmproot/dev-moved-nonascii"; mkdev "$r"; oracle="$(sha_of "$r" feat)"
+printf 'interim\n' > "$r/café.txt"; git -C "$r" add café.txt
+git -C "$r" commit -qm 'chore(cafe): interim non-ASCII file on dev'
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(a): bump a' a.txt 2>&1)"; rc=$?
+check_eq "$rc" 1 'dev mode refuses when dev moved on a non-ASCII path'
+check_has "$out" '  diverged: café.txt' 'the non-ASCII refusal names the diverged path exactly'
+
+# ---------- dev: every brick file must differ from HEAD ----------
+r="$tmproot/dev-files"; mkdev "$r"; oracle="$(sha_of "$r" feat)"
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(a): bump a' a.txt no-such.txt 2>&1)"; rc=$?
+check_eq "$rc" 1 'dev mode refuses a path in neither tree'
+check_has "$out" 'brick file no-such.txt already matches' 'the neither-tree refusal names the path'
+# paired with a file that DOES differ, so a missing check would yield a silently smaller brick
+# (rc 0) rather than an empty commit that fails anyway
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(x): nothing to do' .publication.toml a.txt 2>&1)"; rc=$?
+check_eq "$rc" 1 'dev mode refuses a file that already matches the oracle'
+check_has "$out" 'brick file .publication.toml already matches' 'the already-matches refusal names the path'
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(x): outside' /etc/hosts 2>&1)"; rc=$?
+check_eq "$rc" 1 'dev mode refuses an absolute path'
+check_has "$out" 'relative to the repo root' 'the absolute-path refusal says why'
+check_eq "$(count_commits "$r")" 1 'refused dev bricks created no commit'
+check_eq "$(porcelain_lines "$r")" 0 'refused dev bricks leave the tree clean'
+
+# a directory listed as a brick file: without an explicit refusal, "dir" as a pathspec matches
+# everything under it, shape B then trips over dir/y.txt (not literally "dir") and can leave a
+# staged leftover behind — a real leftover the reviewer measured 2026-09-16
+r="$tmproot/dev-dir"; mkdev "$r"
+git -C "$r" checkout -q feat
+mkdir -p "$r/dir"; printf 'y\n' > "$r/dir/y.txt"
+git -C "$r" add dir/y.txt && git -C "$r" commit -qm 'feat(dir): add dir/y.txt'
+git -C "$r" checkout -q dev
+oracle="$(sha_of "$r" feat)"
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(a): bump a' dir 2>&1)"; rc=$?
+check_eq "$rc" 1 'dev mode refuses a directory as a brick file'
+check_has "$out" 'brick file dir is a directory' 'the directory refusal names the reason'
+check_eq "$(count_commits "$r")" 1 'the directory refusal created no commit'
+check_eq "$(porcelain_lines "$r")" 0 'the directory refusal leaves the tree clean'
+
+# a file BECOMING a directory is a legitimate change, not the directory refusal above: `a.txt` is
+# a blob at HEAD, so the refusal (tree on one side, neither side blob/commit on the other) must
+# not fire when the other side names a real blob
+r="$tmproot/dev-filetodir"; mkdev "$r"
+git -C "$r" checkout -q feat
+git -C "$r" rm -q a.txt
+mkdir -p "$r/a.txt"; printf 'q\n' > "$r/a.txt/in"
+git -C "$r" add -A && git -C "$r" commit -qm 'feat(a): turn a.txt into a directory'
+git -C "$r" checkout -q dev
+oracle="$(sha_of "$r" feat)"
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(a): file to dir' a.txt a.txt/in 2>&1)"; rc=$?
+check_eq "$rc" 0 'a file becoming a directory builds when both its old and new paths are listed'
+if git -C "$r" cat-file -e dev:a.txt/in 2>/dev/null; then
+  pass_line 'the converted path exists at its new location on dev'
+else
+  fail_line 'the converted path exists at its new location on dev'
+fi
+
+# ---------- dev: branch and tree preconditions ----------
+r="$tmproot/dev-branch"; mkdev "$r"; oracle="$(sha_of "$r" feat)"; git -C "$r" checkout -q feat
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(a): bump a' a.txt 2>&1)"; rc=$?
+check_eq "$rc" 1 'dev mode refuses when not on dev'
+check_has "$out" 'not on branch dev' 'the branch refusal names dev'
+
+r="$tmproot/dev-dirty"; mkdev "$r"; oracle="$(sha_of "$r" feat)"; printf 'scratch\n' > "$r/scratch.txt"
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(a): bump a' a.txt 2>&1)"; rc=$?
+check_eq "$rc" 1 'dev mode refuses a dirty tree'
+
+# a repo with no audit.sh of its own cannot be proven, so dev mode refuses BEFORE the commit —
+# not by falling through into run_audit's own missing-audit check after the fact
+r="$tmproot/dev-noaudit"; mkdev "$r"; oracle="$(sha_of "$r" feat)"
+git -C "$r" rm -q skills/audit/audit.sh && git -C "$r" commit -qm 'chore(audit): drop the audit'
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(a): bump a' a.txt 2>&1)"; rc=$?
+check_eq "$rc" 1 'dev mode refuses a repo with no audit before committing'
+check_has "$out" 'no executable audit' 'the missing-audit refusal names the reason'
+check_eq "$(count_commits "$r")" 2 'the missing-audit refusal created no commit'
+check_eq "$(porcelain_lines "$r")" 0 'the missing-audit refusal leaves the tree clean'
+
+# a brick that DELETES skills/audit/audit.sh would pass the pre-commit run_audit call (it still
+# reads the repo's LIVE copy, present until the commit lands) and only fail once committed, with
+# nothing left to prove the next brick — refused before it commits instead
+r="$tmproot/dev-audit-deleted"; mkdev "$r"
+git -C "$r" checkout -q feat
+git -C "$r" rm -q skills/audit/audit.sh
+git -C "$r" commit -qm 'feat(audit): drop the audit'
+git -C "$r" checkout -q dev
+oracle="$(sha_of "$r" feat)"
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'chore(audit): drop audit' skills/audit/audit.sh 2>&1)"; rc=$?
+check_eq "$rc" 1 'a brick that deletes the audit refuses before it commits'
+check_has "$out" "brick file skills/audit/audit.sh would leave no executable audit" \
+  'the audit-loss refusal names the reason'
+check_eq "$(count_commits "$r")" 1 'the audit-loss refusal created no commit'
+check_eq "$(porcelain_lines "$r")" 0 'the audit-loss refusal leaves the tree clean'
+
+# ---------- dev: the subject ----------
+r="$tmproot/dev-subject"; mkdev "$r"; oracle="$(sha_of "$r" feat)"
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'bump a' a.txt 2>&1)"; rc=$?
+check_eq "$rc" 1 'dev mode refuses a non-conventional subject'
+check_has "$out" 'not conventional' 'the conventional refusal says so'
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(a): bump a.' a.txt 2>&1)"; rc=$?
+check_eq "$rc" 1 'dev mode refuses a subject ending in a period'
+long='feat(a): a subject that runs well past forty characters'
+out="$(cd "$r" && bash "$engine" --dev "$oracle" "$long" a.txt 2>&1)"; rc=$?
+check_eq "$rc" 0 'without a policy file a long conventional subject builds'
+
+r="$tmproot/dev-policy"; mkdev "$r" policy; oracle="$(sha_of "$r" feat)"
+out="$(cd "$r" && bash "$engine" --dev "$oracle" "$long" a.txt 2>&1)"; rc=$?
+check_eq "$rc" 1 'a subject in the ADVISE band of the repo policy is refused'
+check_has "$out" 'threshold' 'the policy refusal names the threshold'
+out="$(cd "$r" && ALLOW_LONG_SUBJECT=1 bash "$engine" --dev "$oracle" "$long" a.txt 2>&1)"; rc=$?
+check_eq "$rc" 0 'ALLOW_LONG_SUBJECT=1 lets an over-threshold subject build, as it does for /commit'
+check_has "$out" 'ALLOW_LONG_SUBJECT' 'the override is announced, not silent'
+git -C "$r" reset -q --hard HEAD~1
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(a): bump a' a.txt 2>&1)"; rc=$?
+check_eq "$rc" 0 'a subject under the policy threshold builds'
+
+# ---------- dev: --final ----------
+r="$tmproot/dev-final"; mkdev "$r"; oracle="$(sha_of "$r" feat)"
+out="$(cd "$r" && bash "$engine" --dev --final "$oracle" 'feat(a): bump a' a.txt 2>&1)"; rc=$?
+check_eq "$rc" 1 '--final fails a brick that does not converge'
+check_has "$out" '  still differs: b.txt' '--final names a remaining path'
+check_has "$out" 'is proven and stays' '--final failure keeps the proven brick'
+check_lacks "$out" 'Recovery (run it yourself)' '--final failure does not dress prose up as a command'
+check_lacks "$out" 'reset --hard' '--final failure does not tell the operator to drop the brick'
+check_eq "$(count_commits "$r")" 2 '--final failure leaves the landed brick in place'
+
+# ---------- dev: the audit verdict is still an allowlist ----------
+for mode in fail killed weird liar trailer; do
+  r="$tmproot/dev-audit-$mode"; mkdev "$r"; oracle="$(sha_of "$r" feat)"
+  out="$(cd "$r" && AUDIT_MODE="$mode" bash "$engine" --dev "$oracle" 'feat(a): bump a' a.txt 2>&1)"; rc=$?
+  check_eq "$rc" 1 "dev audit mode '$mode' fails the brick"
+  check_has "$out" 'RESULT: FAIL rc=1 brick=dev' "dev audit mode '$mode' prints the dev FAIL verdict"
+  check_has "$out" 'reset --hard HEAD~1' "dev audit mode '$mode' names the drop-the-brick recovery"
+  check_lacks "$out" 'tag -d' "dev audit mode '$mode' recovery never mentions a tag"
+done
+
+# ---------- dev: artifact ----------
+r="$tmproot/dev-artifact"; mkdev "$r"; oracle="$(sha_of "$r" feat)"; adir="$tmproot/dev-artifacts"
+pre="$(git -C "$r" rev-parse --short HEAD)"
+out="$(cd "$r" && bash "$engine" --dev --artifact-dir "$adir" "$oracle" 'feat(a): bump a' a.txt 2>&1)"
+check_has "$(cat "$adir/audit-dev-$pre.txt" 2>/dev/null)" 'AUDIT_EXIT_STATUS=0' \
+  'dev artifact is named for the pre-brick HEAD and records the audit status'
+
+# ---------- dev: usage ----------
+r="$tmproot/dev-usage"; mkdev "$r"; oracle="$(sha_of "$r" feat)"
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(a): bump a' 2>&1)"; rc=$?
+check_eq "$rc" 2 'dev mode with no files is a usage error'
+out="$(cd "$r" && bash "$engine" --final v0.2.0 "$oracle" 'feat(a): x' 2>&1)"; rc=$?
+check_eq "$rc" 2 '--final without --dev is a usage error'
+out="$(cd "$r" && bash "$engine" --dev not-a-commit 'feat(a): bump a' a.txt 2>&1)"; rc=$?
+check_eq "$rc" 1 'dev mode refuses an oracle that is not a commit'
+check_has "$out" 'is not a commit in' 'the not-a-commit refusal names the reason'
+
+# a file positional that looks like a flag never reaches --final's own parsing: the main flag
+# loop already broke on the first non-flag argument (the oracle), so this is a usage error, not
+# a silent extra brick file
+r="$tmproot/dev-dashfile"; mkdev "$r"; oracle="$(sha_of "$r" feat)"
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(a): bump a' a.txt --final 2>&1)"; rc=$?
+check_eq "$rc" 2 'a brick file name starting with a dash is a usage error'
+check_has "$out" 'looks like a flag' 'the flag-like file name refusal says so'
+
+# a real file named with a SINGLE leading dash has no workaround if the refusal matches `-*` —
+# the engine has no short flags, so only `--*` is ever a flag lookalike worth refusing
+r="$tmproot/dev-dashfile-legit"; mkdev "$r"
+git -C "$r" checkout -q feat
+printf 'z\n' > "$r/-x.txt"
+git -C "$r" add -- -x.txt
+git -C "$r" commit -qm 'feat(x): add a dash-prefixed file'
+git -C "$r" checkout -q dev
+oracle="$(sha_of "$r" feat)"
+out="$(cd "$r" && bash "$engine" --dev "$oracle" 'feat(x): add dash file' -x.txt 2>&1)"; rc=$?
+check_eq "$rc" 0 'a legitimate file named with a single leading dash builds'
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
