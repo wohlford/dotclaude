@@ -465,12 +465,28 @@ left legal.
   configs elsewhere again. **Resolve the subject the way the tool resolves it — including keys the
   tool reads out of the file you resolved** — and make "found nothing" name WHERE it looked.
 
-#### Your matcher matched text you did not mean — or missed text you did
+#### Your matcher matched text you did not mean
 
 - **Multi-line literal checks are a case for Python.** `grep -F` treats an embedded newline as
   *alternation*, not a sequence: `grep -Fc "$(printf 'a\nb')"` counts lines matching **either**, so a
   multi-line check returns a plausible-but-wrong count and reads as verified. Use `python3 -c "..."`
   (`needle in open(f).read()`) or `grep -Pzo`.
+- **A text match cannot tell an occurrence that PERFORMS what it hunts for from one that merely
+  MENTIONS it — so text legitimately naming the thing trips the check, toward a false block or a
+  false pass alike.** Not a misparsed pattern: the pattern is right and the text really is there,
+  carried by a quoted argument, a description, or an input the tool echoes back. Measured twice. A
+  guard matching its trigger phrase anywhere in a command refused `echo`, `grep` and `printf` forms
+  that only QUOTED it, then the heredoc documenting that refusal. And a test asserting a report said
+  WHY it could not decide passed with the filter it tested deleted — a mutant SURVIVED — because the
+  fixture's commit subject carried the word and the report echoes subjects verbatim. **Ask which put
+  the needle there: the thing under test, or text you authored around it.** Scope the match to the
+  structure the property lives in — the command's position, the one verdict line — and keep hunted
+  words out of fixtures. Its own failure mode: that scoping NARROWS, so each shape the parser does
+  not model fails open — measured, the rewritten guard passed an `eval`-wrapped push the crude match
+  blocked. Prove the blocked corpus still blocks.
+
+#### Your search missed what was there
+
 - **A phrase you believe is one line may have WRAPPED — then a line-based grep returns 0, and
   absence is not evidence of absence.** Match against the file's whole text, not line by line.
 - **A property can arrive by INDIRECTION, so its absence from a file's TEXT is not its absence in
