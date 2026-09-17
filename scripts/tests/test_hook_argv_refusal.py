@@ -31,6 +31,7 @@ import os
 import pty
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -123,6 +124,21 @@ def present_hooks():
 
 HOOKS = present_hooks()
 
+# HOOK_TESTS_ONLY=<hook>[,<hook>...] restricts the four per-hook contract tests to the named hooks, so
+# hook-machinery-test.sh can check ONE edited hook in under a second. The population and floor rows
+# still run whole. Unset or empty selects everything. A name that is not a present hook FAILS rather
+# than selecting nothing, since an empty parametrisation reads as a clean run.
+_RAW_SELECTION = os.environ.get("HOOK_TESTS_ONLY", "")
+SELECTION = _RAW_SELECTION.split(",") if _RAW_SELECTION else []
+PARAM_HOOKS = [n for n in HOOKS if n in SELECTION] if SELECTION else HOOKS
+if SELECTION:
+    warnings.warn("SELECTION ACTIVE: %s" % ",".join(SELECTION), stacklevel=2)
+
+
+def test_selection_names_present_hooks():
+    unknown = sorted(set(SELECTION) - set(HOOKS))
+    assert not unknown, "HOOK_TESTS_ONLY names hooks that are not present: %s" % unknown
+
 
 def run(name, argv=(), payload=b"", tty_stdin=False, timeout=30):
     """Invoke a hook, returning (rc, stderr). `tty_stdin` reproduces the blocking case."""
@@ -157,7 +173,7 @@ def test_floor_members_are_all_present():
     )
 
 
-@pytest.mark.parametrize("name", HOOKS)
+@pytest.mark.parametrize("name", PARAM_HOOKS)
 def test_refuses_argv(name):
     """Handed a filename it cannot honour, a hook must say so rather than exit 0."""
     rc, err = run(name, argv=["some/file.py"])
@@ -165,7 +181,7 @@ def test_refuses_argv(name):
     assert "stdin" in err.lower(), "refusal does not say how to invoke it: %r" % err
 
 
-@pytest.mark.parametrize("name", HOOKS)
+@pytest.mark.parametrize("name", PARAM_HOOKS)
 def test_refuses_a_terminal_stdin(name):
     """With no payload coming, a hook must refuse rather than block forever."""
     try:
@@ -175,14 +191,14 @@ def test_refuses_a_terminal_stdin(name):
     assert rc == 2, "exited %d rather than refusing a terminal stdin" % rc
 
 
-@pytest.mark.parametrize("name", HOOKS)
+@pytest.mark.parametrize("name", PARAM_HOOKS)
 def test_still_serves_a_real_payload(name):
     """PRESERVE: the guard must not fire on the invocation the harness actually makes."""
     rc, err = run(name, payload=INERT_PAYLOAD.encode())
     assert rc == 0, "refused a legitimate payload (rc %d): %s" % (rc, err)
 
 
-@pytest.mark.parametrize("name", HOOKS)
+@pytest.mark.parametrize("name", PARAM_HOOKS)
 def test_empty_stdin_is_left_alone(name):
     """PRESERVE: an empty payload is a real harness state; it must keep its current behaviour.
 

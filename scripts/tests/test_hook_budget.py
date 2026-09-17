@@ -30,7 +30,9 @@ import settings_hooks  # noqa: E402
 
 # Named so that a hook LOSING its budget line alarms — a derivation over "hooks that declare a
 # budget" silently shrinks to nothing and passes.
-FLOOR = frozenset({"audit-test.sh", "publication-push-guard-test.sh"})
+FLOOR = frozenset(
+    {"audit-test.sh", "hook-machinery-test.sh", "publication-push-guard-test.sh"}
+)
 
 # The overrun path runs PAST the budget before it can report: a suite's TERM→KILL escalation takes up
 # to ~5.5 s, then the hook prints its report. A budget closer to the timeout than this lets the
@@ -109,3 +111,9 @@ def test_walk_hook_entries_still_raises_on_a_non_string_command():
     doc = {"hooks": {"PostToolUse": [{"hooks": [{"command": 7}]}]}}
     with pytest.raises(ValueError):
         settings_hooks.walk_hook_entries(doc, "fixture")
+
+
+def test_parity_module_is_present():
+    """Nothing but this row names test_hook_parity.py; it names this module back."""
+    path = REPO / "scripts" / "tests" / "test_hook_parity.py"
+    assert path.is_file(), "%s is missing" % path

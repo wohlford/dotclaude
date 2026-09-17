@@ -12,13 +12,38 @@ set -uo pipefail
 # never runs, exit 0). recast-test.sh has no such backstop: on an owned repo it still exits 2 (the
 # missing-suite branch alone covers that), but on a NON-owner it falls through past the (skipped)
 # ownership guard and actually attempts the run — degrading to an OVER-ALARM that blocks a foreign
-# repo which never had a stake in this hook. See the recast-specific fixture near the end of this
-# file for the row that pins the second direction.
+# repo which never had a stake in this hook. See the recast-specific fixture inside the
+# `if selected recast-test.sh; then` block for the row that pins the second direction.
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 hooks="$here/../../scripts"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+
+# ---------- Selection ----------
+# HOOK_TESTS_ONLY=<hook>[,<hook>...] runs only the named hooks' rows, so hook-machinery-test.sh can
+# gate an edit to ONE hook in seconds instead of this whole suite's ~150 s. CASES rows are filtered on
+# their hook column and each bespoke section sits inside `if selected <hook>; then`. A row outside
+# every wrapper runs in EVERY selection: forgetting a wrapper costs time, never coverage. Unset or
+# empty selects everything, byte-identical to a plain run.
+selected() {
+  [ -z "${HOOK_TESTS_ONLY:-}" ] && return 0
+  case ",$HOOK_TESTS_ONLY," in
+    *",$1,"*) return 0 ;;
+  esac
+  return 1
+}
+
+# ---------- Tripwire: a missing command is a FAIL ----------
+# Measured 2026-09-16 while prototyping selection: check_has was defined inside a skipped section, so
+# six rows printed "check_has: command not found", counted nothing, and the run exited 0. bash runs
+# this handler in a subshell, so it cannot increment $fail — it leaves a marker the summary counts.
+# Needs bash >= 4; the tripwire row below FAILs loudly on an older bash rather than going quiet.
+command_not_found_handle() {
+  printf 'FAIL  command not found: %s\n' "$1"
+  : > "$tmp/command-not-found"
+  return 127
+}
 
 pass=0
 fail=0
@@ -61,6 +86,93 @@ write_stub_suite() {
   esac
 }
 
+ppg=publication-push-guard-test.sh
+ppg_union="scripts/tests/test_git_command.py scripts/tests/test_git_command_properties.py scripts/tests/test_publication_push_guard.sh scripts/tests/test_guard_corpus.py scripts/tests/test_guard_internals.py scripts/tests/test_push_guard.sh scripts/tests/test_git_timing_guard.sh scripts/tests/test_explain_git_command.py scripts/tests/test_commit_subject_guard.sh scripts/tests/test_commit_subject.py scripts/tests/test_recast_hooks.sh"
+
+# ppg_owner_fixture DIR — an owning repo holding the tokenizer and a passing stub for every suite.
+ppg_owner_fixture() {
+  mkrepo "$1"
+  mkdir -p "$1/scripts/lib"
+  printf 'x\n' > "$1/scripts/lib/git_command.py"
+  mark_owner "$1/scripts/$ppg"
+  for s in $ppg_union; do write_stub_suite "$1/$s"; done   # unquoted: split on spaces, deliberate
+}
+
+# drive_ppg DIR [NAME=VALUE ...] — drive a tokenizer edit; sets ppg_rc and ppg_err (stderr only).
+drive_ppg() {
+  local r="$1"
+  shift
+  ppg_rc=0
+  ppg_err=$(printf '{"tool_input":{"file_path":"%s"}}' "$r/scripts/lib/git_command.py" \
+    | env "$@" bash "$hooks/$ppg" 2>&1 >/dev/null) || ppg_rc=$?
+}
+
+# check_has HAYSTACK NEEDLE LABEL
+check_has() {
+  case "$1" in
+    *"$2"*) pass_line "$3" ;;
+    *) fail_line "$3 (stderr lacked [$2]; began: $(printf '%s' "$1" | head -3 | tr '\n' ' '))" ;;
+  esac
+}
+
+# check_lacks HAYSTACK NEEDLE LABEL — the mirror of check_has: passes when NEEDLE is absent.
+check_lacks() {
+  case "$1" in
+    *"$2"*) fail_line "$3 (output unexpectedly contained [$2])" ;;
+    *) pass_line "$3" ;;
+  esac
+}
+
+# audit_fixture DIR — an owning repo holding the audit engine and, unless the row writes its own, no suite.
+audit_fixture() {
+  mkrepo "$1"
+  mkdir -p "$1/skills/audit" "$1/scripts/tests"
+  printf 'x\n' > "$1/skills/audit/audit.sh"
+  mark_owner "$1/scripts/audit-test.sh"
+}
+# drive_audit DIR HOOKDIR [NAME=VALUE ...] — drive an audit.sh edit; sets audit_rc and audit_err (stderr only).
+drive_audit() {
+  local r="$1" hookdir="$2"
+  shift 2
+  audit_rc=0
+  audit_err=$(printf '{"tool_input":{"file_path":"%s"}}' "$r/skills/audit/audit.sh" \
+    | env "$@" bash "$hookdir/audit-test.sh" 2>&1 >/dev/null) || audit_rc=$?
+}
+
+# ---------- hook-machinery-test.sh: classification, selection and the budget ----------
+hm='hook-machinery-test.sh'
+hm_trio="scripts/tests/test_hook_parity.py scripts/tests/test_hook_argv_refusal.py scripts/tests/test_hook_budget.py"
+
+# hm_fixture DIR — an owning repo whose guard suite and trio are RECORDING stubs: each appends
+# "<suite> sel=<HOOK_TESTS_ONLY>" to DIR/ran, so a row can assert which suites ran with which selection.
+hm_fixture() {
+  mkrepo "$1"
+  mkdir -p "$1/scripts/tests" "$1/scripts/lib" "$1/.claude"
+  mark_owner "$1/scripts/$hm"
+  # shellcheck disable=SC2016  # ${HOOK_TESTS_ONLY-UNSET} belongs to the generated stub
+  printf '#!/usr/bin/env bash\nprintf "guard sel=%%s\\n" "${HOOK_TESTS_ONLY-UNSET}" >> "%s/ran"\nexit 0\n' "$1" \
+    > "$1/scripts/tests/test_hook_suite_guard.sh"
+  for s in $hm_trio scripts/tests/test_settings_hooks_check.py; do
+    printf 'import os\ndef test_stub():\n    open("%s/ran", "a").write("%s sel=%%s\\n" %% os.environ.get("HOOK_TESTS_ONLY", "UNSET"))\n' \
+      "$1" "$(basename "$s")" > "$1/$s"
+  done
+  printf 'x\n' > "$1/scripts/style-check-test.sh"
+  printf '. lib/hook_budget.sh\n' > "$1/scripts/audit-test.sh"
+  printf '. lib/hook_budget.sh\n' > "$1/scripts/publication-push-guard-test.sh"
+  printf 'x\n' > "$1/scripts/lib/hook_budget.sh"
+  printf 'x\n' > "$1/scripts/lib/settings_hooks.py"
+  printf '{}\n' > "$1/settings.json"
+  printf '{}\n' > "$1/.claude/settings.json"
+}
+
+# drive_hm FILE [NAME=VALUE ...] — sets hm_rc and hm_err (stderr only).
+drive_hm() {
+  local f="$1"
+  shift
+  hm_err=$(printf '{"tool_input":{"file_path":"%s"}}' "$f" | env "$@" bash "$hooks/$hm" 2>&1 >/dev/null)
+  hm_rc=$?
+}
+
 # label | hook | trigger-relative-path | SPACE-SEPARATED suite list
 # Two hooks run MULTIPLE suites. publication-push-guard-test.sh is table-driven: an edit to a gate
 # built on scripts/lib/git_command.py runs that gate's suites, and an edit to the tokenizer runs its
@@ -89,11 +201,40 @@ ppg-commit-subject-lib|publication-push-guard-test.sh|scripts/lib/commit_subject
 env-claims-check|env-claims-check-test.sh|scripts/env-claims-check.py|scripts/tests/test_env_claims_check.py
 mutation-anchors-check|mutation-anchors-check-test.sh|scripts/mutation-anchors-check.py|scripts/tests/test_mutation_anchors_check.py
 recast|recast-test.sh|skills/recast/recast-recon-history.sh|skills/recast/tests/test_recast_recon_history.py
+hook-machinery|hook-machinery-test.sh|scripts/style-check-test.sh|scripts/tests/test_hook_suite_guard.sh scripts/tests/test_hook_parity.py scripts/tests/test_hook_argv_refusal.py scripts/tests/test_hook_budget.py
 "
+
+if [ -n "${HOOK_TESTS_ONLY:-}" ]; then
+  printf 'SELECTION ACTIVE: %s\n' "$HOOK_TESTS_ONLY"
+  known=$(printf '%s\n' "$CASES" | awk -F'|' 'NF >= 2 {print $2}')
+  unknown=""
+  IFS=',' read -r -a sel_names <<< "$HOOK_TESTS_ONLY"
+  for n in ${sel_names[@]+"${sel_names[@]}"}; do
+    case $'\n'"$known"$'\n' in
+      *$'\n'"$n"$'\n'*) ;;
+      *) unknown="$unknown ${n:-<empty>}" ;;
+    esac
+  done
+  if [ -n "$unknown" ]; then
+    printf 'FAIL  selection names hooks with no CASES row:%s\n' "$unknown"
+    printf '\n0 passed, 1 failed\n'
+    exit 1
+  fi
+fi
+
+# The tripwire is live — in every selection and in a full run.
+tripwire_probe_undefined_command_zz >/dev/null 2>&1
+if [ -e "$tmp/command-not-found" ]; then
+  pass_line 'tripwire: an undefined command is recorded as a FAIL'
+  rm -f "$tmp/command-not-found"
+else
+  fail_line "tripwire: an undefined command went unrecorded — command_not_found_handle is not live (bash $BASH_VERSION)"
+fi
 
 i=0
 while IFS='|' read -r label hook trigger suites; do
   [ -z "$label" ] && continue
+  selected "$hook" || continue
   i=$((i + 1))
 
   # --- owner WITHOUT the suite(s) -> must alarm. This is the defect. ---
@@ -124,7 +265,8 @@ while IFS='|' read -r label hook trigger suites; do
   # other one present) must still alarm. Wiping the whole list at once (the case above) cannot
   # tell "checks every suite" apart from "checks whether ANY suite survived" — this pins each
   # per-suite presence line individually. Single-suite triggers have nothing to hold out, so
-  # they are skipped (n_suites -le 1). No arrays: word-split $suites twice, bash-3.2 safe.
+  # they are skipped (n_suites -le 1). No arrays: word-split $suites twice — this loop is bash-3.2 safe,
+  # but the file needs bash 4+ for its command_not_found_handle tripwire.
   n_suites=0
   for _s in $suites; do n_suites=$((n_suites + 1)); done
   if [ "$n_suites" -gt 1 ]; then
@@ -162,16 +304,19 @@ sentinel_case() {
   check_eq "$(drive "$hook" "$r/$trigger")" 0 \
     "$label: same-named scripts/$hook WITHOUT sentinel -> exit 0 (not ownership)"
 }
-sentinel_case style-check style-check-test.sh scripts/style-check.sh
-sentinel_case commit-subject commit-subject-test.sh scripts/lib/commit_subject.py
+selected style-check-test.sh && sentinel_case style-check style-check-test.sh scripts/style-check.sh
+selected commit-subject-test.sh && sentinel_case commit-subject commit-subject-test.sh scripts/lib/commit_subject.py
 
+if selected style-check-test.sh; then
 # A path outside any git repo must stay inert (environment fail-open, unchanged).
 outside="$tmp/not_a_repo"
 mkdir -p "$outside/scripts"
 printf 'x\n' > "$outside/scripts/style-check.sh"
 check_eq "$(drive style-check-test.sh "$outside/scripts/style-check.sh")" 0 \
   'style-check-test.sh: path outside any git repo -> exit 0 (environment fail-open)'
+fi
 
+if selected publication-push-guard-test.sh; then
 # A NON-owner holding only SOME of a hook's suites must stay inert — and in particular must not
 # EXECUTE the repo-supplied scripts that happen to be present. Splitting the old combined guard
 # briefly removed this inertness; the security review caught it. The canary file is the assertion
@@ -191,7 +336,9 @@ if [ -f "$partial/CANARY_EXECUTED" ]; then
 else
   pass_line 'non-owner with a PARTIAL suite set -> repo-supplied script not executed'
 fi
+fi
 
+if selected commit-subject-test.sh; then
 # A suite that is PRESENT but cannot be RUN is the same event as a missing one: the gate did not
 # run. Without this, an unavailable pytest silently skipped test_commit_subject.py and the hook
 # reported success — this branch's own defect, reached through the environment rather than the
@@ -215,7 +362,9 @@ printf '{"tool_input":{"file_path":"%s"}}' "$unrun/scripts/lib/commit_subject.py
 check_eq "$unrun_rc" 2 'owner + suite present but pytest UNAVAILABLE -> exit 2 (gate did not run)'
 check_eq "$(drive commit-subject-test.sh "$unrun/scripts/lib/commit_subject.py")" 0 \
   'owner + same repo with pytest available -> exit 0'
+fi
 
+if selected recast-test.sh; then
 # recast-test.sh is UNLIKE every hook above: when "missing" comes back empty it runs the matched
 # test regardless of OWNERSHIP (the ownership guard only gates the ALARM branch — recast's trigger
 # set is open and its suite is resolved per-file, so any repo carrying the suite gets it run). That
@@ -253,42 +402,15 @@ printf '{"tool_input":{"file_path":"%s"}}' "$recast_foreign/skills/recast/recast
   | PATH="$recast_foreign/shim:$PATH" bash "$hooks/recast-test.sh" >/dev/null 2>&1 || recast_rc=$?
 check_eq "$recast_rc" 0 \
   'recast: NON-owner + suite PRESENT + pytest UNAVAILABLE -> exit 0 (inert; the discriminating row)'
+fi
 
+if selected publication-push-guard-test.sh; then
 # ---------- publication-push-guard-test.sh: discovery, runners and the budget ----------
 # Most rows below drive a TOKENIZER edit in a fixture that owns the hook and carries a passing stub
 # for every suite the tokenizer arm requires, then change exactly one thing (the suite-as-trigger row
 # edits a suite file instead, and the CONTROL copies the real population). Each asserts the exit
 # status AND a message naming its own cause: a hook exits 2 for several reasons, and a row that
 # checked only the status would stay green if a DIFFERENT alarm fired first.
-ppg=publication-push-guard-test.sh
-ppg_union="scripts/tests/test_git_command.py scripts/tests/test_git_command_properties.py scripts/tests/test_publication_push_guard.sh scripts/tests/test_guard_corpus.py scripts/tests/test_guard_internals.py scripts/tests/test_push_guard.sh scripts/tests/test_git_timing_guard.sh scripts/tests/test_explain_git_command.py scripts/tests/test_commit_subject_guard.sh scripts/tests/test_commit_subject.py scripts/tests/test_recast_hooks.sh"
-
-# ppg_owner_fixture DIR — an owning repo holding the tokenizer and a passing stub for every suite.
-ppg_owner_fixture() {
-  mkrepo "$1"
-  mkdir -p "$1/scripts/lib"
-  printf 'x\n' > "$1/scripts/lib/git_command.py"
-  mark_owner "$1/scripts/$ppg"
-  for s in $ppg_union; do write_stub_suite "$1/$s"; done   # unquoted: split on spaces, deliberate
-}
-
-# drive_ppg DIR [NAME=VALUE ...] — drive a tokenizer edit; sets ppg_rc and ppg_err (stderr only).
-drive_ppg() {
-  local r="$1"
-  shift
-  ppg_rc=0
-  ppg_err=$(printf '{"tool_input":{"file_path":"%s"}}' "$r/scripts/lib/git_command.py" \
-    | env "$@" bash "$hooks/$ppg" 2>&1 >/dev/null) || ppg_rc=$?
-}
-
-# check_has HAYSTACK NEEDLE LABEL
-check_has() {
-  case "$1" in
-    *"$2"*) pass_line "$3" ;;
-    *) fail_line "$3 (stderr lacked [$2]; began: $(printf '%s' "$1" | head -3 | tr '\n' ' '))" ;;
-  esac
-}
-
 # An importer nobody wired, written in the LAZY, INDENTED shape three of the eight real importers
 # use — so a predicate narrowed to column-0 imports cannot pass this row. Under that narrowing the
 # rc row below still reads 2 (the tripwire fires instead), so the MESSAGE row is the catch: do not
@@ -492,24 +614,10 @@ drive_ppg "$r"
 check_eq "$ppg_rc" 2 'ppg: a candidate path git prints quoted -> exit 2 (discovery fails closed)'
 check_has "$ppg_err" 'discovery of the files that depend on git_command failed' \
   'ppg: the quoted-path failure is named'
+fi
 
+if selected audit-test.sh; then
 # ---------- audit-test.sh's budget ----------
-# audit_fixture DIR — an owning repo holding the audit engine and, unless the row writes its own, no suite.
-audit_fixture() {
-  mkrepo "$1"
-  mkdir -p "$1/skills/audit" "$1/scripts/tests"
-  printf 'x\n' > "$1/skills/audit/audit.sh"
-  mark_owner "$1/scripts/audit-test.sh"
-}
-# drive_audit DIR HOOKDIR [NAME=VALUE ...] — drive an audit.sh edit; sets audit_rc and audit_err (stderr only).
-drive_audit() {
-  local r="$1" hookdir="$2"
-  shift 2
-  audit_rc=0
-  audit_err=$(printf '{"tool_input":{"file_path":"%s"}}' "$r/skills/audit/audit.sh" \
-    | env "$@" bash "$hookdir/audit-test.sh" 2>&1 >/dev/null) || audit_rc=$?
-}
-
 # THE BUDGET: the suite outlives a lowered budget and starts a child that ignores TERM. The row asserts
 # the overrun report, the bound, and that nothing from the suite's tree survives.
 r="$tmp/audit_overrun"
@@ -579,7 +687,9 @@ printf '#!/bin/sh\nexit 1\n' > "$r/shim/python3"
 chmod +x "$r/shim/python3"
 drive_audit "$r" "$hooks" PATH="$r/shim:$PATH"
 check_eq "$audit_rc" 0 'audit: NON-owner + python3 cannot start a session -> exit 0 (inert)'
+fi
 
+if selected publication-push-guard-test.sh; then
 # CONTROL — green before AND after this change by construction; it earns its keep by going red the
 # day a real gate imports the tokenizer without a DEPENDENTS row. It copies this repo's WHOLE
 # candidate population (every non-test .py git lists), not a hand list of known importers, so a
@@ -617,6 +727,151 @@ done
 check_eq "$ppg_absent" "" 'ppg control: all eight importers measured on 2026-09-14 are in the copy'
 drive_ppg "$r"
 check_eq "$ppg_rc" 0 'ppg CONTROL: every real importer of the tokenizer is wired -> exit 0'
+fi
 
+if selected hook-machinery-test.sh; then
+r="$tmp/hm_one_hook"
+hm_fixture "$r"
+drive_hm "$r/scripts/style-check-test.sh" HOOK_TESTS_ONLY=inherited-junk
+check_eq "$hm_rc" 0 'hook-machinery: a hook edit with passing suites -> exit 0'
+hm_ran=$(cat "$r/ran" 2>/dev/null)
+check_has "$hm_ran" 'guard sel=style-check-test.sh' 'hook-machinery: a hook edit selects ONLY that hook in the guard suite'
+check_has "$hm_ran" 'test_hook_argv_refusal.py sel=style-check-test.sh' 'hook-machinery: a hook edit selects that hook in the trio'
+check_lacks "$hm_ran" 'test_settings_hooks_check.py' 'hook-machinery: a hook edit does not run the settings_hooks suite'
+
+# The two classification arms with no guard row of their own: an edit to the guard suite file, and
+# an edit to a trio module. Neither is reached by the generic hook-machinery CASES row above (its
+# trigger is scripts/style-check-test.sh), so each is its own fixture here.
+r="$tmp/hm_guard_suite_edit"
+hm_fixture "$r"
+drive_hm "$r/scripts/tests/test_hook_suite_guard.sh"
+check_eq "$hm_rc" 0 'hook-machinery: an edit to the guard suite itself -> exit 0'
+# The trio always runs before the guard suite (run_one's call order), so "guard sel=" is the LAST
+# line in ran here — plain `$(cat ...)` strips ITS trailing newline, unlike every other row's
+# check. Append one non-newline byte so the newline between entries survives the capture.
+hm_ran=$(cat "$r/ran" 2>/dev/null; printf x)
+check_has "$hm_ran" 'guard sel='$'\n' 'hook-machinery: an edit to the guard suite runs the guard suite UNSELECTED'
+check_has "$hm_ran" 'test_hook_parity.py sel='$'\n' 'hook-machinery: an edit to the guard suite also runs the trio UNSELECTED'
+
+r="$tmp/hm_trio_module_edit"
+hm_fixture "$r"
+drive_hm "$r/scripts/tests/test_hook_budget.py"
+check_eq "$hm_rc" 0 'hook-machinery: an edit to a trio module -> exit 0'
+hm_ran=$(cat "$r/ran" 2>/dev/null)
+check_has "$hm_ran" 'test_hook_parity.py sel='$'\n' 'hook-machinery: a trio-module edit runs the trio UNSELECTED'
+check_lacks "$hm_ran" 'guard sel=' 'hook-machinery: a trio-module edit does not run the guard suite'
+
+r="$tmp/hm_root_settings"
+hm_fixture "$r"
+drive_hm "$r/settings.json" HOOK_TESTS_ONLY=inherited-junk
+check_eq "$hm_rc" 0 'hook-machinery: root settings.json with passing suites -> exit 0'
+hm_ran=$(cat "$r/ran" 2>/dev/null)
+check_has "$hm_ran" 'test_hook_parity.py sel='$'\n' 'hook-machinery: root settings.json runs the trio UNSELECTED'
+# (the check_lacks row below is the one that pins env neutralisation; this one pins "unselected")
+check_lacks "$hm_ran" 'inherited-junk' 'hook-machinery: an inherited selection never reaches an unselected run'
+check_lacks "$hm_ran" 'guard sel=' 'hook-machinery: root settings.json does not run the guard suite'
+
+# The production shape: a settings.json in ANOTHER repo that is a file symlink into the owning repo.
+r="$tmp/hm_link_target"
+hm_fixture "$r"
+farm="$tmp/hm_link_farm"
+mkrepo "$farm"
+mkdir -p "$farm/.claude"
+ln -s "$r/settings.json" "$farm/.claude/settings.json"
+drive_hm "$farm/.claude/settings.json"
+check_eq "$hm_rc" 0 'hook-machinery: a file symlink into the owning repo -> exit 0'
+check_has "$(cat "$r/ran" 2>/dev/null)" 'test_hook_parity.py sel=' \
+  'hook-machinery: a settings.json symlinked into the owning repo is classified in THAT repo'
+
+r="$tmp/hm_nested_settings"
+hm_fixture "$r"
+drive_hm "$r/.claude/settings.json"
+check_eq "$hm_rc" 0 'hook-machinery: .claude/settings.json -> exit 0'
+check_eq "$(cat "$r/ran" 2>/dev/null)" "" 'hook-machinery: .claude/settings.json runs nothing'
+
+r="$tmp/hm_nested_test_sh"
+hm_fixture "$r"
+printf 'x\n' > "$r/scripts/tests/some-helper-test.sh"
+drive_hm "$r/scripts/tests/some-helper-test.sh"
+check_eq "$(cat "$r/ran" 2>/dev/null)" "" 'hook-machinery: a *-test.sh below scripts/tests runs nothing'
+
+r="$tmp/hm_budget_lib"
+hm_fixture "$r"
+drive_hm "$r/scripts/lib/hook_budget.sh"
+check_eq "$hm_rc" 0 'hook-machinery: hook_budget.sh edit -> exit 0'
+check_has "$(cat "$r/ran" 2>/dev/null)" 'guard sel=audit-test.sh,publication-push-guard-test.sh' \
+  'hook-machinery: hook_budget.sh selects every hook that sources it'
+
+r="$tmp/hm_budget_floor"
+hm_fixture "$r"
+printf 'x\n' > "$r/scripts/audit-test.sh"
+drive_hm "$r/scripts/lib/hook_budget.sh"
+check_eq "$hm_rc" 2 'hook-machinery: a known hook_budget.sh consumer no longer sources it -> exit 2'
+check_has "$hm_err" 'audit-test.sh' 'hook-machinery: the consumer floor names the lost consumer'
+
+r="$tmp/hm_settings_lib"
+hm_fixture "$r"
+drive_hm "$r/scripts/lib/settings_hooks.py"
+check_has "$(cat "$r/ran" 2>/dev/null)" 'test_settings_hooks_check.py sel=' 'hook-machinery: settings_hooks.py also runs its checker suite'
+
+r="$tmp/hm_failing"
+hm_fixture "$r"
+printf '#!/usr/bin/env bash\necho guard-said-no\nexit 1\n' > "$r/scripts/tests/test_hook_suite_guard.sh"
+drive_hm "$r/scripts/style-check-test.sh"
+check_eq "$hm_rc" 2 'hook-machinery: a failing guard suite -> exit 2'
+check_has "$hm_err" 'guard-said-no' 'hook-machinery: the failing suite output is relayed'
+
+# An early FAIL row followed by enough PASS rows to fall out of a tail-only window: the failure
+# line must still surface, not just its surrounding context.
+r="$tmp/hm_truncated_failure"
+hm_fixture "$r"
+# shellcheck disable=SC2016  # $i/$(seq...) belong to the generated stub, not to this script
+printf '#!/usr/bin/env bash\necho "FAIL  early-row"\nfor i in $(seq 1 60); do echo "PASS  row-$i"; done\nexit 1\n' \
+  > "$r/scripts/tests/test_hook_suite_guard.sh"
+drive_hm "$r/scripts/style-check-test.sh"
+check_eq "$hm_rc" 2 'hook-machinery: a guard suite FAIL row preceding 60 PASS rows -> exit 2'
+check_has "$hm_err" 'FAIL  early-row' 'hook-machinery: an early FAIL row survives truncation of the trailing output'
+
+r="$tmp/hm_overrun"
+hm_fixture "$r"
+printf '#!/usr/bin/env bash\nsleep 30\n' > "$r/scripts/tests/test_hook_suite_guard.sh"
+drive_hm "$r/scripts/style-check-test.sh" HOOK_MACHINERY_TEST_BUDGET=3
+check_eq "$hm_rc" 2 'hook-machinery: a suite running past the budget -> exit 2'
+check_has "$hm_err" 'GATE DID NOT COMPLETE' 'hook-machinery: the overrun is reported as an incomplete gate'
+
+r="$tmp/hm_no_pytest"
+hm_fixture "$r"
+mkdir -p "$r/shim"
+# The fallback execs the REAL interpreter by absolute path: `env python3` under this PATH re-finds
+# the shim and recurses forever once anything past the pytest probe calls python3 (a mutant does).
+# shellcheck disable=SC2016  # $1/$2/$@ belong to the generated shim
+printf '#!/bin/sh\nif [ "$1" = "-c" ] && [ "$2" = "import pytest" ]; then exit 1; fi\nexec "%s" "$@"\n' \
+  "$(command -v python3)" > "$r/shim/python3"
+chmod +x "$r/shim/python3"
+drive_hm "$r/scripts/style-check-test.sh" PATH="$r/shim:$PATH"
+check_eq "$hm_rc" 2 'hook-machinery: owner + pytest unavailable -> exit 2'
+check_has "$hm_err" 'GATE DID NOT RUN' 'hook-machinery: unavailable pytest is reported as a gate that did not run'
+
+# The guard suite's OWN selection contract, driven through a nested run of this file.
+self="$here/$(basename "${BASH_SOURCE[0]}")"
+sel_out=$(HOOK_TESTS_ONLY=memory-index-check-test.sh bash "$self" 2>&1)
+sel_rc=$?
+check_eq "$sel_rc" 0 'selection: one hook -> exit 0'
+check_has "$sel_out" 'SELECTION ACTIVE: memory-index-check-test.sh' 'selection: an active selection announces itself'
+check_has "$sel_out" 'memory-index-check: owner + suite DELETED' 'selection: the named hook rows ran'
+check_lacks "$sel_out" 'style-check: owner + suite DELETED' 'selection: another hook CASES rows did not run'
+check_lacks "$sel_out" 'audit: ' 'selection: an unselected bespoke section did not run'
+check_has "$sel_out" 'tripwire: an undefined command is recorded as a FAIL' 'selection: unwrapped rows run in every selection'
+sel_out=$(HOOK_TESTS_ONLY=memory-index-check-test.sh,guard-secrets-test.sh bash "$self" 2>&1)
+check_has "$sel_out" 'guard-secrets: owner + suite DELETED' 'selection: a comma list selects every named hook'
+sel_out=$(HOOK_TESTS_ONLY=no-such-test.sh bash "$self" 2>&1)
+sel_rc=$?
+check_eq "$sel_rc" 1 'selection: an unknown hook name -> exit 1'
+check_has "$sel_out" 'selection names hooks with no CASES row: no-such-test.sh' 'selection: the unknown name is named'
+fi
+
+if [ -e "$tmp/command-not-found" ]; then
+  fail=$((fail + 1))
+fi
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

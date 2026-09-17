@@ -51,17 +51,18 @@ import settings_hooks  # noqa: E402
 HEADER_LINE = "# Ownership sentinel (do not remove): dotclaude-test-runner-hook"
 
 # (b) The load-bearing property: the branch that actually decides alarm-vs-inert. One spelling
-# exists across all 14 hooks, so a literal anchor is sound and a refactor away from it fails
+# exists across all 15 hooks, so a literal anchor is sound and a refactor away from it fails
 # LOUDLY, which is the safe direction. The guarding `exit 2` is deliberately NOT asserted
 # structurally — that is bash parsing, brittle in the loud direction; the guard suite drives each
 # hook and is the behavioural assertion of the exit code.
 GREP_NEEDLE = 'grep -q \'dotclaude-test-runner-hook\' "$root/scripts/$(basename "$0")"'
 
 # Named so their ABSENCE alarms — discovery cannot detect absence, and a derivation matching
-# nothing reports success loudest of all. These three are the gap measured and closed on
-# 2026-09-04.
+# nothing reports success loudest of all. Three of these are the gap measured and closed on
+# 2026-09-04; the fourth, hook-machinery-test.sh, was added the day it was created, 2026-09-16,
+# for the identical reason — a floor member the derivation must never silently lose.
 #
-# Deliberately 3 of 14, not all 14, because two mechanisms already divide the work: an actual
+# Deliberately 4 of 15, not all 15, because two mechanisms already divide the work: an actual
 # DEREGISTRATION is caught loudly on every plain /audit by the sync-docs row, whose hooks table is
 # generated from settings.json. What sync-docs cannot see, and what this floor is for, is a
 # registration whose FORM drifts until the derivation stops matching it — the population silently
@@ -71,6 +72,7 @@ FLOOR = frozenset(
         "recast-test.sh",
         "env-claims-check-test.sh",
         "mutation-anchors-check-test.sh",
+        "hook-machinery-test.sh",
     }
 )
 
@@ -134,13 +136,14 @@ def _has_grep_line(text: str) -> bool:
 # The measured population on 2026-09-04, when the class had grown 9 -> 14 unnoticed. Asserting
 # against len(FLOOR) instead would be strictly subsumed by test_floor_members_are_all_registered
 # — FLOOR being a subset, no state exists where that passes and a >= len(FLOOR) row fails.
-MEASURED_POPULATION = 14
+# 15 measured on 2026-09-16.
+MEASURED_POPULATION = 15
 
 
 def test_population_is_non_trivial():
     """A sweep over a shrunken population passes against anything and reads like a clean run."""
     assert len(HOOKS) >= MEASURED_POPULATION, (
-        "derived only %d hooks, expected at least the %d measured on 2026-09-04: %s — if a hook "
+        "derived only %d hooks, expected at least the %d measured on 2026-09-16: %s — if a hook "
         "was deregistered deliberately, lower this number in the same commit"
         % (len(HOOKS), MEASURED_POPULATION, HOOKS)
     )
@@ -160,6 +163,21 @@ def test_guard_suite_is_present():
     assert GUARD_SUITE.is_file(), (
         "%s is missing — property (c) cannot be judged" % GUARD_SUITE
     )
+
+
+META_SUITES = (
+    REPO / "scripts" / "tests" / "test_hook_argv_refusal.py",
+    REPO / "scripts" / "tests" / "test_hook_budget.py",
+)
+
+
+def test_hook_meta_suites_are_present():
+    """Glob discovery cannot see a deleted suite, and nothing else names these two.
+
+    test_hook_budget.py names this module in turn. Deleting all three at once is the named residual.
+    """
+    missing = [p.name for p in META_SUITES if not p.is_file()]
+    assert not missing, "hook meta-suites missing: %s" % missing
 
 
 def test_every_hook_carries_the_header_sentinel():
@@ -185,3 +203,23 @@ def test_every_hook_has_a_guard_suite_row():
         GUARD_SUITE.name,
         bad,
     )
+
+
+def test_guard_suite_helpers_precede_every_selection_wrapper():
+    """A helper defined inside a skipped section is `command not found` under a selection — measured
+    2026-09-16: six rows went uncounted and the run exited 0. An unselected run defines every helper,
+    so only a selected run can see it; this row sees it on every run instead."""
+    lines = GUARD_SUITE.read_text().splitlines()
+    wrappers = [
+        i for i, line in enumerate(lines) if re.match(r"(if )?selected [\w.-]+", line)
+    ]
+    assert wrappers, "no selection wrapper found in %s" % GUARD_SUITE.name
+    assert any(line.strip() == 'selected "$hook" || continue' for line in lines), (
+        "the CASES loop no longer filters on the selection"
+    )
+    late = [
+        line.split("(")[0]
+        for i, line in enumerate(lines)
+        if i > wrappers[0] and re.match(r"[A-Za-z_][A-Za-z0-9_]*\(\) \{", line)
+    ]
+    assert not late, "helpers defined after the first selection wrapper: %s" % late

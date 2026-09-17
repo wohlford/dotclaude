@@ -103,6 +103,7 @@ Wondering how the pieces fit — what takes effect where, and what owns what? Se
 | PostToolUse | `Edit\|Write`                        | `audit-test.sh`                  | PostToolUse hook — run the audit engine test suite when the engine or its suite changes                                    |
 | PostToolUse | `Edit\|Write`                        | `commit-subject-test.sh`         | PostToolUse hook — run the commit-subject suites, and py39-compat on any scripts/*.py edit                                 |
 | PostToolUse | `Edit\|Write`                        | `publication-push-guard-test.sh` | PostToolUse hook — run the suites of every gate built on git_command.py when a gate, its suite, or the tokenizer changes   |
+| PostToolUse | `Edit\|Write`                        | `hook-machinery-test.sh`         | PostToolUse hook — run the hook tests when a test-runner hook or the machinery around it changes                           |
 | PostToolUse | `Edit\|Write`                        | `debrief-backlog-test.sh`        | PostToolUse hook — run the debrief backlog-helper suite when its Python changes                                            |
 <!-- /sync:hooks -->
 

@@ -133,6 +133,24 @@ logic changes — so a regression in a gate is caught the moment it's edited. Se
 `style-check-test.sh` (guards `style-check.sh`) and `sync-docs-test.sh` (guards the sync-docs Python).
 A new gate with a test suite should follow the same pairing.
 
+The hooks themselves are gated by `hook-machinery-test.sh`. An edit to one `scripts/*-test.sh` runs
+that hook's rows of `tests/test_hook_suite_guard.sh` and its rows of `tests/test_hook_argv_refusal.py`
+(`HOOK_TESTS_ONLY=<hook>`), plus the static parity and budget modules whole. An edit to the guard
+suite itself (`tests/test_hook_suite_guard.sh`) runs everything unselected — the full guard suite plus
+the full trio. An edit to a meta-test module (`test_hook_parity.py`, `test_hook_argv_refusal.py`,
+`test_hook_budget.py`), `lib/settings_hooks.py` (plus its own checker suite,
+`test_settings_hooks_check.py`), or the root `settings.json` runs the three meta-test modules only —
+never the guard suite. An edit to `lib/hook_budget.sh` runs the guard suite and the argv module selected to
+every hook that sources it, with the parity and budget modules whole (derived at run time, floored at `audit-test.sh` and
+`publication-push-guard-test.sh`).
+So a new test-runner hook needs a CASES row, and every bespoke guard-suite section belongs inside an
+`if selected <hook>; then` wrapper — a section left outside every wrapper runs in every selection,
+which costs time but never coverage. Define helper functions above the first wrapper: a helper
+defined inside a skipped section is a `command not found`, which the suite's tripwire counts as a FAIL
+and `test_hook_parity.py` refuses statically. Adding a new test-runner hook trips this gate once
+whatever the order — the hook file, its CASES row and its registration each fail without the others —
+so expect one exit 2 while the three land.
+
 ## Bounding a long test-runner hook
 
 Claude Code kills a hook that outlives its registered `timeout`, discards its output, and never tells

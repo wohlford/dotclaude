@@ -27,6 +27,7 @@ for how the index below stays in sync.
 | `git-timing-guard.sh`            | TRANSITIONAL shim — exec's the real hook, scripts/git-timing-guard.py                                                      |
 | `guard-secrets-test.sh`          | PostToolUse hook — run the guard-secrets test suite when the guard changes                                                 |
 | `guard-secrets.sh`               | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem)                                              |
+| `hook-machinery-test.sh`         | PostToolUse hook — run the hook tests when a test-runner hook or the machinery around it changes                           |
 | `install-git-hooks.sh`           | Install this repo's tracked ../git-hooks/pre-push into the resolved git hooks directory, copying it rather than symlinking |
 | `markdownlint-check-test.sh`     | PostToolUse hook — run the markdownlint-check test suite when the lint hook changes                                        |
 | `markdownlint-check.sh`          | PostToolUse hook — run markdownlint-cli2 on edited markdown in opted-in repos                                              |
