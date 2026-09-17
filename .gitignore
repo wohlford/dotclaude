@@ -19,6 +19,11 @@
 # Browser integration
 /chrome/
 
+# Claude Code skill sync — written through the ~/.claude/skills symlink into this repo's skills/
+# (`.trash/` is where opting out of the sync moves them)
+/skills/synced/
+/skills/.trash/
+
 # Machine-specific settings
 settings.local.json
 .claude.local.md

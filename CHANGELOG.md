@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.110.3 — 2026-09-16
+- fix(audit): exempt the skill-sync subtree from hermetic-outside
+
 ## v0.110.2 — 2026-09-16
 - docs(feature): build re-derivation bricks with publish-brick.sh --dev
 

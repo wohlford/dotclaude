@@ -7,7 +7,7 @@
   // .superpowers/** is tooling scratch space (the feature pipeline's task
   // briefs/reports under sdd/, and whatever else a superpowers skill parks
   // there); it is never committed and is not ours to lint.
-  "ignores": ["plans/**", "specs/**", ".superpowers/**"],
+  "ignores": ["plans/**", "specs/**", ".superpowers/**", "skills/synced/**", "skills/.trash/**"],
   "config": {
     // 919 hits: prose and sync-docs table rows exceed any sane limit; ruff-style,
     // line length is not markdown's concern here.

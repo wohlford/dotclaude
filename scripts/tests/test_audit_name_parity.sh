@@ -612,8 +612,9 @@ floor_reached="$sandbox/floor-reached-audit.sh"
 # own unprovable verdict to stop the widening handing a positive result to an unmeasured probe;
 # 14 -> 15 when the new timing-guard-conf check's own comment named the hermetic-outside check
 # by its verdict name, as a precedent to distinguish itself from -- one more literal occurrence,
-# nothing about check_hermetic_outside itself changed.
-mutate_all "$audit_sh" "$floor_reached" 'hermetic-outside' 'hermetic-elsewhere' 15
+# nothing about check_hermetic_outside itself changed; 15 -> 16 when the skill-sync subtree
+# exemption gained its own shape guard, whose refusal is a new `verdict_fail hermetic-outside`.
+mutate_all "$audit_sh" "$floor_reached" 'hermetic-outside' 'hermetic-elsewhere' 16
 mutate_all "$floor_reached" "$floor_reached.2" \
   'check_hermetic_outside' 'check_hermetic_elsewhere' 2
 mv "$floor_reached.2" "$floor_reached"

@@ -218,8 +218,19 @@ stats-cache.json
 mcp-needs-auth-cache.json
 settings.local.json
 .last-cleanup
+.last-update-result.json
 .ruff_cache
 .DS_Store'
+
+# Sub-top-level exemptions: literal paths, each TWO or more segments deep, exempt together with
+# everything beneath them. Kept separate from HERMETIC_CHURN because their first segment is usually
+# a FLOOR member that must stay watched — only the named subtree leaves the watch, never its parent.
+#   skills/synced — Claude Code syncs claude.ai skills here (written through the ~/.claude/skills
+#   symlink) and rewrites its manifest about every ten minutes, independent of any suite. Measured
+#   2026-09-16: two pinned --tests sweeps each FAILed naming only skills/synced/<id>/manifest.json;
+#   no repo code writes there, and the file was rewritten after the second sweep had exited.
+# hermetic_subtree_bad refuses any entry that is not a narrow literal path, every run.
+HERMETIC_CHURN_SUBTREES='skills/synced'
 
 # Paths that must never leave the watched set. Discovery cannot detect ABSENCE: widening the
 # churn list above would silently stop watching whatever was added to it while still printing
@@ -232,6 +243,20 @@ scripts
 agents
 settings.json
 CLAUDE.md'
+
+hermetic_subtree_bad() { # -> the HERMETIC_CHURN_SUBTREES entries that are NOT narrow literal paths
+  local s
+  while IFS= read -r s; do
+    [[ -z "$s" ]] && continue
+    case "$s" in
+      /*|*/|*//*|*'*'*|*'?'*|*'['*|.|..|./*|../*|*/.|*/..|*/./*|*/../*)
+        printf '%s\n' "$s"; continue ;;
+    esac
+    [[ "$s" == */* ]] || printf '%s\n' "$s"
+  done <<EOF
+$HERMETIC_CHURN_SUBTREES
+EOF
+}
 
 hermetic_is_churn() { # name -> 0 when exempt
   # grep -Fxq, never a `case` glob: a name holding `*` or `[` would match as a PATTERN.
@@ -272,7 +297,7 @@ EOF
 }
 
 hermetic_outside_files() { # watch-roots [extra find predicates...] -> absolute file paths
-  local roots="$1" p agg=0
+  local roots="$1" p agg=0 out s
   shift
   while IFS= read -r p; do
     [[ -z "$p" ]] && continue
@@ -281,7 +306,22 @@ hermetic_outside_files() { # watch-roots [extra find predicates...] -> absolute 
     # entry still present leaves part of the tree unmeasured.
     [[ -e "$p" ]] || continue
     # -L on every walk: the root and its entries may each be symlinks (see the trap above).
-    find -L "$p" -type f "$@" 2>/dev/null || agg=1
+    out="$(find -L "$p" -type f "$@" 2>/dev/null)" || agg=1
+    # Drop the exempt subtrees whose first segment is THIS watch root's name, by LITERAL prefix:
+    # awk reads the prefix from ENVIRON (`-v` would interpret backslashes in the path) and tests
+    # index()==1 (a regex or `find -path` would treat `[`, `*`, `?` in the root path as a pattern).
+    # `find`'s status is captured before filtering and the filter's own status is aggregated too —
+    # a failed awk empties the root's output in BEFORE and AFTER alike, which would compare equal
+    # and read as a clean PASS.
+    while IFS= read -r s; do
+      [[ -z "$s" ]] && continue
+      [[ "${s%%/*}" == "${p##*/}" ]] || continue
+      out="$(HERMETIC_EXEMPT="$p/${s#*/}" awk 'BEGIN { e = ENVIRON["HERMETIC_EXEMPT"] }
+        $0 != e && index($0, e "/") != 1' <<<"$out")" || agg=1
+    done <<EOF2
+$HERMETIC_CHURN_SUBTREES
+EOF2
+    [[ -n "$out" ]] && printf '%s\n' "$out"
   done <<EOF
 $roots
 EOF
@@ -1711,7 +1751,9 @@ check_hermetic() { # scope before-snapshot before-status
 # LIMITATION, stated because it bounds what a FAIL means: this attributes to the suite
 # anything that changed under the root during the window. Run non-interactively that is exact;
 # run alongside a live session that also writes there, a FAIL may name the session's work.
-# It is never the other way round — nothing here can turn a real write into a PASS.
+# The other direction is bounded, not absolute: a real write reads as PASS only in shapes this
+# cannot see — a declared churn or subtree exemption, a create-then-delete, a write adding only an
+# empty directory, or an existing file whose mtime was preserved or set back.
 check_hermetic_outside() { # scope root before-files before-status marker
   local scope="$1" root="$2" before="$3" before_status="$4" marker="$5"
   local roots after n_before n_after appeared vanished modified floor_bad f scope_phys
@@ -1794,6 +1836,15 @@ $HERMETIC_FLOOR
 EOF
   if [[ -n "$floor_bad" ]]; then
     verdict_fail hermetic-outside 'a protected path was moved onto the churn exemption list'
+    print_offenders "$floor_bad"
+    return
+  fi
+
+  # The same drift one level down: an exemption subtree widened to a floor member, a glob, or a
+  # single segment would silently stop watching real config while this still read as a PASS.
+  floor_bad="$(hermetic_subtree_bad)"
+  if [[ -n "$floor_bad" ]]; then
+    verdict_fail hermetic-outside 'an exemption subtree is not a narrow literal path'
     print_offenders "$floor_bad"
     return
   fi

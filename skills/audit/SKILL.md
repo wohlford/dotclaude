@@ -96,11 +96,14 @@ to the other's instrument:
 - **`hermetic-outside`** watches the Claude config root (`$CLAUDE_CONFIG_DIR`, else `~/.claude`),
   resolved physically and walked with `find -L` — the root is typically a symlink, and a probe that
   fails to follow it reports zero files, which reads exactly like "nothing changed". Session-state
-  directories that legitimately churn are exempt by name; **everything else is watched by default**,
-  so a directory nobody anticipated is covered. A timestamp marker catches *appends*, which leave the
-  path set unchanged. Its **one** `SKIP` is the root lying inside the scope, where `hermetic` covers
-  it; every other way of not measuring is a `FAIL`, since a probe that measured nothing is never a
-  clean result. So it **`FAIL`s if it watches zero files** under a root that exists, if it cannot
+  entries that legitimately churn are exempt by top-level name, and one harness-owned subtree inside a
+  protected entry is exempt by exact path — `skills/synced`, where Claude Code syncs claude.ai skills
+  — and a subtree exemption is refused unless it is a narrow literal multi-segment path; **everything else
+  is watched by default**, so a directory nobody anticipated is covered. A timestamp marker catches
+  *appends*, which leave the path set unchanged. Its **one** `SKIP` is the root lying inside the
+  scope, where `hermetic` covers it; every other way of not measuring is a `FAIL`, since a probe
+  that measured nothing is never a clean result. So it **`FAIL`s if it watches zero files** under
+  a root that exists, if it cannot
   create its marker, if any watched root cannot be enumerated — the last aggregated across
   roots, because reporting only the last root's status made a failure invisible unless it happened
   to sort last — and if the configured root **exists but cannot be resolved**, which is a third way
@@ -116,21 +119,25 @@ to the other's instrument:
 Run non-interactively that is exact; run alongside a live session that also writes there, a `FAIL`
 may name that session's work — and a session *deleting* under a watched root mid-walk can surface
 as an `unprovable` enumeration failure rather than an attribution one, so quiesce the tree and
-re-run once before reading a lone `unprovable` as a broken instrument. It never fails the other
-way: nothing turns a real write into a `PASS`.
-One bound it does **not** claim: a suite that creates a path and deletes it again reads as clean —
-a path-set comparison cannot see a create-then-delete, and the marker only dates files that survive.
+re-run once before reading a lone `unprovable` as a broken instrument. The other direction is
+bounded, not absolute: a real write reads as `PASS` only in shapes the check cannot see, and it
+claims none of them — a write under a declared exemption; a create-then-delete, since a path-set
+comparison cannot see it and the marker only dates files that survive; a write that adds only an
+empty directory, since the walk counts files; and a write that preserves or backdates an existing
+file's mtime (`cp -p`, `touch -r`, `tar x`), since the marker compares mtimes.
 
 **Not every hermeticity `FAIL` is pollution, and the reason text after the em dash says which.**
-Only `the suite changed the working tree` and `the suite wrote outside the scope, under <root>`
-mean the suite wrote. The rest report that the sweep could not measure, or that its watch had been
+Only `the suite changed the working tree`, `the suite wrote outside the scope, under <root>` and
+`the suite created the config root at <root>` mean the suite wrote. The rest — including every
+reason that begins `unprovable:` — report that the sweep could not measure, or that its watch had been
 weakened — hunting for a dirty tree will find nothing. **Do not use the indented block as the
-signal:** four of the five print one, and on an instrument failure it carries the tool's own error
-text rather than offending paths. `hermetic` emits `could not read the working tree BEFORE the
+signal:** several print one — including some instrument failures, where it may carry the tool's
+own error text rather than offending paths. `hermetic` emits `could not read the working tree BEFORE the
 suite ran` and its `AFTER` twin (both ends are guarded: a symmetric failure would compare equal and
-read as a clean pass). `hermetic-outside` emits `could not snapshot the config root BEFORE the
-suite ran`, `watched 0 files under <root> — the probe measured nothing`, or `a protected path was
-moved onto the churn exemption list`. Repair the instrument, then re-run.
+read as a clean pass). `hermetic-outside` emits, among others, `unprovable: could not enumerate the config root
+BEFORE the suite ran`, `watched 0 files under <root> — the probe measured nothing`, `a protected
+path was moved onto the churn exemption list`, or `an exemption subtree is not a narrow literal
+path`. Repair the instrument, then re-run.
 
 ### .auditignore
 

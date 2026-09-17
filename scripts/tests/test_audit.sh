@@ -1698,6 +1698,132 @@ assert_has 'FAIL hermetic-outside' \
   'rO14: a config root that exists but cannot be traversed is not a PASS'
 assert_rc 1 'rO14: an unresolvable config root drives the sweep to exit 1'
 
+# --- rO15..rO22: the skill-sync subtree exemption ---------------------------------------------
+# Measured 2026-09-16: Claude Code syncs claude.ai skills into `<config root>/skills/synced/` and
+# rewrites its manifest about every ten minutes, so a ~20-minute sweep named that write as the
+# suite's on every run — while `skills` itself is a floor member that must stay watched. The
+# exemption is ONE literal two-segment subtree; these rows pin what it exempts and what it must not.
+mk_sync_root() { # dir -> a root with a watched logs file, skills/synced and a sibling skill
+  mkdir -p "$1/logs" "$1/skills/synced/u1" "$1/skills/other" "$1/skills/synced-other" "$1/projects"
+  printf 'seed\n' > "$1/logs/existing.log"
+  printf '{}\n' > "$1/skills/synced/u1/manifest.json"
+  printf 'x\n' > "$1/skills/other/s.md"
+  printf 'y\n' > "$1/skills/synced-other/t.md"
+  printf 'p\n' > "$1/projects/session.txt"
+}
+
+# rO15: a write under skills/synced -> PASS
+rO15_root="$tmp/rO15_root"; mk_sync_root "$rO15_root"
+rO15="$tmp/rO15_repo"
+mk_outside_repo "$rO15" "printf 'z\\n' >> '$rO15_root/skills/synced/u1/manifest.json'; printf 'n\\n' > '$rO15_root/skills/synced/u1/new.json'"
+run_outside "$rO15" "$rO15_root" --tests
+assert_has 'PASS hermetic-outside' 'rO15: a write under the exempt skills/synced subtree -> PASS'
+
+# rO16: a sibling under skills stays watched
+rO16_root="$tmp/rO16_root"; mk_sync_root "$rO16_root"
+rO16="$tmp/rO16_repo"
+mk_outside_repo "$rO16" "printf 'z\\n' >> '$rO16_root/skills/other/s.md'"
+run_outside "$rO16" "$rO16_root" --tests
+assert_has 'FAIL hermetic-outside' 'rO16: a write to a sibling under skills -> FAIL'
+assert_has 'skills/other/s.md' 'rO16: the FAIL names the sibling path'
+
+# rO17: a shared name PREFIX is not the subtree
+rO17_root="$tmp/rO17_root"; mk_sync_root "$rO17_root"
+rO17="$tmp/rO17_repo"
+mk_outside_repo "$rO17" "printf 'z\\n' >> '$rO17_root/skills/synced-other/t.md'"
+run_outside "$rO17" "$rO17_root" --tests
+assert_has 'FAIL hermetic-outside' 'rO17: skills/synced-other shares a prefix but is watched -> FAIL'
+assert_has 'synced-other/t.md' 'rO17: the FAIL names the prefix-sharing path'
+
+# rO18: the live shape — skills is a SYMLINK whose target holds synced/
+rO18_root="$tmp/rO18_root"; rO18_target="$tmp/rO18_target"
+mkdir -p "$rO18_root/logs" "$rO18_target/synced/u1" "$rO18_target/audit"
+printf 'seed\n' > "$rO18_root/logs/keep.log"
+printf '{}\n' > "$rO18_target/synced/u1/manifest.json"
+printf 'a\n' > "$rO18_target/audit/SKILL.md"
+ln -s "$rO18_target" "$rO18_root/skills"
+rO18a="$tmp/rO18a_repo"
+mk_outside_repo "$rO18a" "printf 'z\\n' >> '$rO18_root/skills/synced/u1/manifest.json'"
+run_outside "$rO18a" "$rO18_root" --tests
+assert_has 'PASS hermetic-outside' 'rO18: a sync write behind the skills SYMLINK -> PASS'
+rO18b="$tmp/rO18b_repo"
+mk_outside_repo "$rO18b" "printf 'z\\n' >> '$rO18_root/skills/audit/SKILL.md'"
+run_outside "$rO18b" "$rO18_root" --tests
+assert_has 'FAIL hermetic-outside' 'rO18: another write behind the same symlink -> FAIL'
+assert_has 'audit/SKILL.md' 'rO18: the FAIL names the path behind the symlink'
+
+# rO19: a WIDE exemption is unrepresentable — each shape fails the run by name
+rO19_marker="$tmp/rO19.marker"; : > "$rO19_marker"
+for rO19_entry in 'skills' 'skills/*' 'skills/' 'logs' 'skills/../logs' '/skills/synced' 'skills//synced' 'skills/./synced' 'skills/syn?ed' 'skills/[s]ynced'; do
+  rO19_out="$(bash -c 'source "$1"
+HERMETIC_CHURN_SUBTREES="$4"
+pass_count=0; fail_count=0; skip_count=0
+check_hermetic_outside "/no/such/scope" "$2" "seed" 0 "$3"' _ "$engine" "$rO_root" "$rO19_marker" "$rO19_entry" 2>&1)"
+  case "$rO19_out" in
+    *'FAIL hermetic-outside'*'not a narrow literal path'*)
+      pass_line "rO19: exemption '$rO19_entry' -> FAIL, not a narrow literal path" ;;
+    *)
+      fail_line "rO19: exemption '$rO19_entry' -> FAIL, not a narrow literal path"
+      printf '  --- output ---\n%s\n  --------------\n' "$rO19_out" ;;
+  esac
+done
+
+# rO20: the declared list is EXACTLY skills/synced — widening it needs this row to change too
+rO20_val="$(bash -c 'source "$1"; printf "%s" "$HERMETIC_CHURN_SUBTREES"' _ "$engine" 2>&1)"
+if [[ "$rO20_val" == 'skills/synced' ]]; then
+  pass_line 'rO20: HERMETIC_CHURN_SUBTREES is exactly skills/synced'
+else
+  fail_line "rO20: HERMETIC_CHURN_SUBTREES is exactly skills/synced (got: $rO20_val)"
+fi
+
+# rO21: a root PATH holding glob and backslash characters still exempts by literal prefix
+rO21_root="$tmp/rO21_r[x]\\t"; mk_sync_root "$rO21_root"
+rO21a="$tmp/rO21a_repo"
+mk_outside_repo "$rO21a" "printf 'z\\n' >> '$rO21_root/skills/synced/u1/manifest.json'"
+run_outside "$rO21a" "$rO21_root" --tests
+assert_has 'PASS hermetic-outside' 'rO21: exemption holds under a root path with [ ] and a backslash'
+rO21b="$tmp/rO21b_repo"
+mk_outside_repo "$rO21b" "printf 'z\\n' >> '$rO21_root/skills/other/s.md'"
+run_outside "$rO21b" "$rO21_root" --tests
+assert_has 'FAIL hermetic-outside' 'rO21: a sibling write under that root is still caught'
+assert_has 'skills/other/s.md' 'rO21: the FAIL names the sibling path'
+
+# rO22: the exemption is scoped to its own top-level entry
+rO22_root="$tmp/rO22_root"; mk_sync_root "$rO22_root"; mkdir -p "$rO22_root/logs/synced"
+printf 'l\n' > "$rO22_root/logs/synced/x.log"
+rO22="$tmp/rO22_repo"
+mk_outside_repo "$rO22" "printf 'z\\n' >> '$rO22_root/logs/synced/x.log'"
+run_outside "$rO22" "$rO22_root" --tests
+assert_has 'FAIL hermetic-outside' 'rO22: logs/synced is not the exempt subtree -> FAIL'
+assert_has 'logs/synced/x.log' 'rO22: the FAIL names the logs/synced path'
+
+# rO23: .last-update-result.json joins HERMETIC_CHURN ------------------------------------------
+# Measured 2026-09-16: Claude Code's auto-updater writes <root>/.last-update-result.json
+# ("version_from":"2.1.273","version_to":"2.1.274", 17:45:17) — a top-level name, not a
+# floor member, written on an UPDATE landing rather than on a cadence, so an update landing
+# mid-sweep FAILed it before this row.
+rO23_root="$tmp/rO23_root"
+mk_fake_root "$rO23_root"
+printf 'a\n' > "$rO23_root/.last-update-result.json"
+rO23="$tmp/rO23_repo"
+mk_outside_repo "$rO23" "printf 'b\\n' > '$rO23_root/.last-update-result.json'"
+run_outside "$rO23" "$rO23_root" --tests
+assert_has 'PASS hermetic-outside' 'rO23: an update overwriting .last-update-result.json -> PASS'
+
+# rO24: a failed awk filter fails closed, not open -----------------------------------------------
+# `find`'s own failure is already aggregated (`|| agg=1` on the find line); this pins the
+# filter's status the same way. Without it, a failed awk empties $out on both sides of the
+# comparison, which compares equal and reads as a clean PASS over an unmeasured root.
+rO24_bin="$tmp/rO24_bin"; mkdir -p "$rO24_bin"
+printf '#!/usr/bin/env bash\nexit 3\n' > "$rO24_bin/awk"
+chmod +x "$rO24_bin/awk"
+rO24_root="$tmp/rO24_root"; mk_sync_root "$rO24_root"
+rO24_out="$(PATH="$rO24_bin:$PATH" bash -c 'source "$1"
+hermetic_outside_files "$2/skills" >/dev/null
+echo "rc=$?"' _ "$engine" "$rO24_root" 2>&1)"
+OUT="$rO24_out"
+assert_has 'rc=1' 'rO24: a failed awk filter fails the walk closed, not open'
+
 # ============================================================================
 # rMA. The mutation-anchors gate's POPULATION
 # ============================================================================
