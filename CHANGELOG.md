@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.110.2 — 2026-09-16
+- docs(feature): build re-derivation bricks with publish-brick.sh --dev
+
 ## v0.110.1 — 2026-09-16
 - test(publish-brick): add the dev mode mutation campaign
 

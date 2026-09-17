@@ -96,8 +96,9 @@ why alongside the fix — in the commit message or a code comment.
   `dev` in a repo that has adopted the publication model (`.publication.toml` present), `/commit
   --no-tag` is untagged — no tag, no changelog entry; versioning is `main`-only, minted at publish. The
   invariant that never bends is `/commit`, always, in the foreground, never bare `git commit`; only the
-  tagging it applies is marker-conditional. `/recast` is the one exception to the commit path itself —
-  it owns its own per-brick commit/tag/changelog discipline.
+  tagging it applies is marker-conditional. The brick engines are the exceptions to the commit path
+  itself — `/recast`, and `scripts/publish-brick.sh` (publish bricks onto `main`, re-derivation bricks
+  onto `dev`); each owns its own per-brick commit discipline.
 
 ## Choosing the approach
 

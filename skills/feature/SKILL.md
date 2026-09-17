@@ -75,9 +75,11 @@ left in place at the end (no merge).
 run.** In an adopted repo (`.publication.toml` present) **every** pipeline commit — the design-phase
 spec/plan/recommit commits (fast lane steps 1 and 3; full lane steps 1, 4, and 6) and the
 execution/gate commits under **Execute and integrate** alike — is a dev-side commit and goes through
-`/commit --no-tag` (no tag, no `CHANGELOG` entry; versioning is `main`-only, minted at publish). In a
-non-adopted repo every pipeline commit is tagged per `/commit`, exactly as today. The design-lane
-steps below and **Execute and integrate** apply this rule; they do not re-decide it.
+`/commit --no-tag` (no tag, no `CHANGELOG` entry; versioning is `main`-only, minted at publish). (The
+adopted finish's re-derivation bricks are the one exception to *going through `/commit`*: the brick
+engine commits them, untagged — see **Adopted-repo finish**.) In a non-adopted repo every pipeline
+commit is tagged per `/commit`, exactly as today. The design-lane steps below and **Execute and
+integrate** apply this rule; they do not re-decide it.
 
 **Design records must be proven durable — settle the destination once, here, for the whole run.**
 
@@ -278,9 +280,10 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
    subagents to `git commit`. **Tagging is marker-conditional; `/commit` itself is not.** Non-adopted
    repos: `/commit` applies the repo's per-commit semver tag, as today. Adopted repos: per the marker
    check above, these are dev-side commits — go through `/commit --no-tag` (no tag, no `CHANGELOG`
-   entry; versioning is `main`-only). **Never bare `git commit` either way** — where a tag applies it
-   skips the tag and corrupts the release sequence, and in every case it skips `/commit`'s
-   foreground-signing discipline.
+   entry; versioning is `main`-only). **Never bare `git commit` either way** (the re-derivation bricks
+   in **Adopted-repo finish** are the one exception: the brick engine commits them, enforcing the
+   subject and signing itself) — where a tag applies it skips the tag and corrupts the release
+   sequence, and in every case it skips `/commit`'s foreground-signing discipline.
 
    **Scale execution to Step 0's lane** — the triage governs rigor here too, not just the design half.
    **Scale by model tier, never by dropping a review.** SDD's per-task review and its final
@@ -427,22 +430,61 @@ history never had to be.
 2. **Re-plan a clean brick sequence.** Working from `dev..<feature-tip>`, narrate the total change as
    a ground-up sequence of bricks — **repartitioning the reviewed code, not re-inventing it**. This is
    a mini-recast per feature: a foreground, judgment-driven re-narration that cannot be delegated to a
-   subagent, because every brick becomes a signed commit the re-narrator is accountable for.
-3. **Per brick:** apply its slice — edit the working tree toward that brick's portion of the frozen
-   final tree — commit onto `dev` via **`/commit --no-tag`**, then run **`/audit`** on the live repo
-   at that commit. This per-brick `/audit` is the **authoritative** mechanical gate on the adopted
-   path — the branch-level run in step 2 above is fail-fast only and does not stand in for it. **On
-   `/audit` FAIL: fix the brick and amend it in place** (`dev` is unpushed, so rewriting the tip is
-   safe), then re-run `/audit`. If the FAIL cannot be resolved within this brick's boundary — it needs
-   content the Brick-boundary rule says belongs in the same brick — **re-plan the brick sequence**
-   rather than looping fixes; if it still cannot be resolved, stop and report — the feature branch
-   stays intact (discard happens only at point 5). **Never a fixup
-   commit**: it pollutes the narrative the re-derivation exists to produce.
-4. **At the tip, prove convergence.** Assert **`git diff --quiet <feature-tip-SHA> HEAD`** — the tree
-   must match the frozen oracle exactly, lossless — **and** run the **full test suite once more**.
+   subagent, because every brick becomes a signed commit the re-narrator is accountable for. **Record
+   `dev`'s current tip as the pre-finish SHA now** — point 3's PROGRESS-refusal recovery needs it, and
+   it must be captured before the first brick lands.
+3. **Per brick:** build it with the brick engine's dev mode — the **installed** copy, since `dev`'s
+   working tree may predate the branch's own:
+
+   ```bash
+   ~/.claude/scripts/publish-brick.sh --dev [--final] --scope <repo> \
+     [--artifact-dir <dir outside the repo>] <feature-tip-SHA> '<subject>' <file>...
+   ```
+
+   Point `--artifact-dir` outside the repo — an artifact written inside it would fail the *next*
+   brick's own clean-tree precondition. Draft each subject exactly as `/commit` would — its format
+   and scope rules — and pass `--final` on the **last** brick. The engine refuses unless `HEAD` is on
+   `dev` with a clean tree, every listed file differs from the oracle at `HEAD`, the subject is
+   conventional and under the repo's `.commit-conventions.toml` advise threshold
+   (`ALLOW_LONG_SUBJECT=1` overrides, as for `/commit`), and every path `dev` has changed since it
+   last met the oracle already equals the oracle — this finish's "`dev` must not have moved"
+   precondition, re-checked at every brick. **A repo with no
+   `skills/audit/audit.sh` of its own is re-derived entirely by hand** — the engine refuses before
+   committing, since a dev brick cannot be proven with nothing to prove it against. It then checks the
+   files out of the oracle, asserts they match it and that nothing else moved, commits, and runs
+   **`/audit`** on the live repo at that commit, reading the verdict as an allowlist. This per-brick
+   `/audit` is the **authoritative** mechanical gate on the adopted path — the branch-level run in step
+   2 above is fail-fast only and does not stand in for it. **Proceed only on its last line,
+   `RESULT: PASS rc=0 brick=dev`.** **The engine partitions by whole file.** A re-derivation that
+   needs any brick holding part of a file is built **entirely by hand**, re-deriving the same
+   assertions, and says so — do not mix the two: after a partial brick the engine's progress check
+   refuses every later brick, correctly, because a path short of the oracle is indistinguishable from
+   `dev` having moved. **An in-script commit passes no PreToolUse hook**, so the recast suite gate that
+   a typed `git commit` touching `skills/recast/` source would trigger does not fire per brick; point
+   4's tip suite covers it. **On an `/audit` FAIL** the brick's files already equal the oracle, so
+   there is nothing to fix inside it: the partition split something `/audit` validates as a pair. Drop
+   the brick (`git reset --hard HEAD~1`, as the engine prints) and **re-plan the brick sequence**; if it
+   still cannot be resolved, stop and report — the feature branch stays intact (discard happens only
+   at point 5). **On a PROGRESS refusal once bricks from this finish have already landed**, list
+   `git log --oneline <pre-finish-SHA>..dev` and reset to the pre-finish SHA
+   (`git -C <repo> reset --hard <pre-finish-SHA>`) **only if every commit it lists is a brick this
+   finish made** — resetting past a commit this finish did not make can delete another session's
+   work. **Otherwise stop and report; never reset past a commit this finish did not make.** If every
+   listed commit is this finish's own, `dev` did not move — an earlier brick of this finish diverged
+   from the oracle — so reset and re-plan the brick sequence from point 2 against the same oracle.
+   **Run each brick with a Bash tool timeout of at least ten minutes**; on `RESULT: INCOMPLETE`, an
+   unanticipated status, or no verdict line at all, check `git log -1` first — the commit may already
+   have landed with its audit unread — and if so drop it (`git reset --hard HEAD~1`) before re-running.
+   **Never a fixup commit**: it pollutes the narrative the re-derivation exists to produce.
+4. **At the tip, prove convergence.** Assert the tree matches the frozen oracle exactly, lossless —
+   the last brick's `--final` does this, reporting `converged: HEAD tree == oracle`; by hand it is
+   **`git diff --quiet <feature-tip-SHA> HEAD`** — **and** run the **full test suite once more**.
    Both must pass. (This subsumes `finishing-a-development-branch`'s suite check; adopted repos never
-   invoke that skill.) If either check fails, **stop and report; do NOT discard the feature branch** —
-   it is the only record of the re-derivation and is needed to diagnose the divergence.
+   invoke that skill.) A `--final` failure that lists remaining paths (`still differs: <path>`) is
+   **not** this stop condition: build another brick from the paths it names, with `--final` on the
+   new last one. If either check fails for any other reason, **stop and report; do NOT discard the
+   feature branch** — it is the only record of the re-derivation and is needed to diagnose the
+   divergence.
 5. **Discard the feature branch.** `dev` has advanced by the new bricks and is what production runs;
    the branch's messy per-task history is intentionally not preserved.
 
@@ -490,8 +532,10 @@ step — e.g.
   alike, run in the **foreground** for signing — never fall back to bare `git commit`. Tagging is
   marker-conditional: non-adopted repos get the repo's per-commit semver tag + `CONTRIBUTING.md`
   conventions, as today; adopted-repo dev-side commits go through `/commit --no-tag` (no tag, no
-  `CHANGELOG` entry — versioning is `main`-only). The invariant that never bends is `/commit`, always,
-  in the foreground; only the tagging it applies is marker-scoped.
+  `CHANGELOG` entry — versioning is `main`-only). **Outside the adopted finish's re-derivation
+  bricks, which the brick engine's dev mode commits — enforcing the conventional subject, the repo's
+  length policy and the signing assertion that this path would otherwise supply — the invariant that
+  never bends is `/commit`, always, in the foreground; only the tagging it applies is marker-scoped.**
 - **Never integrate on judgment alone.** `/audit` runs before every branch integrates — merge in a
   non-adopted repo, per-brick during re-derivation in an adopted repo — it is the pipeline's only
   deterministic gate, and the model reviews do not substitute for it any more than it substitutes for
