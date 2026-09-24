@@ -558,7 +558,12 @@ history never had to be.
    the last brick's `--final` does this, reporting `converged: HEAD tree == oracle`; by hand it is
    **`git diff --quiet <feature-tip-SHA> HEAD`** — **and** run the **full test suite once more**.
    Both must pass. (This subsumes `finishing-a-development-branch`'s suite check; adopted repos never
-   invoke that skill.) A `--final` failure that lists remaining paths (`still differs: <path>`) is
+   invoke that skill.) **Run that suite even when you already ran it on the oracle and the tree was
+   just proven identical** — it is the last suite run before `/propagate` updates the live
+   configuration, and *"the suite already passed on an identical tree"* is the exact argument
+   CLAUDE.md's "Never reason your way past the last gate" rule refuses there. A run you made on the
+   branch verified your last fix; this one gates the deploy, and a shared tree does not merge their
+   jobs. A `--final` failure that lists remaining paths (`still differs: <path>`) is
    **not** this stop condition: build another brick from the paths it names, with `--final` on the
    new last one. If either check fails for any other reason, **stop and report; do NOT discard the
    feature branch** — it is the only record of the re-derivation and is needed to diagnose the

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.114.0 — 2026-09-18
+- feat(feature): keep the tip suite run over a proven-identical tree
+
 ## v0.113.1 — 2026-09-18
 - docs(CLAUDE.md): admit two hazards, split the verified-in-mind group
 
