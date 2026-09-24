@@ -133,13 +133,58 @@ assert "bash -c 'git push'" 0 'CONCEDED RESIDUAL: push hidden inside an opaque s
 # --- CONCEDED RESIDUAL: a wrapper WITH its own arguments is not stepped over by starts_command ---
 assert 'sudo -u deploy git push' 0 'CONCEDED RESIDUAL: wrapper-with-args is not recognized as a bare wrapper'
 
-# --- CONCEDED RESIDUAL: a non-literal subcommand is not resolved here ---
-# `git $s` cannot be recognized as a push without expansion. publication-push-guard now FAILS
-# CLOSED on this (it guards branch privacy, where an ambiguous target must never pass); this hook
-# is a deliberateness nudge, and blocking here would demand ALLOW_PUSH=1 for a command that may
-# not be a push at all. Recorded deliberately so the asymmetry is documented, not discovered.
+# --- DELIBERATE OVER-BLOCK (was a CONCEDED RESIDUAL until the indeterminate-subcommand rule
+# closed it) ---
+# `git $s` cannot be recognized as literally `push` without expansion, but an INDETERMINATE
+# subcommand -- opaque, or itself git-like -- is now blocked here too, whatever it turns out to
+# be: "over-block on ambiguity; never disappear" is git_command.py's own posture for the
+# ambiguous value slot, via the shared `subcommand_is_indeterminate` predicate. Measured cost: 3
+# of 32,255 historical commands carry an opaque subcommand; no documented command in skills/ or
+# scripts/ uses `git $SUB`.
 # shellcheck disable=SC2016
-assert 's=push; git $s origin dev' 0 'CONCEDED RESIDUAL: non-literal subcommand not resolved here'
+assert 's=push; git $s origin dev' 2 \
+  'DELIBERATE over-block: a non-literal subcommand is now indeterminate, not resolved'
+
+# --- opaque command WORD (the widened `is_git`, 2026-09-18): git_command.py already recognizes
+# these in command position, so these block via the widened `is_git` itself -- they pin the
+# widened `is_git` at this guard, not push-guard's indeterminate-subcommand rule.
+# The push verb is assembled ($V), never spelled contiguously after `git` in this file's own
+# source, and interpolated into a double-quoted row so the LITERAL command text the guard
+# receives carries a real, resolved `push` token -- everything else that must reach the guard
+# literally (a bare `$`, `$(true)`, `${X}`, …) is backslash-escaped so THIS script's own shell
+# does not resolve it first.
+V=pu""sh
+assert "\$(true)git $V origin dev" 2 \
+  'opaque command word $(true)git is recognized (the widened is_git)'
+assert "\"\$X\"git $V origin dev" 2 \
+  'opaque command word "$X"git (quote-merged) is recognized'
+assert "g\$(true)it $V origin dev" 2 \
+  'opaque command word g$(true)it (mid-word substitution) is recognized'
+assert "git\$X $V origin dev" 2 \
+  'opaque command word git$X (trailing expansion) is recognized'
+assert "REPO=\$BASE/foo.git git $V origin dev" 2 \
+  'an assignment ending in /git no longer steals the invocation'
+assert "X=/git git $V origin dev" 2 \
+  'an assignment X=/git no longer steals the invocation'
+
+# --- indeterminate SUBCOMMAND (push-guard's indeterminate-subcommand rule): blocked by design,
+# whatever follows it. These rows depend on that rule rather than the widened `is_git` alone --
+# they pin push-guard's indeterminate-subcommand rule at this guard. Measured cost: 3 of
+# 32,255 historical commands; no documented command in skills/ or scripts/ uses `git $SUB`.
+assert "git \$(true)git origin dev" 2 \
+  'DELIBERATE over-block: an opaque, git-like subcommand $(true)git (the option-run-stop fix) is indeterminate'
+assert "git -c alias.git=$V git origin dev" 2 \
+  'DELIBERATE over-block: an alias named git makes the second git token an indeterminate subcommand'
+assert "git \$V2 origin dev" 2 \
+  'DELIBERATE over-block: a wholly opaque subcommand $V2 is indeterminate'
+assert "git \$(true)git status" 2 \
+  'DELIBERATE over-block: an indeterminate subcommand blocks whatever follows it, even a benign-looking status'
+
+# --- unaffected: authorization and argument position still apply normally ---
+assert "ALLOW_PUSH=1 \$(true)git $V origin dev" 0 \
+  'ALLOW_PUSH=1 authorizes an opaque-command-word push'
+assert "echo \$(true)git $V" 0 \
+  'opaque command word in argument position is still not a command'
 
 # --- regression: a line continuation must not hide the subcommand ---
 # `\` + newline is how any long git command is written. Newlines were rewritten to ` ; ` BEFORE

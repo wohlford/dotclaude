@@ -14,7 +14,9 @@ this one. An author bent on evasion can always prepend `ALLOW_PUSH=1`, alias pus
 Detection is now a git-SUBCOMMAND match, via the shared `scripts/lib/git_command` tokenizer, instead
 of the old raw "a git word and a push word anywhere in the segment" regex: a git invocation in
 command position is a push operation iff its subcommand is `push`, or its subcommand is `subtree`
-and `push` appears among its argument tokens. This kills the old guard's false positives — `push` in
+and `push` appears among its argument tokens, or its subcommand is INDETERMINATE
+(`gitcmd.subcommand_is_indeterminate`: a git-like or opaque word such as `$V` or `$(true)git`, which
+bash may run as a push). This kills the old guard's false positives — `push` in
 a commit/tag message or a filename (`git add scripts/publication-push-guard.py`) no longer blocks —
 while every direct push shape (`git push`, `sudo git push`, `git -C <dir> push`,
 `git <globals> push`, `git subtree push`, in any control-operator or newline-joined position) stays
@@ -163,8 +165,10 @@ def _skip_global_options(seg: list[str], start: int) -> int:
 
 def _segment_has_unauthorized_push(seg: list[str]) -> bool:
     """True if `seg` (one control-operator-delimited slice of the token stream, no operators
-    inside it) contains a git invocation, in command position, that is a push operation, and the
-    segment's own leading env-assignment run does not authorize it."""
+    inside it) contains a git invocation, in command position, whose subcommand is a push
+    operation OR is INDETERMINATE (opaque, or itself git-like, so it may resolve to one at run
+    time — `gitcmd.subcommand_is_indeterminate`), and the segment's own leading env-assignment
+    run does not authorize it."""
     if not seg:
         return False
     authorized = _leading_env_authorized(seg)
@@ -198,7 +202,11 @@ def _segment_has_unauthorized_push(seg: list[str]) -> bool:
         ):
             args.append(seg[k])
             k += 1
-        is_push_op = sub == "push" or (sub == "subtree" and "push" in args)
+        is_push_op = (
+            sub == "push"
+            or (sub == "subtree" and "push" in args)
+            or gitcmd.subcommand_is_indeterminate(sub)
+        )
         if is_push_op and not authorized:
             return True
         j = k

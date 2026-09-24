@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.114.3 — 2026-09-18
+- fix(push-guard): treat an indeterminate subcommand as a push
+
 ## v0.114.2 — 2026-09-18
 - fix(publication-push-guard): judge opaque-only commands
 
