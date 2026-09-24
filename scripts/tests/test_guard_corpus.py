@@ -2526,6 +2526,139 @@ def _build_rows(
             "AmbiguousCommand arm degrades that to rc 0 rather than rc 2 -- exactly what today's "
             "pre-gate already did for this command, since it never satisfied GIT_WORD_RE either",
         ),
+        # ---------- fold-continuation parity (fix/fold-heredoc-terminator, 2026-09-18): the old
+        # ---------- `fold_continuations` was `command.replace("\\\r\n", "").replace("\\\n", "")` --
+        # ---------- every backslash-newline pair removed regardless of what preceded it. The
+        # ---------- escaped-backslash and CRLF rows below follow the pregate_opaque_* precedent
+        # ---------- directly above: both were ALLOWED on the frozen baseline (782039d, which
+        # ---------- carries that same naive fold), so they are new MUST_BLOCK rows the baseline
+        # ---------- allows, not a SANCTIONED_UNBLOCK (see the note beside `_CATEGORIES` on why that
+        # ---------- category does not exist here) -- verified by
+        # ---------- `test_baseline_allows_at_least_one_row`'s own denominator, and each `why` below
+        # ---------- says so explicitly per that precedent. The unquoted-heredoc backslash-pass and
+        # ---------- backslash-pair-before-opener rows mirror `dashC_semicolon_boundary` instead:
+        # ---------- ALREADY blocked on the baseline by the same naive fold, by accident, so they are
+        # ---------- preserve rows -- the verdict does not move, only the mechanism.
+        Row(
+            "fold_escaped_backslash_before_lf_blocks",
+            "echo a" + ("\\" * 2) + "\n" + P,
+            MUST_BLOCK,
+            "an ESCAPED backslash before LF is bash's literal backslash, not a continuation "
+            "-- 'echo a\\' and the push are two separate commands, and the push runs. ALLOWED on "
+            "the frozen baseline (782039d rc=0): its naive fold removed the backslash-newline "
+            "pair regardless of parity and folded the two commands into one, recording no "
+            "invocation at all -- follows the pregate_opaque_* precedent above, a new MUST_BLOCK "
+            "row the baseline allows",
+        ),
+        Row(
+            "fold_backslash_before_crlf_blocks",
+            "echo a" + "\\" + "\r\n" + P,
+            MUST_BLOCK,
+            "bash never continues on a backslash before CRLF -- the backslash escapes the CR "
+            "and the LF still ends the command, so the push runs as a second command. ALLOWED on "
+            "the frozen baseline (782039d rc=0): its naive fold removed a backslash before "
+            "\\r\\n exactly as it removed one before \\n -- same precedent as the escaped-"
+            "backslash row above",
+        ),
+        Row(
+            "fold_unquoted_body_backslash_pass_preserve",
+            "bash <<EOF\n" + "git pu" + ("\\" * 2) + "\nsh origin dev\nEOF",
+            MUST_BLOCK,
+            "bash's own pass over an unquoted heredoc body unescapes '\\\\' to '\\' before the "
+            "consumer shell's continuation fold runs, reassembling the push from 'pu\\' and "
+            "'sh'. ALREADY blocked on the frozen baseline (782039d rc=2): its naive whole-command "
+            "fold glued the same backslash-newline pair too, for the wrong reason (it never "
+            "modeled bash's heredoc-body backslash pass at all) -- a preserve row, mirroring "
+            "dashC_semicolon_boundary: the verdict does not move, only the mechanism",
+        ),
+        Row(
+            "fold_backslash_pair_before_opener_preserve",
+            "bash <<EOF\n" + 'echo "' + ("\\" * 2) + "$(" + P + ')"' + "\nEOF",
+            MUST_BLOCK,
+            "a '\\\\' pair directly before '$(' is emitted as a pair so the opener stays "
+            "visible to the outer shell, which expands the substitution and runs the push. "
+            "ALREADY blocked on the frozen baseline (782039d rc=2) by the same naive fold that "
+            "blocks the unquoted-body backslash-pass row above, by accident -- a preserve row, "
+            "mirroring dashC_semicolon_boundary",
+        ),
+        # ---------- a heredoc inside `$( )` or backticks is not top-level text. A QUOTED body
+        # ---------- there ending in a line continuation is read BOTH ways -- joined onto the
+        # ---------- terminator (bash 3.2 inside `$( )`, and both bashes inside backticks) and
+        # ---------- dropped (bash 5.3 inside `$( )`) -- and unquoted heredocs nested past the
+        # ---------- tokenizer's depth bound are copied through verbatim. An earlier build RAISED
+        # ---------- on both, and this guard's opaque-only arm degrades a raise to rc 0 when no
+        # ---------- literal git word is in view, so an opaque command word walked through.
+        Row(
+            "subst_quoted_body_final_continuation_blocks",
+            "x=$(bash <<'EOF'\n" + P + "\\" + "\nEOF\n)",
+            MUST_BLOCK,
+            "a quoted heredoc body inside $( ) ending in a continuation: bash 3.2 joins it onto "
+            "the terminator ('dev' + 'EOF') and 5.3 drops it ('origin dev'); both readings are "
+            "recorded and the dropped one publishes dev. The frozen baseline's naive fold glued "
+            "the terminator on and returned one invocation; the new build returns both readings, "
+            "so the invocation-count property below still holds",
+        ),
+        Row(
+            "backtick_quoted_body_join_delivers_dev_blocks",
+            "x=`bash <<'dev'\n" + _p("origin main") + " \\" + "\ndev\n`",
+            MUST_BLOCK,
+            "a quoted heredoc body inside backticks is NOT top-level: bash 3.2 and 5.3 both JOIN "
+            "its final continuation onto the terminator, so this runs a push of 'main dev', and "
+            "'dev' appears ONLY through that join. A reading that dropped the continuation as "
+            "though the body were top-level saw a push of 'main' alone and allowed it. The "
+            "explicit 'main' refspec makes the row independent of the fixture's checked-out "
+            "branch, where a bare push would block whatever the tokenizer read",
+        ),
+        Row(
+            "subst_quoted_body_opaque_word_continuation_blocks",
+            "x=$(bash <<'EOF'\n" + "g$(true)it " + PUSH_ARGS + "\\" + "\nEOF\n)",
+            MUST_BLOCK,
+            "an opaque command word in a quoted $( ) heredoc body ending in a continuation: no "
+            "literal git word is in view, so a tokenizer RAISE here degraded to rc 0 through the "
+            "opaque-only arm. The body is now read both ways and the dropped reading publishes dev",
+        ),
+        Row(
+            "nested_heredocs_past_depth_opaque_word_blocks",
+            "".join(f"bash <<E{k}\n" for k in range(1, 10))
+            + "g$(true)it "
+            + PUSH_ARGS
+            + "".join(f"\nE{k}" for k in range(9, 0, -1)),
+            MUST_BLOCK,
+            "nine unquoted heredocs nested past the tokenizer's depth bound (8): the innermost "
+            "body is copied through verbatim and still walked. A tokenizer RAISE here, with only "
+            "an opaque command word in view, degraded to rc 0 through the opaque-only arm",
+        ),
+        # ---------- the reading-variant raise rule and its in-band marker (2026-09-19).
+        # ---------- A heredoc delimiter may be any quoted word, `(x` included, so the terminator
+        # ---------- itself can open a substitution once a body line's final continuation is JOINED
+        # ---------- onto it. That makes one reading unparseable while the other -- the DROP
+        # ---------- reading, which is what both bashes run at the top level -- parses fine. The
+        # ---------- walk now unions the parseable readings and appends ONE indeterminate
+        # ---------- invocation, instead of letting the raise propagate. Both rows below are built
+        # ---------- by hand: the spike found ZERO such shapes in 5,400 generated scripts and a
+        # ---------- 5,400-case adversarial enumeration, so nothing that generates a corpus can
+        # ---------- cover this rule (see the plan's Task 6 step 3).
+        Row(
+            "ambiguous_reading_marker_read_only_body_blocks",
+            "bash <<'(x'\ngit status\nx=$" + "\\" + "\n(x",
+            MUST_BLOCK,
+            "the MARKER row, and the only shape that can pin it: the body carries no publish at "
+            "all, so this command was ALLOWED before (17417c7 rc=0 -- the one readable reading "
+            "is 'git status' and nothing recorded that another reading could not be read). The "
+            "walk now appends an indeterminate invocation whose effective_dir is None, which "
+            "this guard routes into a judgement whose root is unresolvable, and it refuses. A "
+            "witness carrying a real push cannot pin this: it blocks with or without the marker",
+        ),
+        Row(
+            "ambiguous_reading_raise_rule_preserve",
+            "bash <<'(x'\n" + _p("origin dev") + "\nx=$" + "\\" + "\n(x",
+            MUST_BLOCK,
+            "PRESERVE for the raise rule: the all-join reading of this command is unparseable "
+            "and the drop reading publishes dev. Blocked on 17417c7 too (rc=2, there because the "
+            "single reading it took was the drop one), so the verdict does not move -- what "
+            "moves is that a raise in ONE variant can no longer discard the variant that parsed. "
+            "Its value is as the row a mutant inverting the raise rule must kill",
+        ),
     ]
 
 

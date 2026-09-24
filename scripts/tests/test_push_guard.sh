@@ -302,6 +302,257 @@ assert 'if true; then ALLOW_PUSH=1 git push origin main; fi' 0 \
 # word, so an assignment after one still does not authorize.
 assert 'sudo ALLOW_PUSH=1 git push origin main' 2 'reserved: a wrapper is still not a reserved word'
 
+# --- fold-continuation parity (2026-09-18): fold_continuations used to remove ANY backslash-
+# --- newline pair, whatever preceded it -- the escaped-backslash and CRLF rows below were RED
+# --- against dev's tokenizer (rc=0, the push never even recorded) because that naive fold glued
+# --- the two commands into one `echo` invocation. bs/cr/lf build the exact bytes without
+# --- hand-counting escape sequences in a printf/$'...' literal.
+# shellcheck disable=SC1003  # `'\'` is a single-quoted ONE-character string (a literal
+# backslash), not an attempt to escape the closing quote -- shellcheck's heuristic misreads it.
+bs='\'
+cr=$'\r'
+lf=$'\n'
+assert "echo a${bs}${bs}${lf}git push origin dev" 2 \
+  'an ESCAPED backslash before LF is bash literal, not a continuation -- two commands, the second is the push (was RED: dev folded the pair and recorded no invocation)'
+assert "echo a${bs}${cr}${lf}git push origin dev" 2 \
+  'a backslash before CRLF never folds in bash (the backslash escapes the CR, the LF still ends the command) -- the push runs as a second command (was RED on dev)'
+assert "bash <<EOF${lf}git pu${bs}${bs}${lf}sh origin dev${lf}EOF" 2 \
+  'an unquoted heredoc body gets bash'"'"'s own backslash pass: \\ becomes \ before the consumer shell folds the continuation, reassembling the push from pu\ + sh (already blocked on dev by the accidental old fold; preserved here for the modeled reason)'
+assert "bash <<EOF${lf}echo \"${bs}${bs}\$(git push origin dev)\"${lf}EOF" 2 \
+  'a \\ pair directly before $( is emitted as a pair, so the opener stays visible to the outer shell and the substitution runs the push (already blocked on dev; preserved here)'
+# shellcheck disable=SC2016  # the label names $( ) literally; nothing here should expand
+assert "x=\$(bash <<'EOF'${lf}git push${bs}${lf}EOF${lf})" 2 \
+  'a quoted heredoc body inside $( ) ending in a continuation: bash 3.2 joins it onto the terminator and 5.3 drops it, so both readings are recorded and the push is judged in each (was RED: dev picked one reading silently and let this through)'
+
+# --- heredoc context inside a SUBSTITUTION or BACKTICKS: the body's final continuation is read
+# --- both ways (joined onto the terminator AND dropped), never refused. Refusing used to mean
+# --- ParseAmbiguity, and this guard fails OPEN on an unparseable command with no visible git
+# --- word -- so an opaque command word (g$(true)it) inside such a body walked straight through.
+# --- Same for heredocs nested past the tokenizer's depth bound: the innermost body is now copied
+# --- through verbatim and still walked. The push verb is $V (defined above), never spelled after
+# --- the opaque word in this file's source.
+# Backticks: bash 3.2 and 5.3 both JOIN the final continuation onto the terminator, so this runs
+# `git <verb> origin dev`. Already blocked on HEAD for this guard -- the dropped reading is still a
+# bare push, and any push is refused here -- so it is a preserve row for this guard; the
+# publication guard's suite carries the same shape as a discriminating row (ref `dev` arrives only
+# through the join).
+assert "x=\`bash <<'dev'${lf}git $V origin ${bs}${lf}dev${lf}\`" 2 \
+  'a quoted heredoc body inside backticks is NOT top-level: its final continuation joins onto the terminator (preserve here -- the dropped reading is already a push)'
+# shellcheck disable=SC2016  # the label names $( ) literally; nothing here should expand
+assert "x=\$(bash <<'EOF'${lf}g\$(true)it $V origin dev${bs}${lf}EOF${lf})" 2 \
+  'an opaque command word in a quoted $( ) heredoc body ending in a continuation is walked, not refused (was RED: the tokenizer raised and the no-git-word command failed open)'
+nest_open='' nest_close=''
+for k in 1 2 3 4 5 6 7 8 9; do
+  nest_open+="bash <<E${k}${lf}"
+  nest_close="${lf}E${k}${nest_close}"
+done
+assert "${nest_open}g\$(true)it $V origin dev${nest_close}" 2 \
+  'unquoted heredocs nested past the depth bound: the innermost body is copied verbatim and its opaque-word push still walked (was RED: the tokenizer raised and the no-git-word command failed open)'
+
+# --- the raise rule (2026-09-19): one reading unparseable must not discard one that parses.
+# --- A heredoc delimiter may be any quoted word, `(x` included, so JOINING a body's final
+# --- continuation onto that terminator opens a `$(` that never closes. The all-join reading of
+# --- the command below therefore raises, while the drop reading -- what both bashes run at the
+# --- top level -- is a plain unauthorized push. The walk unions the readable variants instead of
+# --- propagating the raise.
+# ---
+# --- PRESERVE here, not RED: measured rc=2 on 17417c7 as well, where the single reading taken
+# --- was already the drop one. It earns its place as the row that a mutant inverting the raise
+# --- rule ("raise as soon as any variant raises") must kill -- this guard fails CLOSED on a
+# --- ValueError only while a literal git word is visible, and one is here.
+# ---
+assert "bash <<'(x'${lf}git $V origin dev${lf}x=\$${bs}${lf}(x" 2 \
+  'raise rule: the all-join reading of this command is unparseable and the drop reading is an unauthorized push -- the push must survive the other reading raising (PRESERVE: rc=2 on 17417c7 too)'
+
+# --- the in-band ambiguity MARKER reaches THIS guard (2026-09-19, Task 3b).
+# --- This guard consumes `iter_context_token_streams`, and that primitive used to drop a raising
+# --- variant with a bare `continue` while `_walk_context` appended an indeterminate INVOCATION.
+# --- Measured on c9c4dad with the witness below: the walk recorded
+# --- `[('status', []), ('$<ambiguous-heredoc-reading>', [])]`, the streams carried no marker, and
+# --- the verdicts split -- publication-push-guard rc=2, push-guard rc=0, git-timing-guard rc=0.
+# --- Shipped `dev` blocks this same witness at rc=2 ("mentions git but could not be parsed"), so
+# --- the branch had turned a dev BLOCK into an ALLOW. `_indeterminate_stream` closes it.
+# ---
+# --- RED on c9c4dad (rc=0), and the body is `git status` DELIBERATELY: the push-carrying witness
+# --- above blocks with or without the marker, so it cannot pin the marker at any guard. This row
+# --- moves only because the marker arrives.
+assert "bash <<'(x'${lf}git status${lf}x=\$${bs}${lf}(x" 2 \
+  'the ambiguity MARKER: a read-only body whose all-join reading is unreadable is refused here too (RED on c9c4dad: rc=0, because iter_context_token_streams dropped the lost reading silently)'
+
+# --- the MARKER's block must be EXPLAINED, not handed a remedy that cannot work ---
+# The rows above pin the VERDICT; these pin the MESSAGE, and the two are not the same question.
+# Measured on the witness below -- which carries NO git word and NO push -- before this change:
+# rc=2 with "pushing is explicit-only. Lead the push segment with ALLOW_PUSH=1 ...", and rc=2
+# again with ALLOW_PUSH=1 actually leading the command. `_indeterminate_stream`'s own docstring
+# records why: that record's leading env-assignment run is empty BY CONSTRUCTION, so no env prefix
+# can ever authorize it. The spec's Diagnosability residual is why this is not polish -- an
+# unexplainable false block is what later gets "fixed" by narrowing a matcher, the repair this
+# repo has twice measured as the fail-open it was trying to remove.
+lacks_pg() { # haystack needle label -- the mirror of contains_pg, for a phrase that must be GONE
+  if grep -qF -- "$2" <<<"$1"; then
+    printf 'FAIL  %s (unexpectedly present: %s)\n' "$3" "$2"; fail=$((fail + 1))
+  else
+    printf 'PASS  %s\n' "$3"; pass=$((pass + 1))
+  fi
+}
+pg_marker="$(stderr_of_pg "bash <<'(x'${lf}echo hello${lf}x=\$${bs}${lf}(x")"
+contains_pg "$pg_marker" 'one READING of this command could not be parsed' \
+  'push-guard names the lost READING as the cause'
+contains_pg "$pg_marker" 'treated as possibly performing a push' \
+  'push-guard says WHY a command carrying no push was judged as one'
+contains_pg "$pg_marker" 'no push segment for ALLOW_PUSH=1 to lead' \
+  'push-guard says no env prefix authorizes THIS one'
+contains_pg "$pg_marker" 'simplify the quoting' \
+  'push-guard gives a remedy that can actually work for THIS witness (a reading that RAISED)'
+contains_pg "$pg_marker" 'heredoc delimiter containing shell metacharacters' \
+  'push-guard names the RAISED cause for a witness whose join reading really does raise'
+lacks_pg "$pg_marker" 'This one is the parse CAP' \
+  'push-guard does not offer the BUDGET remedy for a raised reading'
+contains_pg "$pg_marker" 'explain-git-command.py' \
+  'push-guard names the tool that shows the full parse'
+# The ABSENCE rows match the PRESCRIPTION, never the bare token: the new message names
+# ALLOW_PUSH=1 in order to say it will not help, so `lacks_pg "$pg_marker" 'ALLOW_PUSH=1'` would
+# fail on the very sentence that fixes the defect. What must be gone is BLOCK_MESSAGE's wording.
+lacks_pg "$pg_marker" 'Lead the push segment with ALLOW_PUSH=1' \
+  'push-guard no longer PRESCRIBES the override that cannot work'
+lacks_pg "$pg_marker" 'pushing is explicit-only' \
+  'push-guard no longer calls this a deliberateness decision about a push'
+
+# THE OTHER CAUSE, and the only one that occurs in practice. The marker is emitted both when a
+# variant RAISES and when the parse BUDGET stops the enumeration (`git_command._collect`: "Both
+# branches that can lose a reading emit it"). Over 90,675 real commands from the local transcripts,
+# 6 emit a marker and 6 of 6 are the BUDGET cause -- ordinary 13-47 KB "write a long report via a
+# heredoc" commands -- for which "simplify the quoting" is the one remedy that CANNOT work.
+# Eight ambiguous heredocs are 2**8 = 256 readings against MAX_TOTAL_PARSES = 128, so the cap
+# stops the walk; every delimiter here parses, so nothing raises and the cause is purely
+# truncation.
+pg_cap_cmd="$(python3 - <<'PY'
+import sys
+sys.stdout.write("".join("bash <<'E%d'\nline \\\nE%d\n" % (i, i) for i in range(8)))
+sys.stdout.write("echo done\n")
+PY
+)"
+pg_cap="$(stderr_of_pg "$pg_cap_cmd")"
+contains_pg "$pg_cap" 'one READING of this command could not be parsed' \
+  'the BUDGET cause still reaches the ambiguity message'
+contains_pg "$pg_cap" 'This one is the parse CAP, not the quoting' \
+  'push-guard names the BUDGET cause rather than the delimiter one'
+contains_pg "$pg_cap" 'remove the trailing backslash' \
+  'push-guard gives the remedy that CAN clear a parse-cap truncation'
+lacks_pg "$pg_cap" 'heredoc delimiter containing shell metacharacters' \
+  'push-guard does not blame the delimiter for a truncation -- the measured defect'
+
+# --- THE MARKER IS A STRING AN OPERATOR CAN TYPE -----------------------------------------------
+# Measured on shipped dev: `git <push> origin dev '<marker>'` drew the AMBIGUITY refusal, whose
+# text says NO env prefix authorizes this one and "adding it will not clear this refusal" -- while
+# `ALLOW_PUSH=1 git <push> origin dev '<marker>'` returned rc=0. So the message was false, and a
+# real push block was relabelled as an ambiguity block. The guard tested marker MEMBERSHIP across
+# every token position; the tokenizer only ever emits it as a whole two-token segment.
+#
+# The marker is DERIVED from the tokenizer, never hand-copied: a hand-copied constant goes stale
+# silently and these rows would then measure a string nothing produces.
+pg_mk="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import git_command; print(git_command.AMBIGUOUS_READING_SUBCOMMAND)' "$here/../lib")"
+[ -n "$pg_mk" ] || { printf 'FAIL  could not derive the ambiguity marker from the tokenizer\n'; fail=$((fail + 1)); }
+
+assert "git push origin dev '$pg_mk'" 2 \
+  'a typed-marker push still BLOCKS -- the verdict is unchanged, only the message moves'
+pg_typed="$(stderr_of_pg "git push origin dev '$pg_mk'")"
+contains_pg "$pg_typed" 'Lead the push segment with ALLOW_PUSH=1' \
+  'an operator-TYPED marker gets the ordinary push message, whose remedy that command has'
+lacks_pg "$pg_typed" 'one READING of this command could not be parsed' \
+  'an operator-TYPED marker is not relabelled as a lost reading'
+# The other half of the measurement, and the reason the old wording was FALSE rather than merely
+# unhelpful: the override it said could not help does clear this one.
+assert "ALLOW_PUSH=1 git push origin dev '$pg_mk'" 0 \
+  'ALLOW_PUSH=1 really does clear a typed-marker push -- so "will not clear this refusal" was false'
+# The typed marker in the SUBCOMMAND slot: the one shape a structural test alone cannot tell from
+# the tokenizer's own two-token record, which is why the raw-text discriminator exists.
+pg_typed_bare="$(stderr_of_pg "git '$pg_mk'")"
+lacks_pg "$pg_typed_bare" 'one READING of this command could not be parsed' \
+  'a typed marker in the subcommand slot is operator text, not a synthesized record'
+assert "ALLOW_PUSH=1 git '$pg_mk'" 0 \
+  'and the override clears that one too'
+
+# PRESERVE: an ordinary unauthorized push is untouched -- a runbook greps for this line.
+pg_plain_push="$(stderr_of_pg 'git push origin main')"
+contains_pg "$pg_plain_push" 'Lead the push segment with ALLOW_PUSH=1' \
+  'an ordinary unauthorized push still gets the standard message'
+lacks_pg "$pg_plain_push" 'one READING of this command could not be parsed' \
+  'an ordinary unauthorized push is not relabelled as an ambiguity'
+
+# PRECEDENCE: the SAME witness carrying a real push keeps the standard message. That command does
+# have a working remedy (lead the push segment with the override), and once it is authorized the
+# marker's own message is what surfaces -- two steps, each accurate, instead of one that loops.
+pg_both="$(stderr_of_pg "bash <<'(x'${lf}git $V origin dev${lf}x=\$${bs}${lf}(x")"
+contains_pg "$pg_both" 'Lead the push segment with ALLOW_PUSH=1' \
+  'a REAL push outranks the marker: the standard message wins'
+lacks_pg "$pg_both" 'one READING of this command could not be parsed' \
+  'a REAL push outranks the marker: the ambiguity wording stays out of it'
+
+# --- a deadline the GUARD PROCESS owns -------------------------------------------------------
+# The harness kills a hook that outlives its registered `timeout`, DISCARDS its output and tells
+# nobody, so a gate killed there is silent and the command RUNS -- a correct rc 2 that arrives
+# after the kill is worth exactly as much as an allow. `scripts/lib/guard_deadline.py` gives the
+# process its own, lower bound; these rows WATCH it fire, because a deadline that is merely
+# INSTALLED has never run.
+#
+# The payload is a flat bundle of ambiguous quoted heredocs (last body line ending in a backslash)
+# padded to ~20 KB -- one command, well under MAX_COMMAND_LENGTH. Measured through this guard:
+# 3.5 s. The override drops the deadline to 1 s, so the fired row has ~3x margin and costs a
+# second instead of the 570 s the real deadline would.
+pg_slow_json="$(python3 - <<'PY'
+import json, sys
+parts = ["bash <<'E%d'\nline \\\nE%d\n" % (i, i) for i in range(7)]
+parts.append("echo " + "p" * 20000 + "\n")
+parts.append("git push origin dev\n")
+sys.stdout.write(json.dumps({"tool_input": {"command": "".join(parts)}}))
+PY
+)"
+
+# ONE run per row: the control takes seconds, so rc and stderr are captured together rather than
+# by running the guard twice.
+pg_capture() { # env-assignment... -> sets PG_RC and PG_ERR
+  local errfile
+  errfile="$(mktemp)"
+  PG_RC=0
+  printf '%s' "$pg_slow_json" | env "$@" python3 "$guard" >/dev/null 2>"$errfile" || PG_RC=$?
+  PG_ERR="$(cat "$errfile")"
+  rm -f "$errfile"
+}
+assert_num() { # got want label
+  if [[ "$1" -eq "$2" ]]; then
+    printf 'PASS  %s (exit %d)\n' "$3" "$1"; pass=$((pass + 1))
+  else
+    printf 'FAIL  %s (want %d, got %d)\n' "$3" "$2" "$1"; fail=$((fail + 1))
+  fi
+}
+
+# CONTROL first. Without it the fired row's rc=2 proves nothing: this payload carries a real
+# unauthorized push, so rc=2 is ALSO what a run that never hit the deadline returns. The control
+# pins that the ordinary verdict is reached, and that its wording is not the deadline's.
+pg_capture
+assert_num "$PG_RC" 2 'deadline CONTROL: the slow payload reaches an ordinary verdict unaided'
+contains_pg "$PG_ERR" 'Lead the push segment with ALLOW_PUSH=1' \
+  'deadline CONTROL: unaided, the payload gets the standard push message'
+lacks_pg "$PG_ERR" 'deadline' \
+  'deadline CONTROL: unaided, nothing claims a deadline fired'
+
+pg_capture GUARD_DEADLINE_SECONDS=1
+assert_num "$PG_RC" 2 'deadline FIRES: the handler exits 2, fail CLOSED'
+contains_pg "$PG_ERR" 'reached its own 1s deadline' \
+  'deadline FIRES: the message names the deadline as the cause, and the value armed'
+contains_pg "$PG_ERR" 'GUARD_DEADLINE_SECONDS' \
+  'deadline FIRES: the message names the knob that changes it'
+lacks_pg "$PG_ERR" 'Lead the push segment with ALLOW_PUSH=1' \
+  'deadline FIRES: it is not relabelled as an ordinary deliberateness refusal'
+
+# An override the guard cannot parse must be IGNORED AUDIBLY. A tool that silently discards an
+# argument it cannot read answers with its own defaults and the run looks normal.
+pg_capture GUARD_DEADLINE_SECONDS=banana
+contains_pg "$PG_ERR" "ignoring GUARD_DEADLINE_SECONDS='banana'" \
+  'deadline: an unparseable override is named, not silently swallowed'
+contains_pg "$PG_ERR" 'Lead the push segment with ALLOW_PUSH=1' \
+  'deadline: an unparseable override leaves the real deadline in force (the control verdict)'
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

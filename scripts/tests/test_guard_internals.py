@@ -389,3 +389,75 @@ def test_append_assign_re_stays_a_subset_of_the_shared_env_assign() -> None:
         "the enumeration matched no append-form token at all -- a vacuous pass, so the "
         "subset assertion above proved nothing"
     )
+
+
+# --------------------------------------------------------------------------------------------
+# `_segment_lost_a_reading`'s CONTRACT, in the two stream-shaped guards.
+#
+# These are UNIT rows because the property is not observable end to end. Both callers consult the
+# raw command text first (`_operator_typed_the_marker`), and the only way a marker can reach a
+# segment outside the two-token shape is for the operator to have typed it -- which that raw-text
+# test already catches. So a mutation reverting this function to the MEMBERSHIP test it replaced
+# SURVIVES both suites; measured, not assumed, and recorded rather than papered over. The function
+# still has a contract worth pinning: it answers "is this segment the tokenizer's own synthesized
+# record?", where a membership test answers a looser question that was measured wrong in the
+# caller it came from (`git <push> origin dev '<marker>'` drew the ambiguity refusal, whose text
+# says no env prefix can clear it, while `ALLOW_PUSH=1` did clear it at rc=0).
+# --------------------------------------------------------------------------------------------
+
+PUSH_GUARD_PATH = REPO_ROOT / "scripts" / "push-guard.py"
+TIMING_GUARD_PATH = REPO_ROOT / "scripts" / "git-timing-guard.py"
+
+
+def _load(path: Path, name: str) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None, f"could not load {path}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+MARKER = gitcmd.AMBIGUOUS_READING_SUBCOMMAND
+# The segment the tokenizer actually emits, taken FROM the tokenizer rather than hand-written:
+# `_indeterminate_stream()` is its single producer, and a hand-copied `["git", MARKER]` would stop
+# matching it silently if that producer ever changed shape.
+SYNTHESIZED = gitcmd._indeterminate_stream()
+PUSH_VERB = "push"
+
+
+def test_push_guard_marker_test_accepts_only_the_synthesized_segment() -> None:
+    pg = _load(PUSH_GUARD_PATH, "push_guard_live")
+    assert pg._segment_lost_a_reading(list(SYNTHESIZED)) is True
+    # The measured witness: the marker as an ordinary refspec argument of a real push.
+    assert (
+        pg._segment_lost_a_reading(["git", PUSH_VERB, "origin", "dev", MARKER]) is False
+    )
+    # ... and in every other non-subcommand position the old membership test accepted.
+    assert pg._segment_lost_a_reading(["git", "commit", "-m", MARKER]) is False
+    assert pg._segment_lost_a_reading(["echo", MARKER]) is False
+    assert pg._segment_lost_a_reading([MARKER]) is False
+    assert pg._segment_lost_a_reading(["ALLOW_PUSH=1", "git", MARKER]) is False
+    # A segment with no marker at all is not a lost reading, whatever else it carries.
+    assert pg._segment_lost_a_reading(["git", PUSH_VERB, "origin", "dev"]) is False
+
+
+def test_timing_guard_marker_test_accepts_only_the_synthesized_segment() -> None:
+    """The twin, asserted separately: the two guards hold two copies of this predicate, and a fix
+    applied to one of them is exactly the shape this repo has measured going half-applied."""
+    tg = _load(TIMING_GUARD_PATH, "git_timing_guard_live")
+    assert tg._segment_lost_a_reading(gitcmd, list(SYNTHESIZED)) is True
+    assert (
+        tg._segment_lost_a_reading(gitcmd, ["git", PUSH_VERB, "origin", "main", MARKER])
+        is False
+    )
+    assert tg._segment_lost_a_reading(gitcmd, ["git", "commit", "-m", MARKER]) is False
+    assert tg._segment_lost_a_reading(gitcmd, ["echo", MARKER]) is False
+    assert tg._segment_lost_a_reading(gitcmd, [MARKER]) is False
+    assert (
+        tg._segment_lost_a_reading(gitcmd, ["ALLOW_GIT_WRITE=1", "git", MARKER])
+        is False
+    )
+    assert (
+        tg._segment_lost_a_reading(gitcmd, ["git", PUSH_VERB, "origin", "main"])
+        is False
+    )

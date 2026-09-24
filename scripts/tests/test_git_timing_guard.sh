@@ -697,6 +697,252 @@ check 0 "unknown global option with an attached value (--badopt=1), same cwd, sa
 check 0 "unknown global option followed by a second option, cwd IS the guarded repo: kills both assume-valueless and assume-value-taking mutants of _skip_global_options" \
   "$open_home" "$guarded" "git --badopt --other push origin main"
 
+# --- fold-continuation parity (2026-09-18): mirrors "push is blocked in the window" above --
+# --- same home ($open_home, window ALWAYS open), same cwd ($guarded), same target (origin main)
+# --- -- with the command text rewritten to the three fold-parity shapes. The escaped-backslash
+# --- and CRLF rows were RED against dev's tokenizer (rc=0: the naive fold_continuations glued the
+# --- two commands, the push was never even recorded). The unquoted-heredoc backslash-pass shape
+# --- was already blocked on dev, by the SAME accidental fold the other two exploit -- it is
+# --- pinned here as a preserve, not a new detection. bs/cr/lf build the exact bytes without
+# --- hand-counting escape sequences in a printf/$'...' literal.
+# shellcheck disable=SC1003  # `'\'` is a single-quoted ONE-character string (a literal
+# backslash), not an attempt to escape the closing quote -- shellcheck's heuristic misreads it.
+bs='\'
+cr=$'\r'
+lf=$'\n'
+check 2 "fold parity: an ESCAPED backslash before LF is bash literal, not a continuation -- two commands, the second is the push (was RED: dev folded the pair and recorded no invocation)" \
+  "$open_home" "$guarded" "echo a${bs}${bs}${lf}git push origin main"
+check 2 "fold parity: a backslash before CRLF never folds in bash -- the push runs as a second command (was RED on dev)" \
+  "$open_home" "$guarded" "echo a${bs}${cr}${lf}git push origin main"
+check 2 "fold parity: bash unescapes \\\\ to \\ inside an unquoted heredoc body before its own continuation pass swallows the terminator, reassembling the push from pu\\ + sh (already blocked on dev by the accidental old fold; preserved here for the modeled reason)" \
+  "$open_home" "$guarded" "bash <<EOF${lf}git pu${bs}${bs}${lf}sh origin main${lf}EOF"
+
+# --- heredoc context inside a SUBSTITUTION or BACKTICKS, and heredocs nested past the depth
+# --- bound: same home, cwd and target as the rows above. This guard fails OPEN on ANY tokenizer
+# --- ValueError (its AMBIGUITY POSTURE), so every shape the tokenizer used to REFUSE -- a quoted
+# --- body inside $( ) ending in a continuation, or unquoted heredocs nested past the depth bound
+# --- -- was allowed here even with a literal git word. The tokenizer now records both readings
+# --- of such a continuation (joined onto the terminator, and dropped), and copies a past-depth
+# --- body through verbatim, so each push is found and the window blocks it. The push verb is
+# --- assembled ($tv) where it follows an opaque command word.
+tv="pu""sh"
+check 2 "a quoted heredoc body inside backticks is NOT top-level: both bashes join its final continuation onto the terminator (preserve here -- the dropped reading was already a bare push, and this guard ignores the ref)" \
+  "$open_home" "$guarded" "x=\`bash <<'main'${lf}git $tv origin ${bs}${lf}main${lf}\`"
+# shellcheck disable=SC2016  # the description names $( ) literally; nothing should expand there
+check 2 'a quoted heredoc body inside $( ) ending in a continuation is read both ways, not refused (was RED: the tokenizer raised and this guard fails open on a raise)' \
+  "$open_home" "$guarded" "x=\$(bash <<'EOF'${lf}git $tv origin main${bs}${lf}EOF${lf})"
+# shellcheck disable=SC2016  # the description names $( ) literally; nothing should expand there
+check 2 'an opaque command word g$(true)it in a quoted $( ) heredoc body ending in a continuation is walked (was RED: the tokenizer raised and this guard fails open on a raise)' \
+  "$open_home" "$guarded" "x=\$(bash <<'EOF'${lf}g\$(true)it $tv origin main${bs}${lf}EOF${lf})"
+nest_open='' nest_close=''
+for k in 1 2 3 4 5 6 7 8 9; do
+  nest_open+="bash <<E${k}${lf}"
+  nest_close="${lf}E${k}${nest_close}"
+done
+# shellcheck disable=SC2016  # the description names g$(true)it literally; nothing should expand
+check 2 'nine unquoted heredocs nested past the depth bound: the innermost body is copied verbatim and its opaque-word push still walked (was RED: the tokenizer raised and this guard fails open on a raise)' \
+  "$open_home" "$guarded" "${nest_open}g\$(true)it $tv origin main${nest_close}"
+
+# --- the raise rule (2026-09-19): one unparseable reading must not discard a parseable one.
+# --- A heredoc delimiter may be any quoted word, `(x` included, so JOINING a body's final
+# --- continuation onto that terminator opens a `$(` that never closes: the all-join reading
+# --- raises while the drop reading -- what both bashes run at the top level -- is a plain push.
+# --- This guard fails OPEN on any tokenizer ValueError, so propagating that raise would hand it
+# --- an allow. PRESERVE, not RED: measured rc=2 on 17417c7 too, where the single reading taken
+# --- was already the drop one. Its value is as the row a mutant inverting the raise rule kills.
+# shellcheck disable=SC2016  # the description names $( and `(x` literally; nothing should expand
+check 2 'raise rule: a quoted heredoc delimiter containing `(` makes the all-join reading unparseable -- the drop reading is still the push both bashes run, and it must survive (PRESERVE: rc=2 on 17417c7 too; this guard fails OPEN on a raise, so propagating one would allow it)' \
+  "$open_home" "$guarded" "bash <<'(x'${lf}git $tv origin main${lf}x=\$${bs}${lf}(x"
+
+# --- the in-band ambiguity MARKER reaches THIS guard (2026-09-19, Task 3b).
+# --- `_find_first_push` reads `iter_context_token_streams`, and that primitive used to skip a
+# --- raising variant with a bare `continue` while `_walk_context` appended an indeterminate
+# --- INVOCATION. Measured on c9c4dad with the witness below: the walk recorded
+# --- `[('status', []), ('$<ambiguous-heredoc-reading>', [])]`, the streams carried no marker, and
+# --- the verdicts split -- publication-push-guard rc=2, push-guard rc=0, this guard rc=0.
+# --- `_indeterminate_stream` gives the streams the same signal, and `subcommand_is_indeterminate`
+# --- is already True for that word here (`_segment_contains_push`).
+# ---
+# --- RED on c9c4dad (rc=0), and the body is `git status` DELIBERATELY: the push-carrying witness
+# --- above blocks with or without the marker, so it cannot pin the marker at any guard.
+# ---
+# --- COST, named rather than discovered: shipped `dev` returns rc=0 for this witness at THIS
+# --- guard (it fails open on the raise), so unlike push-guard -- where dev returns rc=2 and this
+# --- is a restoration -- the block here is NEW. A read-only command whose all-join reading is
+# --- unreadable now blocks inside the window. It is the fail-closed direction for a guard whose
+# --- documented posture is fail-open, and it is the same direction the walk already took.
+# shellcheck disable=SC2016  # the description names $( and `(x` literally; nothing should expand
+check 2 'the ambiguity MARKER: a read-only body whose all-join reading is unreadable is refused here too (RED on c9c4dad: rc=0, because iter_context_token_streams dropped the lost reading silently; NEW vs dev, which returns 0 here)' \
+  "$open_home" "$guarded" "bash <<'(x'${lf}git status${lf}x=\$${bs}${lf}(x"
+
+# --- the MARKER's block must be EXPLAINED, not handed a remedy that cannot work ---
+# The row above pins the VERDICT; these pin the MESSAGE, and the two are not the same question.
+# Measured on the witness below -- which carries NO git word and NO push -- before this change:
+# rc=2 with "pushing is paused until 2400 local -- publish after the window", which is wrong twice
+# over. It tells an operator carrying no push that they scheduled a publish, and it points at the
+# window as the thing to wait for while `_indeterminate_stream` records that no ALLOW_GIT_WRITE=1
+# can authorize that record either -- its leading env-assignment run is empty BY CONSTRUCTION.
+# The spec's Diagnosability residual is why this is not polish: an unexplainable false block is
+# what later gets "fixed" by narrowing a matcher.
+#
+# WAITING is deliberately not prescribed even though it would work (the gate is still
+# window-scoped), because sending the operator away for an hour to work around a quoting problem
+# is exactly the unexplainable block the marker's own justification rules out.
+marker_cmd="bash <<'(x'${lf}echo hello${lf}x=\$${bs}${lf}(x"
+check_msg 'one READING of this command could not be parsed' present \
+  'timing guard names the lost READING as the cause' "$open_home" "$guarded" "$marker_cmd"
+check_msg 'treated as possibly performing a push' present \
+  'timing guard says WHY a command carrying no push was judged as one' \
+  "$open_home" "$guarded" "$marker_cmd"
+check_msg 'no segment for ALLOW_GIT_WRITE=1 to lead' present \
+  'timing guard says no env prefix authorizes THIS one' "$open_home" "$guarded" "$marker_cmd"
+check_msg 'simplify the quoting' present \
+  'timing guard gives a remedy that can work for THIS witness (a reading that RAISED)' \
+  "$open_home" "$guarded" "$marker_cmd"
+check_msg 'heredoc delimiter containing shell metacharacters' present \
+  'timing guard names the RAISED cause for a witness whose join reading really does raise' \
+  "$open_home" "$guarded" "$marker_cmd"
+check_msg 'This one is the parse CAP' absent \
+  'timing guard does not offer the BUDGET remedy for a raised reading' \
+  "$open_home" "$guarded" "$marker_cmd"
+check_msg 'explain-git-command.py' present \
+  'timing guard names the tool that shows the full parse' "$open_home" "$guarded" "$marker_cmd"
+
+# THE OTHER CAUSE, and the only one that occurs in practice: the parse BUDGET, not the delimiter.
+# Eight ambiguous heredocs are 2**8 = 256 readings against MAX_TOTAL_PARSES = 128, and every
+# delimiter here parses, so nothing raises and the loss is purely truncation. Over 90,675 real
+# commands, 6 emit a marker and 6 of 6 are this cause -- for which "simplify the quoting" is the
+# one remedy that CANNOT work. No real push is appended, exactly as for `marker_cmd` above: the
+# marker segment is itself push-shaped, which is the whole reason this gate examines it, and a
+# real push would (correctly) outrank it and restore the window wording.
+cap_cmd="$(python3 - <<'PY'
+import sys
+sys.stdout.write("".join("bash <<'E%d'\nline \\\nE%d\n" % (i, i) for i in range(8)))
+sys.stdout.write("echo done\n")
+PY
+)"
+check_msg 'one READING of this command could not be parsed' present \
+  'the BUDGET cause still reaches the ambiguity message' "$open_home" "$guarded" "$cap_cmd"
+check_msg 'This one is the parse CAP, not the quoting' present \
+  'timing guard names the BUDGET cause rather than the delimiter one' \
+  "$open_home" "$guarded" "$cap_cmd"
+check_msg 'remove the trailing backslash' present \
+  'timing guard gives the remedy that CAN clear a parse-cap truncation' \
+  "$open_home" "$guarded" "$cap_cmd"
+check_msg 'heredoc delimiter containing shell metacharacters' absent \
+  'timing guard does not blame the delimiter for a truncation -- the measured defect' \
+  "$open_home" "$guarded" "$cap_cmd"
+
+# --- THE MARKER IS A STRING AN OPERATOR CAN TYPE ---
+# The guard tested marker MEMBERSHIP across every token position, while the tokenizer only ever
+# emits it as a whole two-token segment -- so a real push carrying the marker as an argument was
+# relabelled as an ambiguity block. Measured on push-guard's twin of this function, where the
+# relabel also made the message false in so many words. The marker is DERIVED from the tokenizer,
+# never hand-copied: a hand-copied constant goes stale silently and these rows would then measure
+# a string nothing produces.
+tg_mk="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import git_command; print(git_command.AMBIGUOUS_READING_SUBCOMMAND)' "$here/../lib")"
+[ -n "$tg_mk" ] || { printf 'FAIL  could not derive the ambiguity marker from the tokenizer\n'; fail=$((fail + 1)); }
+typed_cmd="git $tv origin main '$tg_mk'"
+check 2 'a typed-marker push still BLOCKS in-window -- the verdict is unchanged' \
+  "$open_home" "$guarded" "$typed_cmd"
+check_msg 'publish after the window' present \
+  'an operator-TYPED marker gets the ordinary window message, whose remedy that command has' \
+  "$open_home" "$guarded" "$typed_cmd"
+check_msg 'one READING of this command could not be parsed' absent \
+  'an operator-TYPED marker is not relabelled as a lost reading' \
+  "$open_home" "$guarded" "$typed_cmd"
+check_msg 'one READING of this command could not be parsed' absent \
+  'a typed marker in the subcommand slot is operator text, not a synthesized record' \
+  "$open_home" "$guarded" "git '$tg_mk'"
+# The ABSENCE rows match the PRESCRIPTION, never a bare token: the new message names
+# ALLOW_GIT_WRITE=1 in order to say it will not help, so an absence row on the bare token would
+# fail on the very sentence that fixes the defect. What must be gone is BLOCK_MESSAGE's wording.
+check_msg 'publish after the window' absent \
+  'timing guard no longer tells the operator to wait out a window' \
+  "$open_home" "$guarded" "$marker_cmd"
+check_msg 'pushing is paused until' absent \
+  'timing guard no longer calls this a scheduled publish' "$open_home" "$guarded" "$marker_cmd"
+
+# PRESERVE: an ordinary in-window push is untouched.
+check_msg 'publish after the window' present \
+  'an ordinary in-window push still gets the standard window message' \
+  "$open_home" "$guarded" "git $tv origin main"
+check_msg 'one READING of this command could not be parsed' absent \
+  'an ordinary in-window push is not relabelled as an ambiguity' \
+  "$open_home" "$guarded" "git $tv origin main"
+
+# PRECEDENCE: the SAME witness carrying a real push keeps the window message. `_find_first_push`
+# still reads authorization from the FIRST push-carrying segment -- the third return value is
+# about the MESSAGE only and cannot move the verdict.
+# shellcheck disable=SC2016  # the description names $( and `(x` literally; nothing should expand
+check_msg 'publish after the window' present \
+  'a REAL push outranks the marker: the window message wins' \
+  "$open_home" "$guarded" "bash <<'(x'${lf}git $tv origin main${lf}x=\$${bs}${lf}(x"
+# shellcheck disable=SC2016  # the description names $( and `(x` literally; nothing should expand
+check_msg 'one READING of this command could not be parsed' absent \
+  'a REAL push outranks the marker: the ambiguity wording stays out of it' \
+  "$open_home" "$guarded" "bash <<'(x'${lf}git $tv origin main${lf}x=\$${bs}${lf}(x"
+
+# --- a deadline the GUARD PROCESS owns, exiting 0 ---------------------------------------------
+# This guard registers no `timeout`, so the harness default (600 s) binds, and its deadline is the
+# one that EXITS 0: the documented contract here is fail-OPEN on any internal error, so exit 2
+# would be a new class of block rather than the same verdict sooner. What the deadline buys is a
+# bounded wait and a line saying why, instead of a command that stalls for ten minutes and is then
+# allowed with nothing printed. Stated as a verdict-preserving change, and these rows pin it —
+# including the one that would catch it being "upgraded" to a block.
+#
+# ~20 KB of flat ambiguous quoted heredocs; measured ~7 s through this guard, so a 1 s override has
+# ample margin. Driven through the SHIM by its bare path, like every other row here.
+dl_cmd="$(python3 - <<'PY'
+import sys
+parts = ["bash <<'E%d'\nline \\\nE%d\n" % (i, i) for i in range(7)]
+parts.append("echo " + "p" * 20000 + "\n")
+parts.append("git pu" + "sh origin main\n")
+sys.stdout.write("".join(parts))
+PY
+)"
+dl_payload=$(jq -nc --arg c "$dl_cmd" --arg d "$guarded" '{tool_input:{command:$c},cwd:$d}')
+
+dl_capture() { # env-assignment... -> sets DL_RC and DL_OUT (ONE run: the control takes seconds)
+  set +e
+  DL_OUT=$(printf '%s' "$dl_payload" | env HOME="$open_home" "$@" "$guard" 2>&1)
+  DL_RC=$?
+  set -e
+}
+dl_assert_rc() { # want label
+  if [ "$DL_RC" = "$1" ]; then
+    printf 'PASS  %s (rc=%s)\n' "$2" "$DL_RC"; pass=$((pass + 1))
+  else
+    printf 'FAIL  %s (want rc=%s, got rc=%s) — %s\n' "$2" "$1" "$DL_RC" "$DL_OUT"; fail=$((fail + 1))
+  fi
+}
+dl_assert_msg() { # needle present|absent label
+  local hit=absent
+  case "$DL_OUT" in *"$1"*) hit=present ;; esac
+  if [ "$hit" = "$2" ]; then
+    printf 'PASS  %s\n' "$3"; pass=$((pass + 1))
+  else
+    printf 'FAIL  %s (want %s, was %s) — %s\n' "$3" "$2" "$hit" "$DL_OUT"; fail=$((fail + 1))
+  fi
+}
+
+# CONTROL: unaided, the same payload reaches this gate's ordinary window BLOCK. Without it the
+# fired row's rc=0 proves nothing — rc=0 is also what an out-of-scope command returns.
+dl_capture
+dl_assert_rc 2 'deadline CONTROL: the slow payload reaches an ordinary verdict unaided'
+dl_assert_msg 'publish after the window' present \
+  'deadline CONTROL: unaided, the payload gets the ordinary window message'
+dl_assert_msg 'deadline' absent 'deadline CONTROL: unaided, nothing claims a deadline fired'
+
+dl_capture GUARD_DEADLINE_SECONDS=1
+dl_assert_rc 0 'deadline FIRES: this fail-OPEN gate exits 0 — the deadline invents no new block'
+dl_assert_msg 'reached its own 1s deadline' present \
+  'deadline FIRES: the message names the deadline as the cause, and the value armed'
+dl_assert_msg 'publish after the window' absent \
+  'deadline FIRES: an unjudged command is not relabelled as a scheduled publish'
+dl_assert_msg 'fail CLOSED' present \
+  'deadline FIRES: it says which other gates DID judge the command'
+
 # The RESULT line is printed before the verdict is computed, so its ABSENCE is
 # itself the signal that the run died rather than passed.
 printf '\nRESULT: %s passed, %s failed\n' "$pass" "$fail"

@@ -68,6 +68,29 @@ assert "git commit -m \"\$(cat <<'EOF'
 feat(x): short
 EOF
 )\"" "$tmp/r1" 0 'quoted-heredoc short subject -> allowed'
+# A heredoc whose body's last line ends in an ODD backslash run is AMBIGUOUS, so since 2026-09-19
+# the tokenizer reads it both ways and `iter_context_token_streams` returns FOUR streams for this
+# command (measured) rather than two. The guard's old shape test was a stream COUNT of exactly two,
+# so it bailed and skipped the subject check entirely -- a silent fail-open on the very `/commit`
+# form this guard exists for. The ambiguity is planted at the TOP LEVEL, away from the commit's own
+# heredoc, so this row moves on the SHAPE TEST alone: was allowed (0) under the stream count,
+# blocks (2) under the `split_command_contexts` test that replaced it.
+assert "cat <<'A'
+note\\
+A
+git commit -m \"\$(cat <<'EOF'
+$S80
+EOF
+)\"" "$tmp/r1" 2 'top-level ambiguous heredoc beside the /commit form -> subject still measured'
+# The RESIDUAL, recorded rather than discovered later: when the commit's OWN heredoc body ends in a
+# continuation, `_resolvable_heredoc` still returns None -- for a second and independent reason.
+# Its heredoc text comes from a split of the RAW command, where `fold_continuations` glues that
+# last line onto the `EOF` terminator, so `HEREDOC_RE` no longer matches. Moving the shape test
+# does not reach that; the guard fails open here, as it documents it may.
+assert "git commit -m \"\$(cat <<'EOF'
+$S80\\
+EOF
+)\"" "$tmp/r1" 0 'commit heredoc body ending in a continuation -> terminator folded away, fails open'
 
 # --- NO FALSE BLOCKS: every ambiguous or exempt form must pass ---
 # shellcheck disable=SC2016  # the label names the literal $VAR on purpose; nothing here expands

@@ -134,6 +134,15 @@ forced_error_guard() { # label -> sets FE_DIR, FE_GUARD, FE_LOG
   FE_DIR="$(mktemp -d)"
   mkdir -p "$FE_DIR/lib"
   cp "$guard" "$FE_DIR/"
+  # POISON one module; do not amputate the directory. The sandbox lib/ starts as a copy of the
+  # real one and only `git_command.py` is replaced, so these rows drive the guard's fail-closed
+  # branch with a genuine exception from the import they name -- and not from some OTHER import
+  # that happens to be missing. Copied by GLOB rather than by a hand-listed set: a list goes stale
+  # the moment the guard grows a lib dependency, and it went stale exactly once, when
+  # `guard_deadline` was added -- all ten rows here turned rc=1 (an uncaught ModuleNotFoundError,
+  # which is exit "noise" per scripts/HOOKS.md, i.e. the command RUNS) while reading as a
+  # regression in the guard's error handling.
+  cp "$repo_root/scripts/lib"/*.py "$FE_DIR/lib/"
   printf 'raise ValueError("forced %s")\n' "$1" >"$FE_DIR/lib/git_command.py"
   FE_GUARD="$FE_DIR/publication-push-guard.py"
   FE_LOG="$FE_DIR/errors.log"
@@ -633,6 +642,178 @@ push_run "$REPO" $'bash <<\'EOF\'\ngit push origin dev\nEOF' 2 \
   'PRESERVE: a push inside a quoted heredoc body still blocks'
 push_run "$REPO" $'bash <<EOF\necho "#" ; git push origin dev\nEOF' 2 \
   'PRESERVE: a quoted # in a body does not comment out the push that follows'
+
+# ---------- heredoc context inside a SUBSTITUTION or BACKTICKS ----------
+# A quoted heredoc body inside backticks is NOT top-level text: bash 3.2 and 5.3 both JOIN its final
+# line continuation onto the terminator. When the terminator is `dev`, that join is the only place
+# the ref appears -- the dropped reading is a bare push from `main` (HEAD here), which this gate
+# rightly allows -- so the tokenizer's old top-level drop let a real `dev` publish through. Inside
+# `$( )` bash 3.2 joins and 5.3 drops; the tokenizer used to RAISE there, and with no literal git
+# word in view (an opaque command word) this gate's opaque-only arm degrades a raise to rc 0. The
+# same raise, and the same rc 0, came from unquoted heredocs nested past the depth bound. The
+# tokenizer now records both readings of such a continuation and copies a past-depth body through
+# verbatim, so each push below is judged. REPO is on `main` here (build_repo leaves it there).
+# shellcheck disable=SC1003  # `'\'` is a single-quoted ONE-character string (a literal backslash)
+hbs='\'
+hlf=$'\n'
+push_run "$REPO" "x=\`bash <<'dev'${hlf}git ${VERB} origin ${hbs}${hlf}dev${hlf}\`" 2 \
+  'a backtick heredoc body joins its final continuation onto the terminator: dev arrives only via the join'
+push_run "$REPO" "x=\`bash <<'main'${hlf}git ${VERB} origin ${hbs}${hlf}main${hlf}\`" 0 \
+  'control: the same backtick join delivering main is allowed (the fix reads the join, it does not refuse backticks)'
+push_run "$REPO" "x=\$(bash <<'EOF'${hlf}git ${VERB} origin dev${hbs}${hlf}EOF${hlf})" 2 \
+  'PRESERVE: a literal-git push in a quoted $( ) heredoc body ending in a continuation still blocks'
+push_run "$REPO" "x=\$(bash <<'EOF'${hlf}g\$(true)it ${VERB} origin dev${hbs}${hlf}EOF${hlf})" 2 \
+  'an opaque command word in a quoted $( ) heredoc body ending in a continuation is walked, not refused'
+nest_open='' nest_close=''
+for k in 1 2 3 4 5 6 7 8 9; do
+  nest_open+="bash <<E${k}${hlf}"
+  nest_close="${hlf}E${k}${nest_close}"
+done
+push_run "$REPO" "${nest_open}g\$(true)it ${VERB} origin dev${nest_close}" 2 \
+  'nine unquoted heredocs nested past the depth bound: the opaque-word push in the innermost body is still walked'
+
+# ---------- the raise rule and its in-band ambiguity MARKER (2026-09-19) ----------
+# A heredoc delimiter may be any quoted word, `(x` included. Joining a body's final continuation
+# onto that terminator therefore OPENS a substitution that never closes, so the all-join reading
+# raises while the drop reading -- what both bashes run at the top level -- parses. The walk now
+# unions the readable variants and appends ONE indeterminate invocation (effective_dir None)
+# instead of propagating the raise.
+#
+# ALL THREE GUARDS SEE THAT MARKER, since Task 3b. This guard reads INVOCATIONS
+# (`iter_git_invocations_detailed`, :2092); push-guard and git-timing-guard's `_find_first_push`
+# read `iter_context_token_streams`, which for a while dropped a raising variant with a bare
+# `continue` and carried no marker of its own -- so the read-only row below was rc 2 HERE and rc 0
+# at both of the others (measured on c9c4dad), and at push-guard that was a REGRESSION against
+# shipped `dev`, which blocks the same witness at rc 2 on "mentions git but could not be parsed".
+# `_indeterminate_stream` closed it. The two primitives' agreement is pinned in test_git_command.py
+# (`test_both_primitives_carry_the_same_in_band_marker`), and each stream-shaped guard now carries
+# its own rc-2 row for this witness.
+hbw_open="bash <<'(x'"
+hbw_tail="x=\$${hbs}${hlf}(x"
+push_run "$REPO" "${hbw_open}${hlf}git status${hlf}${hbw_tail}" 2 \
+  'the ambiguity MARKER: a read-only body whose all-join reading is unreadable is now refused (RED on 17417c7: rc=0, the readable reading was `git status` alone and nothing recorded the other)'
+push_run "$REPO" "${hbw_open}${hlf}git ${VERB} origin dev${hlf}${hbw_tail}" 2 \
+  'PRESERVE, raise rule: the drop reading publishes dev and must survive the all-join reading raising (rc=2 on 17417c7 too, there via its single reading)'
+
+# --- the MARKER's block must be EXPLAINED, not described as something it is not ---
+# The rows above pin the VERDICT; these pin the MESSAGE, and the two are not the same question.
+# The marker is a SYNTHETIC invocation with effective_dir None, so it lands in
+# `_judge_invocation`'s unresolvable-root arm and the refusal used to read "the effective working
+# directory could not be resolved (cd/pushd target unknown)" -- a sentence about a `cd` for a
+# command that contains no cd, no push and (on the witness below) no git word at all. Measured
+# before this change. It is the same class of mislabel `Block`'s two-axis split already exists to
+# prevent, one level further in, and the spec's Diagnosability residual is why closing it is not
+# polish: an unexplainable false block is what later gets "fixed" by narrowing a matcher.
+hbw_nogit="${hbw_open}${hlf}echo hello${hlf}${hbw_tail}"
+marker_msg="$(judge "$hbw_nogit" "$REPO")"
+assert_contains "$marker_msg" 'one READING of it could not be parsed' \
+  'publication guard names the lost READING as the cause'
+assert_contains "$marker_msg" 'treated as possibly performing a push' \
+  'publication guard says WHY a command carrying no push was judged as one'
+assert_contains "$marker_msg" 'no segment for an override to lead' \
+  'publication guard says no env prefix authorizes THIS one'
+assert_contains "$marker_msg" 'simplify the quoting' \
+  'publication guard gives a remedy that can work for THIS witness (a reading that RAISED)'
+assert_contains "$marker_msg" 'heredoc delimiter containing shell metacharacters' \
+  'publication guard names the RAISED cause for a witness whose join reading really does raise'
+assert_not_contains "$marker_msg" 'This one is the parse CAP' \
+  'publication guard does not offer the BUDGET remedy for a raised reading'
+assert_contains "$marker_msg" 'explain-git-command.py' \
+  'publication guard names the tool that shows the full parse'
+assert_not_contains "$marker_msg" 'cd/pushd target unknown' \
+  'publication guard no longer blames a cd the command does not contain'
+assert_not_contains "$marker_msg" 'could not judge' \
+  'publication guard no longer reports this as an unjudgeable invocation'
+
+# PRESERVE: a genuinely unjudgeable non-push keeps the unjudgeable wording -- the new branch must
+# not have relabelled the whole `is_push=False` arm. This is the same witness the message-wording
+# block further down uses (`m_unres`), and it carries no marker: an unexpanded `-C` target, not a
+# lost reading.
+# shellcheck disable=SC2016  # the UNEXPANDED $live is the point
+unjudgeable_msg="$(judge 'git -C "$live" frobnicate' "$REPO")"
+assert_contains "$unjudgeable_msg" 'could not judge' \
+  'a genuinely unjudgeable non-push still gets the unjudgeable wording'
+assert_not_contains "$unjudgeable_msg" 'one READING of it could not be parsed' \
+  'a genuinely unjudgeable non-push is not relabelled as an ambiguity'
+
+# THE OTHER CAUSE, and the only one that occurs in practice. The marker is emitted both when a
+# variant RAISES and when the parse BUDGET stops the enumeration; over 90,675 real commands, 6
+# emit a marker and 6 of 6 are the BUDGET cause, for which "simplify the quoting" is the one
+# remedy that CANNOT work. Eight ambiguous heredocs are 2**8 = 256 readings against
+# MAX_TOTAL_PARSES = 128; every delimiter here parses, so nothing raises. The trailing `$HOME git`
+# is what gets the command past this guard's own cheap pre-gate.
+cap_cmd="$(python3 - <<'PY'
+import sys
+sys.stdout.write("".join("bash <<'E%d'\nline \\\nE%d\n" % (i, i) for i in range(8)))
+sys.stdout.write("echo $HOME git\n")
+PY
+)"
+cap_msg="$(judge "$cap_cmd" "$REPO")"
+assert_contains "$cap_msg" 'one READING of it could not be parsed' \
+  'the BUDGET cause still reaches the ambiguity message'
+assert_contains "$cap_msg" 'This one is the parse CAP, not the quoting' \
+  'publication guard names the BUDGET cause rather than the delimiter one'
+assert_contains "$cap_msg" 'remove the trailing backslash' \
+  'publication guard gives the remedy that CAN clear a parse-cap truncation'
+assert_not_contains "$cap_msg" 'heredoc delimiter containing shell metacharacters' \
+  'publication guard does not blame the delimiter for a truncation -- the measured defect'
+
+# PRECEDENCE, now per RECORD rather than per command. The SAME witness carrying a real DEV push
+# keeps the alarming wording, because `_find_block_reason` holds the marker refusal back and keeps
+# walking until it finds a real refusable invocation -- a runbook greps for that line.
+#
+# It used to come from `main`'s `ambiguous_reading and not reason.is_push`, where `is_push` is the
+# command-level `carries_push`. That was measured FALSE for a push this guard ALLOWS: see the
+# `main_push` rows below.
+marker_push_msg="$(judge "${hbw_open}${hlf}git ${VERB} origin dev${hlf}${hbw_tail}" "$REPO")"
+assert_contains "$marker_push_msg" "refusing to push private 'dev'" \
+  'a REAL push outranks the marker: the alarming message wins'
+assert_not_contains "$marker_push_msg" 'one READING of it could not be parsed' \
+  'a REAL push outranks the marker: the ambiguity wording stays out of it'
+
+# THE WITNESS THE OLD PRECEDENCE GOT WRONG, and the reason it had to move. `git <push> origin main`
+# is rc=0 on its own here -- an allowlisted target -- so `carries_push` being true said nothing
+# about whether a push was being REFUSED. The refusal was the marker's, and the message claimed
+# both a private-'dev' push and an unresolvable cd/pushd target; the command has no cd, no pushd,
+# and no dev anywhere. Shipped `dev` answers the identical input honestly.
+marker_main_msg="$(judge "${hbw_open}${hlf}git ${VERB} origin main${hlf}${hbw_tail}" "$REPO")"
+push_run "$REPO" "git ${VERB} origin main" 0 \
+  'main_push CONTROL: the push in the witness below is ALLOWED on its own'
+assert_contains "$marker_main_msg" 'one READING of it could not be parsed' \
+  'main_push: a marker beside an ALLOWED push is reported as the marker refusal it is'
+assert_not_contains "$marker_main_msg" "refusing to push private 'dev'" \
+  'main_push: no private-dev claim for a command whose only push targets main'
+assert_not_contains "$marker_main_msg" 'cd/pushd target unknown' \
+  'main_push: no cd/pushd claim for a command containing neither'
+
+# --- THE MARKER IS A STRING AN OPERATOR CAN TYPE ---
+# `subcommand_is_ambiguous_reading(sub)` is position-correct here (it reads the SUBCOMMAND slot of
+# a real record), but it still cannot tell the tokenizer's synthesized record from an operator who
+# typed the marker as a subcommand. That only started to matter when the `and not reason.is_push`
+# precedence above was removed: without this discriminator, `git '<marker>'` beside a real dev push
+# would be reported as a lost reading the command does not have. Derived from the tokenizer, never
+# hand-copied.
+ppg_mk="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import git_command; print(git_command.AMBIGUOUS_READING_SUBCOMMAND)' "$here/../lib")"
+[ -n "$ppg_mk" ] || { printf 'FAIL  could not derive the ambiguity marker from the tokenizer\n'; fail=$((fail + 1)); }
+push_run "$REPO" "git '$ppg_mk' && git ${VERB} origin dev" 2 \
+  'a typed marker beside a real dev push still BLOCKS'
+typed_marker_msg="$(judge "git '$ppg_mk' && git ${VERB} origin dev" "$REPO")"
+assert_contains "$typed_marker_msg" "refusing to push private 'dev'" \
+  'a typed marker beside a real dev push keeps the alarming wording'
+assert_not_contains "$typed_marker_msg" 'one READING of it could not be parsed' \
+  'a typed marker is not reported as a lost reading the command does not have'
+# The SOLO witness is the one that isolates the discriminator. In the compound above, dropping it
+# only moves which record is reported and both say "refusing to push private 'dev'" -- measured,
+# the mutant SURVIVED until this row existed. Alone, the typed marker is the only blocking record,
+# so the two readings differ: "could not judge" (correct -- it IS an unjudgeable subcommand the
+# operator wrote) versus the fourth-category "one READING of it could not be parsed" (false -- no
+# reading was lost).
+push_run "$REPO" "git '$ppg_mk'" 2 'a solo typed marker still BLOCKS'
+solo_marker_msg="$(judge "git '$ppg_mk'" "$REPO")"
+assert_contains "$solo_marker_msg" 'could not judge' \
+  'a solo typed marker is reported as the unjudgeable subcommand it is'
+assert_not_contains "$solo_marker_msg" 'one READING of it could not be parsed' \
+  'a solo typed marker is not reported as a lost reading'
 
 # ---------- limits ----------
 push_run "$REPO" 'x="$(git push origin dev' 2 'unterminated context blocks'
@@ -1400,6 +1581,56 @@ gi "$REPO" checkout -q dev >/dev/null 2>&1
 push_run "$REPO" "git ${VERB} origin dev" 2 "control: a dev push from dev blocks"
 push_run "$REPO" "git ${VERB} ZZ git" 0 "trade control: neutral spelling, explicit refspec git -> allowed"
 push_run "$REPO" "git ${VERB} then git" 0 "trade: full argv judged like its neutral spelling -> allowed"
+
+# ---------- a deadline the GUARD PROCESS owns ----------
+# This gate registers a 60 s `timeout`. A hook that outlives its registration is killed SILENTLY —
+# the harness discards its output and never tells Claude — so the push RUNS. Measured on a single
+# command under MAX_COMMAND_LENGTH: 224.89 s here and 172.40 s on shipped `dev` (recorded in
+# `git_command.py`'s MAX_TOTAL_PARSES docstring, which files this deadline as the remedy). These
+# rows WATCH the handler fire, because a deadline that is merely INSTALLED has never run.
+#
+# ~20 KB of flat ambiguous quoted heredocs; measured 7.0 s through this guard, so a 1 s override
+# has ~7x margin and costs a second rather than the 50 s the real deadline would.
+dl_json="$(python3 - <<'PY'
+import json, sys
+parts = ["bash <<'E%d'\nline \\\nE%d\n" % (i, i) for i in range(7)]
+parts.append("echo " + "p" * 20000 + "\n")
+parts.append("git pu" + "sh origin dev\n")
+sys.stdout.write(json.dumps({"tool_input": {"command": "".join(parts)}, "cwd": "%s"}))
+PY
+)"
+dl_json="${dl_json/\%s/$REPO}"
+
+dl_capture() { # env-assignment... -> sets DL_RC and DL_ERR (ONE run: the control takes seconds)
+  local errfile
+  errfile="$(mktemp)"
+  DL_RC=0
+  printf '%s' "$dl_json" | env "$@" python3 "$guard" >/dev/null 2>"$errfile" || DL_RC=$?
+  DL_ERR="$(cat "$errfile")"
+  rm -f "$errfile"
+}
+
+# CONTROL: unaided the payload reaches an ordinary verdict, so the fired row's rc=2 is the
+# DEADLINE and not simply what this payload always returns.
+dl_capture
+assert_eq "$DL_RC" 2 'deadline CONTROL: the slow payload reaches an ordinary verdict unaided'
+assert_contains "$DL_ERR" 'refusing to push private' \
+  'deadline CONTROL: unaided, the payload gets this gate'"'"'s ordinary push refusal'
+assert_not_contains "$DL_ERR" 'deadline' 'deadline CONTROL: unaided, nothing claims a deadline fired'
+assert_not_contains "$DL_ERR" 'internal error' \
+  'deadline CONTROL: unaided, the run is a verdict rather than a crash'
+
+dl_capture GUARD_DEADLINE_SECONDS=1
+assert_eq "$DL_RC" 2 'deadline FIRES: the handler exits 2 — this gate fails CLOSED'
+assert_contains "$DL_ERR" 'reached its own 1s deadline' \
+  'deadline FIRES: the message names the deadline as the cause, and the value armed'
+assert_contains "$DL_ERR" 'GUARD_DEADLINE_SECONDS' \
+  'deadline FIRES: the message names the knob that changes it'
+# The handler must not be catchable: this guard returns 0 for ANY exception on its opaque-only
+# path, so a handler that merely raised would be converted into an ALLOW. rc=2 above is that
+# property; this row pins that no `except` arm relabelled it as an internal error.
+assert_not_contains "$DL_ERR" 'internal error' \
+  'deadline FIRES: it is not swallowed and relabelled as an internal error'
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

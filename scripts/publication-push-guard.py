@@ -151,6 +151,38 @@ command verbatim, plus cwd, size, sha256 and traceback, to `~/.claude/logs/` —
 $PUBLICATION_PUSH_GUARD_LOG, which every test that drives this branch MUST set so suite runs do not
 bury a rare genuine fault under synthetic records. Recording can never change the verdict: it is
 contractually non-raising, and a failure to record is reported on stderr rather than swallowed.
+
+THE AMBIGUITY MARKER GETS ITS OWN MESSAGE. The tokenizer signals a reading of the command it could
+not parse in-band, as a synthetic invocation (`git_command._indeterminate_invocation`) whose
+subcommand is outside `KNOWN_SAFE_SUBCOMMANDS` and whose `effective_dir` is None. That is a
+deliberate over-read and it correctly blocks — but it lands in `_judge_invocation`'s
+unresolvable-root arm, so until now the refusal read "the effective working directory could not be
+resolved (cd/pushd target unknown)", a sentence about a `cd` the command does not contain. Measured
+on the witness `bash <<'(x'` / `echo hello` / an `x=$` line ending in a backslash / `(x`, which
+carries no cd, no push and no git word. `Block.ambiguous_reading` routes it to wording that names
+the real cause.
+
+Two later corrections to that routing, both measured:
+
+* The precedence is per RECORD, not per command. It used to be `ambiguous_reading and not is_push`
+  in `main`, where `is_push` is `carries_push` — true for ANY literal push including one this guard
+  allows. So the same witness with `git push origin main` appended (a push that is rc=0 on its own)
+  came back "refusing to push private 'dev' … the effective working directory could not be resolved
+  (cd/pushd target unknown)": two false claims in one sentence. `_find_block_reason` now holds a
+  marker refusal back and keeps walking, so a real refusable record still wins when there is one.
+* The marker is a string an OPERATOR CAN TYPE, so the subcommand test alone cannot tell a
+  synthesized record from `git '$<ambiguous-heredoc-reading>'`. The raw command text settles it —
+  a synthesized marker corresponds to no command text by construction.
+
+And the REMEDY the refusal prints is chosen from why the reading was lost (`guard_ambiguity`): the
+marker has two causes, a reading that RAISED and an exhausted parse BUDGET, and the fixed sentence
+this guard used to print named the one that does not occur in practice.
+
+A DEADLINE THIS PROCESS OWNS. `settings.json` registers this hook with a 60 s `timeout`; a hook
+that outlives its registration is killed silently, its output discarded, and the guarded command
+RUNS. One command under `MAX_COMMAND_LENGTH` was measured at 224.89 s here (172.40 s on shipped
+`dev`). `main` therefore arms a 50 s deadline of its own whose handler `os._exit(2)`s — see
+`scripts/lib/guard_deadline.py`, including why it cannot be a raise.
 """
 
 from __future__ import annotations
@@ -166,6 +198,12 @@ import traceback
 from pathlib import Path
 from types import ModuleType
 from typing import NamedTuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import guard_ambiguity  # noqa: E402
+import guard_deadline  # noqa: E402
+
+HOOK_NAME = "publication-push-guard.py"
 
 PREFIX = "publication-push-guard:"
 
@@ -206,19 +244,61 @@ class Block(NamedTuple):
     Neither of the two existing messages fits either case, so this is its own boolean rather than
     a third value squeezed onto `is_push` — the boundary could not be verified, so no publish
     from this repo can be judged, which is a statement about the gate, not about the target.
+
+    `ambiguous_reading` is a FOURTH category, and the one refusal none of the three above can
+    phrase honestly. The tokenizer signals a reading of the command it could not parse in-band, as
+    a synthetic invocation whose subcommand is `AMBIGUOUS_READING_SUBCOMMAND` and whose
+    `effective_dir` is None; that lands in `_judge_invocation`'s unresolvable-root arm, so the
+    refusal came out as "the effective working directory could not be resolved (cd/pushd target
+    unknown)" — a sentence about a `cd` for a command that contains no `cd`, no push and, on the
+    measured witness, no git word at all. It is the same class of mislabel the two booleans above
+    exist to prevent, one level further in: the reason is true of the SYNTHETIC record and false of
+    the command the operator wrote. It is its own flag rather than a value on `is_push` because the
+    two are orthogonal here.
+
+    "A command carrying a real refusal AND a lost reading keeps the alarming wording" survives, but
+    NOT through `is_push`: that is `carries_push`, true for any literal push including one this
+    guard ALLOWS, so gating on it printed a private-'dev' refusal for a command whose only push
+    targets `main`. The precedence is per RECORD, in `_find_block_reason`, which holds a marker
+    refusal back and keeps walking — see the PRECEDENCE note there.
+
+    `lost_cause` is set alongside it, and only ever reads the trails of the walk that already
+    happened. It picks the REMEDY printed with the refusal (`guard_ambiguity`) and decides nothing.
     """
 
     reason: str
     is_push: bool
     boundary_unverifiable: bool = False
+    ambiguous_reading: bool = False
+    # WHY a reading was lost, for `ambiguous_reading` refusals only: one of
+    # `guard_ambiguity`'s UNREADABLE / TRUNCATED / both / UNDETERMINED. It picks the
+    # REMEDY the refusal prints and nothing else -- no verdict here varies with it, which
+    # is the contract `iter_git_invocations_with_readings` states for its trails.
+    lost_cause: str = guard_ambiguity.UNDETERMINED
+
+
+def _explain_tool_clause() -> str:
+    """The sentence naming THIS guard's copy of the explain tool, or "" on any failure.
+
+    Non-raising by contract, like everything else reached from a block-emitting path here: an
+    exception escaping would exit 1, which `scripts/HOOKS.md` treats as noise rather than a veto,
+    so the guarded command would RUN. It needs no `git_command` import, which is why it is
+    separate from `_ambiguity_detail` rather than inlined there — this guard deliberately keeps
+    that module out of module scope, and the marker branch in `main` has no exception to describe.
+    """
+    try:
+        tool = Path(__file__).resolve().parent / "explain-git-command.py"
+        return f" For the full parse, run: python3 {tool} -"
+    except Exception:  # noqa: BLE001 - deliberate: a broken diagnostic must never unblock
+        return ""
 
 
 def _ambiguity_detail(exc: BaseException | None) -> str:
     """The shared location clause, plus THIS guard's path to the explain tool.
 
     The location logic lives in the tokenizer (`describe_ambiguity`) so both guards share one
-    non-raising implementation rather than two that can drift; the tool path is per-caller and is
-    resolved from this file, since a repo-relative string resolves to nothing from the deployed
+    non-raising implementation rather than two that can drift; the tool path is per-caller
+    (`_explain_tool_clause`), since a repo-relative string resolves to nothing from the deployed
     config farm.
     """
     try:
@@ -233,8 +313,7 @@ def _ambiguity_detail(exc: BaseException | None) -> str:
         clause = gitcmd.describe_ambiguity(exc)
         if not clause:
             return ""
-        tool = Path(__file__).resolve().parent / "explain-git-command.py"
-        return f"{clause} For the full parse, run: python3 {tool} -"
+        return f"{clause}{_explain_tool_clause()}"
     except Exception:  # noqa: BLE001 - deliberate: a broken diagnostic must never unblock
         return ""
 
@@ -2089,7 +2168,14 @@ def _find_block_reason(command: str, cwd: str) -> Block | None:
     # `main`'s internal-error branch and reads as a BUG in this guard rather than designed
     # ambiguity. Calling it here, still inside this `try`, is what keeps that routing correct.
     try:
-        invocations = list(gitcmd.iter_git_invocations_detailed(command, cwd))
+        # `iter_git_invocations_with_readings` rather than `iter_git_invocations_detailed`:
+        # SAME walk (the latter is literally this one with the trails dropped), so no second pass
+        # and no second ordering to fall out of step. The trails are used ONLY to name the cause
+        # in an ambiguity refusal's remedy -- never to decide anything.
+        invocation_list, trails = gitcmd.iter_git_invocations_with_readings(
+            command, cwd
+        )
+        invocations = list(invocation_list)
         exported = _exported_injection_reason(command, invocations, gitcmd)
     except ValueError as exc:
         raise AmbiguousCommand(str(exc)) from exc
@@ -2110,6 +2196,12 @@ def _find_block_reason(command: str, cwd: str) -> Block | None:
         # subcommand it would still falsely claim the guard could not judge the command, when in
         # both cases it judged the gate completely.
         return Block(exported, carries_push, boundary_unverifiable=True)
+
+    # A refusal produced by the tokenizer's in-band marker, held back in case a REAL refusable
+    # invocation turns up later in the walk — see the PRECEDENCE note below.
+    marker_block = None
+    # Whether the marker is in the OPERATOR's own text; see the `and not operator_marker` note.
+    operator_marker = gitcmd.AMBIGUOUS_READING_SUBCOMMAND in command
 
     for effective_dir, cdir, sub, seg, tokens in invocations:
         # BEFORE the known-safe shortcut, deliberately. `config` is known-safe, and the whole
@@ -2150,14 +2242,63 @@ def _find_block_reason(command: str, cwd: str) -> Block | None:
         root_dir = _combine(effective_dir, cdir)
         reason = _judge_invocation(root_dir, sub, seg, gitcmd, gitdir_override)
         if reason is not None:
+            # PRECEDENCE, per RECORD. A refusal produced by the tokenizer's in-band marker is
+            # remembered and the scan keeps going, so a command carrying BOTH a lost reading and
+            # a real refusable invocation reports the real one — which is the only one the
+            # operator can act on. `push-guard.py:_block_kind` states the identical rule for the
+            # stream-shaped side; this is its invocation-shaped twin.
+            #
+            # It replaces a command-level test (`ambiguous_reading and not is_push` in `main`)
+            # that was measured FALSE: `is_push` is `carries_push`, true for ANY literal push
+            # including one this guard would allow, so the witness `bash <<'(x'` / an `x=$` line
+            # ending in a backslash / `(x` / `git push origin main` was refused with "refusing to
+            # push private 'dev' (or an ambiguous target): the effective working directory could
+            # not be resolved (cd/pushd target unknown)" — two false claims in one sentence, on a
+            # command whose only push targets `main` (allowed on its own, rc=0) and which contains
+            # no `cd` and no `pushd`. Both came from the SYNTHETIC record. Shipped `dev` answers
+            # the same input honestly.
+            #
+            # The verdict cannot move: every arm here blocks, so continuing past a marker record
+            # either finds another blocking record (still rc 2) or falls through to the remembered
+            # marker (still rc 2). Only the message changes.
+            #
+            # UNCONSTRUCTED, stated as such, exactly like `push-guard.py:_block_kind`'s twin of
+            # this note. `_walk_context` appends a context's indeterminate invocation AFTER that
+            # context's own invocations, so on every shape measured the marker record arrives
+            # last and this hold-back never fires: five shapes were probed for a marker record
+            # PRECEDING a real one -- a top-level heredoc before a push, and the same heredoc
+            # inside `$( )`, backticks, another command's argument span, and a subshell -- and
+            # three raised outright while two put the marker last. Deleting the hold-back
+            # therefore changes nothing measurable today (its mutant SURVIVES the suite, recorded
+            # rather than papered over). It stays because the alternative is to depend on an
+            # ordering nobody has pinned, which is what the sibling guard already refused to do.
             # The WORDING is a claim about the whole command, not about the invocation that
             # happened to block first. `git -C "$live" frobnicate && git push origin dev` blocks
             # on `frobnicate`, whose is_push is False — but the command carries a literal push,
             # and "no push was identified" is then the exact inverse of the mislabel this split
             # exists to prevent. The verdict does not move (both arms block); only the message.
             carries_push = any(s == "push" for _d, _c, s, _g, _t in invocations)
-            return reason._replace(is_push=reason.is_push or carries_push)
-    return None
+            # `ambiguous_reading` is set HERE, on the one record that produced the refusal, rather
+            # than from "does this command contain a marker anywhere": a command can carry a lost
+            # reading AND block for an unrelated, fully-judged reason, and relabelling that refusal
+            # would be the same mislabel one step over.
+            #
+            # `and not operator_marker`: the marker is a string a person can TYPE, so the
+            # subcommand test alone cannot tell a synthesized record from `git
+            # '$<ambiguous-heredoc-reading>'`. A synthesized marker corresponds to no command text
+            # by construction, which is exactly what makes the raw text decisive. Same discriminator
+            # as `push-guard.py:_operator_typed_the_marker`, where it was measured.
+            block = reason._replace(
+                is_push=reason.is_push or carries_push,
+                ambiguous_reading=(
+                    gitcmd.subcommand_is_ambiguous_reading(sub) and not operator_marker
+                ),
+                lost_cause=guard_ambiguity.cause(gitcmd, command, trails),
+            )
+            if not block.ambiguous_reading:
+                return block
+            marker_block = marker_block if marker_block is not None else block
+    return marker_block
 
 
 def _record_internal_error(command: str, cwd: str, exc: BaseException) -> str | None:
@@ -2205,6 +2346,14 @@ def _record_internal_error(command: str, cwd: str, exc: BaseException) -> str | 
 
 def main() -> int:
     """Hook entry point: 2 blocks the push, 0 allows it."""
+    # FIRST, before the stdin read and both heavy tokenizer walks: a deadline this PROCESS owns.
+    # The harness kills a hook at its registered timeout, discards its output and tells nobody, so
+    # this gate killed at 60 s is SILENT and the push RUNS. Measured on a single command under
+    # MAX_COMMAND_LENGTH: 224.89 s here, 172.40 s on shipped `dev` (see `git_command.py`'s
+    # MAX_TOTAL_PARSES docstring, which files this deadline as the remedy). The handler `os._exit`s
+    # rather than raising, because the `opaque_only` arms below return 0 for ANY exception and
+    # would convert the deadline into an ALLOW — see `scripts/lib/guard_deadline.py`.
+    guard_deadline.install(HOOK_NAME)
     # HOOK CONTRACT: the target arrives as a JSON payload on stdin; argv is ignored. Refuse the
     # two invocations this cannot serve, because each otherwise reads as SUCCESS — with argv and
     # stdin at EOF it exits 0 having examined nothing, and with a terminal stdin it blocks
@@ -2326,6 +2475,48 @@ def main() -> int:
             print(
                 f"{PREFIX} refusing this git invocation -- this refusal is about the boundary "
                 f"itself, not the target: {reason.reason}",
+                file=sys.stderr,
+            )
+        elif reason.ambiguous_reading:
+            # A FOURTH category -- see `Block`'s docstring. The refusal came from the tokenizer's
+            # in-band marker for a reading it could not parse, so `reason.reason` is a sentence
+            # about the SYNTHETIC record ("the effective working directory could not be resolved")
+            # and false of the command the operator wrote: measured on the witness
+            # `bash <<'(x'` / `echo hello` / an `x=$` line ending in a backslash / `(x`, which
+            # carries no cd, no push and no git word at all. It is dropped rather than quoted.
+            #
+            # NO `and not reason.is_push` GUARD, deliberately, and its removal is a bug fix rather
+            # than a relaxation. `is_push` is the command-level `carries_push`, true for ANY
+            # literal push including one this guard would ALLOW, so that guard sent the witness
+            # `bash <<'(x'` / `x=$` + backslash / `(x` / `git push origin main` down the branch
+            # below and produced "refusing to push private 'dev' (or an ambiguous target): the
+            # effective working directory could not be resolved (cd/pushd target unknown)" --
+            # false about the target (`git push origin main` alone is rc=0 here) and false about
+            # the cause (the command has no `cd` and no `pushd`). The comment that used to sit
+            # here claimed such a command "keeps the alarming wording below, which is the one it
+            # can act on"; the tree falsified it, because the push was not what was being refused.
+            #
+            # "A real refusal outranks the marker" survives, moved to where it can be TRUE: it is
+            # now per RECORD, in `_find_block_reason`, which holds a marker refusal back and keeps
+            # walking. So a command carrying both still reports the real one; `reason` only
+            # reaches this branch when the marker is all there was.
+            print(
+                f"{PREFIX} refusing a git command because one READING of it could not be parsed. "
+                f"The command was therefore treated as possibly performing a push, rather than "
+                f"allowed unchecked. No env prefix authorizes it: the reading that was lost "
+                f"corresponds to no command text, so there is no segment for an override to lead "
+                f"-- and this gate does not honour ALLOW_PUSH=1 in any case. bash reads a heredoc "
+                f"whose last body line ends in a backslash two ways - dropping the continuation, "
+                f"or joining it onto the terminator - and only one of those readings parses here, "
+                f"so what the other one would have run is unknown. "
+                # The remedy is chosen from WHY the reading was lost, never fixed. The marker has
+                # TWO causes -- a reading that RAISED, and an exhausted parse BUDGET -- and the
+                # sentence that used to be hardcoded here named the one that does not occur in
+                # practice (6 of 6 real markers over 90,675 commands are the BUDGET cause; see
+                # `guard_ambiguity`). This guard already walked, so its TRAILS are passed in and
+                # nothing is re-walked.
+                f"{guard_ambiguity.remedy(reason.lost_cause)}"
+                f"{_explain_tool_clause()}",
                 file=sys.stderr,
             )
         elif reason.is_push:

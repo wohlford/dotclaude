@@ -144,13 +144,38 @@ def _resolvable_heredoc(command: str) -> str | None:
 
     Rather than re-implement `_walk_context`'s recursion here — the exact divergence the shared
     tokenizer exists to prevent, and a walk hardened over five published bricks — this narrows to the
-    provably unambiguous shape: exactly two contexts in total (the top level plus one child) and
-    exactly one top-level nested entry. Then the only possible index is 0 and it can only mean that
-    child. **That is precisely the shape `/commit` emits** (verified: streams=2, nested=1); anything
-    richer is skipped, which fails open.
+    provably unambiguous shape: exactly ONE child context and no GRANDchildren. Then the only
+    possible index is 0 and it can only mean that child. **That is precisely the shape `/commit`
+    emits**; anything richer is skipped, which fails open.
+
+    The shape test asks `split_command_contexts` because that is what it was ever really asking
+    about — context STRUCTURE. It used to ask `iter_context_token_streams` for a count of exactly
+    two, which asserted the same two things only while a context produced exactly one stream. Since
+    2026-09-19 that primitive enumerates the readings of an ambiguous heredoc, so a body whose last
+    line ends in an odd backslash run yields four streams and the old test bailed — skipping the
+    subject check on exactly the `/commit` form this guard exists for, silently. Both halves are
+    kept deliberately: dropping the grandchild half re-opens a measured false block, where
+    `x=$(cat <<'EOF' … EOF\n; git commit -m "$(gen)")` resolves the GRANDCHILD's placeholder as the
+    subject.
     """
-    if len(gitcmd.iter_context_token_streams(command)) != 2:
+    _masked_outer, contexts = gitcmd.split_command_contexts(
+        gitcmd.fold_continuations(
+            gitcmd.strip_comments(gitcmd.mask_heredoc_quotes(command))
+        ),
+        0,
+    )
+    if len(contexts) != 1:
         return None
+    _child_outer, grandchildren = gitcmd.split_command_contexts(
+        gitcmd.fold_continuations(
+            gitcmd.strip_comments(gitcmd.mask_heredoc_quotes(contexts[0].text))
+        ),
+        1,
+    )
+    if grandchildren:
+        return None
+    # Split the RAW text as well: `HEREDOC_RE` and `_is_literal` below must see the body as it was
+    # written, not with the mask pass's quote escapes in it.
     _outer, nested = gitcmd.split_command_contexts(
         gitcmd.fold_continuations(gitcmd.strip_comments(command)), 0
     )

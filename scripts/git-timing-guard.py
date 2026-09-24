@@ -86,9 +86,39 @@ corresponding update: landed in this same change (see its `jq-unavailable` arm b
 the new `python3-unusable` / `python3-lib-absent` arms replacing the FAIL that reasoning used to
 carry) — the two halves are only correct in combination, so they could not land separately.
 
+THE AMBIGUITY MARKER GETS ITS OWN MESSAGE. The tokenizer signals a reading of the command it could
+not parse in-band, as a synthetic `git <marker>` stream (`git_command._indeterminate_stream`), and
+`subcommand_is_indeterminate` is True for it — so `_segment_contains_push` treats it as a possible
+push and this gate examines the command. What `BLOCK_MESSAGE` then says is wrong twice over: it
+tells an operator whose command carries no push at all that they scheduled a publish, and it points
+at the window as the thing to wait for, when no `ALLOW_GIT_WRITE=1` can lead that record either
+(it corresponds to no command text, so its leading env-assignment run is empty by construction).
+Measured on the witness `bash <<'(x'` / `echo hello` / an `x=$` line ending in a backslash / `(x`,
+which carries no git word and no push: rc 2, "pushing is paused until <GUARD_END> local — publish
+after the window". The marker gets
+`AMBIGUOUS_READING_MESSAGE` instead, and a real push-shaped segment outranks it (see
+`_find_first_push`), so a command carrying both keeps the window wording.
+
+THE MARKER IS ALSO A STRING AN OPERATOR CAN TYPE. The test was MEMBERSHIP across every token
+position, while the tokenizer only ever emits it as a whole two-token segment, so a real push
+carrying it as an argument was relabelled as an ambiguity block; `_operator_typed_the_marker`
+settles the rest from the raw command text. Measured on push-guard's twin of these two functions,
+where the relabel also made the message false in so many words.
+
+AND ITS REMEDY IS CHOSEN FROM THE CAUSE. The marker is emitted both by a reading that RAISED and by
+an exhausted parse BUDGET; the fixed sentence this guard used to print named the first, and 6 of 6
+real markers over 90,675 commands are the second. See `scripts/lib/guard_ambiguity.py`.
+
+A DEADLINE THIS PROCESS OWNS, EXITING 0. This hook registers no `timeout`, so the harness default
+binds and a run that outlives it is killed silently. `main` arms a deadline below that default —
+but its handler exits 0, not 2, because this gate's whole contract is fail-OPEN on any internal
+error (condition 5 above, and the bare `except` around `main`). It changes no verdict; it bounds
+the wait and says why. See `scripts/lib/guard_deadline.py`.
+
 Exit codes:
   0 — allow (no policy, not a push, out of scope, inside the window, or any internal error).
-  2 — blocked: a push to a configured repo during the blocked window (stderr fed back to Claude).
+  2 — blocked: a push to a configured repo during the blocked window (stderr fed back to Claude),
+      or a command whose reading the tokenizer lost — stderr then carries the ambiguity message.
 """
 
 from __future__ import annotations
@@ -111,9 +141,52 @@ BLOCK_MESSAGE = (
     "window. Local commits and tags are not gated.\n"
 )
 
+# The message for a block the standard one would MISDESCRIBE. `BLOCK_MESSAGE` says "publish after
+# the window", which tells an operator whose command carries no push at all that they scheduled a
+# publish; and the one record behind this block corresponds to no command text, so no
+# ALLOW_GIT_WRITE=1 can lead it either (`git_command._indeterminate_stream` records why by
+# construction). Measured on the witness `bash <<'(x'` / `echo hello` / an `x=$` line ending in a
+# backslash / `(x`, which carries no git word and no push: rc 2 with the window wording.
+# It deliberately does NOT prescribe waiting. Waiting really would allow the command — the gate is
+# still window-scoped — but the refusal is about a reading of the command, and sending the operator
+# away for an hour to work around a quoting problem is exactly the unexplainable false block the
+# marker's own justification rules out.
+AMBIGUOUS_READING_MESSAGE = (
+    "blocked by git timing guard: one READING of this command could not be parsed, so the command "
+    "was treated as possibly performing a push — which is the only reason this publication-window "
+    "gate examined it at all. No env prefix authorizes it: the reading that was lost corresponds "
+    "to no command text, so there is no segment for ALLOW_GIT_WRITE=1 to lead. bash reads a "
+    "heredoc whose last body line ends in a backslash two ways - dropping the continuation, or "
+    "joining it onto the terminator - and only one of those readings parses here, so what the "
+    "other one would have run is unknown. {remedy}{tool}\n"
+)
+# `{remedy}` is filled from `guard_ambiguity.remedy(...)` at print time. The marker has TWO causes
+# -- a reading that RAISED, and an exhausted parse BUDGET -- and the sentence that used to be
+# hardcoded here named the one that does not occur in practice; see `guard_ambiguity`'s docstring
+# for the 6-of-6 measurement over 90,675 real commands.
+
 # The override token. Segment-scoped, matching push-guard.py's stricter reading — see the module
 # docstring's OVERRIDE IS SEGMENT-SCOPED paragraph.
 OVERRIDE_TOKEN = "ALLOW_GIT_WRITE=1"
+
+
+def _explain_tool_clause() -> str:
+    """The sentence naming THIS guard's copy of the explain tool, or "" on any failure.
+
+    Non-raising by contract: it is called from the block-emitting path, and per `scripts/HOOKS.md`
+    only exit 2 blocks, so an exception escaping here would exit 1 and the guarded command would
+    RUN. Per-caller for the reason `git_command.describe_ambiguity` records — the tokenizer
+    deliberately names no tool, because the path differs per caller — and resolved from `__file__`
+    rather than a repo-relative string, which resolves to nothing from the deployed config farm.
+    `__file__` is this .py even when reached through the `git-timing-guard.sh` shim, which `exec`s
+    into it.
+    """
+    try:
+        tool = Path(__file__).resolve().parent / "explain-git-command.py"
+        return f" For the full parse, run: python3 {tool} -"
+    except Exception:  # noqa: BLE001 - deliberate: a broken diagnostic must never unblock
+        return ""
+
 
 # The four characters the bash guard's `tr -d "\"' \\r"` deletes, WHEREVER they occur in the
 # value — not just at the edges. `tr -d` is a global deletion, not a trim, so a value like
@@ -268,19 +341,92 @@ def _leading_env_authorized(gitcmd, seg: list[str]) -> bool:
     return authorized
 
 
-def _find_first_push(gitcmd, command: str) -> tuple[bool, bool]:
+def _operator_typed_the_marker(gitcmd, command: str) -> bool:
+    """True when the OPERATOR's own text contains the tokenizer's reserved marker.
+
+    The marker is a string a person can type, so no test over a token STREAM can tell a
+    synthesized marker from a typed one — `git <push> origin main '$<ambiguous-heredoc-reading>'`
+    carries it as an ordinary refspec argument, and `git '$<ambiguous-heredoc-reading>'` produces
+    exactly the two-token segment `_indeterminate_stream` emits. The raw command text settles it,
+    because a synthesized marker corresponds to NO command text by construction — the premise
+    `AMBIGUOUS_READING_MESSAGE` states in so many words. `git_command.split_command_contexts`
+    takes the same posture one layer down for an operator-supplied `PLACEHOLDER_PREFIX`.
+
+    RESIDUAL, stated: a command that both types the marker AND genuinely loses a reading is
+    reported with the window wording rather than the ambiguity wording. It still blocks — the
+    synthesized segment is marker-subcommanded, so `_segment_contains_push` is True — so this
+    degrades a message, never a verdict. See `push-guard.py`'s twin for the measurement.
+    """
+    return gitcmd.AMBIGUOUS_READING_SUBCOMMAND in command
+
+
+def _segment_lost_a_reading(gitcmd, seg: list[str]) -> bool:
+    """True if `seg` IS the tokenizer's in-band AMBIGUITY MARKER — a reading of the command that
+    could not be parsed, or one the parse budget never tried.
+
+    STRUCTURAL, not a membership test over every token position. The earlier membership form
+    justified itself with "the marker reaches a stream only through
+    `git_command._indeterminate_stream`", and that claim is FALSE: the marker is ordinary text an
+    operator can type in any argument slot, so a real push carrying it was relabelled as an
+    ambiguity block. Measured on push-guard's twin of this function, where the relabel also made
+    the message false in so many words.
+
+    The property lives in the SEGMENT's shape: `_indeterminate_stream` emits exactly two tokens,
+    `['git', <marker>]`, with nothing before the `git` and nothing after the marker — its own
+    docstring says so, and both stream consumers close the final segment at `i == n`, so that list
+    IS one whole segment. This still cannot disagree with `_segment_contains_push` about which
+    invocation it found: on the two-token marker segment that function walks to index 1 and finds
+    the same token this one names.
+
+    Narrowing a matcher silently drops true positives, twice measured in this parser, so the shape
+    test is paired with a corpus of marker-producing commands that must STILL take the ambiguity
+    path — the marker rows in this suite, run before and after.
+    """
+    return (
+        len(seg) == 2
+        and gitcmd.is_git(seg[0])
+        and gitcmd.subcommand_is_ambiguous_reading(seg[1])
+    )
+
+
+def _find_first_push(gitcmd, command: str) -> tuple[bool, bool, bool]:
     """Scan every command context's token stream (`iter_context_token_streams`, outermost first,
     depth-first into what it contains — see that function's docstring) for the FIRST segment that
     contains a push in command position.
 
+    The THIRD value is about the MESSAGE only and cannot move the verdict. `found`/`authorized`
+    still come from the FIRST push-carrying segment, whichever that was: reading authorization
+    from a later segment instead would let a phantom authorization return 0, which is the exact
+    failure the primary-stream-first invariant exists to prevent. What the scan does gain is that
+    it no longer stops at a marker — it keeps looking for a segment carrying a REAL push-shaped
+    invocation, and reports `False` if it finds one, so a command holding both keeps the standard
+    window wording whose remedy that command really has. Ordinary commands pay nothing: a real
+    push still returns at the first segment that carries it.
+
+    Why not just rely on the marker arriving LAST: `iter_context_token_streams` appends a
+    context's marker after that context's own streams AND its children's, which reads as "a push
+    always comes first" — but a sibling ordering is visible in `_collect`'s structure (a child's
+    marker is appended before the next sibling's streams are collected), so the guarantee is not
+    the whole one it looks like. UNCONSTRUCTED, stated as such: six adversarial shapes were probed
+    for a marker preceding a push stream and none produced one — five raised outright, the sixth
+    put the marker last. So this is a cheap invariant asserted here rather than a defect anyone
+    has witnessed, and the message no longer depends on an ordering nobody has pinned.
+
     Returns:
-        (found, authorized) — found is False if no push exists anywhere in the command (both
-        values in that case are then meaningless); otherwise authorized reflects only the ONE
-        segment that carries the first push found, per `_leading_env_authorized`.
+        (found, authorized, lost_reading) — found is False if no push exists anywhere in the
+        command (the other two are then meaningless); authorized reflects only the ONE segment
+        that carries the first push found, per `_leading_env_authorized`; lost_reading is True
+        when that segment was the tokenizer's ambiguity marker and no real push-shaped segment
+        was found anywhere.
 
     Raises:
         ValueError: on tokenizing ambiguity — the caller decides that means allow (fail open).
     """
+    found = False
+    authorized = False
+    lost_reading = False
+    # Computed ONCE over the raw text: it is a property of the command, not of a segment.
+    typed = _operator_typed_the_marker(gitcmd, command)
     for stream in gitcmd.iter_context_token_streams(command):
         seg_start = 0
         n = len(stream)
@@ -288,9 +434,15 @@ def _find_first_push(gitcmd, command: str) -> tuple[bool, bool]:
             if i == n or gitcmd.is_op(stream[i]):
                 seg = stream[seg_start:i]
                 if _segment_contains_push(gitcmd, seg):
-                    return True, _leading_env_authorized(gitcmd, seg)
+                    marker = not typed and _segment_lost_a_reading(gitcmd, seg)
+                    if not found:
+                        found = True
+                        authorized = _leading_env_authorized(gitcmd, seg)
+                        lost_reading = marker
+                    if not marker:
+                        return found, authorized, False
                 seg_start = i + 1
-    return False, False
+    return found, authorized, lost_reading
 
 
 def _combine_dir(base: str | None, cdir: str | None) -> str | None:
@@ -441,7 +593,24 @@ def _within_window(start: str, end: str, days: str) -> bool:
 
 
 def main() -> int:
-    # INVOCATION CONTRACT, FIRST, before anything else — asserted for every registered hook by
+    # A deadline this PROCESS owns, armed before anything else so it covers the stdin read and
+    # both tokenizer walks. This guard registers no `timeout`, so the harness default binds, and
+    # its deadline EXITS 0 — the documented contract here is fail-OPEN on any internal error, so
+    # exit 2 would be a new class of block rather than the same verdict sooner. What it buys is a
+    # bounded wait and a line saying why, instead of a command that stalls for the whole harness
+    # default and is then allowed with nothing printed. See `scripts/lib/guard_deadline.py`.
+    #
+    # It is armed ABOVE the "no policy file" early return even though that return is the 99.99%
+    # path: `guard_deadline` and `settings_hooks` are two small pure-Python modules, nothing like
+    # the tokenizer import that return exists to avoid, and a deadline armed after the returns
+    # would not cover the reads that reach them.
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+    import guard_deadline  # noqa: E402 (deliberately lazy, not top-level)
+
+    guard_deadline.install(HOOK_NAME)
+
+    # INVOCATION CONTRACT, before anything that reads stdin or the policy file (the deadline
+    # above it neither reads nor decides) — asserted for every registered hook by
     # scripts/tests/test_hook_argv_refusal.py. Claude Code always invokes this with no arguments
     # and a piped JSON payload, so neither branch below changes any live verdict; they only stop
     # a malformed invocation from reading as a clean pass (argv, stdin at EOF -> exit 0 having
@@ -503,7 +672,7 @@ def main() -> int:
     import git_command as gitcmd  # noqa: E402 (deliberately lazy, not top-level)
 
     try:
-        found, authorized = _find_first_push(gitcmd, command)
+        found, authorized, lost_reading = _find_first_push(gitcmd, command)
     except ValueError:
         # AMBIGUITY POSTURE: fail OPEN, explicitly -- see the module docstring. push-guard.py
         # covers a publish hidden in an unparseable command regardless of what this guard does.
@@ -524,7 +693,25 @@ def main() -> int:
         return 0
 
     if _within_window(start, end, days):
-        sys.stderr.write(BLOCK_MESSAGE.format(end=end))
+        if lost_reading:
+            # The remedy is chosen from WHY the reading was lost. This guard's own primitive
+            # (`iter_context_token_streams`) returns no trails, so `guard_ambiguity.cause` walks a
+            # second time -- paid only here, on a path already emitting a block, and bounded by
+            # the deadline armed at the top of `main`. It is contractually non-raising, which
+            # matters more here than anywhere: this guard's whole contract is fail-OPEN, so a
+            # raise would exit 0 and the block would silently not happen.
+            import guard_ambiguity  # noqa: E402 (lazy, beside the tokenizer it consults)
+
+            sys.stderr.write(
+                AMBIGUOUS_READING_MESSAGE.format(
+                    remedy=guard_ambiguity.remedy(
+                        guard_ambiguity.cause(gitcmd, command)
+                    ),
+                    tool=_explain_tool_clause(),
+                )
+            )
+        else:
+            sys.stderr.write(BLOCK_MESSAGE.format(end=end))
         return 2
     return 0
 
