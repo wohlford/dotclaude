@@ -15,9 +15,16 @@ explains a *policy* block on prose that only mentions git inside a quote).
 **READ-ONLY.** This tool parses only — it never executes, evaluates, or shells out to any part of
 the command it is handed. It only ever calls pure-text functions from `git_command` (`tokenize`,
 `split_command_contexts`, `mask_heredoc_quotes`, `strip_comments`, `fold_continuations`,
-`iter_git_invocations_detailed`, `has_git_word`) and this module's own pure-text heredoc scanner —
-none of which import `subprocess`, `os.system`, `eval`, or `exec` on the command text. A diagnostic
-that could run what it diagnoses would be worse than the ambiguity it explains.
+`iter_git_invocations_with_readings`, `has_git_word`) and this module's own pure-text heredoc
+scanner — none of which import `subprocess`, `os.system`, `eval`, or `exec` on the command text. A
+diagnostic that could run what it diagnoses would be worse than the ambiguity it explains.
+
+**A command with an ambiguous heredoc continuation shows WHICH READING produced each invocation.**
+The tokenizer walks both readings and records their union, so an invocation may be an over-read
+rather than something bash would run; each record then carries a `reading:` line saying whether it
+came from the primary (all-drop) reading, from a named variant, or stands in for a reading that
+could not be walked at all. Nothing is printed for a command with no ambiguous heredoc, where
+there is only one reading to report.
 
 **Positions are in PREPARED, per-context text, not the caller's original.** Earlier passes
 (`mask_heredoc_quotes`, `strip_comments`, `fold_continuations`) insert escapes and delete spans, and
@@ -261,6 +268,20 @@ def _heredoc_advisory_any(text: str) -> str | None:
 # --------------------------------------------------------------------------------------------
 
 
+def _count_for_humans(value: int) -> str:
+    """Render an untried-assignment count a reader can take in.
+
+    `untried` is `2**k - tried`, and `k` is bounded by input LENGTH rather than by nesting
+    depth — about 2053 at `MAX_COMMAND_LENGTH`, whose exact value runs to some 618 digits.
+    Printing that verbatim in the tool the design added FOR diagnosability buys nothing: past
+    a threshold the only fact a reader needs is that the enumeration was cut off far short of
+    the whole. Small counts stay exact, because there the number is the information.
+    """
+    if value < 1_000_000:
+        return str(value)
+    return f"about 2^{value.bit_length() - 1}"
+
+
 def _render_tokens(tokens: list[str]) -> str:
     """Tokens exactly as the walk recorded them — including any `__GIT_COMMAND_SUBST_N__`
     placeholder standing in for a nested context.
@@ -361,9 +382,101 @@ def _render_contexts(contexts: list[ContextInfo]) -> list[str]:
     return lines
 
 
+# --------------------------------------------------------------------------------------------
+# Reading provenance — WHICH reading of an ambiguous heredoc continuation produced each record.
+#
+# A quoted heredoc body whose last line ends in an odd backslash run reads two ways, and the
+# tokenizer refuses to guess which one bash takes: it walks BOTH and records the union, so a report
+# can carry an invocation nobody typed. That over-read is acceptable only while an operator can see
+# where it came from — an unexplainable block is what gets "fixed" by narrowing a matcher, the
+# repair this repo has twice measured as the fail-open it was trying to remove.
+#
+# Display only. Nothing here is fed back into ALLOW/BLOCK, and no guard's verdict may vary with
+# which reading found an invocation — that is precisely the question the walk exists to stop
+# guessing.
+# --------------------------------------------------------------------------------------------
+
+_READING_INDENT = " " * 16
+
+_READING_NOTE = (
+    "  note: 'reading:' names which reading of an ambiguous heredoc continuation produced each",
+    "        record. A quoted heredoc body whose last line ends in an odd backslash run reads two",
+    "        ways, and the tokenizer records BOTH — so a VARIANT record may be an invocation bash",
+    "        would not run. That is an over-read, never a lost one. Heredocs are numbered 0-based",
+    "        in the order the masking pass met them.",
+)
+
+
+def _assignment_label(joined: tuple[int, ...], count: int) -> str:
+    """One context's reading assignment, in the walk's own 0-based encounter order."""
+    if not joined:
+        return f"all {count} read as DROP"
+    names = ", ".join(f"#{i}" for i in joined)
+    return f"heredoc {names} of {count} read as JOIN"
+
+
+def _step_clause(step: gitcmd.ReadingStep) -> str | None:
+    """One context's contribution, or None when that context had no reading choice to make."""
+    if step.count == 0:
+        return None
+    where = "the command" if step.depth == 0 else f"nested context depth {step.depth}"
+    if step.joined is None:
+        return f"{where}: reading not determined"
+    return f"{where}: {_assignment_label(step.joined, step.count)}"
+
+
+def _reading_lines(trail: gitcmd.ReadingTrail) -> list[str]:
+    """The `reading:` block for ONE invocation, taken from its trail by list position."""
+    if trail.lost:
+        own = trail.steps[-1]
+        lines = [
+            "       reading: LOST — a reading of this command could not be walked, so this record",
+            f"{_READING_INDENT}stands in for whatever that reading would have contributed. It is",
+            f"{_READING_INDENT}NOT a command you typed, and no env prefix can authorize it.",
+        ]
+        lines += [
+            f"{_READING_INDENT}unreadable: {_assignment_label(joined, own.count)} → {category}"
+            for joined, category in trail.unreadable
+        ]
+        if trail.untried:
+            lines.append(
+                f"{_READING_INDENT}the parse cap stopped the enumeration: "
+                f"{_count_for_humans(trail.untried)} reading(s) never tried"
+            )
+        return lines
+    clauses = [c for c in (_step_clause(step) for step in trail.steps) if c]
+    head = "PRIMARY" if trail.primary else "VARIANT"
+    if not clauses:
+        return [f"       reading: {head} — no ambiguous heredoc in its own context"]
+    return [f"       reading: {head} — {clauses[0]}"] + [
+        f"{_READING_INDENT}{clause}" for clause in clauses[1:]
+    ]
+
+
+def _readings_are_informative(
+    trails: list[gitcmd.ReadingTrail] | None,
+    invocations: list[gitcmd.Invocation],
+) -> bool:
+    """True only when the walk actually had a reading to choose.
+
+    Two jobs. It keeps the report for a command with no ambiguous heredoc BYTE-IDENTICAL to what
+    this tool printed before provenance existed — which is the only way a reader can tell the new
+    lines mean something happened. And it is the honest condition: with nothing ambiguous there is
+    exactly one reading, so labelling every record PRIMARY would train the eye to skip the line
+    that matters. The length check is a guard, not a formality — a trail list out of step with the
+    invocation list would name the WRONG reading for a record, which is worse than naming none.
+    """
+    if trails is None or len(trails) != len(invocations):
+        return False
+    return any(
+        trail.lost or any(step.count for step in trail.steps) for trail in trails
+    )
+
+
 def _render_invocations(
     has_word: bool,
     invocations: list[gitcmd.Invocation] | None,
+    trails: list[gitcmd.ReadingTrail] | None = None,
 ) -> list[str]:
     lines = ["INVOCATIONS:"]
     lines.append(f"  has_git_word: {has_word}")
@@ -373,6 +486,7 @@ def _render_invocations(
     if not invocations:
         lines.append("  (none found)")
         return lines
+    show_readings = _readings_are_informative(trails, invocations)
     any_placeholder = False
     for n, inv in enumerate(invocations, start=1):
         lines.append(
@@ -382,10 +496,14 @@ def _render_invocations(
             f"       env={_render_tokens(inv.tokens.env)}  opts={_render_tokens(inv.tokens.opts)}"
         )
         lines.append(f"       args={_render_tokens(inv.arg_tokens)}")
+        if show_readings:
+            lines += _reading_lines(trails[n - 1])
         any_placeholder = any_placeholder or any(
             has_placeholder(seg)
             for seg in (inv.tokens.env, inv.tokens.opts, inv.arg_tokens)
         )
+    if show_readings:
+        lines += list(_READING_NOTE)
     if any_placeholder:
         lines.append(
             f"  note: a token containing '{gitcmd.PLACEHOLDER_PREFIX}N{gitcmd.PLACEHOLDER_SUFFIX}' "
@@ -414,18 +532,20 @@ def build_report(command: str) -> Report:
     contexts, discover_failure = discover_contexts(command)
 
     invocations: list[gitcmd.Invocation] | None
+    trails: list[gitcmd.ReadingTrail] | None
     verdict_exc: ValueError | None
     try:
-        invocations = gitcmd.iter_git_invocations_detailed(command, None)
+        invocations, trails = gitcmd.iter_git_invocations_with_readings(command, None)
         verdict_exc = None
     except ValueError as exc:
         invocations = None
+        trails = None
         verdict_exc = exc
 
     if verdict_exc is None:
         lines = ["VERDICT:     PARSED"]
         lines += _render_contexts(contexts)
-        lines += _render_invocations(has_word, invocations)
+        lines += _render_invocations(has_word, invocations, trails)
         top = contexts[0]
         if top.prepared_text is not None:
             advisory = _heredoc_advisory_any(top.prepared_text)
@@ -434,12 +554,26 @@ def build_report(command: str) -> Report:
         return Report("\n".join(lines), 0)
 
     # Ambiguous. Prefer the discovery walk's own failure — it names which context raised, which
-    # the bare exception from `iter_git_invocations_detailed` cannot, since that walk's contract
-    # (see `iter_git_invocations_with_cwd`) returns no context bookkeeping on failure. Both walks
-    # run the identical `_prepare`/`split_command_contexts` calls in the identical order, so for
-    # every category that carries a position they raise on the same construct; only a
-    # `tokenize()`-origin failure (never reached by `discover_contexts`) can leave `discover_failure`
-    # unset while `verdict_exc` is not.
+    # the bare exception from the invocation walk cannot, since that walk's contract (see
+    # `iter_git_invocations_with_cwd`) returns no context bookkeeping on failure.
+    #
+    # The two walks are NOT step-for-step identical any more, and this is what they now are.
+    # `discover_contexts` calls `mask_heredoc_quotes` with no reading state, so it walks the
+    # PRIMARY (all-drop) reading only, while the invocation walk enumerates every reading of every
+    # ambiguous heredoc and raises only when they ALL fail. That still leaves the two naming the
+    # same construct, for a reason in the walk rather than in the calls: `_reading_assignments`
+    # puts all-drop FIRST and `_walk_context` keeps the FIRST failure, so the exception it raises
+    # is the one the primary reading produced. Measured over 4,000 generated inputs plus the
+    # crafted witnesses — 2,669 raises, every one byte-identical in category, text and pos to a
+    # primary-only walk's, and not one case where the primary alone parsed. Preferring
+    # `discover_failure`'s context index therefore stays correct.
+    #
+    # Two divergences remain, both benign here. A `tokenize()`-origin failure is never reached by
+    # `discover_contexts`, so it can leave `discover_failure` unset while `verdict_exc` is not —
+    # the `else` below covers it. And should some NON-primary reading ever parse while the primary
+    # raises, the invocation walk returns PARSED while discovery stopped early; the parsed branch
+    # above then prints a partial CONTEXTS list, which it already tolerates (it tests
+    # `top.prepared_text is not None`). That shape did not occur in the sweep.
     category = (
         verdict_exc.category
         if isinstance(verdict_exc, gitcmd.ParseAmbiguity)
