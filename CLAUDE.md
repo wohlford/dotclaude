@@ -285,6 +285,29 @@ left legal.
   answered truthfully whenever asked. **Re-read before every claim about liveness**; "it is still
   going" is a measurement carrying a timestamp, never remembered state.
 
+#### The probe you built is not the thing that ships
+
+- **A probe that RE-IMPLEMENTS the subject's control flow measures a program that does not ship.**
+  Not the wrong-subject case: the right module, the right functions, and the answer is still about
+  a loop the code never runs. Measured: to count a guard's git subprocesses the probe rebuilt its
+  per-invocation loop and dropped the known-safe `continue` the shipped loop applies first,
+  charging 1,400 spawns where the real function spends 800 — identical on both sides of the change
+  it was meant to price. The figure was already written into a durable record when a peer's
+  contradicting number forced a re-derivation through the shipped entry point. Call the subject's
+  OWN entry point and instrument around it. Its own failure mode: an entry point that does too much
+  may be unreachable in isolation, and the honest move is then to report the number as unmeasured
+  rather than to rebuild the loop and price the rebuild.
+- **A deployment check whose verdict is the SAME before and after the deployment tells you nothing
+  about which version is installed.** It fires and it passes, so every *did it run* remedy clears
+  it, and the pass reads as confirmation. Measured: after promoting a config repo to production,
+  three guard cases — a benign command allowed, a private-branch push blocked, a bare push blocked
+  — all passed and were reported to the operator as the new code being live; all three are
+  byte-identical on the old code, so the promote could have silently not happened. The
+  discriminating probe exercises a behaviour the OLD version has no route to at all: a deadline
+  override returned rc=2 naming the deadline. Choose the check by asking what the old version would
+  have answered. Its own failure mode: a new-only behaviour can be absent for an unrelated reason —
+  a flag, an env override — so it proves the new code is PRESENT, never that the rest of it works.
+
 #### A second run proves less than it looks like
 
 - **A second instrument AGREEING is not a second measurement when it inherits the same harness —
