@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.111.2 — 2026-09-17
+- docs(CLAUDE.md): point bulk edits at bulk_edit.py
+
 ## v0.111.1 — 2026-09-17
 - test(bulk_edit): add its mutation campaign
 

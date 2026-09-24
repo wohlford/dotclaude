@@ -99,6 +99,13 @@ the RED→GREEN rule below sends you to do — use `~/.claude/scripts/lib/mutate
 the `(label, old, new)` list. Ten were hand-rolled and discarded before it existed, each
 re-derivation dropping a different safety property; worst was the unmutated BASELINE, absent from 7
 of 8 — without it an already-red suite scores every mutation CAUGHT and the sweep reads flawless.
+Before hand-writing a script that applies OLD→NEW edits across files, use
+`~/.claude/scripts/lib/bulk_edit.py`, supplying only the `Edit` list: it judges every file in
+memory before writing any. Four such scripts were hand-written in one session
+before it existed, each re-typing the anchor refusal and running every other check by hand.
+Its already-applied check is the costliest to get wrong: an insertion's re-run finds its anchor
+once more and inserts the text twice, and a first draft judging all edits at once still did so on
+a file with one edit made and one not — both measured.
 And before backgrounding a check that outruns the tool timeout, use `~/.claude/scripts/run-long.sh`
 rather than a wrapper of your own — it is the shipped remedy for the killed-run and
 graded-the-launch-tree hazards below, and you read its verdict back with `--status`, never from the
