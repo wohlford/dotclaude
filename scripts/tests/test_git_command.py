@@ -212,9 +212,14 @@ def test_continuation_mid_arguments_is_folded():
     assert got == [(None, "push", ["origin", "dev"])]
 
 
-def test_continuation_with_crlf_is_folded():
+def test_a_backslash_before_crlf_is_not_a_continuation():
+    # This row used to assert the opposite -- that `\` + CRLF folds like `\` + LF. bash never
+    # does: the backslash escapes the CR and the LF still ends the command (measured, bash 3.2.57
+    # and 5.3.15: `echo a\` + CRLF + `git status` ran git). Folding it once hid a real invocation
+    # at both push guards. Here git runs with a lone CR as its subcommand, and the next line is a
+    # separate command that is not git at all.
     got = git_command.iter_git_invocations("git \\\r\n  push origin dev")
-    assert got == [(None, "push", ["origin", "dev"])]
+    assert [sub for _c, sub, _s in got] == [" "]
 
 
 def test_real_newline_still_separates_commands():
@@ -774,6 +779,145 @@ def test_cd_to_a_substitution_target_is_unresolvable():
     assert push[0] is None
 
 
+def test_a_long_relative_cd_chain_makes_the_cwd_unresolvable_rather_than_slow():
+    """A tracked cwd that grows without bound is a DENIAL-OF-GUARD, not a cosmetic cost.
+
+    `_resolve_cd` joins each relative target onto the path so far, so N relative `cd`s cost O(N^2)
+    in one walk -- and this module now walks a context once per reading variant, up to
+    `MAX_TOTAL_PARSES`. Measured 2026-09-22 before the bound: a 65,533-byte command carrying 13,083
+    `cd x;` hops and ONE push took 83.6 s in `iter_git_invocations_detailed` (0.63 s on the
+    pre-change tokenizer) and drove the real `publication-push-guard.py` to 102.8 s against the
+    60 s timeout `settings.json` registers for it. A PreToolUse hook killed at its timeout is
+    silent and the command RUNS, so the guard reached `refusing to push` and was killed before it
+    could say it.
+
+    Past the bound the answer is None -- *unresolvable* -- which is the conservative answer this
+    function already returns for `cd -`, `cd "$VAR"` and `cd "$(...)"`, and which makes a push
+    block rather than pass. No real directory approaches the bound: `PATH_MAX` is 1024 on Darwin
+    and 4096 on Linux.
+    """
+    deep = "cd verylongdirectorysegment;" * 400
+    result = git_command.iter_git_invocations_with_cwd(
+        deep + "git push origin dev", "/repo"
+    )
+    push = next(r for r in result if r[2] == "push")
+    assert push[0] is None, (
+        "a cd chain past the bound must read as unresolvable, not as an invented directory"
+    )
+
+
+def test_a_long_relative_cd_chain_does_not_make_the_walk_superlinear():
+    """TIMING-SENSITIVE: read a failure here as possibly the MACHINE before the code.
+
+    The companion to the row above. That one pins the VALUE, which is what actually protects the
+    guard; this one pins the COST, because the value could be right while the walk still spends
+    minutes reaching it.
+
+    Sized from measurement, at the smallest k that still separates the two clearly. The witness
+    deliberately does NOT use k=7 (the 128-parse shape that produced the 83.6 s figure): about
+    24 s of that is 128 parses of a 65 KB command, which is `MAX_TOTAL_PARSES`'s documented price
+    and which no cwd bound can remove -- a budget sized against it would fail this row for a
+    reason it does not name. With `MAX_TRACKED_CWD` monkeypatched away, same input:
+
+        k=2 (4 parses)   0.80 s bounded vs  2.71 s unbounded   3.4x
+        k=3 (8 parses)   1.56 s bounded vs  5.27 s unbounded   3.4x
+        k=4 (16 parses)  3.17 s bounded vs 10.49 s unbounded   3.3x
+
+    6.5 s is ~2x the bounded time, leaving room for a busy machine, and still fails on the
+    unbounded one. The push is found in every cell, so a fast MISS cannot pass for a fast pass.
+    """
+    import time
+
+    # k ambiguous heredocs => 2**k assignments, every one of which PARSES, so every one re-walks
+    # the cd chain. A single walk of that chain costs ~0.2 s even unbounded, which is why an
+    # earlier draft of this row -- one walk, no heredocs -- passed before the fix and pinned
+    # nothing. The multiplier is what makes the quadratic visible.
+    head = "cat <<'E'\n\\\nE\n" * 4
+    command = head + "cd x;" * 13083 + "git push origin dev\n"
+    assert len(command) <= git_command.MAX_COMMAND_LENGTH, len(command)
+    start = time.perf_counter()
+    subs = [
+        i.subcommand
+        for i in git_command.iter_git_invocations_detailed(command, "/repo")
+    ]
+    elapsed = time.perf_counter() - start
+    assert "push" in subs, (
+        "the walk must still FIND the push -- a fast miss is not a pass"
+    )
+    assert elapsed < 6.5, f"walked in {elapsed:.1f}s; unbounded, this shape takes 10.5s"
+
+
+def test_an_unmatched_opener_in_an_unquoted_body_does_not_blind_the_whole_command():
+    """CAPABILITY PRESERVATION, in the fold pass: do not widen a body into a parse refusal.
+
+    An odd backslash run before a backtick or `$(` means the outer shell passes the opener through
+    as TEXT and the consumer shell decides. Emitting the bare opener is right when something in the
+    body closes it -- then the consumer really can run a substitution and the walk must descend.
+    When NOTHING closes it, no consumer shell can open one either (it is a syntax error there, and
+    literal text to the outer shell), so emitting it buys no capability and costs the whole
+    command: `split_command_contexts` raises, two guards then fail closed on ordinary prose and the
+    timing guard fails OPEN, losing a push the pre-change tokenizer saw.
+
+    `Don\\`t` is the only legal spelling of a literal backtick in an unquoted body, so this is not
+    an adversarial shape -- it is how anyone writes an apostrophe-free contraction into a file.
+    """
+    for body in ("Don" + _BS + "`t", "cost " + _BS + "$(5"):
+        command = f"cat <<EOF\n{body}\nEOF\ngit push origin dev"
+        subs = [sub for sub, _args in _pairs(command)]
+        assert "push" in subs, (body, subs)
+
+
+def test_a_matched_opener_in_an_unquoted_body_is_still_walked():
+    """The other side of the rule above -- the half that must NOT change.
+
+    A backslash-escaped opener the body goes on to CLOSE is a real substitution for the consumer
+    shell, and this module has always descended into it. Narrowing the fix to unmatched openers is
+    what keeps that true; a rule keyed on "is it escaped" rather than "is it closed" would drop it.
+    """
+    body = "x " + _BS + "`git push origin dev`"
+    subs = [sub for sub, _args in _pairs(f"cat <<EOF\n{body}\nEOF\n")]
+    assert "push" in subs, subs
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # A literal backslash, not `_BS`: this decorator is evaluated at IMPORT time and `_BS` is
+        # defined further down the file, so the module would not load.
+        "x\\`git push origin dev",  # glued: the escaped opener abuts the git word
+        "x\\` git push origin dev",  # a space does not save it either
+    ],
+)
+def test_an_unclosed_opener_hides_nothing_and_still_parses(body):
+    """Reporting NO invocation behind an unclosed opener is correct; RAISING is what was wrong.
+
+    Nothing can run behind an opener the body never closes -- the outer shell passes it through as
+    text, and the consumer shell meets a syntax error -- so a tokenizer that reports no invocation
+    here is right, and this is byte-for-byte what the pre-change tokenizer does (measured: `-` on
+    both sides, before and after this fix).
+
+    So the claim is NOT "the push must be found", which an earlier draft of this row asserted from
+    a model rather than a measurement. It is that the command must still PARSE: the regression this
+    fix removes made the whole command raise, which two guards turn into a false block and the
+    timing guard turns into a fail-open. `parses` is the discriminator, because the no-push
+    assertion alone passes vacuously on exactly the raise being removed.
+
+    Related but distinct: the 2026-09-03 record's Killed design 2 measured a real fail-open from
+    ADDING an escape to a raw unterminated opener -- the escape took command position and swallowed
+    the `git` behind it. Nothing is added here, so that shape is not reachable from this change;
+    the row below the parametrize list is what keeps a closed opener genuinely walked.
+    """
+    command = f"cat <<EOF\n{body}\nEOF\n"
+    subs = [
+        sub for sub, _args in _pairs(command)
+    ]  # must not raise -- that IS the assertion
+    assert "push" not in subs, (
+        "an unclosed opener must not manufacture an invocation nothing executes",
+        body,
+        subs,
+    )
+
+
 def test_nested_invocations_are_reported_before_their_host_command():
     """Bash evaluates a substitution BEFORE running the command whose arguments carry it."""
     subs = _subs('git commit -m "$(git push origin dev)"')
@@ -876,9 +1020,15 @@ def test_backslash_terminated_comment_does_not_eat_the_next_line():
 
 
 def test_both_primitives_agree_on_the_same_string():
-    """The two primitives must never disagree — a drifted build made them return opposite verdicts.
+    """The two primitives must never disagree about whether a string PARSES — a drifted build made
+    them return opposite verdicts.
 
-    No other test drives `iter_context_token_streams`, which is exactly how that drift survived.
+    Scope, corrected: this row asserts RAISE parity and nothing else. It says nothing about whether
+    the two agree on what a context CONTAINS, and while its docstring claimed the broader thing the
+    row stayed green through a measured content disagreement — the walk recorded the ambiguity
+    marker for a lost reading and `iter_context_token_streams` dropped it silently, which turned a
+    `dev` push-guard BLOCK into an ALLOW. The content half is asserted by
+    `test_both_primitives_carry_the_same_in_band_marker`; this row is not a substitute for it.
     """
     for command in (
         'x="$(echo hi  # note\ngit status)"',
@@ -1644,3 +1794,424 @@ def test_is_git_is_linear_on_a_pathological_word(word):
     start = time.perf_counter()
     git_command.is_git(word)
     assert time.perf_counter() - start < 0.2
+
+
+# ---------- line continuations: fold only where bash does (2026-09-18) ----------
+#
+# Every expectation below was measured against bash 3.2.57 AND 5.3.15 with a fake `git` that logs
+# its argv. RED rows failed on the tokenizer before this change; PRESERVE rows passed then and pin
+# behaviour the change had to keep. The push verb is assembled, as elsewhere in this file.
+
+_FV = "pu" + "sh"
+_BS = "\\"
+
+
+def _pairs(command):
+    return [(inv.subcommand, inv.arg_tokens) for inv in _invs(command)]
+
+
+@pytest.mark.parametrize(
+    ("command", "want"),
+    [
+        # RED: an ESCAPED backslash before a newline is not a continuation; bash runs the push.
+        (f"echo a{_BS * 2}\ngit {_FV} origin dev", [(_FV, ["origin", "dev"])]),
+        # RED: a backslash before CRLF escapes the CR; the LF still ends the command.
+        (f"echo a{_BS}\r\ngit {_FV} origin dev", [(_FV, ["origin", "dev"])]),
+        # PRESERVE: an odd run IS a continuation.
+        (f"echo a{_BS}\ngit status", []),
+        (f"echo a{_BS * 3}\ngit status", []),
+        (f"git {_BS}\n  {_FV} origin dev", [(_FV, ["origin", "dev"])]),
+        # RED: a QUOTED body's last-line continuation is DROPPED by the consumer shell at the top
+        # level, never glued onto the terminator (the fuzzy target matcher used to hide the
+        # mangled refspec). That is what bash ran, and it leads the list because the all-drop
+        # reading is the PRIMARY variant. Since 2026-09-19 the joined reading follows it: the
+        # tokenizer no longer asks a context question to pick one, so it records both everywhere.
+        # The extra record is an over-read (a false block at worst); losing the join would be a
+        # bypass, since only the join can produce `devEOF`.
+        (
+            f"bash <<'EOF'\ngit {_FV} origin dev{_BS}\nEOF",
+            [(_FV, ["origin", "dev"]), (_FV, ["origin", "devEOF"])],
+        ),
+        (
+            f"bash <<'EOF'\ngit {_FV} origin featurebranch{_BS}\nEOF",
+            [
+                (_FV, ["origin", "featurebranch"]),
+                (_FV, ["origin", "featurebranchEOF"]),
+            ],
+        ),
+        # RED: a quoted EVEN run is a literal backslash, and the terminator stays separate.
+        (f"bash <<'EOF'\ngit log -1 dev{_BS * 2}\nEOF", [("log", ["-1", "dev" + _BS])]),
+        # RED: `<<-` strips leading tabs from every body line, then the consumer drops the
+        # trailing continuation — the primary reading, and what bash ran. The joined reading
+        # follows, with the terminator glued on as an argument.
+        (
+            f"bash <<-'EOF'\n\tgit status{_BS}\n\tEOF",
+            [("status", []), ("status", ["EOF"])],
+        ),
+        # PRESERVE: an UNQUOTED body glues in bash too, swallowing the terminator.
+        (f"bash <<EOF\ngit log -1 dev{_BS}\nEOF", [("log", ["-1", "devEOF"])]),
+        # RED: an unquoted EVEN run -- bash's own pass halves it, the consumer drops the rest.
+        (f"bash <<EOF\ngit log -1 dev{_BS * 2}\nEOF", [("log", ["-1", "dev"])]),
+        # PRESERVE: bash's pass halves the pair and the consumer then joins the lines.
+        (
+            f"bash <<EOF\ngit pu{_BS * 2}\nsh origin dev\nEOF",
+            [(_FV, ["origin", "dev"])],
+        ),
+        # RED: a substitution in an unquoted body is expanded by the OUTER shell, from raw text.
+        (f"bash <<EOF\nx=$(echo x{_BS * 2}\ngit status)\nEOF", [("status", [])]),
+        # PRESERVE (all three were right before this change; a first draft of it broke the
+        # first two): an even run before an opener leaves the opener live.
+        (f'bash <<EOF\necho "{_BS * 2}$(git status)"\nEOF', [("status", [])]),
+        (f"bash <<EOF\necho {_BS * 2}`git log -1 dev`\nEOF", [("log", ["-1", "dev"])]),
+        (f'bash <<EOF\necho "{_BS * 4}$(git status)"\nEOF', [("status", [])]),
+        # RED: a heredoc nested in an unquoted body is read by the consumer shell, after bash's pass.
+        (
+            f"bash <<EOF\nbash <<EOF2\ngit sta{_BS * 4}\ntus\nEOF2\nEOF",
+            [("status", [])],
+        ),
+        # RED: backslashes at END OF INPUT -- bash 3.2 drops them (5.3 keeps them, and git then
+        # rejects the word), so the reading that RUNS is the one without them.
+        (f"git status{_BS}", [("status", [])]),
+        (f"git status{_BS * 3}", [("status", [])]),
+        # PRESERVE: a backtick inside single quotes is a literal character, so it opens no backtick
+        # span and the heredoc after it is still top-level text — which is what still gates the
+        # UNQUOTED-body pass. The drop reading bash ran leads, the join follows, exactly as for the
+        # same command without the quoted backtick: since 2026-09-19 no context question feeds the
+        # drop/join decision, so this row pins the quote model's reading of `'`'` and nothing else.
+        (
+            f"echo '`'\nbash <<'EOF'\ngit {_FV} origin dev{_BS}\nEOF",
+            [(_FV, ["origin", "dev"]), (_FV, ["origin", "devEOF"])],
+        ),
+    ],
+    # Explicit ids, so a mutation campaign can require the ONE row a mutant is traced to flip
+    # rather than accept any failing row of this function.
+    ids=[
+        "escaped-backslash-lf",
+        "backslash-crlf",
+        "odd-run-folds",
+        "odd-run-of-three-folds",
+        "continuation-before-subcommand",
+        "quoted-body-final-continuation",
+        "quoted-body-final-continuation-feature",
+        "quoted-body-even-run",
+        "dash-quoted-body-tabs",
+        "unquoted-body-swallows-terminator",
+        "unquoted-body-even-run",
+        "unquoted-body-halves-pair",
+        "unquoted-body-substitution-raw",
+        "even-run-before-dollar-paren",
+        "even-run-before-backtick",
+        "four-run-before-dollar-paren",
+        "nested-heredoc-in-unquoted-body",
+        "eoi-single-backslash",
+        "eoi-three-backslashes",
+        "single-quoted-backtick-is-literal",
+    ],
+)
+def test_a_continuation_folds_only_where_bash_folds(command, want):
+    assert _pairs(command) == want
+
+
+_SUBST_FINAL_CONTINUATION = f"x=$(bash <<'EOF'\ngit {_FV}{_BS}\nEOF\n)"
+
+
+# Inside `$( )` bash 3.2 joins a quoted body's final continuation onto the terminator and 5.3
+# drops it. Raising here let every fail-open guard wave the command through, so the tokenizer
+# records BOTH readings; one test per reading, so losing either half is attributable.
+def test_a_substitution_body_ending_in_a_continuation_records_the_dropped_reading():
+    assert (_FV, []) in _pairs(_SUBST_FINAL_CONTINUATION)
+
+
+def test_a_substitution_body_ending_in_a_continuation_records_the_joined_reading():
+    assert (_FV + "EOF", []) in _pairs(_SUBST_FINAL_CONTINUATION)
+
+
+def _log_dev(run: int, open_: str, close: str) -> str:
+    return f"x={open_}bash <<'EOF'\ngit log -1 dev{_BS * run}\nEOF\n{close}"
+
+
+# Inside backticks the text loses one backslash of each pair before it runs, so odd runs of 1 and 3
+# BOTH join the terminator: the JOINED element of each row is what bash 3.2.57 and 5.3.15 ran (fake
+# `git` logging argv). Since 2026-09-19 every ambiguous heredoc is read BOTH ways and the all-drop
+# reading is the primary, so the drop leads each list. That order is load-bearing rather than
+# cosmetic -- `_find_first_push` returns on the first push-carrying segment -- which is why bash's
+# own reading sits SECOND here. Losing it would still be a bypass: only the join yields `devEOF`.
+# Run 2 is EVEN at the outer level and becomes odd only after the halving, so its ambiguity is
+# found in the nested context rather than the top-level one; run 5 halves to 2 literal backslashes
+# plus the continuation.
+@pytest.mark.parametrize(
+    ("command", "want"),
+    [
+        (
+            _log_dev(1, "`", "`"),
+            [("log", ["-1", "dev"]), ("log", ["-1", "devEOF"])],
+        ),
+        (
+            _log_dev(2, "`", "`"),
+            [("log", ["-1", "dev"]), ("log", ["-1", "devEOF"])],
+        ),
+        (
+            _log_dev(3, "`", "`"),
+            [("log", ["-1", "dev"]), ("log", ["-1", "devEOF"])],
+        ),
+        (
+            _log_dev(5, "`", "`"),
+            [("log", ["-1", f"dev{_BS}"]), ("log", ["-1", f"dev{_BS}EOF"])],
+        ),
+        (
+            _log_dev(3, "$(y=`", "`)"),
+            [("log", ["-1", "dev"]), ("log", ["-1", "devEOF"])],
+        ),
+        (
+            _log_dev(3, "`y=$(", ")`"),
+            [("log", ["-1", "dev"]), ("log", ["-1", "devEOF"])],
+        ),
+        (
+            _log_dev(2, "`y=$(", ")`"),
+            [("log", ["-1", "dev"]), ("log", ["-1", "devEOF"])],
+        ),
+    ],
+    ids=[
+        "backticks-run-1",
+        "backticks-run-2",
+        "backticks-run-3",
+        "backticks-run-5",
+        "backticks-in-substitution-run-3",
+        "substitution-in-backticks-run-3",
+        "substitution-in-backticks-run-2",
+    ],
+)
+def test_a_backtick_body_ending_in_backslashes_reads_as_bash_does(command, want):
+    assert _pairs(command) == want
+
+
+def test_deeply_nested_unquoted_heredocs_still_read_the_innermost_command():
+    # The consumer-shell re-scan of an unquoted body recurses; past MAX_CONTEXT_DEPTH the body is
+    # copied verbatim instead. It must neither escape as RecursionError nor raise at all: a raise
+    # here let every fail-open guard pass a command whose git word it never saw. The depth must
+    # outrun Python's own stack: with the bound removed, 400 levels still completed (measured) and
+    # the row passed without it; 600 already raised RecursionError in a bare interpreter.
+    deep = "".join(f"bash <<E{k}\n" for k in range(1000))
+    deep += "git status\n" + "".join(f"E{k}\n" for k in reversed(range(1000)))
+    assert _pairs(deep) == [("status", [])]
+
+
+def test_an_unquoted_dash_body_strips_tabs_before_the_terminator_comparison():
+    # PRESERVE, and the killer for the logical-line tab strip on the unquoted path: the terminator
+    # is found, so the trailing `echo "` is top-level text and its unbalanced quote raises. Without
+    # the strip the terminator is missed and the quote is neutralised as body text.
+    with pytest.raises(ValueError):
+        _invs('bash <<-EOF\n\techo x\n\tEOF\necho "')
+
+
+# ---------- heredoc reading variants (2026-09-19) ----------
+#
+# The drop/join decision no longer asks a CONTEXT question the module's quote model answers
+# unreliably. Every quoted-delimiter heredoc whose last body line ends in an odd backslash run is
+# ambiguous everywhere, the reading is an INPUT to the mask pass, and the walk enumerates.
+
+
+def test_a_reading_state_numbers_only_ambiguous_heredocs():
+    # An ordinal is consumed ONLY by a body with a final continuation, so ordinal i names the same
+    # heredoc under every assignment.
+    state = git_command._ReadingState()
+    git_command.mask_heredoc_quotes(
+        f"bash <<'EOF'\ngit {_FV} origin dev\nEOF\n", 0, state
+    )
+    assert state.count == 0
+    state = git_command._ReadingState()
+    git_command.mask_heredoc_quotes(
+        f"bash <<'EOF'\ngit {_FV} origin dev{_BS}\nEOF\n", 0, state
+    )
+    assert state.count == 1
+
+
+def test_a_join_reading_keeps_the_continuation_and_a_drop_removes_it():
+    ambiguous = f"bash <<'EOF'\ngit {_FV} origin dev{_BS}\nEOF\n"
+    drop = git_command.mask_heredoc_quotes(ambiguous, 0, git_command._ReadingState())
+    join = git_command.mask_heredoc_quotes(
+        ambiguous, 0, git_command._ReadingState({0: True})
+    )
+    assert f"dev{_BS}\nEOF" in join  # the later fold glues it onto the terminator
+    assert f"dev{_BS}\nEOF" not in drop
+
+
+def test_both_readings_are_recorded_for_an_ambiguous_heredoc():
+    # bash 3.2 joins inside `$( )` and 5.3 drops, so both are real.
+    command = f"x=$(bash <<'EOF'\ngit {_FV}{_BS}\nEOF\n)"
+    assert _pairs(command) == [(_FV, []), (_FV + "EOF", [])]
+
+
+def test_a_variant_that_raises_does_not_hide_a_reading_that_parses():
+    # A quoted delimiter may contain `(`. Both bashes run this push (top level -> drop); only the
+    # all-join reading raises `unterminated command substitution`.
+    command = f"bash <<'(x'\ngit {_FV} origin dev\nx=${_BS}\n(x\n"
+    pairs = _pairs(command)
+    assert (_FV, ["origin", "dev"]) in pairs
+    assert any(git_command.subcommand_is_indeterminate(sub) for sub, _args in pairs)
+
+
+def test_an_invocation_run_twice_is_recorded_twice():
+    # The duplicate must live in a VARIANT, not the primary: measured, the primary of a
+    # `git status` x2 command already carries both, so such a row cannot detect set semantics.
+    # Here drop reads [status, stat], join reads [status, status]; the max-multiset keeps two
+    # `status` records and a set-union keeps one.
+    command = "x=$(bash <<'us'\ngit status; git stat" + _BS + "\nus\n)"
+    assert [s for s, _a in _pairs(command)].count("status") == 2
+
+
+def test_an_exhausted_cap_yields_the_marker_and_never_raises(monkeypatch):
+    monkeypatch.setattr(git_command, "MAX_TOTAL_PARSES", 1)
+    command = (
+        f"bash <<'A'\ngit {_FV} origin dev{_BS}\nA\n"
+        f"bash <<'B'\ngit {_FV} origin main{_BS}\nB\n"
+    )
+    pairs = _pairs(command)
+    assert any(git_command.subcommand_is_indeterminate(sub) for sub, _args in pairs)
+
+
+def test_every_variant_raising_still_raises():
+    with pytest.raises(ValueError):
+        _invs("echo '")
+
+
+def test_the_streams_carry_every_reading_primary_first():
+    """Both readings reach a token-shaped consumer, and the PRIMARY (all-drop) one comes FIRST.
+
+    Not cosmetic. The two primitives must agree about what a context contains — the publication
+    guard pairs `_exported_injection_reason` with `_find_block_reason`, and the timing guard
+    correlates `_find_first_push` with `_push_target_dirs` BY ORDER — so leaving this primitive
+    single-reading while the walk enumerates would take a reading away from three guards. And
+    `_find_first_push` returns on the FIRST push-carrying segment, with the timing guard returning
+    0 when that one is authorized, so a join-first order would let a body's last line authorize a
+    push it does not authorize.
+    """
+    command = f"x=$(bash <<'EOF'\ngit {_FV}{_BS}\nEOF\n)"
+    streams = git_command.iter_context_token_streams(command)
+    # CONTROL: both readings really are present, or the ordering assertion is vacuous.
+    drop = [i for i, s in enumerate(streams) if _FV in s]
+    join = [i for i, s in enumerate(streams) if _FV + "EOF" in s]
+    assert drop and join, streams
+    assert drop[0] < join[0], streams
+
+
+# ---------- the parse cap's exact cost, in both directions (2026-09-19) ----------
+#
+# `MAX_TOTAL_PARSES` bounds the WHOLE walk, so what a given shape costs is a property of the shape,
+# not of the cap's value. These two fixtures are the smallest of each kind and their costs are
+# written down as literals rather than derived, because a literal that is WRONG in the safe
+# direction is invisible: at any budget above the true cost, "both readings present" and "no raise"
+# read exactly the same. The count is therefore asserted directly, by counting the walk's own
+# `_prepare` runs.
+
+_CAP_TOP_LEVEL = f"bash <<'A'\ngit status{_BS}\nA\n"
+_CAP_IN_SUBSTITUTION = f"x=$(bash <<'A'\ngit status{_BS}\nA\n)"
+
+# (fixture, TOTAL parses, parses CHARGED to the budget) -- measured, see `_walk_parse_count`.
+# The two differ because each context's PRIMARY reading is free: it is what the pre-change
+# tokenizer walked, and charging it would let a large enough input withdraw a reading the old code
+# always had (measured as a capability regression at `commit-subject-guard.py`).
+#   top level      2 total = primary + all-join;          1 free (the primary),  so 1 charged
+#   inside `$( )`  4 total = primary, its child, all-join, the join's child;
+#                            2 free (outer primary and its child's primary), so 2 charged
+#                  -- each parent variant re-walks the child, so the child's single reading is
+#                     prepared twice, and only the copy under a non-primary parent is charged.
+_CAP_COSTS = ((_CAP_TOP_LEVEL, 2, 1), (_CAP_IN_SUBSTITUTION, 4, 2))
+
+
+def _walk_parse_count(command):
+    """How many `_prepare` runs `iter_git_invocations_detailed` charges to the parse budget.
+
+    `_walk_context` calls `budget.spend()` immediately before each `_prepare`, one for one, so
+    counting `_prepare` counts the budget the fixture needs. Restored by CONTENT (the identity
+    assertion in the caller), never by reading the module back: a spy left installed would make
+    every later row in this file measure the wrong function.
+    """
+    calls = []
+    original = git_command._prepare
+
+    def counting(text, depth, readings=None):
+        calls.append(depth)
+        return original(text, depth, readings)
+
+    git_command._prepare = counting
+    try:
+        _invs(command)
+    finally:
+        git_command._prepare = original
+    return len(calls)
+
+
+def test_both_readings_survive_the_cap_at_its_exact_cost(monkeypatch):
+    """Budget safety: a TOP-LEVEL ambiguous heredoc costs 2 parses (primary, all-join); one inside
+    `$( )` costs 4 (primary, its child, all-join, the join's child). At N both readings are
+    present; at N-1 the join is replaced by the marker. The N-1 half is the control that MOVES --
+    without it the row passes on a cap that never binds.
+    """
+    # Count BEFORE any cap is patched: a budget left at N-1 from a previous fixture would cap the
+    # next fixture's own count and the literal would then be compared against a truncated run.
+    for command, total, _charged in _CAP_COSTS:
+        assert _walk_parse_count(command) == total, command
+    assert git_command._prepare.__name__ == "_prepare", (
+        "_walk_parse_count left its spy installed"
+    )
+
+    for command, _total, charged in _CAP_COSTS:
+        monkeypatch.setattr(git_command, "MAX_TOTAL_PARSES", charged)
+        at_n = [sub for sub, _args in _pairs(command)]
+        assert at_n == ["status", "statusA"], (command, at_n)
+
+        # N-1: never a raise, and the reading that could not be enumerated is named in-band.
+        monkeypatch.setattr(git_command, "MAX_TOTAL_PARSES", charged - 1)
+        at_n_minus_1 = [sub for sub, _args in _pairs(command)]
+        assert "statusA" not in at_n_minus_1, (command, at_n_minus_1)
+        assert git_command.AMBIGUOUS_READING_SUBCOMMAND in at_n_minus_1, (
+            command,
+            at_n_minus_1,
+        )
+
+
+def test_both_primitives_carry_the_same_in_band_marker(monkeypatch):
+    """Both primitives signal a LOST reading in-band, by BOTH branches that can lose one.
+
+    The cap figure below is the CHARGED cost, not the total: the primary reading is free, so
+    the top-level fixture needs 0 budget to lose its second reading and 1 to keep it. See
+    `_CAP_COSTS`.
+
+    This row previously asserted the OPPOSITE -- that the marker reached the walk only -- and
+    recorded the measured consequence: on the `<<'(x'` witness with a `git status` body, the
+    publication guard (invocation-shaped) blocked at rc 2 while push-guard and the timing guard
+    (stream-shaped) returned rc 0. That was a REGRESSION against shipped `dev`, where push-guard
+    blocks the same witness at rc 2 ("mentions git but could not be parsed"), so the branch turned
+    a `dev` BLOCK into an ALLOW. `_indeterminate_stream` closes it; the guard rows that could not
+    be written while the asymmetry stood now live in `test_push_guard.sh` and
+    `test_git_timing_guard.sh`.
+
+    Two branches lose a reading and they are reached differently -- a variant that RAISES
+    (`continue`) and an exhausted BUDGET (`break`) -- so a fix for one need not cover the other.
+    Both are asserted here.
+    """
+    witness = f"bash <<'(x'\ngit status\nx=${_BS}\n(x\n"
+    walked = [sub for sub, _args in _pairs(witness)]
+    assert git_command.AMBIGUOUS_READING_SUBCOMMAND in walked, walked
+
+    streams = git_command.iter_context_token_streams(witness)
+    # CONTROL: the real reading really was produced (a raise here would satisfy the assertions
+    # below vacuously, and a raise is a different verdict with a different guard posture).
+    assert streams and any("status" in stream for stream in streams), streams
+    assert any(
+        git_command.AMBIGUOUS_READING_SUBCOMMAND in stream for stream in streams
+    ), streams
+    # ORDER is load-bearing: `_find_first_push` returns on the FIRST push-carrying segment, so the
+    # marker must not precede the primary stream.
+    assert git_command.AMBIGUOUS_READING_SUBCOMMAND not in streams[0], streams
+
+    # The same for cap truncation, which reaches the streams primitive by the other branch.
+    # 0, not 1: the primary is free, so 1 buys the all-join variant and nothing truncates.
+    monkeypatch.setattr(git_command, "MAX_TOTAL_PARSES", 0)
+    capped_walk = [sub for sub, _args in _pairs(_CAP_TOP_LEVEL)]
+    assert git_command.AMBIGUOUS_READING_SUBCOMMAND in capped_walk, capped_walk
+    capped_streams = git_command.iter_context_token_streams(_CAP_TOP_LEVEL)
+    assert any(
+        git_command.AMBIGUOUS_READING_SUBCOMMAND in stream for stream in capped_streams
+    ), capped_streams

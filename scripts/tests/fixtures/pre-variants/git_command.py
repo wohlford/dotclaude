@@ -31,12 +31,9 @@ nothing is recorded.
 
 from __future__ import annotations
 
-import itertools
 import os
 import re
 import shlex
-from collections import Counter
-from collections.abc import Iterator, Mapping
 from typing import NamedTuple
 
 # git *global* options (before the subcommand), classified by whether they consume the FOLLOWING
@@ -247,19 +244,6 @@ def describe_ambiguity(exc: BaseException | None) -> str:
 
     It deliberately does NOT name a tool: the path differs per caller and resolving it here would
     hardcode one caller's layout into the shared tokenizer.
-
-    WHICH READING the position belongs to, now that the walk enumerates readings: always the
-    PRIMARY (all-drop) one, so this function needs no variant dimension and deliberately has none.
-    Two facts compose to that. `_walk_context` raises only when EVERY reading of a context failed,
-    so a surviving reading never reaches here — a lost reading beside a surviving one is reported
-    in-band by `_indeterminate_invocation`/`_indeterminate_stream` instead, and named per record by
-    `iter_git_invocations_with_readings`. And `_reading_assignments` yields all-drop FIRST while
-    the walk keeps the FIRST failure, so the exception that escapes is the one the all-drop reading
-    produced. Measured rather than reasoned: over 4,000 generated inputs plus crafted witnesses,
-    2,669 raises carried a position and every one was byte-identical in category, text and pos to
-    what a primary-only walk raises — with no case where the primary alone parsed. So the excerpt
-    an operator is shown is text from the reading bash takes at the top level, not from a variant
-    they would fail to find in their own command.
     """
     try:
         text = getattr(exc, "text", None)
@@ -720,25 +704,6 @@ def _bash_unquoted_heredoc(
     return _unescape_heredoc("\n".join(body_lines) + tail), n, None
 
 
-def _opener_is_closed(body: str, idx: int, opener: str) -> bool:
-    """Does `body` close the substitution opener at `idx`?
-
-    Answered with the same scanners the walk uses, so the question this asks and the question
-    `split_command_contexts` later asks cannot drift apart — two spellings of one intent is itself
-    the defect this module has already paid for elsewhere.
-    """
-    try:
-        if opener == "`":
-            _scan_to_backtick(body, idx + 1)
-        else:
-            if not body.startswith("$(", idx):
-                return False
-            _scan_to_unbalanced_paren(body, idx + 2)
-    except ValueError:
-        return False
-    return True
-
-
 def _unescape_heredoc(body: str) -> str:
     """bash's backslash handling inside an UNQUOTED heredoc body, working on backslash RUNS.
 
@@ -785,27 +750,7 @@ def _unescape_heredoc(body: str) -> str:
                     out.append("\\" * run)
                     k = j
                     continue
-                # ODD run: the outer shell passes the opener through as TEXT and the consumer
-                # shell decides — but only if the body CLOSES it. An unclosed opener runs nothing
-                # in either shell (literal text outside, a syntax error inside), so emitting it
-                # bare buys no capability and costs the whole command: it reaches
-                # `split_command_contexts`, which raises, and two guards then fail closed on
-                # ordinary prose while the timing guard fails OPEN and loses a push the
-                # pre-change tokenizer saw. `Don\\`t` is the only legal spelling of a literal
-                # backtick in an unquoted body, so that is prose, not an adversarial shape.
-                #
-                # Leaving the author's own escape in place is what `dev` already emits here, so
-                # this narrows to exactly the inputs this change had widened. It is NOT the
-                # 2026-09-03 "escape the unmatched opener" repair, which ADDED an escape to a raw
-                # opener and was measured taking command position and swallowing the `git` behind
-                # it — nothing is added here.
-                if _opener_is_closed(body, j, nxt):
-                    out.append("\\" * ((run - 1) // 2))
-                    out.append(nxt)
-                    k = j + 1
-                    continue
                 out.append("\\" * ((run - 1) // 2))
-                out.append("\\")
                 out.append(nxt)
                 k = j + 1
                 continue
@@ -817,33 +762,6 @@ def _unescape_heredoc(body: str) -> str:
     return "".join(out)
 
 
-class _ReadingState:
-    """Which READING each ambiguous heredoc gets, and how many were found.
-
-    An ambiguous heredoc is a QUOTED-delimiter body whose last line ends in an odd backslash run:
-    bash drops that continuation at the top level, joins it onto the terminator inside backticks,
-    and splits by version inside `$( … )` (3.2 joins, 5.3 drops). The module used to pick one
-    reading from a CONTEXT question its own quote model answers unreliably; a desync then dropped a
-    refspec both bashes pass to git, and the publication guard went from blocking to allowing.
-
-    Ordinals are consumed ONLY by an ambiguous heredoc, in encounter order, so ordinal `i` names the
-    same heredoc under every assignment — which is what makes `count` a sound basis for enumerating
-    `2**count` assignments without a second scan.
-    """
-
-    __slots__ = ("readings", "count")
-
-    def __init__(self, readings: Mapping[int, bool] | None = None) -> None:
-        self.readings = dict(readings or {})
-        self.count = 0
-
-    def next_reading(self) -> bool:
-        """Reading for the next ambiguous heredoc: True = JOIN, False (the default) = DROP."""
-        ordinal = self.count
-        self.count += 1
-        return self.readings.get(ordinal, False)
-
-
 def _consume_heredoc_body(
     text: str,
     i: int,
@@ -853,7 +771,7 @@ def _consume_heredoc_body(
     quoted: bool = False,
     top_level: bool = True,
     depth: int = 0,
-    state: "_ReadingState | None" = None,
+    in_backticks: bool = False,
 ) -> int:
     """Copy one heredoc body to `out` as the consumer shell will read it, with its unmatched quotes
     neutralised, and return the index just past its terminator line.
@@ -869,37 +787,35 @@ def _consume_heredoc_body(
     - an UNQUOTED body at the top level gets bash's own pass (`_bash_unquoted_heredoc`), and the
       result is re-masked, since it is command text the consumer reads its OWN heredocs from —
       bounded by `MAX_CONTEXT_DEPTH`, past which the body is copied through verbatim instead;
-    - a QUOTED body whose last line ends in a continuation is AMBIGUOUS in every context — bash
-      drops it at the top level, joins it onto the terminator inside backticks, and splits by
-      version inside `$( … )` (3.2 joins, 5.3 drops). Which reading this pass emits is an INPUT
-      (`state`), not a question about context: the context answer came from this module's own
-      quote model, which desyncs from bash on known shapes, and a desync then dropped a refspec
-      both bashes pass to git. Exactly ONE well-formed reading is emitted per call, so no text is
-      ever duplicated — emitting the body twice was measured to unbalance an enclosing `$( … )`
-      into a raise, which two guards read as ALLOW. The WALK enumerates the assignments;
+    - a top-level body whose last line ends in a continuation has it dropped
+      (`_drop_final_continuation`);
+    - a QUOTED body inside a `$( … )`, outside backticks, ending in a continuation is emitted TWICE,
+      once with the continuation dropped and once verbatim, so the later fold joins the second
+      copy onto the terminator: bash 3.2 joins there and 5.3 drops, and both readings are
+      recorded. An earlier version raised instead, and every guard that fails open on an
+      unparseable command with no visible git word then waved the command through — so the
+      ambiguity is resolved by reading both, never by refusing to read;
+    - anywhere inside BACKTICKS (`in_backticks`) the body is copied verbatim. Backtick text loses
+      one backslash of each pair before it runs, so this pass cannot yet see the body bash will
+      read; the walk re-prepares the extracted backtick text afterwards, and a `$( … )` inside it
+      gets its dual reading there. Emitting the dropped copy here was measured to be WRONG, not
+      merely redundant: after that halving the dropped copy's `\\` + newline became a
+      continuation and glued the two copies into one command,
+      hiding bash's reading (`git log -1 dev` + three backslashes, then `EOF`, runs
+      `log -1 devEOF`);
     - an unquoted body inside a substitution keeps the old handling; the walk re-prepares each
       extracted context as top-level text, which is where its body gets bash's pass.
 
     An unterminated body (no line ever equals `delim`) consumes the remainder. That tolerates
     quotes in text the shell would also treat as body, and keeps the text visible; it never hides
     a command.
-
-    Args:
-        state: Reading assignment plus the ambiguity counter, shared with the caller and with the
-            recursive re-mask of an unquoted body so parent and child share ONE ordinal namespace.
-            None creates a private all-drop state: calling `next_reading()` on None would raise
-            `AttributeError`, which is OUTSIDE this module's ValueError taxonomy and would escape
-            every consumer that catches only ValueError.
     """
-    state = state if state is not None else _ReadingState()
     n = len(text)
     if not quoted and top_level and depth < MAX_CONTEXT_DEPTH:
         body, end, found = _bash_unquoted_heredoc(text, i, delim, strip_tabs)
         if found is not None:
             body = _drop_final_continuation(body)
-        # ONE ordinal namespace with the parent: without the shared state the heredocs inside an
-        # unquoted body would be drop-only forever, unreachable by any assignment.
-        body = mask_heredoc_quotes(body, depth + 1, state)
+        body = mask_heredoc_quotes(body, depth + 1)
         out.append(_neutralize_unmatched_quotes(body))
         if found is None:
             return n
@@ -926,11 +842,10 @@ def _consume_heredoc_body(
         body = "\n".join(line.lstrip("\t") for line in body.split("\n"))
     if quoted and term_start is not None:
         dropped = _drop_final_continuation(body)
-        if dropped != body:
-            # Ambiguous in EVERY context; the reading is an input. Duplicating the body here
-            # instead was measured to unbalance an enclosing `$( … )` into a raise, which two
-            # guards read as ALLOW.
-            body = body if state.next_reading() else dropped
+        if top_level:
+            body = dropped
+        elif not in_backticks and dropped != body:
+            body = dropped + body  # both readings (see the docstring)
     out.append(_neutralize_unmatched_quotes(body))
     if term_start is None:
         return n
@@ -939,9 +854,7 @@ def _consume_heredoc_body(
     return term_end
 
 
-def mask_heredoc_quotes(
-    command: str, _depth: int = 0, state: "_ReadingState | None" = None
-) -> str:
+def mask_heredoc_quotes(command: str, _depth: int = 0) -> str:
     """Escape the UNMATCHED quote characters inside each heredoc body, leaving all else alone.
 
     **A heredoc body is literal text, not a quoting context.** A real shell performs no quote
@@ -970,16 +883,10 @@ def mask_heredoc_quotes(
 
     Args:
         command: The raw shell-command string.
-        _depth: Nesting depth of `command` itself, for the recursive unquoted-body re-mask.
-        state: Reading assignment for the ambiguous heredocs this pass meets, plus the counter that
-            numbers them. None makes a private all-drop state, so a caller that does not care about
-            readings keeps the historical single-text behaviour. `_mask_with_count` is the entry
-            point that reads the count back out.
 
     Returns:
         The command with quote characters inside heredoc bodies backslash-escaped.
     """
-    state = state if state is not None else _ReadingState()
     out: list[str] = []
     # (delimiter, strip leading tabs), in the order the operators appeared on the line.
     pending: list[tuple[str, bool]] = []
@@ -989,12 +896,11 @@ def mask_heredoc_quotes(
     # heredoc operator at all. That is the reported form, so the stack is not an edge case.
     contexts: list[str | None] = []
     # Whether an unescaped backtick is open. Backticks are not quote contexts here (the stack above
-    # is); this feeds `top_level`, which since 2026-09-19 gates ONLY the unquoted-body pass. A
-    # heredoc inside a backtick span is not top-level text — backtick text loses one backslash of
-    # each pair before it runs, so this pass cannot yet see the body bash will read, and the walk
-    # re-prepares the extracted backtick text afterwards. The drop/join decision no longer asks
-    # this question at all: it is an input (`state`), because the answer came from this pass's own
-    # quote model and a desync let a push of `dev` through the publication guard.
+    # is), but a heredoc inside one is NOT top-level text: a first version of this change missed
+    # that, dropped a backtick body's final continuation as though it were top-level, and let a
+    # push of `dev` through the publication guard, where both bashes join that continuation onto
+    # the terminator (measured: `` x=`bash <<'dev'`` / `git log -1 \` / `dev` / `` ` `` runs
+    # `log -1 dev` under 3.2 and 5.3).
     backtick_open = False
     i, n = 0, len(command)
     quote: str | None = None
@@ -1083,7 +989,7 @@ def mask_heredoc_quotes(
                     quoted,
                     top_level=not contexts and not backtick_open,
                     depth=_depth,
-                    state=state,
+                    in_backticks=backtick_open,
                 )
             pending = []
             at_word_start = True
@@ -1741,15 +1647,6 @@ def _cd_command_position(tokens: list[str], i: int) -> bool | None:
     return None if through_wrapper else True
 
 
-MAX_TRACKED_CWD = 4096
-"""Longest tracked working directory `_resolve_cd` will carry before answering *unresolvable*.
-
-Sized from the operating systems rather than from taste: `PATH_MAX` is 1024 on Darwin and 4096 on
-Linux, so no directory a command could actually enter is longer than this. It exists to bound
-COST, not to judge paths — see `_resolve_cd`.
-"""
-
-
 def _resolve_cd(cwd_state: str | None, target: str | None) -> str | None:
     """Apply one `cd`/`pushd` target to the tracked working directory.
 
@@ -1759,8 +1656,7 @@ def _resolve_cd(cwd_state: str | None, target: str | None) -> str | None:
 
     Returns:
         The new directory, or None meaning *unresolvable* — the conservative answer whenever the
-        target cannot be resolved statically (`cd -`, `cd "$VAR"`, `cd ~`, `cd "$(…)"`), or when
-        the tracked path has grown past `MAX_TRACKED_CWD` (see below).
+        target cannot be resolved statically (`cd -`, `cd "$VAR"`, `cd ~`, `cd "$(…)"`).
     """
     if cwd_state is None:
         return None
@@ -1772,336 +1668,11 @@ def _resolve_cd(cwd_state: str | None, target: str | None) -> str | None:
     if PLACEHOLDER_PREFIX in target:
         return None
     if os.path.isabs(target):
-        joined = os.path.normpath(target)
-    else:
-        joined = os.path.normpath(os.path.join(cwd_state, target))
-    # Past the bound the answer is *unresolvable*, the same conservative value every other branch
-    # here returns — a push then blocks rather than being judged against an invented directory.
-    # This is a COST bound, not a correctness one: each relative hop appends to the path and each
-    # normpath rescans it, so N hops cost O(N**2) in ONE walk, and this module walks a context once
-    # per reading variant up to `MAX_TOTAL_PARSES`. Measured 2026-09-22 without it: a 65,533-byte
-    # command holding 7 ambiguous heredocs (k=7, so exactly 128 assignments, all of which parse),
-    # 13,083 `cd x;` hops and ONE push spent 83.6 s in the walk — against 0.63 s for the same input
-    # on the pre-change tokenizer — and drove `publication-push-guard.py` to 102.8 s against the
-    # 60 s timeout `settings.json` registers for it. A PreToolUse hook killed at its timeout is
-    # SILENT and the command RUNS, so the guard reached `refusing to push` and died before saying
-    # it. No real directory comes close: `PATH_MAX` is 1024 on Darwin and 4096 on Linux, so a path
-    # past this bound cannot name one — which is why discarding it loses no capability.
-    if len(joined) > MAX_TRACKED_CWD:
-        return None
-    return joined
+        return os.path.normpath(target)
+    return os.path.normpath(os.path.join(cwd_state, target))
 
 
-def _mask_with_count(
-    text: str, depth: int, readings: Mapping[int, bool] | None = None
-) -> tuple[str, int]:
-    """Mask under one reading assignment and report how many ambiguous heredocs were seen.
-
-    Split from `_prepare` because the count must be knowable BEFORE anything that can raise: the
-    enumeration needs `k` to build its assignments, and the split half (`split_command_contexts`)
-    raises on exactly the inputs the enumeration exists to survive. Masking is total.
-    """
-    state = _ReadingState(readings)
-    return mask_heredoc_quotes(text, depth, state), state.count
-
-
-def _reading_assignments(count: int) -> Iterator[dict[int, bool]]:
-    """Every assignment to try, primary first, all-join second, in a FIXED order.
-
-    A pure function of the count: `k` is fixed for a text whatever the assignment (the mask scans by
-    input index and the reading changes only what is emitted), so no feedback from a parse is
-    needed — which is what lets the caller take `k` from the total mask and never from a parse that
-    may raise.
-
-    LAZY, and that is a security property rather than a style choice. `k` is bounded by input
-    LENGTH, not by `MAX_CONTEXT_DEPTH` — about 2053 at `MAX_COMMAND_LENGTH` — so materialising the
-    assignments puts the whole `2**k` in front of the parse cap, where no cap value can reach it.
-    The first draft did exactly that, and its `assignment not in ordered` scan over a growing list
-    made it `4**k` besides: measured, a 444-BYTE command with k=16 spent 38 s inside this function
-    having parsed nothing, against a 60 s hook registration that two heavy tokenizer calls must
-    share. A PreToolUse hook killed at its timeout is SILENT and the command RUNS, so that was a
-    denial-of-guard bypass reachable from a tiny input, not a slow path.
-
-    Yielding lazily lets `_walk_context` stop at the cap: the caller consumes at most
-    `MAX_TOTAL_PARSES` of these however large `2**k` is. `itertools.product` is itself lazy, and
-    building one assignment dict costs O(count), paid only for assignments actually walked.
-    """
-    if count <= 0:
-        yield {}
-        return
-    yield {}  # the primary: all-drop, what bash does at the top level
-    yield {i: True for i in range(count)}  # all-join, the other extreme
-    for bits in itertools.product((False, True), repeat=count):
-        # The two extremes are already yielded; skipping them by SHAPE costs O(1) per candidate,
-        # where testing membership of what was yielded costs O(2**k) and was the `4**k` above.
-        if not any(bits) or all(bits):
-            continue
-        yield {i: True for i, bit in enumerate(bits) if bit}
-
-
-MAX_TOTAL_PARSES = 128
-"""One cap on the TOTAL parses a single walk may spend across every context and every variant.
-
-CALIBRATED (2026-09-21) against a term that does NOT bind, and corrected 2026-09-22. Read the
-table for the column it can answer, never for the one a headroom figure made it look like it
-answered. Wall clock is the REAL hook process on the ADVERSARIAL BACKTICK LADDER at depth
-`MAX_CONTEXT_DEPTH`, one ambiguous heredoc per level, padded to 64,718 chars, driven through
-`publication-push-guard.py` — which makes TWO heavy tokenizer calls per run,
-`iter_context_token_streams` and `iter_git_invocations_detailed`.
-
-| cap | that guard's wall clock, ON THE LADDER | real commands truncated, of 88,662 |
-| :-- | :--- | :--- |
-| 64  |  8.83 s |  61 (0.069%) |
-| 128 | 17.89 s |   6 (0.0068%) |
-| 256 | 36.65 s |   2 (0.0023%) |
-
-**A "headroom vs the 60 s registration" column used to sit in the middle of that table. It was
-deleted because it described the FIXTURE while reading as a property of this constant.** The
-ladder is not the worst shape, and the registration is not this cap's to satisfy. Measured
-2026-09-22 on the shape nobody thought to build: a FLAT bundle of ambiguous quoted heredocs in ONE
-context, no nesting, padded to 65,529 chars, through the same guard — **224.89 s at this very
-cap**, against the ladder's 17.89 s at the same length. Both tokenizer calls together are 24.51 s
-of that; the rest is the guard's own per-invocation work. Shipped `dev`, whose tokenizer answers
-the identical input in **0.15 s**, takes **172.40 s** on it. So that guard overruns its 60 s
-registration on `dev` exactly as on this branch, at every value of this constant, and no value has
-ever governed it: the binding term is four `subprocess.run` calls per invocation against one root,
-uncached — **8,212 on BOTH sides** of that fixture, because the extra invocations this branch
-finds are `status`, which the guard's known-safe `continue` skips before judging. That is filed as
-its own work (a per-root memo that must include the alias table, plus a deadline owned by the
-guard process), and it is not a reason to move this number.
-
-What this cap DOES govern is the right-hand column, and the tokenizer's own share: it holds the
-walk to 128 parses however large `2**k` is, which is what keeps the flat fixture's two tokenizer
-calls to 24.51 s at `MAX_COMMAND_LENGTH` instead of unbounded. 256 is rejected on cost for no
-matching gain — the per-parse price is linear, so it roughly doubles that worst case to buy four
-fewer truncations in 88,662. 64 is rejected on the right-hand column: those 61 are not
-pathological input but the operator's own document-writing shape (a redirect into `plans/` with a
-quoted heredoc delimiter), whose context count grows with the document, so that column only gets
-worse with time.
-
-Both differential corpora clear 128 by 9x and neither reaches it: max 14 parses over the original
-generator's 9 seeds x 600 scripts, max 9 over the desync generator's 5 seeds x 150 x 2. The cost
-is linear in the cap — 68–80 ms per parse at `MAX_COMMAND_LENGTH`, measured out to 510 parses —
-against a pre-change baseline of 0.28–0.30 s for the whole call.
-
-What this cap does NOT bound, stated because the table above reads as if it did: a parse is
-charged per CONTEXT per variant, and the real corpus's heaviest command spends 451 parses in
-62 ms — **0.138 ms each, 500x cheaper than the adversarial ladder's**. Parse COUNT therefore
-prices the two apart by a factor this cap cannot see, which is exactly why no single value
-satisfies both columns and why the value had to be chosen rather than derived. A budget in bytes
-parsed, or in wall clock, is the instrument that would price them the same.
-"""
-
-# Contains `$`, so `_is_opaque` is True for it and therefore `subcommand_is_indeterminate` is too.
-AMBIGUOUS_READING_SUBCOMMAND = "$<ambiguous-heredoc-reading>"
-
-
-def subcommand_is_ambiguous_reading(sub: str) -> bool:
-    """True for the ONE subcommand meaning "a reading of this command was lost", not "a git word
-    I cannot resolve".
-
-    `subcommand_is_indeterminate` is True for this word and for every other opaque one alike, and
-    that is right for the VERDICT and wrong for the MESSAGE. An opaque word (`git $V origin dev`)
-    really may be a push, sitting in a segment an operator can lead with `ALLOW_PUSH=1`; this one
-    corresponds to NO command text, so no env prefix can ever authorize it — see
-    `_indeterminate_stream`, which emits it with an empty leading env run by construction. A guard
-    that cannot tell the two apart prescribes the one remedy that cannot work, and the spec's
-    Diagnosability residual names an unexplainable false block as what later gets "fixed" by
-    narrowing a matcher — the repair this repo has twice measured as the fail-open it removed.
-
-    A PREDICATE rather than three `sub == AMBIGUOUS_READING_SUBCOMMAND` comparisons in three
-    guards, for the same reason `subcommand_is_indeterminate` is one: this module already
-    distinguishes a variant that RAISED from a budget that TRUNCATED (see
-    `iter_context_token_streams`), and should those ever carry separate tokens, one predicate
-    changes while three hand-typed equality tests go stale in silence. What it deliberately does
-    NOT own is the MESSAGE: each guard's override token, framing and precedence against a real
-    push are its own policy, exactly as `describe_ambiguity` owns the location clause and leaves
-    the tool path to its caller.
-
-    Residual, stated rather than guarded against: an operator who types this sentinel verbatim
-    gets the ambiguity wording for a word they wrote themselves. The command blocks either way —
-    the word contains `$`, so `_is_opaque` and therefore `subcommand_is_indeterminate` are already
-    True for it — so the cost is a mislabelled message, never a changed verdict.
-    """
-    return sub == AMBIGUOUS_READING_SUBCOMMAND
-
-
-class _ParseBudget:
-    """One cap on TOTAL parses across a whole walk, charged by every variant in every context.
-
-    Budgeting per-context VARIANTS instead was measured at 75,421 parses / 9.14 s on a 65,536-char
-    input, because nested contexts are re-walked once per parent variant: work is variants x
-    contexts and a per-context cap counts one factor. A hook timeout lets the command RUN, so an
-    unbounded walk is a bypass, not a slowdown.
-    """
-
-    __slots__ = ("remaining",)
-
-    def __init__(self, limit: int) -> None:
-        self.remaining = limit
-
-    def spend(self) -> bool:
-        if self.remaining <= 0:
-            return False
-        self.remaining -= 1
-        return True
-
-
-_MAX_REPORTED_READINGS = 4
-"""How many failed reading assignments one context reports. `k` ambiguous heredocs give up to
-`2**k` assignments and every one of them can raise, so an uncapped list is unbounded diagnostic
-text on exactly the adversarial input that produced it. Four is enough to show the pattern; the
-`untried` count carries the rest of the story."""
-
-
-class ReadingStep(NamedTuple):
-    """Which reading ONE context's ambiguous heredocs were given for the record this hangs off.
-
-    Attributes:
-        depth: That context's nesting depth — 0 is the command the caller handed in.
-        count: How many ambiguous heredoc continuations the mask pass met in that context. 0 means
-            the context had no reading choice to make, so nothing here varies.
-        joined: The 0-based encounter ordinals read as JOIN. `()` is the PRIMARY (all-drop)
-            reading — what bash does at the top level and the only one that occurs in real
-            commands. None means the record is not attributable to any one assignment: the
-            indeterminate marker stands for a reading that was never read at all.
-    """
-
-    depth: int
-    count: int
-    joined: tuple[int, ...] | None
-
-
-class ReadingTrail(NamedTuple):
-    """The reading assignment behind ONE invocation, carried BY LIST POSITION.
-
-    Deliberately not a field on `Invocation` (~40 call sites unpack that record positionally) and
-    deliberately not a map keyed by `_invocation_key`. The union is a MAX-MULTISET, so identical
-    keys legitimately repeat — a command that genuinely runs `git status` twice contributes two
-    records with the same key — and a key-based map would collide exactly where the union did its
-    work. A list indexed the same way as the invocation list cannot collide by construction.
-
-    Why this exists at all: the redesign accepts an over-read, and an over-read is only acceptable
-    while the operator can see WHY a command blocked. An unexplainable false block is what gets
-    "fixed" by narrowing a matcher — the repair this repo has twice measured as the fail-open it
-    was trying to remove (see the spec's Diagnosability residual).
-
-    Attributes:
-        steps: One `ReadingStep` per context on the path from the top-level command down to the
-            context that produced this invocation, OUTERMOST FIRST. A nested invocation carries
-            its ancestors' assignments too, because the parent's reading decides the child's text:
-            naming only the innermost would report "primary" for a record that exists solely
-            because an ancestor was read as JOIN.
-        lost: "" for a real invocation. On the indeterminate marker: "unreadable" when a variant
-            raised, "truncated" when the parse cap stopped the enumeration, "unreadable+truncated"
-            when both happened in that context.
-        unreadable: `(joined, category)` for each variant that raised, in the order tried, capped
-            at `_MAX_REPORTED_READINGS`.
-        untried: How many assignments the parse cap never tried in that context.
-    """
-
-    steps: tuple[ReadingStep, ...]
-    lost: str = ""
-    unreadable: tuple[tuple[tuple[int, ...], str], ...] = ()
-    untried: int = 0
-
-    @property
-    def primary(self) -> bool:
-        """True when every context on the path took the all-drop reading and nothing was lost."""
-        return not self.lost and all(step.joined == () for step in self.steps)
-
-
-def _reading_category(exc: BaseException) -> str:
-    """The ambiguity CATEGORY of a failed variant, for the trail. Never raises: a trail is a
-    diagnostic, and a diagnostic that can raise inside the walk would turn a block into a crash."""
-    try:
-        category = getattr(exc, "category", None)
-        return category if isinstance(category, str) else str(exc)
-    except Exception:  # noqa: BLE001 - a broken diagnostic must never change a verdict
-        return "unknown"
-
-
-def _indeterminate_invocation() -> Invocation:
-    """An in-band marker that some reading of this context could not be read or was not tried.
-
-    `effective_dir` is None DELIBERATELY: `subcommand_is_indeterminate` is True for this subcommand,
-    so push-guard and the timing guard treat it as push-shaped, the publication guard routes it out
-    of `KNOWN_SAFE_SUBCOMMANDS` into a judgement whose root is unresolvable, and `plan-rehearse.py`
-    refuses it as not statically resolvable. Passing a real directory instead was measured to make
-    plan-rehearse VOUCH for a command whose reading it could not determine.
-    """
-    return Invocation(
-        None, None, AMBIGUOUS_READING_SUBCOMMAND, [], InvocationTokens([], [])
-    )
-
-
-def _indeterminate_stream() -> list[str]:
-    """The STREAM form of `_indeterminate_invocation`, for `iter_context_token_streams`.
-
-    The two primitives must carry the SAME in-band signal or they disagree about what a context
-    contains, and the disagreement is a fail-open rather than a mismatch. Measured on the witness
-    `bash <<'(x'` / `git status` / `x=$\\` / `(x`: the walk recorded
-    `[('status', []), (AMBIGUOUS_READING_SUBCOMMAND, [])]` while the streams primitive silently
-    `continue`d past the variant that raised and returned ONE marker-free stream, so the
-    publication guard (invocation-shaped) blocked at rc=2 while push-guard and the timing guard
-    (both stream-shaped) returned rc=0 — turning `dev`'s rc=2 push-guard BLOCK into an ALLOW.
-
-    Two tokens, no trailing separator. Both stream consumers close the final segment at `i == n`
-    (`push-guard.py:_block_kind`, `git-timing-guard.py:_find_first_push` each loop
-    `for i in range(n + 1)`), so a two-token list IS one complete segment; a trailing `;` would be
-    inert, and relying on one would make the signal depend on a separator convention neither
-    consumer requires. `git` leads so `is_git`/`starts_command` put the marker in SUBCOMMAND
-    position, which is where `subcommand_is_indeterminate` is consulted (`push-guard.py:208`,
-    `git-timing-guard.py:227`). Nothing precedes `git`, so the segment's leading env-assignment run
-    is empty and no `ALLOW_PUSH=1`/`ALLOW_GIT_WRITE=1` can authorize it.
-    """
-    return ["git", AMBIGUOUS_READING_SUBCOMMAND]
-
-
-def _invocation_key(inv: Invocation) -> tuple:
-    return (
-        inv.effective_dir,
-        inv.cdir,
-        inv.subcommand,
-        tuple(inv.arg_tokens),
-        tuple(inv.tokens.env),
-        tuple(inv.tokens.opts),
-    )
-
-
-def _union_max_multiset(
-    base: list[Invocation],
-    base_trails: list[ReadingTrail],
-    extra: list[Invocation],
-    extra_trails: list[ReadingTrail],
-) -> tuple[list[Invocation], list[ReadingTrail]]:
-    """Multiplicity of each key is the MAX across variants; `base` keeps its order.
-
-    A set union collapses a command that genuinely runs one invocation twice — measured as
-    hidden_valid=92 on the differential's default seed, against 0 here.
-
-    Each trail travels with its invocation BY POSITION, appended in the same step that appends the
-    invocation. That is what keeps the answer to "which reading produced THIS record" attached to
-    the record the max-multiset actually kept: a key-based map would merge the trail of the
-    duplicate it dropped with the trail of the one it kept, which is precisely the case the
-    multiset exists for.
-    """
-    counts = Counter(_invocation_key(inv) for inv in base)
-    seen: Counter[tuple] = Counter()
-    out = list(base)
-    out_trails = list(base_trails)
-    for inv, trail in zip(extra, extra_trails, strict=True):
-        key = _invocation_key(inv)
-        seen[key] += 1
-        if seen[key] > counts[key]:
-            out.append(inv)
-            out_trails.append(trail)
-    return out, out_trails
-
-
-def _prepare(
-    text: str, depth: int, readings: Mapping[int, bool] | None = None
-) -> tuple[str, list[CommandContext], int]:
+def _prepare(text: str, depth: int) -> tuple[str, list[CommandContext]]:
     r"""Apply the fixed preparation order and split out one level of nested contexts.
 
     ORDER IS LOAD-BEARING and `normalize_command` is deliberately SPLIT, because its two halves
@@ -2128,123 +1699,43 @@ def _prepare(
             OUTSIDE this module's ValueError taxonomy and would escape a consumer that swallows
             only ValueError.
 
-        readings: Which ambiguous heredocs to read as JOIN, by encounter ordinal. None (the
-            default) is all-drop — the PRIMARY reading, which is what bash does at the top level
-            and the only reading that occurs in real commands.
-
     Returns:
-        The outer string (contexts replaced by placeholders, newlines still present), the extracted
-        contexts, and how many ambiguous heredocs the mask pass met. The count comes back even when
-        the caller is about to enumerate: it is what `_reading_assignments` needs, and taking it
-        from `_mask_with_count` rather than from a parse is what keeps it available on the inputs
-        that make the split half raise.
+        The outer string (contexts replaced by placeholders, newlines still present) and the
+        extracted contexts.
 
     Raises:
         ValueError: On unbalanced quotes, an unterminated context, or a reserved marker in input.
     """
-    masked, count = _mask_with_count(text, depth, readings)
-    outer, nested = split_command_contexts(
-        fold_continuations(strip_comments(masked)), depth
+    return split_command_contexts(
+        fold_continuations(strip_comments(mask_heredoc_quotes(text))), depth
     )
-    return outer, nested, count
 
 
-_EMPTY_TRAIL = ReadingTrail(())
-"""The trail of an invocation found in the context currently being walked.
-
-Empty rather than "primary": `_walk_once` is not told which reading produced the text it was
-handed, so claiming one here would be a guess. `_walk_context` knows, and prepends its own step.
-"""
-
-
-class _Recorder(list):
-    """The invocation list, plus one `ReadingTrail` per invocation, appended in ONE operation.
-
-    A `list` subclass so every record site inside `_walk_once` keeps its existing shape
-    (`results.append(Invocation(...))`) while no site can append an invocation WITHOUT a trail.
-    Five separate record sites maintaining a parallel list by hand is an alignment nobody checks,
-    and a trail one position out is a diagnostic naming the wrong reading -- worse than no
-    diagnostic, because it reads as authoritative. `trails[i]` describes `self[i]`, structurally.
-
-    `extend` is refused rather than inherited: it is the one list operation that would append
-    invocations with no trail, and a child's records arrive with trails already filled in, so
-    `extend_child` is the only correct spelling.
-    """
-
-    __slots__ = ("trails",)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.trails: list[ReadingTrail] = []
-
-    def append(self, inv: Invocation) -> None:
-        super().append(inv)
-        self.trails.append(_EMPTY_TRAIL)
-
-    def extend(self, _invocations) -> None:  # type: ignore[override]
-        # A ValueError, not a TypeError: this module's documented taxonomy is ValueError, and a
-        # consumer that swallows only ValueError would otherwise meet an escaping exception --
-        # which every guard here treats as noise rather than a veto, so the command RUNS.
-        raise ValueError("_Recorder.extend would drop reading trails; use extend_child")
-
-    def extend_child(
-        self, invocations: list[Invocation], trails: list[ReadingTrail]
-    ) -> None:
-        """Take a child context's records and the trails that child already filled in."""
-        if len(invocations) != len(trails):
-            raise ValueError("invocation/trail misalignment from a child context")
-        super().extend(invocations)
-        self.trails.extend(trails)
-
-
-def _walk_once(
-    outer: str,
-    nested: list[CommandContext],
-    base_cwd: str | None,
-    max_depth: int,
-    budget: _ParseBudget,
-    primary_chain: bool = False,
-) -> tuple[list[Invocation], str | None, list[ReadingTrail]]:
-    """Walk ONE prepared reading of one context in source order, recursing into its children.
-
-    Split out of `_walk_context` so that function can drive this one once per reading assignment.
-    Everything here is the walk as it always was; the variant dimension lives entirely in the
-    caller.
+def _walk_context(
+    ctx: CommandContext, base_cwd: str | None, max_depth: int
+) -> tuple[list[Invocation], str | None]:
+    """Walk ONE context in source order, recursing into the contexts it introduces.
 
     Args:
-        outer: The prepared outer string, contexts already replaced by placeholders.
-        nested: The contexts `outer`'s placeholders refer to.
+        ctx: The context to walk.
         base_cwd: Working directory in force when this context starts.
         max_depth: Maximum nesting depth before the input is treated as ambiguous.
-        budget: The walk-wide parse budget, threaded into every child walk. Never defaulted — a
-            per-call default silently disables the limit it exists to impose.
-        primary_chain: True when this reading was reached through its parents' FIRST assignments,
-            which makes each child's own first assignment free of the budget. Defaults to False:
-            an unmarked caller gets the charging behaviour, since the wrong answer here withdraws
-            a reading rather than adding one.
 
     Returns:
-        The `Invocation` records found, in command order, the working directory in force at the
-        END of this context, and one `ReadingTrail` per invocation AT THE SAME LIST POSITION. The
-        record names its own fields — this line deliberately does not respell them, which is how
-        it came to disagree with the code it describes.
-
-        The trails this function returns are RELATIVE: an invocation found in this very context
-        carries no step at all, because this function is not told which assignment produced the
-        text it was handed. `_walk_context` knows, and prepends its own step to every trail on the
-        way out — including the ones a child already filled in, so the chain reads outermost-first.
+        The `Invocation` records found, in command order, and the working directory in force at the
+        END of this context. The record names its own fields — this line deliberately does not
+        respell them, which is how it came to disagree with the code it describes.
 
     Raises:
         ValueError: On unbalanced quotes, an unterminated context, or excessive nesting.
     """
+    if ctx.depth > max_depth:
+        raise ValueError("maximum command-context depth exceeded")
+
+    outer, nested = _prepare(ctx.text, ctx.depth)
     tokens = strip_redirects(tokenize(newlines_to_separators(outer)))
 
-    # `results` is a recorder rather than a plain list so that EVERY append carries a trail with
-    # it: a parallel list appended at five separate record sites is an alignment nobody checks,
-    # and a trail one position out is a diagnostic that names the wrong reading — worse than none,
-    # because it reads as authoritative. Appending both in one operation makes the alignment
-    # structural, exactly as the walk carries `InvocationTokens` on the record instead of beside it.
-    results = _Recorder()
+    results: list[Invocation] = []
     cwd_state = base_cwd
     walked: set[int] = set()
 
@@ -2265,10 +1756,8 @@ def _walk_once(
                 if idx in walked:
                     continue
                 walked.add(idx)
-                sub_results, _, sub_trails = _walk_context(
-                    nested[idx], cwd, max_depth, budget, primary_chain=primary_chain
-                )
-                results.extend_child(sub_results, sub_trails)
+                sub_results, _ = _walk_context(nested[idx], cwd, max_depth)
+                results.extend(sub_results)
 
     i, n = 0, len(tokens)
     subshell_cwds: list[str | None] = []
@@ -2547,157 +2036,10 @@ def _walk_once(
     # the direction that allows.
     for idx, context in enumerate(nested):
         if idx not in walked:
-            sub_results, _, sub_trails = _walk_context(context, None, max_depth, budget)
-            results.extend_child(sub_results, sub_trails)
+            sub_results, _ = _walk_context(context, None, max_depth)
+            results.extend(sub_results)
 
-    return list(results), cwd_state, results.trails
-
-
-def _lost_trail(
-    depth: int,
-    count: int,
-    unreadable: list[tuple[tuple[int, ...], str]],
-    untried: int,
-) -> ReadingTrail:
-    """The trail of an `_indeterminate_invocation` -- WHICH readings were lost, and how.
-
-    The marker corresponds to no command text, so its step carries `joined=None` rather than an
-    assignment: it stands for readings that were never read, which is a different fact from "this
-    record came from the all-drop reading" and must not render as one.
-    """
-    parts = []
-    if unreadable:
-        parts.append("unreadable")
-    if untried:
-        parts.append("truncated")
-    return ReadingTrail(
-        steps=(ReadingStep(depth, count, None),),
-        lost="+".join(parts) or "unreadable",
-        unreadable=tuple(unreadable),
-        untried=untried,
-    )
-
-
-def _walk_context(
-    ctx: CommandContext,
-    base_cwd: str | None,
-    max_depth: int,
-    budget: _ParseBudget | None = None,
-    primary_chain: bool = True,
-) -> tuple[list[Invocation], str | None, list[ReadingTrail]]:
-    """Walk ONE context under every reading of its ambiguous heredocs, and union what they found.
-
-    A quoted heredoc body ending in an odd backslash run reads two ways, and which one bash takes
-    depends on a context question this module answers unreliably — so it answers neither: it walks
-    the context once per reading assignment and records the union. An EXTRA invocation is an
-    over-read, costing a false block; a LOST one is a bypass, because the join reading mangles a
-    word (`dev` -> `devEOF`) and can lose a push target.
-
-    Three rules, each measured rather than reasoned:
-
-    - **The primary (all-drop) variant fixes ORDER and cwd.** All-drop is what bash does at the top
-      level, the only case that occurs in real commands, and drop never swallows a delimiter.
-    - **Raise only if EVERY variant raises.** A quoted delimiter may contain `(`, so the all-join
-      reading of a command both bashes run can raise `unterminated command substitution`;
-      propagating that raise discards a correct read and hands the timing guard, and push-guard
-      behind a hidden git word, a fail-open. When some variant raised but another parsed, ONE
-      `_indeterminate_invocation` is appended so the ambiguity is visible in-band.
-    - **Exceeding the parse budget never raises** — it emits the same marker. Raising there would
-      hand the timing guard and the publication guard's opaque path an ALLOW.
-
-    Args:
-        ctx: The context to walk.
-        base_cwd: Working directory in force when this context starts.
-        max_depth: Maximum nesting depth before the input is treated as ambiguous.
-        budget: The walk-wide parse budget. None creates one, which is correct ONLY at the entry
-            point: every recursive call must pass the budget it was given, or the cap counts one
-            context's parses instead of the walk's.
-
-    Returns:
-        The `Invocation` records found, in command order, the working directory in force at the
-        END of this context — both from the primary variant, topped up by later variants — and one
-        `ReadingTrail` per invocation, at the SAME list position, naming the reading assignment
-        that produced it. The trails are a DIAGNOSTIC: no consumer's verdict may vary with them,
-        because which reading bash takes is exactly the question this walk refuses to guess.
-
-    Raises:
-        ValueError: On unbalanced quotes, an unterminated context, or excessive nesting — only when
-            no reading of this context parsed.
-    """
-    if ctx.depth > max_depth:
-        raise ValueError("maximum command-context depth exceeded")
-    if budget is None:
-        budget = _ParseBudget(MAX_TOTAL_PARSES)
-
-    # Total; never raises — which is why the count survives a parse that does.
-    _masked, count = _mask_with_count(ctx.text, ctx.depth)
-    assignments = _reading_assignments(count)
-    results: list[Invocation] = []
-    trails: list[ReadingTrail] = []
-    primary_cwd = base_cwd
-    first_error: ValueError | None = None
-    parsed_any = False
-    truncated = False
-    untried = 0
-    unreadable: list[tuple[tuple[int, ...], str]] = []
-
-    for tried, readings in enumerate(assignments):
-        # The PRIMARY reading is free. It is what the pre-change tokenizer walked, so charging it
-        # to the budget this change introduced lets a large enough input withdraw a reading the
-        # old code always had -- measured 2026-09-22 as a capability regression at
-        # `commit-subject-guard.py`, which reads no marker and so simply stopped seeing an
-        # 80-character commit subject from 127 ambiguous contexts on (dev blocks it at every N).
-        # Free parses total one per CONTEXT, exactly the old cost; the variants this change added
-        # remain capped, which is the term that made an unbounded walk a bypass.
-        free = primary_chain and tried == 0
-        if not free and not budget.spend():
-            truncated = True
-            # Every assignment from this one on, including this one: the spend FAILED, so nothing
-            # was walked under it.
-            untried = (1 << count) - tried
-            break
-        joined = tuple(sorted(i for i, as_join in readings.items() if as_join))
-        try:
-            # BOTH the prepare and the walk sit inside the try: a child context that raises is one
-            # variant failing, not the parent's failure.
-            outer, nested, _count = _prepare(ctx.text, ctx.depth, readings)
-            found, end_cwd, found_trails = _walk_once(
-                outer, nested, base_cwd, max_depth, budget, primary_chain=free
-            )
-        except ValueError as exc:
-            first_error = first_error if first_error is not None else exc
-            if len(unreadable) < _MAX_REPORTED_READINGS:
-                unreadable.append((joined, _reading_category(exc)))
-            continue
-        # This context's own step, prepended to every trail the variant produced — including the
-        # ones a child already filled in, so the chain reads outermost-first. A nested record must
-        # name its ANCESTORS' assignments too: it may exist only because a parent was read as
-        # JOIN, and a trail naming just the innermost context would report that record as primary.
-        step = ReadingStep(ctx.depth, count, joined)
-        found_trails = [t._replace(steps=(step, *t.steps)) for t in found_trails]
-        if not parsed_any:
-            results, primary_cwd, trails = found, end_cwd, found_trails
-        else:
-            results, trails = _union_max_multiset(results, trails, found, found_trails)
-        parsed_any = True
-
-    if not parsed_any:
-        if truncated:
-            # The cap, not the input: "exceeding the cap never raises".
-            return (
-                [_indeterminate_invocation()],
-                base_cwd,
-                [_lost_trail(ctx.depth, count, unreadable, untried)],
-            )
-        raise (
-            first_error
-            if first_error is not None
-            else ValueError("no readable reading of this command context")
-        )
-    if first_error is not None or truncated:
-        results = results + [_indeterminate_invocation()]
-        trails = trails + [_lost_trail(ctx.depth, count, unreadable, untried)]
-    return results, primary_cwd, trails
+    return results, cwd_state
 
 
 def iter_git_invocations_with_cwd(
@@ -2757,44 +2099,7 @@ def iter_git_invocations_detailed(
     """
     if len(command) > MAX_COMMAND_LENGTH:
         raise ValueError("command exceeds the maximum length this scanner will parse")
-    return iter_git_invocations_with_readings(command, base_cwd, max_depth)[0]
-
-
-def iter_git_invocations_with_readings(
-    command: str, base_cwd: str | None, max_depth: int = MAX_CONTEXT_DEPTH
-) -> tuple[list[Invocation], list[ReadingTrail]]:
-    """`iter_git_invocations_detailed`, plus WHICH READING of the command produced each record.
-
-    Same walk, same order, same raises — `iter_git_invocations_detailed` is now this function with
-    the trails dropped, so the two can never disagree about what the walk found.
-
-    The trails are parallel to the invocations BY POSITION and are never keyed by the invocation
-    itself: the union is a MAX-MULTISET, so two records legitimately share a key and a key-based
-    map would collide exactly where the union did its work.
-
-    For a DIAGNOSTIC, never for a verdict. No guard's ALLOW/BLOCK may vary with which reading found
-    an invocation — that is the question this walk exists to stop guessing. What this enables is
-    `explain-git-command.py` telling an operator WHY a command blocked: the design accepts an
-    over-read from a second reading, and an unexplainable over-read is what gets "fixed" by
-    narrowing a matcher, the repair this repo has twice measured as the fail-open it removed.
-
-    Args:
-        command: The raw shell-command string to scan.
-        base_cwd: Working directory the command starts in, or None if already unknown.
-        max_depth: Maximum context nesting depth before the input is treated as ambiguous.
-
-    Returns:
-        The invocations, and one `ReadingTrail` per invocation at the same list position.
-
-    Raises:
-        ValueError: Same conditions as `iter_git_invocations_with_cwd`.
-    """
-    if len(command) > MAX_COMMAND_LENGTH:
-        raise ValueError("command exceeds the maximum length this scanner will parse")
-    invocations, _cwd, trails = _walk_context(
-        CommandContext(command, 0), base_cwd, max_depth
-    )
-    return invocations, trails
+    return _walk_context(CommandContext(command, 0), base_cwd, max_depth)[0]
 
 
 def iter_context_token_streams(
@@ -2806,111 +2111,32 @@ def iter_context_token_streams(
     gets each context's tokens and applies its existing rules per context, instead of re-deriving
     them from an invocation tuple that has already discarded segment structure.
 
-    Preparation MUST match `_walk_context` exactly — both call `_prepare`, over the SAME
-    `_reading_assignments` and charged to one `_ParseBudget`, so the two primitives can never
-    disagree about what a context contains. That is not tidiness: the publication guard pairs
-    `_exported_injection_reason` with `_find_block_reason`, and the timing guard correlates
-    `_find_first_push` with `_push_target_dirs` BY ORDER. Leaving this primitive single-reading
-    while the walk enumerates would take a reading away from three guards.
-
-    **The primary stream precedes every variant stream**, because `_reading_assignments` puts the
-    all-drop assignment first. Load-bearing, not cosmetic: `_find_first_push` returns on the FIRST
-    push-carrying segment and the timing guard returns 0 when that one is authorized, so a
-    join-first order would let a body whose last line ends `ALLOW_GIT_WRITE=1` plus a continuation
-    authorize a push it does not authorize.
-
-    **A LOST reading is signalled in-band**, by `_indeterminate_stream`, exactly as `_walk_context`
-    signals it with `_indeterminate_invocation` — one marker per affected CONTEXT, appended after
-    that context's streams (so the primary-first invariant above is untouched). Leaving it out was
-    measured as a REGRESSION against shipped `dev`: on the witness `bash <<'(x'` / `git status` /
-    `x=$\\` / `(x` the walk recorded `[('status', []), (AMBIGUOUS_READING_SUBCOMMAND, [])]` and the
-    publication guard blocked at rc 2, while this primitive skipped the raising variant with a bare
-    `continue` and push-guard and the timing guard both returned rc 0 — where `dev` blocks the same
-    witness at rc 2. Both branches that can lose a reading emit it: a variant that RAISES, and an
-    exhausted BUDGET. Exceeding the cap never raises here either.
-
-    Known cost, accepted: children are re-collected under each variant, so a child whose text the
-    reading did not change contributes duplicate streams. That is an over-read — more text scanned,
-    never less.
-
-    Placeholders appear as ordinary word tokens (never `git`, never a control operator), so they
-    are inert to a caller's command-position and segment logic.
-
-    A consumer that tested the stream COUNT as a shape guard must stop: the count now varies with
-    the readings. `commit-subject-guard.py` did, and its test moved onto `split_command_contexts`.
+    Preparation MUST match `_walk_context` exactly — both call `_prepare`, so the two primitives
+    can never disagree about what a context contains. Placeholders appear as ordinary word tokens
+    (never `git`, never a control operator), so they are inert to a caller's command-position and
+    segment logic.
 
     Args:
         command: The raw shell-command string to scan.
         max_depth: Maximum context nesting depth before the input is treated as ambiguous.
 
     Returns:
-        One token list per context per readable variant, the top-level command's primary first,
-        plus one `_indeterminate_stream` per context that lost a reading.
+        One token list per context, the top-level command first.
 
     Raises:
-        ValueError: Same conditions as `iter_git_invocations_with_cwd` — for a context, only when
-            no reading of it parsed AND the cap was not what stopped it.
+        ValueError: Same conditions as `iter_git_invocations_with_cwd`.
     """
     if len(command) > MAX_COMMAND_LENGTH:
         raise ValueError("command exceeds the maximum length this scanner will parse")
     streams: list[list[str]] = []
-    budget = _ParseBudget(MAX_TOTAL_PARSES)
 
-    def _collect(ctx: CommandContext, primary_chain: bool = True) -> None:
+    def _collect(ctx: CommandContext) -> None:
         if ctx.depth > max_depth:
             raise ValueError("maximum command-context depth exceeded")
-        _masked, count = _mask_with_count(ctx.text, ctx.depth)
-        parsed_any = False
-        truncated = False
-        first_error: ValueError | None = None
-        for tried, readings in enumerate(_reading_assignments(count)):
-            # Free primary, exactly as `_walk_context` does it and for the same measured reason.
-            # This primitive is the one push-guard reads, so a withdrawn primary here is a
-            # fail-open at that guard even when the walk is perfect -- the shape this branch has
-            # already had to fix twice.
-            free = primary_chain and tried == 0
-            if not free and not budget.spend():
-                truncated = True
-                break
-            # EVERYTHING this variant does sits inside the try, and a failure rolls back what
-            # it appended. `_walk_context` has always done it this way; this primitive did not,
-            # and the gap was a measured fail-open: only `_prepare` was guarded, so a variant
-            # whose CHILD context was unparseable raised out of the whole primitive instead of
-            # being one failed reading. Measured on `x=`bash <<'\"'` / a hidden-git-word push /
-            # `echo tail \\` / `\"` / backtick: both bashes RUN the push, the walk records it,
-            # and push-guard and the publication guard went from BLOCK on dev to ALLOW here,
-            # because both consume this primitive and both treat its ValueError as nothing to
-            # judge. 24 such ALLOW regressions in 432 push-carrying shapes.
-            mark = len(streams)
-            try:
-                outer, nested, _ = _prepare(ctx.text, ctx.depth, readings)
-                streams.append(strip_redirects(tokenize(newlines_to_separators(outer))))
-                for child in nested:
-                    _collect(child, primary_chain=free)
-            except ValueError as exc:
-                # This reading contributed nothing; leave no partial trace behind.
-                del streams[mark:]
-                first_error = first_error if first_error is not None else exc
-                continue
-            parsed_any = True
-        # A LOST reading is signalled in-band, exactly as `_walk_context` does it, and for the same
-        # reason: silently dropping it is the fail-open direction. ONE marker per affected CONTEXT,
-        # not per command -- the walk appends one per context too, and the timing guard correlates
-        # `_find_first_push` with `_push_target_dirs` BY ORDER, so a per-command marker would
-        # collapse several contexts' losses into a single record the walk does not match.
-        # It goes AFTER this context's streams and its children's, so the invariant
-        # "the primary stream precedes every variant stream" is untouched.
-        if not parsed_any:
-            if truncated:
-                # The cap, not the input: "exceeding the cap never raises". Returning no stream at
-                # all here would be the same silent loss this marker exists to close.
-                streams.append(_indeterminate_stream())
-                return
-            if first_error is not None:
-                raise first_error
-            return
-        if first_error is not None or truncated:
-            streams.append(_indeterminate_stream())
+        outer, nested = _prepare(ctx.text, ctx.depth)
+        streams.append(strip_redirects(tokenize(newlines_to_separators(outer))))
+        for child in nested:
+            _collect(child)
 
     _collect(CommandContext(command, 0))
     return streams

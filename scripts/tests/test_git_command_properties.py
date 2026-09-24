@@ -41,6 +41,10 @@ The full record, including all four designs and the measurements that killed eac
 memory under `2026-09-03-heredoc-unbalanced-substitution`.
 """
 
+import hashlib
+import importlib.util
+import inspect
+import itertools
 import json
 import os
 import random
@@ -48,6 +52,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from collections import Counter, namedtuple
 from pathlib import Path
 
@@ -223,6 +228,27 @@ def _irregular_cases():
 
 CASES = _structured_cases() + _substitution_cases() + _irregular_cases()
 
+_HEREDOC_OPERATOR = re.compile(
+    r"<<(-?)[ \t]*((?:'[^']*'|\"[^\"]*\"|\\\S|[^\s;&|<>()])+)"
+)
+
+
+def _only_quoted_plain_heredocs(command):
+    """True when every heredoc operator in `command` is `<<` (never `<<-`) with a QUOTED or escaped
+    delimiter -- the population the insert-only and byte-identity guarantees still cover.
+
+    Since 2026-09-18 the masking pass TRANSFORMS two other shapes, because bash does: `<<-` strips
+    leading tabs from every body line, and an UNQUOTED body gets bash's own backslash and
+    continuation pass before the consumer reads it. Those are held to the bash differential
+    (`test_git_command_bash_differential.py`) and to the removal-only and opener-parity properties
+    below instead. A body whose last line ends in a continuation is dropped for any delimiter, but
+    no body in this corpus ends that way.
+    """
+    ops = _HEREDOC_OPERATOR.findall(command)
+    return bool(ops) and all(
+        dash == "" and any(c in word for c in "'\"\\") for dash, word in ops
+    )
+
 
 def _subs(command):
     return [
@@ -256,9 +282,16 @@ def test_masking_only_ever_inserts_sanctioned_characters():
     required: subsequence preserves the original catch (forbidding deletion or reordering, which
     is the shape of the fail-open this property exists to catch), and the allowlist stops
     insert-only from licensing insertion of arbitrary meaningful text.
+
+    Scoped since 2026-09-18 to `_only_quoted_plain_heredocs` cases -- see that helper for why the
+    other shapes are now transformed, and which properties hold them instead.
     """
     allowed_insertions = set("\\")
+    checked = 0
     for case in CASES:
+        if not _only_quoted_plain_heredocs(case.command):
+            continue
+        checked += 1
         masked = git_command.mask_heredoc_quotes(case.command)
 
         it = iter(masked)
@@ -275,6 +308,7 @@ def test_masking_only_ever_inserts_sanctioned_characters():
                 case.command,
             )
         )
+    assert checked > 150, checked
 
 
 def test_masking_is_idempotent():
@@ -288,9 +322,11 @@ def test_masking_is_idempotent():
 def test_a_balanced_body_comes_out_byte_identical():
     """The blast-radius guarantee, and the reason the fix is narrow enough to be safe: if every
     body already balances, nothing is touched, so no command that parses today can begin parsing
-    differently tomorrow."""
+    differently tomorrow. Scoped since 2026-09-18 to `_only_quoted_plain_heredocs` cases."""
     checked = 0
     for case in CASES:
+        if not _only_quoted_plain_heredocs(case.command):
+            continue
         if not all(_quotes_balanced(body) for body in case.bodies):
             continue
         checked += 1
@@ -397,6 +433,187 @@ def test_the_walk_raises_nothing_worse_than_value_error():
             raise AssertionError(
                 "walk raised {} on {!r}: {}".format(type(exc).__name__, text, exc)
             ) from exc
+
+
+# =====================================================================================
+# Unchanged behaviour where NOTHING is ambiguous, against the vendored pre-change oracle
+# =====================================================================================
+#
+# The 2026-09-19 reading-variant change enumerates readings of an ambiguous heredoc. A command with
+# no ambiguous heredoc ANYWHERE has exactly one assignment, so it must come out byte-identical to
+# the build before the change — same invocations, same order. That is the only claim strong enough
+# to be worth stating: an "over-read is acceptable" rule cannot distinguish a deliberate second
+# reading from a regression that invented one.
+#
+# WHY A VENDORED FILE AND NOT `git show <sha>:<path>`. The pre-change tree is reachable only from
+# this branch, and the pre-publish history fold rewrites those commits — after which the command
+# fails in any fresh clone and this property silently stops being checkable. It is loaded the way
+# `test_guard_corpus.py:_load_baseline_gitcmd` loads its own baseline: under its OWN module name,
+# never `git_command`, which this module already occupies in `sys.modules`.
+# `scripts/tests/fixtures/prechange/` is a DIFFERENT frozen baseline (782039d) and is not touched.
+#
+# WHY THE AMBIGUITY COUNT IS GLOBAL. Scoping it to the top-level context is wrong and measurably
+# so — see `test_the_ambiguity_filter_must_be_scoped_globally_not_to_the_top_level` below, which is
+# the control that moves.
+
+_PRE_VARIANTS_ORACLE = (
+    Path(__file__).resolve().parent / "fixtures" / "pre-variants" / "git_command.py"
+)
+
+# sha256 of the tokenizer as it stood BEFORE the reading-variant change, computed when the
+# file was vendored. Deliberately not expressed as a commit SHA: the branch that carried it
+# is re-derived into bricks and deleted by the adopted finish, so such a SHA resolves for
+# nobody afterwards -- and this very file explains that the pre-publish fold rewrites those
+# commits. The vendored copy below is tracked, so ITS path in history is the provenance.
+# Asserted on every load: a silently edited oracle turns every comparison below into the code
+# comparing itself with itself, which passes.
+_PRE_VARIANTS_RELPATH = "scripts/tests/fixtures/pre-variants/git_command.py"
+"""The oracle's path as git spells it -- what `git show <commit>:<path>` needs."""
+
+_PRE_VARIANTS_SHA256 = (
+    "2d0e92e38973b7eabd3bb43d657cdab0d0a49d24adadfc1660ce44d7697ef1b9"
+)
+
+_PRE_VARIANTS_MODULE = None
+
+
+def _pre_variants_gitcmd():
+    """Import the vendored pre-change tokenizer under its own module name, digest first."""
+    global _PRE_VARIANTS_MODULE
+    if _PRE_VARIANTS_MODULE is None:
+        digest = hashlib.sha256(_PRE_VARIANTS_ORACLE.read_bytes()).hexdigest()
+        assert digest == _PRE_VARIANTS_SHA256, (
+            "the vendored pre-change oracle has drifted: {0} has sha256 {1}, expected {2}. "
+            "It is the reference every comparison in this section is made against; restore it "
+            "from this fixture's own history (`git log --oneline -- {3}`, then "
+            "`git show <commit>:{3}`) rather than updating this "
+            # {3} is REPO-RELATIVE on purpose: `git show <commit>:<path>` rejects an absolute
+            # path, so interpolating {0} here would print a command that cannot run -- in the one
+            # message a reader meets at the moment they can least afford to debug it.
+            "constant.".format(
+                _PRE_VARIANTS_ORACLE,
+                digest,
+                _PRE_VARIANTS_SHA256,
+                _PRE_VARIANTS_RELPATH,
+            )
+        )
+        spec = importlib.util.spec_from_file_location(
+            "pre_variants_git_command", _PRE_VARIANTS_ORACLE
+        )
+        assert spec is not None and spec.loader is not None, _PRE_VARIANTS_ORACLE
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _PRE_VARIANTS_MODULE = module
+    return _PRE_VARIANTS_MODULE
+
+
+# A raise is a VERDICT here, not an error: the two builds must agree about it too, so it is
+# recorded as a value rather than allowed to escape.
+_RAISED = ("<ValueError>",)
+
+
+def _invocation_record(module, command):
+    """Every field the union's dedup identity reads, in order — so "same invocations, same order"
+    is asserted over the whole tuple and not over subcommands alone."""
+    try:
+        return [
+            (
+                inv.effective_dir,
+                inv.cdir,
+                inv.subcommand,
+                tuple(inv.arg_tokens),
+                tuple(inv.tokens.env),
+                tuple(inv.tokens.opts),
+            )
+            for inv in module.iter_git_invocations_detailed(command, "/repo")
+        ]
+    except ValueError:
+        return _RAISED
+
+
+def _global_ambiguity_count(command, depth=0):
+    """Ambiguous heredocs in this context AND in every context it contains.
+
+    Mirrors the walk: each context is masked (total, never raises) and its children come from the
+    PRIMARY preparation — which is sound as a population filter, because a context with no
+    ambiguity has exactly one assignment and therefore exactly one set of children.
+    """
+    _masked, count = git_command._mask_with_count(command, depth)
+    total = count
+    if depth > git_command.MAX_CONTEXT_DEPTH:
+        return total
+    try:
+        _outer, nested, _count = git_command._prepare(command, depth, None)
+    except ValueError:
+        return total
+    for child in nested:
+        total += _global_ambiguity_count(child.text, child.depth)
+    return total
+
+
+# Commands that ARE ambiguous, so the filter above has something to exclude. Without them the
+# filter is decorative: measured, not one of the 4,855 generated commands below contains an
+# ambiguous heredoc, so a corpus-only population would pass with the filter deleted.
+_AMBIGUITY_WITNESSES = (
+    # top level: old build DROPPED, new build records drop then join
+    "bash <<'EOF'\ngit status" + "\\" + "\nEOF\n",
+    # inside `$( )`: the OLD build already recorded both readings here (by emitting the body
+    # twice), so this one is excluded by the filter without differing — kept because the filter
+    # must exclude it on the AMBIGUITY, never on whether the answer happens to have changed
+    "x=$(bash <<'EOF'\ngit status" + "\\" + "\nEOF\n)",
+    # inside backticks: old build JOINED only, new build records both
+    "x=`bash <<'EOF'\ngit status" + "\\" + "\nEOF\n`",
+    # backtick halving: an EVEN run outside becomes ODD inside, so only a GLOBAL count sees it
+    "x=`bash <<'EOF'\ngit status" + "\\" * 2 + "\nEOF\n`",
+)
+
+
+def test_a_command_with_no_ambiguous_heredoc_reads_exactly_as_the_pre_change_oracle():
+    """The population is every generated command whose ambiguity count, summed over ALL contexts,
+    is zero. For those the new build must return the pre-change build's invocations, in order,
+    including agreeing about a raise."""
+    oracle = _pre_variants_gitcmd()
+    commands = (
+        [case.command for case in CASES]
+        + list(_fuzz_inputs())
+        + list(_AMBIGUITY_WITNESSES)
+    )
+    unchanged, excluded = [], []
+    for command in commands:
+        (excluded if _global_ambiguity_count(command) else unchanged).append(command)
+
+    # FLOOR, and a non-zero denominator: a filter that excluded everything would leave the loop
+    # below asserting nothing at all, and report success.
+    assert len(unchanged) >= 4800, len(unchanged)
+    # And the filter must really be filtering. The witnesses are appended last and are the only
+    # ambiguous commands here (measured over the whole corpus), so this is an exact statement of
+    # what the filter excluded, not a lower bound on it.
+    assert excluded == list(_AMBIGUITY_WITNESSES), excluded
+
+    for command in unchanged:
+        assert _invocation_record(oracle, command) == _invocation_record(
+            git_command, command
+        ), (
+            "reading-variant change altered a command with no ambiguous heredoc: "
+            "{!r}".format(command)
+        )
+
+
+def test_the_ambiguity_filter_must_be_scoped_globally_not_to_the_top_level():
+    """CONTROL that MOVES for the property above: a command the TOP-LEVEL count calls
+    unambiguous, whose reading nonetheless changed.
+
+    Backtick text loses one backslash of each pair before it runs, so a body line ending in an
+    EVEN run at the top level ends in an ODD one inside the backticks — ambiguous in the child
+    context and invisible to a top-level-scoped count. Scoping the filter that way would admit
+    this command into the unchanged population, where the final assertion would fail on it.
+    """
+    command = "x=`bash <<'EOF'\ngit status" + "\\" * 2 + "\nEOF\n`"
+    assert git_command._mask_with_count(command, 0)[1] == 0
+    assert _global_ambiguity_count(command) == 1
+    assert _invocation_record(_pre_variants_gitcmd(), command) != _invocation_record(
+        git_command, command
+    )
 
 
 # =====================================================================================
@@ -753,4 +970,510 @@ def test_prefixing_an_eval_family_wrapper_changes_no_invocation():
                 failures.append(f"{lead + prefix + rest!r}: {got!r} != {base!r}")
     assert not failures, f"{len(failures)} case(s), first 5:\n" + "\n".join(
         failures[:5]
+    )
+
+
+# ---------- UNQUOTED and `<<-` bodies: transformed as bash transforms them (2026-09-18) ----------
+#
+# The insert-only guarantee above existed to catch repairs that relocated a command boundary by
+# INSERTING text (four such repairs failed open; see the module docstring). Unquoted and `<<-` bodies
+# are now transformed the way bash transforms them, which DELETES characters, so they need their own
+# bash-free guarantees: every change is a deletion of a backslash, newline or tab (or the
+# neutraliser's inserted backslash), and no substitution opener is ever made to look escaped.
+
+_UNQ_PIECES = (
+    "a",
+    " ",
+    "\\",
+    "\\",
+    "$(",
+    ")",
+    "`",
+    "'",
+    '"',
+    "\t",
+    "$X",
+    "echo ",
+    "git ",
+)
+
+
+def _unquoted_bodies(rounds=3000):
+    rng = random.Random(SEED + 17)
+    for _ in range(rounds):
+        lines = []
+        for _ in range(rng.randint(1, 4)):
+            lines.append(
+                "".join(rng.choice(_UNQ_PIECES) for _ in range(rng.randint(0, 8)))
+            )
+        yield rng.choice(("<<", "<<-")), "\n".join(lines)
+
+
+def _aligns_removal_only(raw, masked):
+    """True when `masked` is reachable from `raw` by deleting only backslash, LF and TAB IN PLACE,
+    and inserting a backslash only IMMEDIATELY BEFORE a quote (the neutraliser's one move).
+
+    An exact alignment, not a greedy two-pointer: a first version accepted a deletion and an
+    insertion as independent moves with no positional tie, so `a\\` -> `\\a` -- a backslash
+    RELOCATED across content, the boundary-moving class this property exists to catch -- passed.
+    """
+    from functools import lru_cache
+
+    n, m = len(raw), len(masked)
+
+    @lru_cache(maxsize=None)
+    def ok(i, j):
+        if i == n and j == m:
+            return True
+        if i < n and j < m and raw[i] == masked[j] and ok(i + 1, j + 1):
+            return True
+        if i < n and raw[i] in "\\\n\t" and ok(i + 1, j):
+            return True
+        return (
+            j + 1 < m and masked[j] == "\\" and masked[j + 1] in "'\"" and ok(i, j + 1)
+        )
+
+    return ok(0, 0)
+
+
+def test_the_removal_only_alignment_rejects_a_relocated_backslash():
+    # The control that proves the checker above can fail: relocation and arbitrary insertion are
+    # refused, in-place deletion and the neutraliser's quote escape are accepted.
+    assert not _aligns_removal_only("a\\", "\\a")
+    assert not _aligns_removal_only("a\\b", "\\ab")
+    assert not _aligns_removal_only("ab", "a\\b")
+    assert _aligns_removal_only("a\\\nb", "ab")
+    assert _aligns_removal_only("it's", "it\\'s")
+
+
+def _live_openers(text):
+    """Count `$(` and backticks preceded by an EVEN backslash run -- the openers a scanner reads as
+    live rather than escaped."""
+    count = 0
+    for m in re.finditer(r"\$\(|`", text):
+        k = m.start()
+        run = 0
+        while k - run - 1 >= 0 and text[k - run - 1] == "\\":
+            run += 1
+        count += run % 2 == 0
+    return count
+
+
+def test_an_unquoted_body_is_only_ever_reduced():
+    checked = 0
+    for op, body in _unquoted_bodies():
+        command = f"cat {op}EOF\n{body}\nEOF\n"
+        try:
+            masked = git_command.mask_heredoc_quotes(command)
+        except ValueError:
+            continue  # a refusal hides nothing: every consumer fails closed on it
+        checked += 1
+        assert _aligns_removal_only(command, masked), (command, masked)
+        # The terminator line is operator text, copied verbatim -- whenever bash would find it
+        # there (no body line IS the terminator, and no continuation swallows it).
+        lines = body.split("\n")
+        found_early = any(
+            (line.lstrip("\t") if op == "<<-" else line) == "EOF" for line in lines
+        )
+        swallowed = (len(lines[-1]) - len(lines[-1].rstrip("\\"))) % 2 == 1
+        if not found_early and not swallowed:
+            assert masked.endswith("\nEOF\n"), (command, masked)
+    assert checked > 2000, checked
+
+
+def test_masking_never_makes_a_live_opener_look_escaped():
+    # Measured before this property existed: collapsing `\\` directly before `$(` to one backslash
+    # made the scanner read `\$(` as escaped, and a substitution the outer shell expands vanished
+    # from the walk. Masking may make an escaped opener live (the consumer re-reads it) but never
+    # the reverse.
+    checked = 0
+    for op, body in _unquoted_bodies():
+        command = f"cat {op}EOF\n{body}\nEOF\n"
+        try:
+            masked = git_command.mask_heredoc_quotes(command)
+        except ValueError:
+            continue
+        checked += 1
+        assert _live_openers(masked) >= _live_openers(command), (command, masked)
+    assert checked > 2000, checked
+
+
+# =====================================================================================
+# The parse cap's cost -- TIMING-SENSITIVE
+# =====================================================================================
+
+
+def _adversarial_reading_ladder():
+    """The construction `MAX_TOTAL_PARSES` was calibrated against, rebuilt here rather than pasted.
+
+    `MAX_CONTEXT_DEPTH` nested backtick levels, each carrying one quoted-delimiter heredoc whose
+    body ends in a run of `2**level` backslashes. Backtick text loses one backslash of each pair
+    before it runs, so after `level` rounds of halving that run is ODD at its own level and EVEN
+    at every level above -- fresh ambiguity per level, which is what a per-CONTEXT budget cannot
+    bound and what this one global cap exists for. The innermost body is padded out to just under
+    `MAX_COMMAND_LENGTH`, because the cap's cost is (parses x bytes scanned per parse) and the
+    second factor is maximal there.
+    """
+    backslash = "\\"
+
+    def tick(level):
+        # Nesting backticks REQUIRES escaping, and the escape count doubles each level.
+        return backslash * (2**level - 1) + "`"
+
+    def heredoc(tag, run, pad=""):
+        return f"bash <<'{tag}'\ngit status{pad}{backslash * run}\n{tag}\n"
+
+    def build(pad_chars):
+        depth = git_command.MAX_CONTEXT_DEPTH
+        pad = ("\n" + "x" * pad_chars) if pad_chars else ""
+        text = heredoc(f"E{depth - 1}", 2 ** (depth - 1), pad)
+        for level in range(depth - 2, -1, -1):
+            text = heredoc(f"E{level}", 2**level) + tick(level) + text + tick(level)
+        return text
+
+    low, high, best = 0, git_command.MAX_COMMAND_LENGTH, build(0)
+    while low <= high:
+        mid = (low + high) // 2
+        candidate = build(mid)
+        if len(candidate) <= git_command.MAX_COMMAND_LENGTH:
+            best, low = candidate, mid + 1
+        else:
+            high = mid - 1
+    return best
+
+
+# 1.7x over a MEASURED baseline, and deliberately NOT derived from any hook registration. Five
+# consecutive trials of the pair below measured 17.64-18.07 s (a 2.4% spread) at
+# `MAX_TOTAL_PARSES = 128`, and the guard process itself 17.89 s; 30.0 leaves 1.7x for an ordinary
+# busy machine. An earlier version of this comment called the number "half of the 60 s
+# `settings.json` registers for `publication-push-guard.py`" -- true arithmetic, wrong claim, and
+# the same error `MAX_TOTAL_PARSES`'s own docstring carried: that guard overruns 60 s on shapes
+# this cap does not govern (172 s on shipped `dev` for a flat 65,529-char command whose tokenizer
+# costs 0.15 s), so fitting inside the registration was never this bound's to promise. What it
+# does promise is a REGRESSION detector on the ladder: it catches the cap raised back to 256
+# (36.65 s in that guard) and roughly a 1.7x rise in per-parse cost.
+ADVERSARIAL_LADDER_BUDGET_SECONDS = 30.0
+
+
+def test_the_adversarial_reading_ladder_stays_inside_its_wall_clock_budget():
+    """TIMING-SENSITIVE: read a failure here as possibly the MACHINE before the code.
+
+    A hook that outlives its registered timeout is killed, is never told it was killed, and the
+    command RUNS -- so on this walk's own safety asymmetry an unbounded enumeration is a bypass,
+    not a slowdown. That makes the wall clock a security property and not a tidiness one, which is
+    why it is asserted rather than left to review.
+
+    The wall-clock half is the part a loaded machine can move, so it is paired with two halves
+    that it cannot: the cap must actually BIND on this input (uncapped it wants 510 parses), and
+    exhausting it must yield the in-band marker rather than a raise. A green row whose parse count
+    had drifted below the cap would be measuring an input that no longer reaches the enumeration.
+    """
+    command = _adversarial_reading_ladder()
+    assert len(command) > git_command.MAX_COMMAND_LENGTH * 0.9, len(command)
+
+    start = time.perf_counter()
+    invocations = git_command.iter_git_invocations_detailed(command, None)
+    streams = git_command.iter_context_token_streams(command)
+    elapsed = time.perf_counter() - start
+
+    # Deterministic: the cap binds, and both primitives degrade in band rather than raising.
+    assert any(
+        git_command.subcommand_is_ambiguous_reading(inv.subcommand)
+        for inv in invocations
+    ), [inv.subcommand for inv in invocations]
+    assert any(
+        any(git_command.subcommand_is_ambiguous_reading(token) for token in stream)
+        for stream in streams
+    ), len(streams)
+
+    assert elapsed < ADVERSARIAL_LADDER_BUDGET_SECONDS, (
+        "TIMING-SENSITIVE row: the two enumerating primitives took {:.2f}s over a {}-char "
+        "adversarial ladder, against a {:.0f}s budget (half the 60s timeout settings.json "
+        "registers for publication-push-guard.py, which calls both). Re-run on an idle machine "
+        "before treating this as a code regression; if it reproduces idle, the cap or the "
+        "per-parse cost moved -- MAX_TOTAL_PARSES is {} and was calibrated at 128.".format(
+            elapsed,
+            len(command),
+            ADVERSARIAL_LADDER_BUDGET_SECONDS,
+            git_command.MAX_TOTAL_PARSES,
+        )
+    )
+
+
+# The parse cap can only bound work that happens AFTER a parse is spent. The first draft of
+# `_reading_assignments` returned a LIST, so `2**k` assignments were built before the loop that
+# spends the budget ever ran -- and its `assignment not in ordered` membership scan made that
+# `4**k`. Measured on the draft: a 444-BYTE command (k=16) spent 38.17 s inside that function
+# having parsed nothing, against the 60 s the publication guard's registration allows for two
+# heavy tokenizer calls. A PreToolUse hook killed at its timeout is SILENT and the command RUNS,
+# so this was a denial-of-guard bypass reachable from a tiny input. After the fix: 0.113 s.
+FLAT_AMBIGUITY_BUDGET_SECONDS = 5.0
+
+
+_BS = chr(92)  # a literal backslash, kept out of this file's f-strings
+
+
+def _flat_ambiguous_command(count: int) -> str:
+    """`count` sibling heredocs in ONE context, each ambiguous. `k` is per-context and bounded by
+    input LENGTH, never by `MAX_CONTEXT_DEPTH` -- which is why a 444-byte command can carry 16."""
+    return "".join(f"bash <<'E{i}'\ngit status{_BS}\nE{i}\n" for i in range(count))
+
+
+def test_the_reading_enumeration_is_lazy():
+    """DETERMINISTIC half, and the one that fails on the draft for a reason no machine load can
+    explain: a materialised list cannot be consumed a prefix at a time. Taking a handful of
+    assignments for a count whose `2**k` is astronomically large must return immediately."""
+    assignments = git_command._reading_assignments(2000)
+    assert inspect.isgenerator(assignments), (
+        "_reading_assignments must yield lazily: at MAX_COMMAND_LENGTH `k` is about 2053, so a "
+        "materialised list puts 2**k in front of the parse cap, where no cap value reaches it"
+    )
+    prefix = list(itertools.islice(assignments, 5))
+    assert prefix[0] == {}, "the primary (all-drop) reading must come first"
+    assert prefix[1] == {i: True for i in range(2000)}, "all-join must come second"
+    assert all(a != prefix[0] and a != prefix[1] for a in prefix[2:]), (
+        "the two extremes are yielded up front and must not be repeated by the product"
+    )
+
+
+def test_a_small_command_with_many_ambiguous_heredocs_stays_cheap():
+    """TIMING-SENSITIVE: wall clock is the half a loaded machine can move. A failure here may be
+    the machine -- re-run idle before blaming the code -- but the companion row above is
+    deterministic, so the two together cannot both be explained away."""
+    command = _flat_ambiguous_command(16)
+    assert len(command) < 500, "the point of this row is that the input is TINY"
+    start = time.perf_counter()
+    invocations = git_command.iter_git_invocations_detailed(command, "/repo")
+    elapsed = time.perf_counter() - start
+    assert invocations, "the walk must still read the command, not merely return fast"
+    assert elapsed < FLAT_AMBIGUITY_BUDGET_SECONDS, (
+        "a %d-byte command with 16 ambiguous heredocs took %.2f s (budget %.1f s, cap %d). The "
+        "draft that returned a list took 38.17 s here; a hook killed at its timeout is silent and "
+        "the command runs. TIMING-SENSITIVE: re-run on an idle machine before blaming the code."
+        % (
+            len(command),
+            elapsed,
+            FLAT_AMBIGUITY_BUDGET_SECONDS,
+            git_command.MAX_TOTAL_PARSES,
+        )
+    )
+
+
+# Generated AMBIGUOUS commands: heredocs whose delimiters carry shell metacharacters, whose bodies
+# end in odd backslash runs, nested in the contexts that make a reading unparseable. This is the
+# population `test_both_primitives_agree_on_the_same_string` names and cannot reach -- its fixture
+# is three hand-written commands with no heredoc -- and the population the bash differential cannot
+# reach either, because `_tokenizer_invocations` calls only `iter_git_invocations_detailed`. A
+# review found a BLOCKER here: `_collect` guarded only `_prepare`, so a variant whose CHILD was
+# unparseable raised out of the whole primitive, and push-guard and the publication guard went from
+# BLOCK on dev to ALLOW on a push both bashes run.
+_AMBIGUOUS_DELIMITERS = ["EOF", '"', "'", "(x", 'a"b', "x)y", "$v", "`t"]
+_AMBIGUOUS_WRAPPERS = [
+    ("", ""),
+    ("x=$(", ")"),
+    ("x=`", "`"),
+    ("x=$(y=`", "`)"),
+    ("x=`y=$(", ")`"),
+]
+
+
+def _ambiguous_commands():
+    """Every (delimiter, wrapper, backslash-run) combination, as one command each."""
+    backslash = chr(92)
+    for delimiter in _AMBIGUOUS_DELIMITERS:
+        quoted = "'%s'" % delimiter if "'" not in delimiter else '"%s"' % delimiter
+        for open_wrap, close_wrap in _AMBIGUOUS_WRAPPERS:
+            for run in (0, 1, 2, 3):
+                body = "git status origin dev" + backslash * run
+                yield "%sbash <<%s\n%s\n%s\n%s" % (
+                    open_wrap,
+                    quoted,
+                    body,
+                    delimiter,
+                    close_wrap,
+                )
+
+
+def test_the_streams_primitive_never_raises_where_the_walk_reads():
+    """Wherever the walk READS a command, the streams primitive must not RAISE on it.
+
+    Scope, stated exactly: this row asserts RAISE PARITY and nothing else. It does not compare
+    what the two primitives found -- an earlier version of this docstring said they "must agree
+    about what a context CONTAINS", which the assertions below have never checked.
+
+    Two guards depend on the parity it does assert: push-guard consumes streams ONLY, and the
+    publication guard pairs a streams pass with an invocation pass. A streams-only raise is
+    therefore not a tidy asymmetry -- at push-guard's ValueError arm (which returns 0 without a
+    visible git word) and at the timing guard's fail-open it is a LOST invocation, the regression
+    class this whole branch exists to prevent.
+    """
+    divergences = []
+    walked = 0
+    streams_read = 0
+    tokens_seen = 0
+    for command in _ambiguous_commands():
+        try:
+            git_command.iter_git_invocations_detailed(command, "/repo")
+        except ValueError:
+            continue  # the walk could not read it either; parity holds trivially
+        walked += 1
+        try:
+            streams = list(git_command.iter_context_token_streams(command))
+        except ValueError as exc:
+            divergences.append((command, str(exc)))
+            continue
+        streams_read += 1
+        tokens_seen += sum(len(stream) for stream in streams)
+    # Measured floor, not a guess: the corpus is 160 commands of which the walk reads 77, the same
+    # 77 before and after the fix, and against the PRE-FIX tokenizer (8ca921e) this corpus reports
+    # 13 divergences. A first draft asserted 100 and failed on a clean tree -- the denominator
+    # guard doing its job, which is why it is here at all.
+    assert walked >= 70, (
+        "the corpus must actually exercise the walk, or this row passes by measuring nothing "
+        "(walked=%d)" % walked
+    )
+    # A floor on the CHECKER's own completed reads, named separately from the walk's. `walked`
+    # counts what the OTHER primitive did, so it stays healthy while this row reads nothing at
+    # all: measured 2026-09-23, stubbing `iter_context_token_streams` to `return []` left this
+    # row passing in 0.11 s with walked=77 and no divergences. One number cannot be a floor for
+    # both parties. Measured: streams_read=77, tokens_seen=1231.
+    assert streams_read >= 70 and tokens_seen >= 1000, (
+        "the streams primitive itself produced almost nothing (streams_read=%d, tokens_seen=%d); "
+        "a parity row that never read its own subject reports clean whatever the subject does"
+        % (streams_read, tokens_seen)
+    )
+    assert not divergences, (
+        "%d of %d commands: the walk read them and the streams primitive raised. Each one is a "
+        "command push-guard and the publication guard stop judging. First: %r -> %s"
+        % (len(divergences), walked, divergences[0][0], divergences[0][1])
+    )
+
+
+def test_the_primary_reading_survives_an_exhausted_budget(monkeypatch):
+    """CAPABILITY PRESERVATION: no cap value may leave this module weaker than the pre-change one.
+
+    The primary reading is exactly what the pre-change tokenizer walked, so charging it to the
+    same budget as the variants this change ADDED means a large enough input silently withdraws
+    a reading the old code always had. Measured 2026-09-22 before the fix, through the real
+    `commit-subject-guard.py` with an 80-character subject (`.commit-conventions.toml` blocks at
+    >= 80), sweeping the number of preceding ambiguous contexts:
+
+        n:      0    1   60  120  126  127  128  200
+        dev:    2    2    2    2    2    2    2    2
+        branch: 2    2    2    2    2    0    0    0
+
+    The threshold sits exactly at `MAX_TOTAL_PARSES`. The push gates were unaffected only because
+    they read the in-band marker; a consumer that does not read it -- and `commit-subject-guard.py`
+    is one -- just stops seeing the command.
+
+    `MAX_TOTAL_PARSES = 0` is the sharpest form of the property: zero budget for variants, and the
+    primary must still come through for every context.
+    """
+    monkeypatch.setattr(git_command, "MAX_TOTAL_PARSES", 0)
+    command = (
+        "".join("v%d=$(cat <<'A'\nnote\\\nA\n)\n" % i for i in range(5))
+        + 'out=$(git commit -m "subject")'
+    )
+
+    streams = list(git_command.iter_context_token_streams(command))
+    flat = [tok for s in streams for tok in s]
+    assert "commit" in flat, (
+        "the commit vanished at cap 0: the primary reading is being charged to the variant budget"
+    )
+
+    subs = [
+        i.subcommand
+        for i in git_command.iter_git_invocations_detailed(command, "/repo")
+    ]
+    assert "commit" in subs, "the walk lost the commit behind an exhausted budget"
+
+
+def test_an_exhausted_budget_never_withdraws_a_push_from_either_primitive(monkeypatch):
+    """The same property where it is load-bearing: a push must not disappear behind the cap.
+
+    push-guard reads ONLY `iter_context_token_streams`, so a push present to the walk and absent
+    from the streams is a fail-open at that guard however correct the walk is. This row asserts
+    both primitives at a budget too small to enumerate anything.
+    """
+    monkeypatch.setattr(git_command, "MAX_TOTAL_PARSES", 0)
+    command = (
+        "".join("v%d=$(cat <<'A'\nnote\\\nA\n)\n" % i for i in range(8))
+        + "git push origin dev"
+    )
+
+    flat = [tok for s in git_command.iter_context_token_streams(command) for tok in s]
+    assert "push" in flat, "the streams primitive withdrew a push at cap 0"
+
+    subs = [
+        i.subcommand
+        for i in git_command.iter_git_invocations_detailed(command, "/repo")
+    ]
+    assert "push" in subs, "the walk withdrew a push at cap 0"
+
+
+def test_the_enumeration_yields_the_mixed_assignments_not_only_the_extremes():
+    """The two extremes are the first two; everything BETWEEN them must follow.
+
+    For k ambiguous heredocs there are 2**k assignments. Yielding only all-drop and all-join
+    covers each heredoc's two readings in isolation but never a COMBINATION -- and a combination
+    is what a command with two ambiguous heredocs in one context actually needs.
+
+    Deterministic on purpose: it reads the generator directly rather than timing anything, so it
+    cannot be waved away as machine noise. `_reading_assignments` is lazy and k can reach ~2053 at
+    `MAX_COMMAND_LENGTH`, so this takes only the first four.
+    """
+    import itertools
+
+    first_four = list(itertools.islice(git_command._reading_assignments(2), 4))
+    assert first_four[0] == {}, ("the primary must come first", first_four)
+    assert first_four[1] == {0: True, 1: True}, (
+        "all-join must come second",
+        first_four,
+    )
+    assert {frozenset(a.items()) for a in first_four} == {
+        frozenset({}.items()),
+        frozenset({0: True, 1: True}.items()),
+        frozenset({0: True}.items()),
+        frozenset({1: True}.items()),
+    }, ("all four assignments must be yielded, extremes first", first_four)
+
+
+def test_a_mixed_reading_recovers_an_invocation_neither_extreme_finds():
+    """The behavioural half: the walk must CONSUME the mixed assignments, not merely be offered
+    them.
+
+    Witness measured 2026-09-23 -- two ambiguous heredocs in one backtick context, where the
+    `git status` is visible only when the first heredoc JOINS and the second DROPS. Neither
+    extreme produces it. Without the mixed assignments the marker still appears, so a guard still
+    blocks; what is lost is the guard's ability to say WHAT it refused, which is the difference
+    between a verdict and a shrug.
+    """
+    bs = "\\"
+    command = (
+        "`bash <<'A'"
+        + chr(10)
+        + "git log -1 dev"
+        + bs
+        + chr(10)
+        + "A"
+        + chr(10)
+        + "bash <<"
+        + chr(39)
+        + 'a"b'
+        + chr(39)
+        + chr(10)
+        + "git status"
+        + bs
+        + chr(10)
+        + 'a"b'
+        + chr(10)
+        + "`"
+    )
+    subs = [
+        i.subcommand
+        for i in git_command.iter_git_invocations_detailed(command, "/repo")
+    ]
+    assert "status" in subs, (
+        "the `git status` is visible only under a MIXED reading; the extremes alone lose it",
+        subs,
     )
