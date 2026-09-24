@@ -239,10 +239,63 @@ still stop and report, and nothing here licenses continuing past one.
    — that model wrote the check. Rehearse in a scratch clone made outside the repo and discarded
    afterwards, keeping the base branch and dropping the remote:
    `git clone -q -b <branch> <repo> <dir>`, `git -C <dir> branch <base> origin/<base>`,
-   `git -C <dir> remote remove origin`, `git -C <dir> config commit.gpgsign false`. Those settings
+   `git -C <dir> remote remove origin`, `git -C <dir> config commit.gpgsign false`,
+   `git -C <dir> config tag.gpgsign false`. Those settings
    are not the safety net — a push to an explicit URL, or a repo a check creates for itself, still
-   escapes them. In the clone, apply every earlier task's edits and this task's up to the check's
-   step — by hand where the plan describes an edit in prose. **Read each check before running it:**
+   escapes them. **`~/.claude/scripts/plan-rehearse.py` does the mechanical half** — `--create`
+   builds that clone:
+
+   ```bash
+   ~/.claude/scripts/plan-rehearse.py --create --scope "$PWD" --branch <branch> \
+       --base <base> --plan plans/<plan>.md --clone <dir outside the repo>
+   ```
+
+   Then re-run it without `--create` after applying each task's edits. A run extracts every
+   `Expected:`, TOKENIZES each command with `scripts/lib/git_command.py` — the same tokenizer the
+   push guards use — and refuses a word in COMMAND POSITION that writes or reaches the network, a
+   path or `-C`/`cd` target landing outside the clone, and anything it cannot resolve statically
+   (`~`, an unknown variable, an opaque `sh -c`, a backtick it cannot read into). It runs the rest
+   inside the clone and prints each one's exit status and output beside the plan's own quoted
+   expectation. **`--base` must name a ref the clone actually has** — it is what taint is measured
+   against, and the tool refuses rather than proceed without it, because an unresolvable base once
+   produced a clean verdict over a tree nothing had been compared to.
+
+   **The gate's scope, stated once and not extended.** It refuses what it can read STATICALLY: a
+   word in command position that writes or reaches the network, and a path, redirect, `cd` or
+   `-C` target that resolves outside the clone. **It does not follow a value through an
+   indirection** — a command name reached through a variable, a command behind a wrapper carrying
+   its own arguments (`timeout 5 …`, `nice -n 19 …`), or anything a `python` fence computes rather
+   than quotes. Those are the shared tokenizer's accepted limits, recorded in three other scripts
+   that depend on it, and not a defect list to work through. **There is NO sandbox.** The clone is
+   disposable and has no remote, and the tool installs a deny-all `pre-push` hook that stops an
+   ACCIDENTAL push — it does not contain a check routing around it, since `--no-verify` and
+   `-c core.hooksPath=…` are the check's own to pass, both measured landing a ref past it. This
+   repo's push guards do not help either: they are PreToolUse hooks on YOUR shell and never see a
+   child the tool spawns. **So the rule is the one this step already gave you — read every check
+   before you run it, including the ones the tool ran.**
+   **It never applies an edit, and the token PASS is not
+   in its vocabulary.** Both are measured rather than caution: across this repo's plans, prose
+   `Modify:` entries outrun `Create:` ones 107 to 32, so the state most checks need is yours to
+   produce; and every `Expected:` is prose no matcher can adjudicate — in
+   `plans/2026-07-04-exec-bit-guard.md`, `:112` expects exit 0 while `:294` expects exit 127, so
+   any rc-based verdict scores the RED-phase rows backwards. It reports what RAN; you compare.
+   A check whose earlier tasks' paths are still identical to base comes back TAINTED — still run,
+   because an instrument that cannot answer at all fails the same way at base — one whose command
+   could not be extracted UNPAIRED, one it would not execute REFUSED, and the run is INDETERMINATE
+   while any remain, so what went unrehearsed is visible rather than absent. In the clone, apply
+   every earlier task's edits and this task's up to the check's step — by hand where the plan
+   describes an edit in prose — **then run the tool again**, so a check that was TAINTED now
+   reports against the state you just produced; a TAINTED row you never re-run is a check nobody
+   rehearsed. **An UNREADABLE row is different, and re-running will not clear it**: that task
+   declares its files in prose, so the tool cannot tell whether its edits landed. Measured, 25% of
+   the tasks in this repo's plans do, which leaves about a fifth of all checks unmeasurable — read
+   those by hand, and do not read the row as work still outstanding.
+   Its report is where you read what each check DID; **the judging is still yours, and
+   so is reading every check — including the ones it ran.** A gate with holes becomes a licence the
+   moment the text says otherwise: an earlier draft of this paragraph exempted its RAN rows from
+   the read below, and the review then found seven command shapes it wrongly allowed, each of which
+   would have landed in exactly that exempted bucket.
+   **Read each check before running it:**
    re-point every path and `-C` target at the clone, since one still aimed at the real checkout
    grades the unedited tree; a check that would still reach outside the clone — a write, a push, a
    signing prompt, a network call — is itself a finding: fix it where you can, and never run it as
