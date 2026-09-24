@@ -1584,10 +1584,11 @@ push_run "$REPO" "git ${VERB} then git" 0 "trade: full argv judged like its neut
 
 # ---------- a deadline the GUARD PROCESS owns ----------
 # This gate registers a 60 s `timeout`. A hook that outlives its registration is killed SILENTLY —
-# the harness discards its output and never tells Claude — so the push RUNS. Measured on a single
-# command under MAX_COMMAND_LENGTH: 224.89 s here and 172.40 s on shipped `dev` (recorded in
-# `git_command.py`'s MAX_TOTAL_PARSES docstring, which files this deadline as the remedy). These
-# rows WATCH the handler fire, because a deadline that is merely INSTALLED has never run.
+# the harness discards its output and never tells Claude — so the push RUNS. Measured 2026-09-22,
+# before the per-judgment spawn memo (closed 2026-09-23), on a single command under
+# MAX_COMMAND_LENGTH: 224.89 s here and 172.40 s on shipped `dev` (recorded in `git_command.py`'s
+# MAX_TOTAL_PARSES docstring, which files this deadline as the remedy). These rows WATCH the
+# handler fire, because a deadline that is merely INSTALLED has never run.
 #
 # ~20 KB of flat ambiguous quoted heredocs; measured 7.0 s through this guard, so a 1 s override
 # has ~7x margin and costs a second rather than the 50 s the real deadline would.
@@ -1631,6 +1632,304 @@ assert_contains "$DL_ERR" 'GUARD_DEADLINE_SECONDS' \
 # property; this row pins that no `except` arm relabelled it as an internal error.
 assert_not_contains "$DL_ERR" 'internal error' \
   'deadline FIRES: it is not swallowed and relabelled as an internal error'
+
+# ---------- alias TABLE: git's own resolution rules (2026-09-23) ----------
+# git 2.55 runs SUBSECTION aliases -- `[alias "X"] command = ...` -- and `git config --get alias.X`
+# never reads that key, so the guard used to see "not an alias" and ALLOW. Measured with
+# GIT_TRACE: `alias expansion: pub => <verb>`. The rows pin the measured rules: subsection form is
+# case-SENSITIVE, plain form case-INSENSITIVE, the LAST definition in config order wins, and a
+# VALUELESS matching entry is a git fatal error wherever it sits.
+build_repo 1
+gi "$REPO" config alias.pub.command "${VERB} origin dev"
+push_run "$REPO" 'git pub' 2 "subsection alias resolving to the push verb is refused"
+
+build_repo 1
+gi "$REPO" config alias.Pub.command "${VERB} origin dev"
+push_run "$REPO" 'git pub' 0 "subsection alias is case-sensitive: [alias \"Pub\"] is not 'pub' (git agrees)"
+
+build_repo 1
+gi "$REPO" config alias.zz status
+gi "$REPO" config alias.zz.command "${VERB} origin dev"
+push_run "$REPO" 'git zz' 2 "plain then subsection: the LATER (push) definition wins"
+
+build_repo 1
+gi "$REPO" config alias.zz.command "${VERB} origin dev"
+gi "$REPO" config alias.zz status
+push_run "$REPO" 'git zz' 0 "subsection then plain: the LATER (status) definition wins"
+
+build_repo 1
+gi "$REPO" config alias.mixed "${VERB} origin dev"
+push_run "$REPO" 'git MIXED' 2 "plain alias is case-insensitive: 'MIXED' resolves alias.mixed"
+
+build_repo 1
+gi "$REPO" config alias.hop.command hop2
+gi "$REPO" config alias.hop2 "${VERB} origin dev"
+push_run "$REPO" 'git hop' 2 "a subsection alias chaining to a plain alias that pushes is refused"
+
+build_repo 1
+gi "$REPO" config alias.vv status
+printf '[alias]\n\tvv\n' >>"$REPO/.git/config"
+push_run "$REPO" 'git vv' 2 "a VALUELESS matching definition blocks even after a valued one"
+
+# One non-UTF-8 byte in an UNRELATED alias value must not break every judgment: the table read
+# decodes the whole alias section, where the old per-name lookup never read that value at all.
+build_repo 1
+printf '[alias]\n\tlatin = log --format=caf\351\n' >>"$REPO/.git/config"
+gi "$REPO" config alias.pub2 "${VERB} origin dev"
+push_run "$REPO" 'git frob' 0 "a non-UTF-8 byte in another alias's value does not refuse an unrelated command"
+push_run "$REPO" 'git pub2' 2 "…and an aliased push beside it is still refused"
+
+# ---------- tag sweep in O(1) spawns (2026-09-23) ----------
+# The census (every transcript command, replayed through the shipped guard) found the worst REAL
+# command was every publish: `--follow-tags` in a repo with 388 tags cost 784 spawns (~24 s),
+# because _tags_block ran rev-parse + merge-base per tag. Two for-each-ref queries now answer it.
+spawn_count() { # cwd command -> prints how many git subprocesses one judgment spawns
+  python3 - "$guard" "$1" "$2" <<'PY'
+import importlib.util
+import subprocess
+import sys
+
+spec = importlib.util.spec_from_file_location("ppg_count", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+count = 0
+real = subprocess.run
+
+
+def counting(*args, **kwargs):
+    global count
+    count += 1
+    return real(*args, **kwargs)
+
+
+mod.subprocess.run = counting
+mod._find_block_reason(sys.argv[3], sys.argv[2])
+print(count)
+PY
+}
+
+build_repo 1
+for i in $(seq 1 5); do gi "$REPO" tag "few$i" main >/dev/null 2>&1; done
+few="$(spawn_count "$REPO" "git ${VERB} origin main --follow-tags")"
+for i in $(seq 1 60); do gi "$REPO" tag "many$i" main >/dev/null 2>&1; done
+many="$(spawn_count "$REPO" "git ${VERB} origin main --follow-tags")"
+if [[ "$few" -ge 1 && "$few" -eq "$many" ]]; then
+  printf 'PASS  --follow-tags spawn count is independent of tag count (%d with 5 tags and 65)\n' "$few"
+  pass=$((pass + 1))
+else
+  printf 'FAIL  --follow-tags spawn count is independent of tag count (5 tags: %s, 65 tags: %s)\n' "$few" "$many"
+  fail=$((fail + 1))
+fi
+push_run "$REPO" "git ${VERB} origin main --follow-tags" 0 "65 main-reachable tags: --follow-tags allowed"
+
+# PRESERVE rows: each shape below is blocked today and must stay blocked. `--no-merged=main` would
+# have been the obvious one-query rewrite, and it DROPS the tree and blob tags -- measured.
+tree_tag_repo() { build_repo 1; gi "$REPO" tag "$1" "$(gi "$REPO" rev-parse "$2")" >/dev/null 2>&1; }
+tree_tag_repo tree-tag 'main^{tree}'
+push_run "$REPO" "git ${VERB} origin main --follow-tags" 2 "a tag of a TREE blocks the tag sweep"
+tree_tag_repo blob-tag 'main:README.md'
+push_run "$REPO" "git ${VERB} origin main --follow-tags" 2 "a tag of a BLOB blocks the tag sweep"
+
+# build_repo branches dev at the init commit, so a dev-ONLY commit has to be made explicitly.
+dev_only_commit() {
+  gi "$REPO" switch -q dev >/dev/null 2>&1
+  printf 'd\n' >"$REPO/d.txt"
+  gi "$REPO" add d.txt >/dev/null 2>&1
+  gi "$REPO" commit -q -m d >/dev/null 2>&1
+  gi "$REPO" switch -q main >/dev/null 2>&1
+}
+build_repo 1
+dev_only_commit
+gi "$REPO" tag -a -m x ann-dev dev >/dev/null 2>&1
+gi "$REPO" tag -a -m x tagtag-dev ann-dev >/dev/null 2>&1
+gi "$REPO" tag -d ann-dev >/dev/null 2>&1
+push_run "$REPO" "git ${VERB} origin main --tags" 2 "a tag of a tag of a dev-only commit blocks the sweep"
+build_repo 1
+gi "$REPO" tag -a -m x tagtag-main main >/dev/null 2>&1
+push_run "$REPO" "git ${VERB} origin main --tags" 0 "an annotated tag on main is reachable"
+build_repo 1
+dev_only_commit
+gi "$REPO" tag "$(printf 'odd\342\200\250refs/tags/x')" dev >/dev/null 2>&1
+# Real tags named exactly 'odd' and 'x' on main so a splitlines() mutant's fragments of the
+# U+2028-bearing name ("refs/tags/odd", "refs/tags/x") land IN the merged set and vanish from the
+# set difference -- with no such tags, the fragments still land OUTSIDE an otherwise-empty merged
+# set and the row blocks for the wrong reason, discriminating nothing (measured).
+gi "$REPO" tag odd main >/dev/null 2>&1
+gi "$REPO" tag x main >/dev/null 2>&1
+push_run "$REPO" "git ${VERB} origin main --tags" 2 "a dev-only tag whose name holds U+2028 is not split into main-reachable names"
+
+# The MERGED-set mirror of the row above (2026-09-23, round 2): a tag ON main whose name holds
+# U+2028. The all-tags query and the --merged=main query both return this exact name as ONE
+# line (U+2028 is not "\n", so split("\n") never breaks it) -- the two sets are equal singletons
+# and the tag is reachable, so the push is ALLOWED. A splitlines() mutant on the MERGED side only
+# fragments the merged copy ("refs/tags/main", "refs/tags/ok"), neither of which equals the
+# unfragmented tags-side entry, so the set difference goes non-empty and this row BLOCKS instead
+# -- the one shape that discriminates that site (measured: the tags-side-only U+2028 row above
+# does not, because a dev-only marker never reaches the merged query at all).
+build_repo 1
+gi "$REPO" tag "$(printf 'main\342\200\250ok')" main >/dev/null 2>&1
+push_run "$REPO" "git ${VERB} origin main --tags" 0 "a main-reachable tag whose name holds U+2028 is still reachable"
+
+# No main: the ONLY thing that can decide these rows is the tag sweep. `feature` is a plain
+# non-dev branch, so the same push WITHOUT --tags is allowed (the control row).
+build_repo 1
+gi "$REPO" branch -q feature >/dev/null 2>&1
+gi "$REPO" tag keep feature >/dev/null 2>&1
+gi "$REPO" switch -q feature >/dev/null 2>&1
+gi "$REPO" branch -q -D main >/dev/null 2>&1
+push_run "$REPO" "git ${VERB} origin feature" 0 "control: with no main, a feature push without --tags is allowed"
+push_run "$REPO" "git ${VERB} origin feature --tags" 2 "with no main branch no tag is provably reachable"
+gi "$REPO" tag -d keep >/dev/null 2>&1
+push_run "$REPO" "git ${VERB} origin feature --tags" 0 "with no main and NO tags, --tags sweeps nothing (unchanged)"
+
+# ---------- spawn memo and budget (2026-09-23) ----------
+# The guard ran 4 git subprocesses per invocation, uncached: a plain 1000-segment `git frobN`
+# command cost 77.4 s, so its own 50 s deadline refused it. With the memo one judgment spends 4 in
+# total for it: rev-parse, for-each-ref, cat-file, and one alias-table read.
+max_spawns="$(python3 -c 'import importlib.util,sys;s=importlib.util.spec_from_file_location("m",sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(m.MAX_GIT_SPAWNS)' "$guard" 2>/dev/null || echo 0)"
+# FLOOR: a budget read as 0 (constant missing, import failed) would make every row below vacuous.
+if [[ "$max_spawns" -ge 64 ]]; then
+  printf 'PASS  MAX_GIT_SPAWNS read from the guard (%d)\n' "$max_spawns"; pass=$((pass + 1))
+else
+  printf 'FAIL  MAX_GIT_SPAWNS read from the guard (got %s, want >= 64)\n' "$max_spawns"; fail=$((fail + 1))
+  max_spawns=64
+fi
+
+build_repo 1
+flood=""
+for i in $(seq 0 999); do flood+="git frob$i ; "; done
+flood+="true"
+got="$(spawn_count "$REPO" "$flood")"
+assert_eq "$got" 4 "1000 unknown subcommands in one repo cost 4 git spawns"
+push_run "$REPO" "$flood" 0 "1000 unknown subcommands are judged (allowed) before the deadline fires"
+
+# Budget: D distinct existing directories cost D rev-parses + 3 per-root queries (for-each-ref,
+# cat-file, alias table). D = MAX-3 lands exactly ON the budget (allowed); D = MAX-2 is one over.
+build_repo 1
+for i in $(seq 0 $((max_spawns - 2))); do mkdir -p "$REPO/b$i"; done
+at="" over="" opaque=""
+for i in $(seq 0 $((max_spawns - 4))); do at+="git -C b$i frob ; "; done
+for i in $(seq 0 $((max_spawns - 3))); do
+  over+="git -C b$i frob ; "
+  opaque+='g${X}it'" -C b$i frob ; "
+done
+at+="true" over+="true" opaque+="true"
+push_run "$REPO" "$at" 0 "exactly MAX_GIT_SPAWNS distinct queries is within budget"
+push_run "$REPO" "$over" 2 "one query over MAX_GIT_SPAWNS is refused"
+out="$(judge "$over" "$REPO")"
+case "$out" in
+  *"git-query budget"*) printf 'PASS  the budget refusal names the budget\n'; pass=$((pass + 1)) ;;
+  *) printf 'FAIL  the budget refusal names the budget (got: %s)\n' "${out:0:200}"; fail=$((fail + 1)) ;;
+esac
+push_run "$REPO" "$opaque" 2 "an OPAQUE command word over budget is refused, never allowed"
+
+# A SECOND shape spends the budget: not many directories, but many EXPLICIT tag refspecs pushed to
+# ONE repo in ONE command (`--tags`/`--follow-tags` are answered in 2 queries total by the O(1)
+# sweep above and never reach this path). Each explicit tag refspec costs ~3 distinct queries
+# (classify src, classify dst, tag reachability) -- measured 2026-09-24: 80 such refspecs in one
+# repo, every tag main-reachable, stays within budget (rc 0); 85 exceeds it (rc 2), even though a
+# real per-refspec judgment would allow every one of them. The refusal message must not claim this
+# is about directories or repositories -- it is one repo, one directory, many refs.
+build_repo 1
+manyrefs="git ${VERB} origin main"
+for i in $(seq 1 90); do
+  gi "$REPO" tag -f "t$i" main >/dev/null 2>&1
+  manyrefs+=" t$i"
+done
+push_run "$REPO" "$manyrefs" 2 "many explicit tag refspecs in one push exhaust the git-query budget"
+out="$(judge "$manyrefs" "$REPO")"
+case "$out" in
+  *"git-query budget"*) printf 'PASS  the many-refspecs budget refusal names the budget\n'; pass=$((pass + 1)) ;;
+  *) printf 'FAIL  the many-refspecs budget refusal names the budget (got: %s)\n' "${out:0:200}"; fail=$((fail + 1)) ;;
+esac
+
+# ---------- ruling: a marker on a U+2028-named branch still arms the guard (2026-09-23) ----------
+# str.splitlines() (used, before this branch's 2026-09-23 alias-table/tag-sweep/spawn-memo change,
+# by _remote_push_blocks and twice by _repo_is_adopted_root) also
+# splits on U+2028, a legal branch-name character. A repo whose .publication.toml is committed ONLY
+# on such a branch used to read as NOT adopted (dormant -> allow), while git-hooks/pre-push's own
+# is_dormant() reads refs line by line and reads it as ARMED -- the two layers disagreed.
+# `send-pack` is refused only when the repo is adopted (PUBLISHING_SUBCOMMANDS, checked only past
+# the dormant short-circuit), so rc 2 vs 0 is exactly adopted vs dormant -- no push verb needed.
+u2028_branch="$(printf 'arm\342\200\250x')"
+build_repo 0
+if gi "$REPO" branch -q "$u2028_branch" main >/dev/null 2>&1; then
+  gi "$REPO" checkout -q "$u2028_branch" >/dev/null 2>&1
+  printf 'production = "dev"\n' >"$REPO/.publication.toml"
+  gi "$REPO" add -A >/dev/null 2>&1
+  gi "$REPO" commit -q -m marker >/dev/null 2>&1
+  gi "$REPO" checkout -q main >/dev/null 2>&1
+  push_run "$REPO" 'git send-pack x' 2 \
+    "a .publication.toml only on a branch named with U+2028 still arms the guard"
+
+  build_repo 0
+  gi "$REPO" branch -q "$u2028_branch" main >/dev/null 2>&1
+  push_run "$REPO" 'git send-pack x' 0 \
+    "control: the same U+2028-named branch with no marker stays dormant"
+else
+  printf 'SKIP  git refused a branch name containing U+2028 -- row unnecessary on this git\n'
+fi
+
+# ---------- ruling: _git_capture's whole-string .strip() ate a trailing Unicode
+# whitespace character too, closed 2026-09-23 ----------
+# `str.strip()` removes more than "\n" -- U+2028, U+0085, U+00A0 and every other Unicode
+# whitespace code point -- so a branch whose name ENDS in one of those characters loses it from
+# the LAST ref in _repo_is_adopted_root's for-each-ref output (that call went through
+# `_git_capture`, which strips the WHOLE multi-line string, not per line). The probe then names a
+# ref that does not exist, its verdict is "missing", and the guard reads NOT adopted -- the same
+# disagreement class the U+2028 ruling above closed for split(), now via strip() instead.
+# `for-each-ref`'s default sort is by refname, so the marker branch must sort LAST among the
+# repo's branches (after "dev" and "main") to be the one whose trailing character strip() can eat.
+zz_u2028_branch="$(printf 'zz\342\200\250')"
+build_repo 0
+if gi "$REPO" branch -q "$zz_u2028_branch" main >/dev/null 2>&1; then
+  gi "$REPO" checkout -q "$zz_u2028_branch" >/dev/null 2>&1
+  printf 'production = "dev"\n' >"$REPO/.publication.toml"
+  gi "$REPO" add -A >/dev/null 2>&1
+  gi "$REPO" commit -q -m marker >/dev/null 2>&1
+  gi "$REPO" checkout -q main >/dev/null 2>&1
+  push_run "$REPO" 'git send-pack x' 2 \
+    "a marker on a branch whose name ENDS in U+2028 (sorting last) still arms the guard"
+else
+  printf 'SKIP  git refused a branch name ending in U+2028 -- row unnecessary on this git\n'
+fi
+
+# ---------- ruling: remote.<r>.push is read like _tags_block reads tags (2026-09-24) ----------
+# `_remote_push_blocks` splits `remote.<remote>.push` on "\n" ONLY, the same fix the tag sweep
+# above already pins -- but no row here exercised the CONFIG-read site itself. build_repo branches
+# dev at the init commit, so the tag this row creates on dev is main-reachable like everything
+# else in this section -- reachability decides nothing here. What decides the row is
+# `PLAIN_REF_RE`: a ref name embedding U+2028 is not a plain name, so it is UNRESOLVABLE and
+# blocks regardless of reachability. `str.splitlines()` would fragment it at the U+2028 into two
+# refspecs naming its ASCII sibling tags `a` and `b`, which DO resolve and ARE main-reachable,
+# letting `git push origin` through (no refspec on the command line at all -- the config supplies
+# it). Confirmed by hand (2026-09-24): reverting the split call to `.splitlines()` turns this row's
+# rc from 2 to 0; restoring the file byte-for-byte (sha256-verified) turns it back to 2.
+remote_ls_char="$(printf '\342\200\250')"
+build_repo 1
+gi "$REPO" tag "a${remote_ls_char}refs/tags/b" dev >/dev/null 2>&1
+gi "$REPO" tag a main >/dev/null 2>&1
+gi "$REPO" tag b main >/dev/null 2>&1
+gi "$REPO" config remote.origin.push "refs/tags/a${remote_ls_char}refs/tags/b" >/dev/null 2>&1
+push_run "$REPO" "git ${VERB} origin" 2 \
+  "remote.origin.push naming a non-plain (U+2028-bearing) refspec is not resolved onto its split sibling names"
+
+# `_remote_push_blocks` also used to `.strip()` each line -- `str.strip()` removes every Unicode
+# whitespace code point, not only the "\n" the split above already consumed. build_repo branches
+# dev at the init commit, so the tag this row creates on dev is main-reachable too -- reachability
+# decides nothing here either. What decides the row is `PLAIN_REF_RE`: a ref name ENDING in U+00A0
+# (NBSP) is not a plain name, so it is UNRESOLVABLE and blocks regardless of reachability.
+# Stripping it would silently resolve the refspec onto its ASCII sibling tag `t`, which DOES
+# resolve and IS main-reachable, letting the push through. Confirmed by hand (2026-09-24): the
+# pre-fix code (reintroducing `.strip()`) turns this row's rc from 2 to 0; the shipped code (no
+# `.strip()` on this path) turns it back to 2.
+nbsp_char="$(printf '\302\240')"
+build_repo 1
+gi "$REPO" tag "t${nbsp_char}" dev >/dev/null 2>&1
+gi "$REPO" tag t main >/dev/null 2>&1
+gi "$REPO" config remote.origin.push "refs/tags/t${nbsp_char}" >/dev/null 2>&1
+push_run "$REPO" "git ${VERB} origin" 2 \
+  "remote.origin.push naming a non-plain (NBSP-suffixed) refspec is not resolved onto its trimmed sibling"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.115.3 — 2026-09-24
+- fix(publication-push-guard): read aliases as git does, cap git queries
+
 ## v0.115.2 — 2026-09-23
 - docs(CLAUDE.md): add a group for probe-construction hazards
 

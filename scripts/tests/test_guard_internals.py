@@ -22,6 +22,10 @@ still flow through, one call earlier.
 from __future__ import annotations
 
 import importlib.util
+import os
+import random
+import re
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -461,3 +465,169 @@ def test_timing_guard_marker_test_accepts_only_the_synthesized_segment() -> None
         tg._segment_lost_a_reading(gitcmd, ["git", PUSH_VERB, "origin", "main"])
         is False
     )
+
+
+_EXPANSION_RE = re.compile(r"alias expansion: \S+ => (\S+)")
+_ORACLE_NAMES = ("foo", "Foo", "FOO", "bar", "baz")
+
+
+def _oracle_env() -> dict[str, str]:
+    """Hermetic: the operator's own global/system aliases must not reach either side."""
+    env = dict(os.environ)
+    env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1", GIT_TRACE="1")
+    return env
+
+
+def _git_resolution(repo: Path, name: str) -> str:
+    """What git ITSELF does with `git <name>`: the expansion's first word, 'undefined', or 'error'.
+
+    Alias values are unique `v<N>` words that are not git commands, so the oracle can never write,
+    fetch or publish: git prints the expansion, then fails to find `v<N>`."""
+    out = subprocess.run(
+        ["git", "-C", str(repo), name],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        env=_oracle_env(),
+    )
+    text = out.stdout + out.stderr
+    hit = _EXPANSION_RE.search(text)
+    if hit:
+        return hit.group(1)
+    if f"'{name}' is not a git command" in text:
+        return "undefined"
+    return "error"
+
+
+def _emulated_resolution(repo: Path, name: str) -> str:
+    found, value = guard._alias_definition(str(repo), name)
+    if not found:
+        return "undefined"
+    if not value:
+        return "error"
+    return value.split()[0]
+
+
+def _random_alias_config(rng: random.Random, counter: list[int]) -> str:
+    lines = []
+    for _ in range(rng.randint(1, 4)):
+        counter[0] += 1
+        value = f"v{counter[0]}"
+        name = rng.choice(("foo", "Foo", "FOO", "bar"))
+        valueless = rng.random() < 0.08
+        if rng.random() < 0.5:
+            lines.append("[alias]")
+            lines.append(f"    {name}" if valueless else f"    {name} = {value}")
+        else:
+            var = rng.choice(("command", "command", "COMMAND", "cmd"))
+            lines.append(f'[alias "{name}"]')
+            lines.append(f"    {var}" if valueless else f"    {var} = {value}")
+    return "\n".join(lines) + "\n"
+
+
+def test_alias_definition_matches_git_itself(tmp_path, monkeypatch):
+    """Differential oracle: for generated configs the table emulation must answer exactly what git
+    does. git is the oracle -- not a second reading of our own rules."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    rng = random.Random(20260923)
+    counter = [0]
+    tally = {"expanded": 0, "undefined": 0, "error": 0}
+    mismatches = []
+    for i in range(60):
+        repo = (tmp_path / f"r{i}").resolve()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True, env=_oracle_env())
+        cfg = _random_alias_config(rng, counter)
+        with (repo / ".git" / "config").open("a") as fh:
+            fh.write(cfg)
+        for name in _ORACLE_NAMES:
+            want = _git_resolution(repo, name)
+            got = _emulated_resolution(repo, name)
+            tally["expanded" if want.startswith("v") else want] += 1
+            if got != want:
+                mismatches.append((cfg, name, want, got))
+    assert not mismatches, mismatches[:5]
+    # Floors: an oracle that never discriminates proves nothing.
+    assert tally["expanded"] >= 60, tally
+    assert tally["undefined"] >= 60, tally
+    assert tally["error"] >= 5, tally
+
+
+def test_unreadable_alias_table_blocks(monkeypatch):
+    """A table read that fails cannot prove `zz` is not an alias, so the chain must block rather
+    than report "none" (which allows)."""
+    monkeypatch.setattr(guard, "_alias_table", lambda root: None)
+    assert guard._resolve_alias_chain("/nonexistent", "zz", [], gitcmd) == (
+        "block",
+        None,
+    )
+
+
+def test_memo_does_not_leak_between_judgments(tmp_path, monkeypatch):
+    """Two judgments in one process against the SAME repo, with the one fact they query changed in
+    between, must each see the current state -- and no ledger may survive a judgment. One repo on
+    purpose: two different repo paths never share a memo key, so they could not detect a memo
+    that outlives its judgment (a class-level `memo` dict, say)."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    verb = "pu" + "sh"
+    repo = (tmp_path / "r").resolve()
+    git = [
+        "git",
+        "-C",
+        str(repo),
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "tag.gpgsign=false",
+        "-c",
+        "user.email=t@t.invalid",
+        "-c",
+        "user.name=t",
+    ]
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / ".publication.toml").write_text('production = "dev"\n')
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "i"], check=True)
+    blocks = []
+    for alias_value in ("status", f"{verb} origin dev"):
+        subprocess.run([*git, "config", "alias.zz", alias_value], check=True)
+        blocks.append(guard._find_block_reason("git zz", str(repo)))
+        assert guard._LEDGER is None
+    assert blocks[0] is None, blocks[0]
+    assert blocks[1] is not None and blocks[1].is_push, blocks[1]
+
+
+def test_budget_exhaustion_clears_ledger(tmp_path, monkeypatch):
+    """A judgment that exhausts the git-query budget must still clear `_LEDGER` on the way out --
+    the `finally` in `_find_block_reason` has to run on the `_SpawnBudgetExceeded` path too, not
+    only on an ordinary return -- and the refusal it converts that exception into must name the
+    budget. `MAX_GIT_SPAWNS` monkeypatched to 1: `_judge_invocation` spends its first spawn on
+    `_resolve_root` (allowed, exactly at budget) and its second on `_repo_is_adopted_root`'s
+    `for-each-ref` (over budget), so an adopted repo and an unrecognised subcommand -- no alias
+    configuration needed -- is already a command needing more than one spawn."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setattr(guard, "MAX_GIT_SPAWNS", 1)
+    repo = (tmp_path / "r").resolve()
+    git = [
+        "git",
+        "-C",
+        str(repo),
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "tag.gpgsign=false",
+        "-c",
+        "user.email=t@t.invalid",
+        "-c",
+        "user.name=t",
+    ]
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / ".publication.toml").write_text('production = "dev"\n')
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "i"], check=True)
+    block = guard._find_block_reason("git zz", str(repo))
+    assert block is not None and "git-query budget" in block.reason, block
+    assert guard._LEDGER is None

@@ -180,9 +180,10 @@ this guard used to print named the one that does not occur in practice.
 
 A DEADLINE THIS PROCESS OWNS. `settings.json` registers this hook with a 60 s `timeout`; a hook
 that outlives its registration is killed silently, its output discarded, and the guarded command
-RUNS. One command under `MAX_COMMAND_LENGTH` was measured at 224.89 s here (172.40 s on shipped
-`dev`). `main` therefore arms a 50 s deadline of its own whose handler `os._exit(2)`s — see
-`scripts/lib/guard_deadline.py`, including why it cannot be a raise.
+RUNS. One command under `MAX_COMMAND_LENGTH` was measured 2026-09-22, before the per-judgment
+spawn memo (closed 2026-09-23), at 224.89 s here (172.40 s on shipped `dev`). `main` therefore
+arms a 50 s deadline of its own whose handler `os._exit(2)`s — see `scripts/lib/guard_deadline.py`,
+including why it cannot be a raise.
 """
 
 from __future__ import annotations
@@ -371,6 +372,76 @@ _DEQUOTE_CHARS = str.maketrans("", "", "'\"\\")
 # `git push origin "$B"` blocked while `git $s origin dev` sailed through.
 LITERAL_SUBCOMMAND_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]*$")
 
+# The most git subprocesses ONE judgment may spend, counting cache misses only. Sized from the
+# 2026-09-23 spawn census (every distinct Bash command in 2,258 transcripts, replayed through the
+# shipped `_find_block_reason`): with the tag sweep made O(1), the worst real command needs ~8
+# distinct queries, so 256 is 32x headroom. Deliberately generous -- refusing a real command costs
+# the operator, while a larger budget costs only time inside the deadline: 256 spawns at the
+# measured ~31 ms each (784 in 24.3 s) is ~8 s, still under the 50 s `guard_deadline` at 6x slower
+# spawns. The deadline stays the wall-clock backstop (a slow config include, a slow tokenizer).
+# What the budget adds is a FAST, DETERMINISTIC refusal naming its cause for the shape no memo can
+# collapse: many DISTINCT directories (`git -C d1 x ; git -C d2 x ; ...`), OR many explicit
+# refspecs pushed to ONE repo in ONE command (`git push origin main t1 t2 ... t85`): about 3-4
+# queries per distinct tag (two to classify it, `rev-parse` plus `merge-base` for reachability;
+# the `merge-base` is shared when tags share a commit), so roughly 62 explicit tags on distinct
+# commits, about 80 on one commit, is this budget's ceiling too -- a real shape the base branch
+# (per-tag, uncached) allowed and this one newly refuses, not only the many-directories one.
+MAX_GIT_SPAWNS = 256
+
+
+class _SpawnBudgetExceeded(Exception):
+    """Raised by `_git` when a cache miss would exceed MAX_GIT_SPAWNS. Caught ONLY in
+    `_find_block_reason` and converted to a Block there. It must never reach `main`: its
+    `opaque_only` arm returns 0 for any exception, which would turn this bound into an ALLOW."""
+
+
+class _SpawnLedger:
+    """One judgment's memo and miss count. See `_git`."""
+
+    def __init__(self, budget: int) -> None:
+        self.budget = budget
+        self.misses = 0
+        self.memo: dict[tuple[tuple[str, ...], str | None], tuple[int, str]] = {}
+
+
+# Active only while `_find_block_reason` judges; None everywhere else, so a helper called directly
+# (the white-box tests) spawns exactly as it always did.
+_LEDGER: _SpawnLedger | None = None
+
+
+def _git(directory: str, *args: str, stdin: str | None = None) -> tuple[int, str]:
+    """Run `git -C <directory> <args>` and return (returncode, stdout), unstripped.
+
+    Inside a judgment identical queries are answered once. That is exact, not approximate: the
+    guard judges every invocation against the state BEFORE the command runs -- it never simulates
+    an earlier segment's effect -- so one query has one answer for the whole judgment. Misses count
+    against the ledger's budget. Exceptions (TimeoutExpired, OSError) are not cached and propagate
+    exactly as the direct `subprocess.run` calls this replaced did.
+    """
+    argv = ("git", "-C", directory, *args)
+    ledger = _LEDGER
+    key = (argv, stdin)
+    if ledger is not None:
+        cached = ledger.memo.get(key)
+        if cached is not None:
+            return cached
+        if ledger.misses >= ledger.budget:
+            raise _SpawnBudgetExceeded(ledger.misses)
+        ledger.misses += 1
+    out = subprocess.run(
+        list(argv),
+        input=stdin,
+        capture_output=True,
+        text=True,
+        errors="surrogateescape",
+        check=False,
+        timeout=10,
+    )
+    result = (out.returncode, out.stdout)
+    if ledger is not None:
+        ledger.memo[key] = result
+    return result
+
 
 def _dequote(command: str) -> str:
     """Strip quote/backslash characters so quote-split obfuscation reads as the plain word it
@@ -381,8 +452,9 @@ def _dequote(command: str) -> str:
 
 # git subcommands that are never `push` and never worth an alias-config lookup (the common case,
 # kept fast). Anything NOT in this set — including genuinely unknown words — is treated as a
-# possible custom alias and resolved via `git config alias.<sub>` once the repo is confirmed
-# adopted (see _find_block_reason). "push" itself is deliberately absent: it is always a candidate.
+# possible custom alias and resolved via the alias table (see `_alias_definition`) once the repo
+# is confirmed adopted (see _find_block_reason). "push" itself is deliberately absent: it is
+# always a candidate.
 KNOWN_SAFE_SUBCOMMANDS = frozenset(
     {
         "status",
@@ -540,85 +612,45 @@ def _combine(base: str | None, sub: str | None) -> str | None:
 
 def _resolve_root(effective_dir: str) -> str | None:
     """The toplevel of the repo containing effective_dir, or None if it cannot be resolved."""
-    out = subprocess.run(
-        ["git", "-C", effective_dir, "rev-parse", "--show-toplevel"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    if out.returncode != 0:
+    rc, stdout = _git(effective_dir, "rev-parse", "--show-toplevel")
+    if rc != 0:
         return None
-    return out.stdout.strip()
+    return stdout.strip()
 
 
 def _git_capture(root: str, *args: str) -> str | None:
     """Stripped stdout of a git command in `root`, or None if it failed."""
-    out = subprocess.run(
-        ["git", "-C", root, *args],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    return out.stdout.strip() if out.returncode == 0 else None
+    rc, stdout = _git(root, *args)
+    return stdout.strip() if rc == 0 else None
 
 
 def _head_branch(root: str) -> str | None:
     """The short name of the branch HEAD points to, or None if detached/unresolvable."""
-    out = subprocess.run(
-        ["git", "-C", root, "symbolic-ref", "--quiet", "--short", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    if out.returncode != 0:
+    rc, stdout = _git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
+    if rc != 0:
         return None
-    return out.stdout.strip()
+    return stdout.strip()
 
 
 def _ref_exists(root: str, ref: str) -> bool:
-    out = subprocess.run(
-        ["git", "-C", root, "rev-parse", "--quiet", "--verify", ref],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    return out.returncode == 0
+    rc, _stdout = _git(root, "rev-parse", "--quiet", "--verify", ref)
+    return rc == 0
 
 
 def _tag_reachable_from_main(root: str, tag_name: str) -> bool:
     """True only if refs/tags/<tag_name> resolves AND its commit is an ancestor of `main`. A repo
     with no `main` branch, or an unresolvable tag, is NOT reachable (fail closed — we cannot prove
     safety, so we do not assume it)."""
-    commit_out = subprocess.run(
-        [
-            "git",
-            "-C",
-            root,
-            "rev-parse",
-            "--quiet",
-            "--verify",
-            f"refs/tags/{tag_name}^{{commit}}",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
+    commit_rc, commit_stdout = _git(
+        root, "rev-parse", "--quiet", "--verify", f"refs/tags/{tag_name}^{{commit}}"
     )
-    if commit_out.returncode != 0:
+    if commit_rc != 0:
         return False
-    commit = commit_out.stdout.strip()
-    ancestor = subprocess.run(
-        ["git", "-C", root, "merge-base", "--is-ancestor", commit, "main"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
+    commit = commit_stdout.strip()
+    ancestor_rc, _ancestor_stdout = _git(
+        root, "merge-base", "--is-ancestor", commit, "main"
     )
-    return ancestor.returncode == 0
+    return ancestor_rc == 0
 
 
 def _classify_ref(name: str, root: str) -> tuple[str, str] | None:
@@ -668,36 +700,54 @@ def _refspec_blocks(spec: str, root: str) -> bool:
 
 
 def _remote_push_blocks(root: str, remote: str) -> bool:
-    """True if remote.<remote>.push configures a dev-spanning (or ambiguous) refspec."""
-    out = subprocess.run(
-        ["git", "-C", root, "config", "--get-all", f"remote.{remote}.push"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    if out.returncode != 0:
+    """True if remote.<remote>.push configures a dev-spanning (or ambiguous) refspec.
+
+    Split on "\\n" ONLY: `str.splitlines()` also splits on U+2028, a legal refspec character
+    (via a branch name on either side of the colon).
+
+    Each line is used exactly as split, with no `.strip()`: `str.strip()` removes every Unicode
+    whitespace code point, not only the "\\n" this split already consumed -- so a refspec whose
+    ref name ENDS in one of those characters (e.g. U+00A0) would have that character stripped
+    too, silently resolving to the different, shorter name a whitespace-free sibling tag or
+    branch holds. Measured 2026-09-24: `git config --get-all` on this platform (git 2.55.0)
+    delivers one refspec per line, LF-separated, with no trailing "\\r" -- only a genuinely
+    empty line (the split's own trailing artifact when stdout ends in "\\n") is filtered."""
+    rc, stdout = _git(root, "config", "--get-all", f"remote.{remote}.push")
+    if rc != 0:
         return False  # not configured — no opinion, the caller falls back to the HEAD check
-    return any(
-        _refspec_blocks(line.strip(), root)
-        for line in out.stdout.splitlines()
-        if line.strip()
-    )
+    return any(_refspec_blocks(line, root) for line in stdout.split("\n") if line)
 
 
 def _tags_block(root: str) -> bool:
-    """True if any local tag (the set --tags/--follow-tags would sweep) is not main-reachable."""
-    out = subprocess.run(
-        ["git", "-C", root, "tag", "--list"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
+    """True if any local tag (the set --tags/--follow-tags would sweep) is not main-reachable.
+
+    Two queries whatever the tag count: every tag, and the tags `for-each-ref --merged=main`
+    reports; the difference is exactly what the per-tag `_tag_reachable_from_main` would refuse.
+    The per-tag loop this replaces cost two spawns per tag -- measured 784 spawns (~24 s) on every
+    publish of a 388-tag repo, half the guard's deadline and growing with each release.
+
+    NOT `--no-merged=main`: measured, it omits tags that point at a tree or a blob, which the
+    per-tag predicate refuses (`^{commit}` does not resolve) -- the one-query form is a
+    fail-open. A failing `--merged` query (no `main`: `malformed object name`, rc 128) blocks, as
+    the per-tag form did when `merge-base` failed; with NO tags the answer is False before that
+    query runs, exactly as the per-tag loop's `any([])` was (no `main` + no tags stays allowed).
+
+    Split on "\\n" ONLY: `str.splitlines()` also splits on U+2028, a legal tag-name character,
+    and a dev-only tag named `a<U+2028>refs/tags/b` would then vanish into two merged names."""
+    everything_rc, everything_stdout = _git(
+        root, "for-each-ref", "--format=%(refname)", "refs/tags/"
     )
-    if out.returncode != 0:
+    if everything_rc != 0:
         return True  # can't enumerate tags — can't prove safety
-    tags = [t.strip() for t in out.stdout.splitlines() if t.strip()]
-    return any(not _tag_reachable_from_main(root, t) for t in tags)
+    tags = {line for line in everything_stdout.split("\n") if line}
+    if not tags:
+        return False
+    merged_rc, merged_stdout = _git(
+        root, "for-each-ref", "--merged=main", "--format=%(refname)", "refs/tags/"
+    )
+    if merged_rc != 0:
+        return True
+    return bool(tags - {line for line in merged_stdout.split("\n") if line})
 
 
 def _split_push_args(args: list[str]) -> tuple[set[str], list[str]]:
@@ -776,15 +826,77 @@ def _judge_push(root: str, args: list[str]) -> str | None:
     return None
 
 
+def _alias_table(root: str) -> list[tuple[str, str | None]] | None:
+    """Every `alias.*` entry in config order as (canonical key, value or None if valueless), or
+    None when the table could not be read (the caller then BLOCKS -- see `_alias_definition`).
+
+    `-z` because a value may contain newlines: each record is `key\\nvalue\\0`, or `key\\0` when
+    valueless. rc 1 means no entry matched -- an EMPTY table, not a failure."""
+    rc, stdout = _git(root, "config", "-z", "--get-regexp", r"^alias\.")
+    if rc == 1:
+        return []
+    if rc != 0:
+        return None
+    entries: list[tuple[str, str | None]] = []
+    for record in stdout.split("\0"):
+        if not record:
+            continue
+        key, sep, value = record.partition("\n")
+        entries.append((key, value if sep else None))
+    return entries
+
+
+def _alias_definition(root: str, name: str) -> tuple[bool, str | None]:
+    """Whether git would expand `git <name>` as an alias in `root`, and to what.
+
+    Replaces `git config --get alias.<name>`, which had two defects: one spawn per distinct NAME
+    (the per-subcommand term in the backlog's measurement), and it never reads the SUBSECTION form
+    git 2.55 also runs -- `[alias "X"] command = ...` -- so such an alias read as "not an alias"
+    and was ALLOWED.
+
+    Resolution, measured against git 2.55: a plain `alias.<v>` entry matches when
+    `v == name.lower()` (git lowercases the variable and matches case-insensitively); a subsection
+    `alias.<s>.command` entry matches only when `s == name` exactly (subsection names are
+    case-sensitive). The LAST matching entry in config order wins, across both forms -- except
+    that a VALUELESS matching entry wins wherever it sits, because git aborts on it ("missing
+    value", fatal) before reaching any later one. `name` already matches LITERAL_SUBCOMMAND_RE, so
+    it has no dot and the plain-form key is unambiguous.
+
+    Returns (False, None) when not defined; (True, value) otherwise, with value None when the
+    matching definition is valueless OR the table could not be read. Both make the chain block: an
+    unreadable table cannot prove `name` is NOT an alias, and reading it as "none" would ALLOW.
+    (Measured: a config git cannot read also fails the guard's earlier `rev-parse`, so end to end
+    that path already refuses on the root; this keeps the helper fail-closed on its own.)
+    """
+    entries = _alias_table(root)
+    if entries is None:
+        return True, None
+    found: tuple[bool, str | None] = (False, None)
+    lowered = name.lower()
+    for key, value in entries:
+        rest = key[len("alias.") :]
+        if "." not in rest:
+            matches = rest == lowered
+        else:
+            subsection, _, variable = rest.rpartition(".")
+            matches = variable == "command" and subsection == name
+        if not matches:
+            continue
+        if value is None:
+            return True, None
+        found = (True, value)
+    return found
+
+
 def _resolve_alias_chain(
     root: str, sub: str, seg: list[str], gitcmd: ModuleType, max_depth: int = 10
 ) -> tuple[str, list[str] | None]:
-    """Chase `git config alias.<X>` recursively — the way real git resolves an alias chain — with a
-    depth cap and cycle guard standing in for git's own loop-abort (real git aborts on an alias
-    loop; 10 hops is generous headroom for any legitimate chain).
+    """Chase an alias chain recursively, plain and subsection forms alike (see `_alias_definition`)
+    — with a depth cap and cycle guard standing in for git's own loop-abort (real git aborts on an
+    alias loop; 10 hops is generous headroom for any legitimate chain).
 
     Args:
-        root: The repo toplevel to consult `git config alias.<X>` in.
+        root: The repo toplevel whose alias table `_alias_definition` reads.
         sub: The initial subcommand token to resolve.
         seg: The argument tokens following `sub` (folded into diagnostics on a `push` result).
         gitcmd: The lazily-imported `git_command` module, supplying the tokenizer.
@@ -814,25 +926,19 @@ def _resolve_alias_chain(
         if not LITERAL_SUBCOMMAND_RE.match(current_sub):
             # `git $s`, `git "$@"`, `git ${x}`: the subcommand only exists after expansion, so it
             # can be neither recognized nor resolved. Ambiguous -> fail closed. Without this, the
-            # `git config alias.<X>` lookup below returns rc!=0 and depth==0 reports "none"
+            # `_alias_definition` lookup below reports "not defined" and depth==0 reports "none"
             # (not an alias, therefore not a push) — allowing an invocation that may well be one.
             return "block", None
         if current_sub in seen or depth >= max_depth:
             return "block", None  # cycle, or chain too deep to trust
         seen.add(current_sub)
-        out = subprocess.run(
-            ["git", "-C", root, "config", "--get", f"alias.{current_sub}"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
-        if out.returncode != 0:
+        defined, value = _alias_definition(root, current_sub)
+        if not defined:
             # Not configured as an alias. At depth 0 that means `sub` itself was never an
             # alias — not a push, allow. At any deeper hop, it means the chain landed on a
             # subcommand we can neither recognize as safe nor resolve further — ambiguous.
             return ("none", None) if depth == 0 else ("block", None)
-        value = out.stdout.strip()
+        value = (value or "").strip()
         if not value or value.startswith("!"):
             return "block", None
         try:
@@ -1489,19 +1595,13 @@ def _config_scope_is_local(seg: list[str], env: list[str]) -> bool:
 
 def _git_batch_check(root: str, stdin_data: str) -> str | None:
     """Like `_git_capture`, but for `git cat-file --batch-check`, which takes its object list on
-    STDIN rather than argv -- the one genuinely new subprocess call `_repo_is_adopted_root` needs
-    beyond `_git_capture` itself. Same `timeout=10` and None-on-any-failure contract; unlike
+    STDIN rather than argv -- the one subprocess call `_repo_is_adopted_root` runs beyond its own
+    direct `_git` ref-list read (that function no longer routes through `_git_capture` at all; see
+    its docstring for why). Same `timeout=10` and None-on-any-failure contract; unlike
     `_git_capture` this does not `.strip()` the output, because the caller needs it split into
     lines (one verdict per probed ref) and a leading/trailing blank line changes nothing there."""
-    out = subprocess.run(
-        ["git", "-C", root, "cat-file", "--batch-check"],
-        input=stdin_data,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    return out.stdout if out.returncode == 0 else None
+    rc, stdout = _git(root, "cat-file", "--batch-check", stdin=stdin_data)
+    return stdout if rc == 0 else None
 
 
 def _repo_is_adopted_root(root: str) -> bool:
@@ -1517,6 +1617,17 @@ def _repo_is_adopted_root(root: str) -> bool:
     here: past the hook's own timeout the process is killed by signal and never reaches its own
     fail-closed handler.
 
+    The ref-list read below calls `_git` directly rather than `_git_capture`: `_git_capture`
+    `.strip()`s the WHOLE multi-line output, and `str.strip()` removes more than "\\n" -- every
+    Unicode whitespace code point, U+2028/U+0085/U+00A0 among them, all legal in a branch name.
+    `for-each-ref`'s default sort is by refname, so a branch whose name ENDS in one of those
+    characters and sorts LAST would have that trailing character silently eaten from the last
+    line of the joined string -- the probe would then name a ref that does not exist, read
+    "missing", and this predicate would read not-adopted, the same disagreement with
+    `git-hooks/pre-push`'s `is_dormant()` (which reads refs line by line and keeps the
+    character) as the split-on-"\\n" fix below closes for `str.splitlines()`. Splitting on "\\n"
+    ONLY (not `str.splitlines()`, which also splits on U+2028) still applies to both reads below.
+
     FAIL-CLOSED: unresolvable means True.
     """
     if not root:
@@ -1525,17 +1636,17 @@ def _repo_is_adopted_root(root: str) -> bool:
         # sitting in, rather than failing. This explicit guard is what closes the empty-root case
         # -- the swap to refs-based detection does not close it on its own.
         return True
-    refs_out = _git_capture(root, "for-each-ref", "--format=%(refname)", "refs/heads/")
-    if refs_out is None:
+    refs_rc, refs_out = _git(root, "for-each-ref", "--format=%(refname)", "refs/heads/")
+    if refs_rc != 0:
         return True
-    refs = refs_out.splitlines()
+    refs = [line for line in refs_out.split("\n") if line]
     if not refs:
         return False
     probe = "\n".join(f"{r}:.publication.toml" for r in refs) + "\n"
     out = _git_batch_check(root, probe)
     if out is None:
         return True
-    return any(line and not line.endswith("missing") for line in out.splitlines())
+    return any(line and not line.endswith("missing") for line in out.split("\n"))
 
 
 def _repo_is_adopted(effective_dir: str | None) -> bool:
@@ -2197,6 +2308,33 @@ def _find_block_reason(command: str, cwd: str) -> Block | None:
         # both cases it judged the gate completely.
         return Block(exported, carries_push, boundary_unverifiable=True)
 
+    global _LEDGER
+    _LEDGER = _SpawnLedger(MAX_GIT_SPAWNS)
+    try:
+        return _judge_invocations(command, invocations, trails, gitcmd, gitdir_override)
+    except _SpawnBudgetExceeded as exc:
+        # `is_push` is the command-level `carries_push`, as at the other command-scoped refusals:
+        # a command carrying a literal push is then worded "refusing to push private 'dev' (or an
+        # ambiguous target)". Accepted deliberately -- the "(or an ambiguous target)" clause is
+        # true here (the push was never judged), and "no push was identified" would be false.
+        return Block(
+            f"the guard's git-query budget ({MAX_GIT_SPAWNS} distinct queries, {exc.args[0]} "
+            "spent) ran out before every invocation was judged -- the command names more "
+            "distinct directories, repositories or refs than one judgment will query. Split it "
+            "into smaller commands.",
+            any(s == "push" for _d, _c, s, _g, _t in invocations),
+        )
+    finally:
+        _LEDGER = None
+
+
+def _judge_invocations(
+    command: str,
+    invocations: list,
+    trails: list,
+    gitcmd: ModuleType,
+    gitdir_override: bool,
+) -> Block | None:
     # A refusal produced by the tokenizer's in-band marker, held back in case a REAL refusable
     # invocation turns up later in the walk — see the PRECEDENCE note below.
     marker_block = None
@@ -2348,11 +2486,12 @@ def main() -> int:
     """Hook entry point: 2 blocks the push, 0 allows it."""
     # FIRST, before the stdin read and both heavy tokenizer walks: a deadline this PROCESS owns.
     # The harness kills a hook at its registered timeout, discards its output and tells nobody, so
-    # this gate killed at 60 s is SILENT and the push RUNS. Measured on a single command under
-    # MAX_COMMAND_LENGTH: 224.89 s here, 172.40 s on shipped `dev` (see `git_command.py`'s
-    # MAX_TOTAL_PARSES docstring, which files this deadline as the remedy). The handler `os._exit`s
-    # rather than raising, because the `opaque_only` arms below return 0 for ANY exception and
-    # would convert the deadline into an ALLOW — see `scripts/lib/guard_deadline.py`.
+    # this gate killed at 60 s is SILENT and the push RUNS. Measured 2026-09-22, before the
+    # per-judgment spawn memo (closed 2026-09-23), on a single command under MAX_COMMAND_LENGTH:
+    # 224.89 s here, 172.40 s on shipped `dev` (see `git_command.py`'s MAX_TOTAL_PARSES docstring,
+    # which files this deadline as the remedy). The handler `os._exit`s rather than raising,
+    # because the `opaque_only` arms below return 0 for ANY exception and would convert the
+    # deadline into an ALLOW — see `scripts/lib/guard_deadline.py`.
     guard_deadline.install(HOOK_NAME)
     # HOOK CONTRACT: the target arrives as a JSON payload on stdin; argv is ignored. Refuse the
     # two invocations this cannot serve, because each otherwise reads as SUCCESS — with argv and
