@@ -1505,3 +1505,142 @@ def test_a_reserved_word_after_a_non_git_word_still_opens_a_command(command):
     assert [(inv.subcommand, inv.arg_tokens) for inv in got] == [
         (_ARG_VERB, ["origin", "dev"])
     ]
+
+
+# ---------- opaque command words (2026-09-18: git behind a substitution / expansion) ----------
+#
+# Each shape below was run under /bin/bash 3.2.57 and MacPorts bash 5.3.15, with a fake `git`
+# first on PATH that only echoes its argv: bash ran git for every one. Before this change every
+# guard allowed all of them, because `is_git` accepted only the literal text `git` or a path
+# ending in `/git`.
+
+_OPAQUE_VERB = "pu" + "sh"
+_OPAQUE_SHAPES = [
+    "$(true)git",
+    "`true`git",
+    "git$(true)",
+    '"$(true)"git',
+    "${X}git",
+    '"$X"git',
+    '$X""git',
+    "$'git'",
+    "g$(true)it",
+    "gi${X}t",
+    "/usr/bin/$(true)git",
+    "git$X",
+    "git${X}",
+    'git"$X"',
+    "${X:-git}",
+    "${X-git}",
+    "${X:=git}",
+    "${X+git}",
+]
+
+
+@pytest.mark.parametrize("word", _OPAQUE_SHAPES)
+def test_an_opaque_word_that_bash_reduces_to_git_is_recorded(word):
+    got = _invs(f"{word} {_OPAQUE_VERB} origin dev")
+    assert [(inv.subcommand, inv.arg_tokens) for inv in got] == [
+        (_OPAQUE_VERB, ["origin", "dev"])
+    ]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "legit status",  # static text: not opaque, so the widening never applies
+        "digit status",
+        "gitk status",
+        "echo $(true)git status",  # argument position
+        "ls ${HOME}/git",  # argument position
+        "$G status",  # wholly dynamic: the stated residual, NOT recorded
+        "$(echo git) status",  # wholly dynamic: the stated residual, NOT recorded
+        "${X:-a,git} status",  # a comma inside `${…}` is not a brace expansion: bash runs `a,git`
+    ],
+)
+def test_words_the_widening_must_not_record(command):
+    assert _invs(command) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"REPO=$BASE/foo.git git {_OPAQUE_VERB} origin dev",
+        f"BIN=$R/nogit git {_OPAQUE_VERB} origin dev",
+        f"X=/git git {_OPAQUE_VERB} origin dev",
+        f"TOKEN=$(cat t)git git {_OPAQUE_VERB} origin dev",
+    ],
+)
+def test_an_assignment_is_never_the_git_word(command):
+    # An assignment is never the command word. Matching one made push-guard's own scan take
+    # the real `git` as the subcommand and bury the push.
+    assert not git_command.is_git(command.split()[0])
+    got = _invs(command)
+    assert [(inv.subcommand, inv.arg_tokens) for inv in got] == [
+        (_OPAQUE_VERB, ["origin", "dev"])
+    ]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git $(true)git origin dev",
+        f"git -c alias.git={_OPAQUE_VERB} git origin dev",
+        "git ${X}git origin dev",
+    ],
+)
+def test_a_git_like_subcommand_is_recorded_not_dropped(command):
+    # The option-run stop used to DROP the invocation when the subcommand slot held a bare
+    # `git` (premise: never a real subcommand). An alias named `git` makes it one, and an opaque
+    # word may expand to anything — so it is recorded, indeterminate, and every consumer blocks it.
+    got = _invs(command)
+    assert len(got) == 1
+    assert git_command.subcommand_is_indeterminate(got[0].subcommand)
+
+
+@pytest.mark.parametrize(
+    ("sub", "want"),
+    [
+        ("status", False),
+        (_OPAQUE_VERB, False),
+        ("git", True),
+        ("$V", True),
+        (git_command.PLACEHOLDER_PREFIX + "0" + git_command.PLACEHOLDER_SUFFIX, True),
+        ("${X}git", True),
+    ],
+)
+def test_subcommand_is_indeterminate(sub, want):
+    assert git_command.subcommand_is_indeterminate(sub) is want
+
+
+_N = git_command.MAX_COMMAND_LENGTH
+
+
+@pytest.mark.parametrize(
+    "word",
+    [
+        "${" * (_N // 2),
+        "{" + "," * (_N - 1),
+        "x" * (_N // 4) + "{" + "," * (_N // 4) + "}" + "$a" * (_N // 4),
+        "$a" * (_N // 2),
+    ],
+    ids=[
+        "dollar-brace-run",
+        "open-brace-commas",
+        "long-prefix-brace-long-suffix",
+        "dollar-name-run",
+    ],
+)
+def test_is_git_is_linear_on_a_pathological_word(word):
+    # A guard that outruns its hook timeout lets the command RUN, so `is_git` must stay linear on
+    # a maximum-length word. Three drafts were not: `\{[^}]*\}` in the parameter regex rescanned
+    # to end-of-token from every `$` (5.9 s on 60k); a brace-expansion regex with the comma inside
+    # its pattern backtracked on an unclosed `{` (14.3 s at 32k commas); and recursing into each
+    # brace alternative with the whole prefix and suffix was quadratic again (67.8 s at 64k). The
+    # brace clause was then deleted; the two brace-shaped words stay here so that bringing any
+    # such clause back is measured against them. Shipped cost on this bound: under 0.01 s.
+    import time
+
+    start = time.perf_counter()
+    git_command.is_git(word)
+    assert time.perf_counter() - start < 0.2

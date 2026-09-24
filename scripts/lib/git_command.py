@@ -16,6 +16,17 @@ empty word (``eval "git push origin dev"``, ``eval ':;' git push``) — which is
 tokenizer exactly as ``sh -c "…"`` is. A `cd`/`pushd`/`popd` reached through any wrapper makes the
 tracked cwd UNRESOLVABLE rather than followed, since whether the shell really moves depends on the
 whole chain. Resolving aliases and nested command strings is out of scope here.
+
+Since 2026-09-18, `is_git` also recognises many command words bash reduces to `git` through
+substitution and expansion — see `is_git`'s own docstring for the widened rule. Three classes
+stay residual there: BRACE expansion (``{git,}`` — a clause for it was built and deleted, see the
+comment above `_literal_git`); a command word whose EXPANSION SUPPLIES letters of `git` — wholly dynamic
+(``$G``, ``$(echo git)``) or partly (``gi$X``, ``${X}it``, ``$(echo g)it``), all measured allowed
+at every guard — since closing it by text was measured to false-block 1.5%-10% of real commands;
+and WHITESPACE inside ``${…}`` in the command
+word (``git${X:+ }``, ``${X:- }git``) — bash ran git for ``git${X:+ } status`` under `/bin/bash`
+3.2.57 and MacPorts bash 5.3.15 (X=1), and `shlex` splits the word into ``git${X:+`` / ``}``, so
+nothing is recorded.
 """
 
 from __future__ import annotations
@@ -1120,9 +1131,79 @@ def strip_redirects(seg: list[str]) -> list[str]:
     return out
 
 
+# Parameter expansions a word can carry. Non-rescanning by construction: `[^{}]*` stops at the next
+# brace of EITHER kind, so a run of `${` costs one step each. The first draft used `[^}]*`, which
+# rescans to end-of-token from every `$` — measured 5.9 s on 60k of them.
+_PARAM_EXPANSION_RE = re.compile(
+    r"\$(?:\{[^{}]*\}|[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])"
+)
+# `${NAME-word}`, `${NAME:-word}`, `${NAME=word}`, `${NAME:=word}`, `${NAME+word}`, `${NAME:+word}`:
+# the expansion's VALUE may be the literal `word`, so it is reduced to that word before judging.
+_WORD_EXPANSION_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}]*)\}")
+# Brace expansion (`{git,}`) is deliberately NOT recognised. A clause for it was built and then
+# DELETED, after it produced both BLOCKERs of this change's final review, each a guard pushed past
+# its hook timeout — which lets the command run: its regex first backtracked quadratically on an
+# unclosed `{` (14.3 s for one 32k-comma word), and once that was fixed, recursing into each
+# alternative with the whole prefix and suffix was quadratic again (67.8 s for one 64k word). The
+# shape it closed occurred 0 times in 120,781 real commands. A residual, stated below.
+
+
+def _literal_git(word: str) -> bool:
+    return word == "git" or word.endswith("/git")
+
+
+def _is_opaque(token: str) -> bool:
+    """True when bash would EXPAND part of this token: a substitution placeholder or a `$`."""
+    return PLACEHOLDER_PREFIX in token or "$" in token
+
+
 def is_git(token: str) -> bool:
-    """True if token invokes git (bare name or a path ending in /git)."""
-    return token == "git" or token.endswith("/git")
+    """True if this word, in command position, may run git.
+
+    Literally `git` or a path ending in `/git`, as before — and, since 2026-09-18, a word bash
+    REDUCES to one of those at run time. Every shape below ran git under bash 3.2.57 and 5.3.15, and
+    every guard consuming this module allowed all of them while this accepted only the literal text.
+
+    - never an env ASSIGNMENT: an assignment is never the command word, and command position already
+      steps over it. Matching `REPO=$BASE/foo.git` made push-guard's own scan take the real `git`
+      after it as the subcommand and bury the push.
+    - an OPAQUE word (a substitution placeholder or a `$`) is git when, with placeholders removed,
+      it ENDS in `git` — this is the only clause that sees the quote-merged forms, since
+      `shlex(posix=True)` turns `"$X"git`, `$X""git` and `$'git'` into `$Xgit` / `$git` — or when,
+      with default-value expansions reduced to their word and every other expansion removed, what
+      remains is literally git (`git$X`, `git${X}`, `${X:-git}`).
+
+    Residual, stated rather than closed — the rule is that a word is caught only when its LITERAL
+    letters end in `git`, or reduce to git once expansions are removed, so any word whose
+    expansion SUPPLIES letters of `git` passes: wholly dynamic (`$G`, `$(echo git)`) and partly
+    dynamic alike (`gi$X`, `${X}it`, `$(echo g)it`, `` `echo g`it ``, measured allowed at all four
+    guards). Closing it was measured to false-block 1.5%-10% of real commands. Also residual:
+    escape-encoded ANSI-C (`$'\\x67it'`); BRACE expansion (`{git,}`, `{nope,git}` — see the
+    comment above `_literal_git` for why a clause for it was deleted); globs; and WHITESPACE
+    inside `${…}` (`git${X:+ }`, `${X:- }git`), which bash
+    keeps as one word but `shlex` splits before any predicate runs — a tokenizer-level defect,
+    filed separately. Over-reads, harmless and rare: an opaque word that merely ends in `git`
+    (`$HOME/bin/legit`), and `'$X'git` (single-quoted, so bash runs a command literally named
+    `$Xgit`).
+    """
+    if ENV_ASSIGN.match(token):
+        return False
+    if _literal_git(token):
+        return True
+    if not _is_opaque(token):
+        return False
+    literal = _PLACEHOLDER_RE.sub("", token)
+    if literal.endswith("git"):
+        return True
+    literal = _WORD_EXPANSION_RE.sub(r"\1", literal)
+    return _literal_git(_PARAM_EXPANSION_RE.sub("", literal))
+
+
+def subcommand_is_indeterminate(sub: str) -> bool:
+    """True when a recorded SUBCOMMAND cannot be read as text: a git-like word (an alias named `git`
+    makes `git git …` run anything) or an opaque one (`git $V origin dev` with V=<push>). A consumer
+    that compares subcommands literally must treat this as possibly the operation it guards."""
+    return is_git(sub) or _is_opaque(sub)
 
 
 def _steps_as_wrapper(
@@ -1625,18 +1706,26 @@ def _walk_context(
                 i = j
                 continue
             if is_git(tokens[j]):
-                # A bare `git` can never be a legitimate subcommand, so an option run ending on
-                # one means THIS invocation had no subcommand — and recording `git` as one buries
-                # the real invocation's subcommand in an argument segment nothing judges.
-                # Measured shape: `git -c ; git push origin dev` recorded ("git", ["push", …]).
-                #
-                # `and starts_command(tokens, j)` was here and is deliberately gone: it made the
-                # branch UNSATISFIABLE. Every token between `i` and `j` starts with `-` or is a
-                # consumed value, so `starts_command` always walks back to `tokens[i]` — the `git`
-                # token itself, which is neither an operator nor a wrapper — and returns False.
-                # The comment claimed a defence the code could not provide, which reads as
-                # coverage while pinning nothing.
+                # The option run ended on a git-like word, so the SUBCOMMAND slot holds it.
+                # This used to DROP the invocation, on the premise that a bare `git` is never a
+                # real subcommand. An alias named `git` makes it one (`git -c alias.git=<push>
+                # git origin dev` ran a push past both push guards), and since `is_git` accepts
+                # opaque words, an expansion here may be anything (`git $(true)git origin dev`).
+                # So record it, exactly as the unknown-option branch above does: the git-like
+                # word becomes the subcommand, `subcommand_is_indeterminate` says so, and every
+                # consumer blocks it. Deliberately NO argument scan (seg=[]), for that branch's
+                # reason. Then resume AT `j`, never past it: the `git -c ; git <push> …` shape
+                # this branch was written for still has its real invocation walked on its own.
                 _descend(tokens[i:j], cwd_state)
+                results.append(
+                    Invocation(
+                        cwd_state,
+                        cdir,
+                        tokens[j],
+                        [],
+                        InvocationTokens(env_pre, tokens[i + 1 : j]),
+                    )
+                )
                 i = j
                 continue
             seg: list[str] = []
@@ -1652,9 +1741,8 @@ def _walk_context(
             # an argument list that `git` is reached through a reserved word -- walking back from a
             # `git` otherwise meets an argument word first, and bash recognises a reserved word only
             # in command position, so behind an argument it is an ordinary word and the rest of the
-            # line is still THIS command's argv -- or, rarely, through an env-assignment token that
-            # itself ends in `/git` (`X=/git`), which a backward walk steps over as an assignment and
-            # so reaches command position with no reserved word at all. Stopping there once cut the
+            # line is still THIS command's argv. (`is_git` no longer matches an env-assignment token,
+            # so a nested `git` can no longer be reached that way instead.) Stopping there once cut the
             # list short -- `git <push> origin main -o then HEAD:refs/heads/x/git dev` recorded
             # `['origin', 'main', '-o', 'then']` and the publication guard never saw `dev`.
             #
