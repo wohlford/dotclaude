@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.110.6 — 2026-09-17
+- fix(feature): ask whether each plan check can pass at all
+
 ## v0.110.5 — 2026-09-17
 - docs(CLAUDE.md): admit the inherited-setting hazard and split its group
 

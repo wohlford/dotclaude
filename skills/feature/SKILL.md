@@ -180,16 +180,18 @@ still stop and report, and nothing here licenses continuing past one.
    repeat that. If you took the short-plan path and skipped brainstorming, nothing has run those
    checks: do one quick pass over them first. Either way, the pass that earns its keep is the one no
    checklist can make: is this the right design, is the decomposition sound, does it solve the
-   actual problem? Then ask the full lane's step-5 question of any task that carries a verification:
-   **is that check falsifiable?** Judge it by the three tests step 5 lists — the defect class does
-   not care which lane produced the plan. Revise inline.
+   actual problem? Then ask the full lane's step-5 questions of any task that carries a
+   verification: **is that check falsifiable, and can it pass at all?** Judge both by step 5's
+   tests, and run the check the way step 5 says — the defect class does not care which lane
+   produced the plan. Revise inline.
 3. Run a diverse-model review **only if** the change's **stakes** are real even though they stayed
    under Step 0's bar — the fast lane means the design is easy to reason about, not that being wrong
    is cheap. The clearest case is stakes that sit in the **rework, not the reach**: a long mechanical
    change, few consumers, cleanly reversible, but a wrong plan means implementing all of it twice.
    One outside read is worth it there; a spec and a spike are not. Above Step 0's bar you would be on
    the full lane, whose step 6 reviews the plan regardless. Else skip. Pick the reviewer per
-   **Diverse-model review** below. If it ran, **fold its findings; revise; recommit via `/commit`**
+   **Diverse-model review** below. If it ran, **fold its findings; revise, re-running per step 5
+   any check the fold changes; recommit via `/commit`**
    (tagging and durability per the Step 0.5 rules) — same as the full lane's step 6. A review whose findings are not
    folded is a review you paid for and did not use.
 4. Present the recorded spec+plan (committed, or in memory per Step 0.5's durability rule), then
@@ -228,8 +230,31 @@ still stop and report, and nothing here licenses continuing past one.
    if the task were done wrong? On that last one, read each task's check and not just its
    instructions: does it test the real deliverable or a proxy that can pass while the requirement is
    missed; is it anchored by content rather than a line number the task's own earlier steps will
-   shift; does it contradict the text it verifies? Revise inline.
-6. **One diverse-model review of the plan** (see below). Fold findings; revise; recommit via
+   shift; does it contradict the text it verifies? **Then ask whether each check can pass at all**
+   — one that never can is still falsifiable, so the questions above wave it through. Look for an
+   expected result the tree at that step cannot produce: a count of 0 whose needle the task's own
+   new text adds; a count omitting occurrences its other edits add; rows expected red that the old
+   code already passes; a gate the untouched tree already fails; an anchor for a line shape the
+   file does not have. **Answer by running the check, never from your model of the finished tree**
+   — that model wrote the check. Rehearse in a scratch clone made outside the repo and discarded
+   afterwards, keeping the base branch and dropping the remote:
+   `git clone -q -b <branch> <repo> <dir>`, `git -C <dir> branch <base> origin/<base>`,
+   `git -C <dir> remote remove origin`, `git -C <dir> config commit.gpgsign false`. Those settings
+   are not the safety net — a push to an explicit URL, or a repo a check creates for itself, still
+   escapes them. In the clone, apply every earlier task's edits and this task's up to the check's
+   step — by hand where the plan describes an edit in prose. **Read each check before running it:**
+   re-point every path and `-C` target at the clone, since one still aimed at the real checkout
+   grades the unedited tree; a check that would still reach outside the clone — a write, a push, a
+   signing prompt, a network call — is itself a finding: fix it where you can, and never run it as
+   it stands. Then run each check from inside the clone; one that outruns a tool call goes through
+   `~/.claude/scripts/run-long.sh`, as any long check does. Leave a check unrun only when it cannot
+   be expressed as a command, must reach outside the clone, or depends on an edit the task leaves
+   to the implementer's judgment; record each unrun check and why in the plan, where its reviewers
+   and the implementer will see it. Re-run every check you revise. Measured: seven unsatisfiable
+   checks passed this step, each caught later by a reviewer doing exactly this or by a delegate
+   refusing to bend correct work to a wrong number. Revise inline.
+6. **One diverse-model review of the plan** (see below). Fold findings; revise, re-running per
+   step 5 any check the fold changes; recommit via
    `/commit` (tagging and durability per the Step 0.5 rules). (If a review at this stage invalidates the spec, loop
    back to step 1 as with spike invalidation.)
 7. Present the recorded spec + plan (committed, or in memory per Step 0.5's durability rule), then
@@ -549,8 +574,9 @@ step — e.g.
   spike, and the diverse-model review of its plan. There is no separate security gate at the finish;
   `/audit` and `/vet` are the only gates the branch clears before it integrates.
 - Scope the spike to one assumption; bias borderline triage to the full lane.
-- Budget: the diverse-model agent pass — default to **one** (on the plan); ultrathink is cheap; the
-  spike substitutes for a second reasoning pass; the fast lane skips the diverse pass unless stakes
+- Budget: the diverse-model agent pass — default to **one** (on the plan); ultrathink is cheap, but
+  step 5 and fast-lane step 2 also run the plan's checks, which cost their own runtime; the spike
+  substitutes for a second reasoning pass; the fast lane skips the diverse pass unless stakes
   warrant it. The default execute-then-integrate phase adds the SDD subagent passes (one implementer +
   reviews per task, plus the final whole-branch review) — and `/vet`'s reviewer dispatch when the
   diff touches a skill or agent (`/audit` is
@@ -561,6 +587,7 @@ step — e.g.
   cutting gates** — see "Scale execution to Step 0's lane"; never trade a review away to save budget.
 - **Never spend two same-model passes on one artifact.** Each sub-skill (`brainstorming`,
   `writing-plans`) already self-reviews its own output against a mechanical checklist; the
-  ultrathink steps own the altitude question those checklists cannot ask, and nothing else.
+  ultrathink steps own the altitude question those checklists cannot ask, plus the rehearsal that
+  runs each plan check, and nothing else.
   Repeating a checklist doubles the pass that shares the author's blind spot — the reason the
   diverse-model review exists at all. Independence is what catches defects, not repetition.
