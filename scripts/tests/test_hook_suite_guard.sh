@@ -87,7 +87,7 @@ write_stub_suite() {
 }
 
 ppg=publication-push-guard-test.sh
-ppg_union="scripts/tests/test_git_command.py scripts/tests/test_git_command_properties.py scripts/tests/test_publication_push_guard.sh scripts/tests/test_guard_corpus.py scripts/tests/test_guard_internals.py scripts/tests/test_push_guard.sh scripts/tests/test_git_timing_guard.sh scripts/tests/test_explain_git_command.py scripts/tests/test_commit_subject_guard.sh scripts/tests/test_commit_subject.py scripts/tests/test_recast_hooks.sh"
+ppg_union="scripts/tests/test_plan_rehearse.py scripts/tests/test_git_command.py scripts/tests/test_git_command_properties.py scripts/tests/test_publication_push_guard.sh scripts/tests/test_guard_corpus.py scripts/tests/test_guard_internals.py scripts/tests/test_push_guard.sh scripts/tests/test_git_timing_guard.sh scripts/tests/test_explain_git_command.py scripts/tests/test_commit_subject_guard.sh scripts/tests/test_commit_subject.py scripts/tests/test_recast_hooks.sh"
 
 # ppg_owner_fixture DIR — an owning repo holding the tokenizer and a passing stub for every suite.
 ppg_owner_fixture() {
@@ -190,7 +190,7 @@ style-check|style-check-test.sh|scripts/style-check.sh|scripts/tests/test_style_
 sync-docs|sync-docs-test.sh|skills/sync-docs/sync_docs.py|skills/sync-docs/tests/test_stub.py
 commit-subject|commit-subject-test.sh|scripts/lib/commit_subject.py|scripts/tests/test_commit_subject_guard.sh scripts/tests/test_commit_subject.py scripts/tests/test_py39_compat.sh
 ppg-guard-only|publication-push-guard-test.sh|scripts/publication-push-guard.py|scripts/tests/test_publication_push_guard.sh scripts/tests/test_guard_corpus.py scripts/tests/test_guard_internals.py
-ppg-shared-dep|publication-push-guard-test.sh|scripts/lib/git_command.py|scripts/tests/test_git_command.py scripts/tests/test_git_command_properties.py scripts/tests/test_publication_push_guard.sh scripts/tests/test_guard_corpus.py scripts/tests/test_guard_internals.py scripts/tests/test_push_guard.sh scripts/tests/test_git_timing_guard.sh scripts/tests/test_explain_git_command.py scripts/tests/test_commit_subject_guard.sh scripts/tests/test_commit_subject.py scripts/tests/test_recast_hooks.sh
+ppg-shared-dep|publication-push-guard-test.sh|scripts/lib/git_command.py|scripts/tests/test_plan_rehearse.py scripts/tests/test_git_command.py scripts/tests/test_git_command_properties.py scripts/tests/test_publication_push_guard.sh scripts/tests/test_guard_corpus.py scripts/tests/test_guard_internals.py scripts/tests/test_push_guard.sh scripts/tests/test_git_timing_guard.sh scripts/tests/test_explain_git_command.py scripts/tests/test_commit_subject_guard.sh scripts/tests/test_commit_subject.py scripts/tests/test_recast_hooks.sh
 ppg-push-guard|publication-push-guard-test.sh|scripts/push-guard.py|scripts/tests/test_push_guard.sh
 ppg-timing-guard|publication-push-guard-test.sh|scripts/git-timing-guard.py|scripts/tests/test_git_timing_guard.sh
 ppg-explain|publication-push-guard-test.sh|scripts/explain-git-command.py|scripts/tests/test_explain_git_command.py

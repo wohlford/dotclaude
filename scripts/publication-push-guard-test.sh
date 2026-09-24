@@ -82,6 +82,7 @@ scripts/commit-subject-guard.py|scripts/tests/test_commit_subject_guard.sh
 scripts/commit-subject-advisor.py|scripts/tests/test_commit_subject_guard.sh
 scripts/lib/commit_subject.py|scripts/tests/test_commit_subject.py
 scripts/recast-commit-gate.py|scripts/tests/test_recast_hooks.sh
+scripts/plan-rehearse.py|scripts/tests/test_plan_rehearse.py
 '
 
 # ---------- Cheap guard: which rows does this edit select? ----------

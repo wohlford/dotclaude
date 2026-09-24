@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.112.3 — 2026-09-18
+- test(hook-suite-guard): rerun the rehearse suite on tokenizer changes
+
 ## v0.112.2 — 2026-09-18
 - test(plan-rehearse): add the mutation campaign
 
