@@ -47,6 +47,9 @@ S79="$(python3 -c 'print("f"*79)')"
 # --- opted-in repo ---
 mkrepo "$tmp/r1"
 assert "git commit -m \"$S80\""            "$tmp/r1" 2 '80-char subject -> blocked'
+# shellcheck disable=SC2016  # the escaped \$(true) must reach the guard UNEXPANDED (git_command.py's
+# widened is_git, 2026-09-18): the command word bash reduces to `git` without the text being it.
+assert "\$(true)git commit -m \"$S80\""    "$tmp/r1" 2 'opaque command word $(true)git reduces to git (the widened is_git, at this guard); 80-char subject -> blocked'
 assert "git commit -m \"$S79\""            "$tmp/r1" 0 '79-char subject -> allowed (advise tier only)'
 assert "git commit -m \"$S72\""            "$tmp/r1" 0 '72-char subject -> allowed by the PRE hook'
 assert 'git commit -m "feat(x): short"'    "$tmp/r1" 0 'short subject -> allowed'

@@ -63,10 +63,18 @@ MUTATIONS = [
     ),
     # Nothing is ever recognised as publishing, so the gate never fires. A suite that only checks
     # "allowed commands stay allowed" passes this happily.
+    # The distinct-target cap stops bounding the per-target subprocess cost, so a decoy flood is
+    # resolved one target at a time again. The cap row (nine distinct unguarded targets must block)
+    # has to go red; the flood's own timing row would too, on the pre-cap cost.
+    mutate.Mutation(
+        "target-cap-dropped",
+        "    if len(distinct) > MAX_PUSH_TARGETS:\n        return repo_pat\n",
+        "",
+    ),
     mutate.Mutation(
         "push-detection-broken",
-        '        if sub_idx < len(seg) and seg[sub_idx] == "push":\n            return True',
-        '        if sub_idx < len(seg) and seg[sub_idx] == "pushX":\n            return True',
+        '            seg[sub_idx] == "push" or gitcmd.subcommand_is_indeterminate(seg[sub_idx])\n',
+        '            seg[sub_idx] == "pushX" or gitcmd.subcommand_is_indeterminate(seg[sub_idx])\n',
     ),
 ]
 

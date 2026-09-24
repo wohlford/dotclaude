@@ -17,9 +17,15 @@ and is the only thing time-gated; `commit` and `tag` never leave the machine, so
 not block them. Gating those too made the override a daily reflex, and a bypass used daily is not
 a gate.
 
-ONLY THE FIRST PUSH IN THE COMMAND IS EXAMINED — this matches the original bash guard exactly,
-which broke out of its segment loop at the first match. A command that chains two pushes (rare,
-and not a shape any documented workflow produces) is judged on its first one only.
+EVERY PUSH'S TARGET IS JUDGED, since 2026-09-18 — the original bash guard, and this one until
+then, broke out at the first match, so a harmless push aimed elsewhere could displace the real
+one (`git -C /tmp <push>; git <push> origin dev` was allowed). That became a live decoy once an
+indeterminate subcommand counted as a push, so the command now blocks when ANY push-shaped
+invocation targets a guarded repo. The OVERRIDE is still read from the first push-shaped
+segment only (below) — and since an indeterminate subcommand counts as push-shaped, that segment
+can now be a no-op (`ALLOW_GIT_WRITE=1 git -C /tmp $V; <push of the guarded repo>` is judged
+authorized, where it blocked before). A residual, not a hole: it needs the operator's own override
+token, which already authorizes the plain push.
 
 OVERRIDE IS SEGMENT-SCOPED, matching `push-guard.py`'s stricter reading, not the original bash's
 "any segment anywhere" reading. `ALLOW_GIT_WRITE=1` must lead the SAME control-operator-delimited
@@ -151,7 +157,7 @@ def _skip_global_options(gitcmd, seg: list[str], start: int) -> int:
     unjudgeable here (an unrecognized option could turn out to be value-taking, which would make
     `push` its VALUE rather than the subcommand). Measured to matter: before this raised,
     `_segment_contains_push` confidently found the push (its old fallback stepped over the
-    unknown option), while `_first_push_target_dir`'s `iter_git_invocations_detailed` — which does
+    unknown option), while `_push_target_dirs`'s `iter_git_invocations_detailed` — which does
     NOT raise on this shape; correction, this file previously claimed it "already raises this
     identical shape", which is false — instead RECORDS the unknown option itself as the
     invocation's subcommand and keeps walking, so its loop never finds a `push` subcommand here
@@ -160,8 +166,8 @@ def _skip_global_options(gitcmd, seg: list[str], start: int) -> int:
     payload cwd it reads as an ALLOW for a real push in the guarded repo (`git -C <guarded>
     --badopt push origin main`, old rc=2, new rc=0 before this fix). Propagating the raise HERE,
     in `_segment_contains_push`'s own walk, is what actually closes the gap — it makes `main`'s
-    FIRST `except ValueError` fire before `_first_push_target_dir` is ever reached, so the guard's
-    documented fail-open (not `_first_push_target_dir`'s independent, undocumented one) is what
+    FIRST `except ValueError` fire before `_push_target_dirs` is ever reached, so the guard's
+    documented fail-open (not `_push_target_dirs`'s independent, undocumented one) is what
     decides every cwd uniformly. See `scripts/tests/test_git_timing_guard.sh`'s "cwd IS the
     guarded repo" rows, which pin that this is now uniform rather than an accident of which
     payload cwd happens to coincide with the fallback. The caller's `except ValueError` already
@@ -192,10 +198,13 @@ def _skip_global_options(gitcmd, seg: list[str], start: int) -> int:
 
 def _segment_contains_push(gitcmd, seg: list[str]) -> bool:
     """True if `seg` (one control-operator-delimited slice of a context's token stream) contains
-    a `git` invocation, in command position, whose subcommand is literally `push`. Scoped to the
-    publication boundary this guard gates — see the module docstring; `subtree push` and other
-    push-shaped subcommands are deliberately not matched, exactly as the bash guard's `push` word
-    match was not.
+    a `git` invocation, in command position, whose subcommand is literally `push` — or, since
+    2026-09-18, whose subcommand is INDETERMINATE (`gitcmd.subcommand_is_indeterminate`): a
+    git-like word (an alias named `git` makes `git git …` run anything) or an opaque one (`git $V
+    origin dev` with `V=<push>`). Either is treated as a possible push, since a consumer comparing
+    a subcommand as literal text cannot tell it apart from one. Scoped to the publication boundary
+    this guard gates — see the module docstring; `subtree push` and other push-shaped subcommands
+    are deliberately not matched, exactly as the bash guard's `push` word match was not.
 
     Raises:
         ValueError: via `_skip_global_options`, on an unclassifiable global option between `git`
@@ -214,7 +223,9 @@ def _segment_contains_push(gitcmd, seg: list[str]) -> bool:
         ):
             continue
         sub_idx = _skip_global_options(gitcmd, seg, j + 1)
-        if sub_idx < len(seg) and seg[sub_idx] == "push":
+        if sub_idx < len(seg) and (
+            seg[sub_idx] == "push" or gitcmd.subcommand_is_indeterminate(seg[sub_idx])
+        ):
             return True
     return False
 
@@ -294,16 +305,25 @@ def _combine_dir(base: str | None, cdir: str | None) -> str | None:
     return os.path.normpath(os.path.join(base, cdir))
 
 
-def _first_push_target_dir(gitcmd, command: str, payload_cwd: str | None) -> str | None:
-    """The target directory of the FIRST `push` invocation `iter_git_invocations_detailed` finds,
-    composing its `effective_dir` (which follows `cd`/`pushd`/`popd`) with its own `cdir` (the
-    LAST `-C` it carried — see `_combine_dir`), falling back to the payload's own `cwd` when
-    `effective_dir` is unresolvable (e.g. `cd "$VAR"`) — see the module docstring's CWD
-    RESOLUTION paragraph for the four pinned decisions this implements.
+def _push_target_dirs(
+    gitcmd, command: str, payload_cwd: str | None
+) -> list[str | None]:
+    """The target directory of EVERY `push`, or INDETERMINATE-subcommand (see
+    `_segment_contains_push`), invocation `iter_git_invocations_detailed` finds, each composing its
+    `effective_dir` (which follows `cd`/`pushd`/`popd`) with its own `cdir` (the LAST `-C` it
+    carried — see `_combine_dir`), falling back to the payload's own `cwd` when `effective_dir` is
+    unresolvable (e.g. `cd "$VAR"`) — see the module docstring's CWD RESOLUTION paragraph for the
+    four pinned decisions this implements. No such invocation → `[payload_cwd]`.
+
+    EVERY one, not the first: this returned only the first until 2026-09-18, and once an
+    indeterminate subcommand counted as a push, a harmless decoy aimed elsewhere took that slot —
+    `git -C /tmp $V; git <push> origin dev` was judged in `/tmp` and allowed (measured, the pinned
+    in-window fixture), as `git -C /tmp <push>; git <push> origin dev` already had been. The caller
+    blocks when ANY target is a guarded repo, so a decoy can no longer displace the real push.
 
     Correlated with `_find_first_push` by ORDER, not by shared state: both walk the command's
     contexts outermost-first: `_find_first_push` finds the first push-carrying SEGMENT via
-    `iter_context_token_streams`, this walks the first push INVOCATION via
+    `iter_context_token_streams`, this walks the push INVOCATIONS via
     `iter_git_invocations_detailed`. They are two different primitives over the same command
     because no single one exposes both a push's own segment (needed for the override, which must
     NOT trust the invocation's wrapper-transparent env field — see `_leading_env_authorized`) and
@@ -332,14 +352,50 @@ def _first_push_target_dir(gitcmd, command: str, payload_cwd: str | None) -> str
     Raises:
         ValueError: on tokenizing ambiguity — the caller decides that means allow (fail open).
     """
+    targets: list[str | None] = []
     for inv in gitcmd.iter_git_invocations_detailed(command, payload_cwd):
-        if inv.subcommand == "push":
+        if inv.subcommand == "push" or gitcmd.subcommand_is_indeterminate(
+            inv.subcommand
+        ):
             base = inv.effective_dir if inv.effective_dir is not None else payload_cwd
-            return _combine_dir(base, inv.cdir)
-    return payload_cwd
+            targets.append(_combine_dir(base, inv.cdir))
+    return targets or [payload_cwd]
 
 
-def _origin_url(target: str | None) -> str:
+# Bounds on judging EVERY push target (see `_push_target_dirs`). Each distinct target costs one
+# `git remote get-url` subprocess, and the command's author chooses how many there are and how
+# slow each is (a repo whose config includes a large file) — measured: 2,000 decoys took 49.8 s,
+# and 400 aimed at a slow repo passed 60 s, so the hook timed out and the command RAN. Past either
+# bound the command is judged IN scope — it blocks inside the window rather than failing open. No
+# documented workflow pushes to more than a handful of repos in one command.
+MAX_PUSH_TARGETS = 8
+TARGET_BUDGET_SECONDS = 15.0
+
+
+def _scope_origin(targets: list[str | None], repo_pat: str) -> str:
+    """The first distinct target's origin URL that names a guarded repo, else "" — or `repo_pat`
+    itself, meaning "judge it in scope", when there are more than `MAX_PUSH_TARGETS` distinct
+    targets or resolving them outruns `TARGET_BUDGET_SECONDS`. One slow target on its own still
+    resolves to "" on its own 10 s timeout, exactly as before this bound existed."""
+    import time
+
+    distinct = list(dict.fromkeys(targets))
+    if len(distinct) > MAX_PUSH_TARGETS:
+        return repo_pat
+    deadline = time.monotonic() + TARGET_BUDGET_SECONDS
+    for target in distinct:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return repo_pat
+        url = _origin_url(target, timeout=min(10.0, remaining))
+        if repo_pat in url:
+            return url
+    if len(distinct) > 1 and time.monotonic() >= deadline:
+        return repo_pat
+    return ""
+
+
+def _origin_url(target: str | None, timeout: float = 10.0) -> str:
     """The target repo's `origin` remote URL, or "" on any failure — no origin configured, `git`
     itself missing, the directory not existing or not a repo, a timeout. All fail open the same
     way the bash guard's `git -C "$target" remote get-url origin 2>/dev/null || true` does: an
@@ -354,7 +410,7 @@ def _origin_url(target: str | None) -> str:
             ["git", "-C", target, "remote", "get-url", "origin"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -457,11 +513,13 @@ def main() -> int:
         return 0
 
     try:
-        target = _first_push_target_dir(gitcmd, command, payload_cwd)
+        targets = _push_target_dirs(gitcmd, command, payload_cwd)
     except ValueError:
         return 0
 
-    origin = _origin_url(target)
+    # The first target whose origin names a guarded repo, else "" — bounded, see `_scope_origin` —
+    # so the scope check below reads exactly as it did when only one target was judged.
+    origin = _scope_origin(targets, repo_pat)
     if repo_pat not in origin:
         return 0
 

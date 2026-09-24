@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.114.4 — 2026-09-18
+- fix(git-timing-guard): judge every push target, bounded
+
 ## v0.114.3 — 2026-09-18
 - fix(push-guard): treat an indeterminate subcommand as a push
 

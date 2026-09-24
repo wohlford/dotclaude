@@ -231,19 +231,84 @@ check 0 "DECIDED trade (fix/eval-wrapper-bypass): a cd reached through a wrapper
 check 2 "nohup runs the cd in a child: the push stays in the guarded repo (was allowed before fix/eval-wrapper-bypass)" \
   "$open_home" "$guarded" "nohup cd $foreign ; git push origin main"
 
-# Ruling R8 (I2): PRE-EXISTING, not introduced by this branch. This guard judges only the FIRST push
-# it finds in a command's token stream (it is a timing gate on the publication boundary, not a full
-# per-push auditor; push-guard.py's own publication gate still covers every push regardless). eval
-# does not change that rule -- it only changes which push happens to be first, so it can make a push
-# that would otherwise have been judged second (and therefore ignored either way) visible instead.
-# Both rows below measure 0 with eval AND on the eval-free spelling (measured directly), which is
-# what makes this pre-existing rather than a regression introduced here.
-check 0 "PRE-EXISTING: this guard judges only the FIRST push; eval now makes that push visible (the eval-free spelling is allowed on every build)" \
+# Ruling R8 (I2) recorded that this guard judged only the FIRST push's TARGET, so a push aimed at a
+# foreign repo, placed first, hid a later push to the guarded one. Since 2026-09-18 every push's
+# target is judged (`_push_target_dirs`): the decoy became live once an indeterminate subcommand
+# counted as a push (`git -C /tmp $V; <push of the guarded repo>`), and closing it closed this row too.
+check 2 "every push's target is judged: a foreign push placed first no longer hides the guarded one" \
   "$open_home" "$foreign" "eval git -C $foreign push origin x ; git -C $guarded push origin main"
-check 0 "PRE-EXISTING: this guard judges only the FIRST push; eval now makes that push visible (the eval-free spelling is allowed on every build)" \
+check 2 "every push's target is judged: an indeterminate-subcommand decoy placed first no longer hides the guarded push" \
+  "$open_home" "$foreign" "git -C $foreign \$V ; git -C $guarded push origin main"
+check 2 "every push's target is judged: a git-like-subcommand decoy placed first no longer hides the guarded push" \
+  "$open_home" "$foreign" "git -C $foreign git ; git -C $guarded push origin main"
+# The OVERRIDE is still read from the first push-carrying segment only, so an authorized first push
+# still carries the command -- a residual stated in the module docstring, unchanged here.
+check 0 "RESIDUAL: the override is read from the first push-carrying segment only" \
   "$open_home" "$guarded" "ALLOW_GIT_WRITE=1 eval git push origin x ; git push origin main"
+check 0 "RESIDUAL: an overridden indeterminate no-op counts as that first push-shaped segment" \
+  "$open_home" "$foreign" "ALLOW_GIT_WRITE=1 git -C $foreign \$V ; git -C $guarded push origin main"
+
+# Judging every target costs one `git remote get-url` per DISTINCT target, so a decoy flood once
+# pushed this guard past its hook timeout — which lets the command run (2,000 decoys: 49.8 s).
+# Past MAX_PUSH_TARGETS distinct targets the command is judged in scope instead of resolved one by
+# one, so the flood blocks, and fast.
+# Relative targets (resolved against the payload cwd) keep 2,000 decoys near 32 KB: a command past
+# the tokenizer's 64 KB MAX_COMMAND_LENGTH is unparseable, and this guard fails OPEN on that by its
+# documented ambiguity posture, so an oversized flood would measure that posture, not the bound.
+flood=""
+for i in $(seq 1 2000); do flood+="git -C d$i \$V ; "; done
+flood_t0=$SECONDS
+check 2 "a 2000-target decoy flood is judged in scope, not resolved target by target" \
+  "$open_home" "$foreign" "${flood}git -C $guarded push origin main"
+if (( SECONDS - flood_t0 <= 10 )); then
+  printf 'PASS  the decoy flood is judged within 10 s (took %ss)\n' "$((SECONDS - flood_t0))"
+  pass=$((pass + 1))
+else
+  printf 'FAIL  the decoy flood took %ss (want <= 10)\n' "$((SECONDS - flood_t0))"
+  fail=$((fail + 1))
+fi
+# The cap's price, stated: nine DISTINCT unguarded push targets in one command block inside the
+# window. No documented workflow pushes to that many repos in one command.
+nine=""
+for i in 1 2 3 4 5 6 7 8 9; do nine+="git -C $foreign/r$i push origin x ; "; done
+check 2 "DELIBERATE over-block: more than MAX_PUSH_TARGETS distinct targets is judged in scope" \
+  "$open_home" "$foreign" "${nine}true"
+# Repeats of ONE target are one target: de-duplication keeps an ordinary chain under the cap.
+same=""
+for i in 1 2 3 4 5 6 7 8 9; do same+="git -C $foreign push origin x$i ; "; done
+check 0 "nine pushes to one unguarded repo are one target: still allowed" \
+  "$open_home" "$foreign" "${same}true"
 
 check 2 "push -u is blocked"                   "$open_home" "$guarded" "git push -u origin feature"
+
+# --- opaque command words (2026-09-18: git behind a substitution / expansion) ---
+# Each row below mirrors "push is blocked in the window" above -- same home ($open_home, window
+# ALWAYS open), same cwd ($guarded) -- with the command word rewritten to a shape bash reduces to
+# `git` at run time without the TEXT being literally `git` (scripts/lib/git_command.py's widened
+# `is_git`, 2026-09-18). The first three need no change in THIS file: once the tokenizer records
+# the invocation at all, its subcommand token is the literal word `push`, so the existing
+# `seg[sub_idx] == "push"` comparison already matches -- they pin the widened `is_git` at this
+# guard. The fourth is the one row this task's code change makes GREEN: `git $(true)git origin
+# main` puts the opaque word in the SUBCOMMAND slot, so the subcommand token is `$(true)git`, never
+# literally `push`, and only `gitcmd.subcommand_is_indeterminate` recognises it as a possible push
+# (the option-run-stop fix and the indeterminate-subcommand rule) -- blocked by design, whatever
+# args follow it. The fifth mirrors "echo of the phrase is allowed" above: the same opaque word
+# in ARGUMENT position is not in command position, so no invocation is recorded.
+# shellcheck disable=SC2016  # the literal $(true)/$X must reach the guard UNEXPANDED
+check 2 'opaque command word $(true)git reduces to git (the widened is_git, at this guard)' \
+  "$open_home" "$guarded" '$(true)git push origin main'
+# shellcheck disable=SC2016
+check 2 'opaque command word "$X"git reduces to git (the widened is_git, at this guard)' \
+  "$open_home" "$guarded" '"$X"git push origin main'
+# shellcheck disable=SC2016
+check 2 'opaque command word git$X reduces to git (the widened is_git, at this guard)' \
+  "$open_home" "$guarded" 'git$X push origin main'
+# shellcheck disable=SC2016
+check 2 'indeterminate subcommand ($(true)git behind a literal git) blocks by design, whatever follows it' \
+  "$open_home" "$guarded" 'git $(true)git origin main'
+# shellcheck disable=SC2016
+check 0 'opaque word in ARGUMENT position is not a command: echo $(true)git push is allowed' \
+  "$open_home" "$guarded" 'echo $(true)git push origin main'
 
 echo "--- shim/.py differential: the shim's exec plumbing must not disagree with what it execs into ---"
 check_diff "shim rc == py rc on a MUST-BLOCK push" \
@@ -567,12 +632,12 @@ check 2 "reserved-word cd trade CONTROL: bare push, cwd already inside the guard
 
 # --- unknown global option: the two-primitive split, pinned rather than incidental --------
 # Found by the final whole-branch review: _segment_contains_push (via iter_context_token_streams)
-# and _first_push_target_dir (via iter_git_invocations_detailed) are two DIFFERENT primitives
-# walking the same command (see _first_push_target_dir's own docstring for why neither one alone
+# and _push_target_dirs (via iter_git_invocations_detailed) are two DIFFERENT primitives
+# walking the same command (see _push_target_dirs's own docstring for why neither one alone
 # suffices). An unrecognized global option used to make them DISAGREE: _segment_contains_push's
 # old hand-rolled option-skipper confidently found the push regardless, while
 # iter_git_invocations_detailed correctly refused to guess and recorded the unknown option as the
-# "subcommand" instead of push -- so _first_push_target_dir's loop never matched it and silently
+# "subcommand" instead of push -- so _push_target_dirs's loop never matched it and silently
 # fell back to the payload cwd. On a foreign payload cwd that read as ALLOW for a real push in the
 # guarded repo. Fixed by making _segment_contains_push's own walk raise on the identical unknown
 # option instead of guessing -- both primitives now refuse the same input, and this guard's
