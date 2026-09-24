@@ -206,6 +206,9 @@ left legal.
   DEPENDENCY GRAPH — one grep settles it,** cheaper than the gate you were skipping. Measured: a
   CLAUDE.md prose edit, argued in two consecutive sessions to be unable to reach any suite — one grep
   then found a suite that reads CLAUDE.md and asserts on the very marker region the edit sat beside.
+
+#### You wrote it down and never ran it — prose review cannot tell
+
 - **A command you write into documentation is unverified until you run it.** An un-runnable one reads
   exactly like a working one, so prose review never catches it — only execution does. Seen: a flag
   rejecting the arity it was given (`git check-ignore -q a b` → `fatal: --quiet is only valid with a
@@ -217,6 +220,18 @@ left legal.
   turns, as what unblocked a *compression* pass — where content leaves by design. Run against the
   real job at last, it returned FAIL with 130 words removed for 7 lines saved: an unreadable bag,
   the very hand-accounting it was meant to replace. Named the enabler twice, never once run.
+- **A check that can never PASS is still falsifiable, so asking whether it would fail if the work
+  were wrong clears it — only running it finds the defect.** Not an un-runnable command: this one
+  runs and returns a value its author did not predict, because the expected result was written from
+  a model of the finished tree, and the author is the one reader who cannot see that model's error.
+  Measured: seven such checks passed a review step asking exactly that question, none caught there —
+  a count of 0 whose needle the task's own new text adds; a count omitting occurrences its other
+  edits add; rows expected red that the old code already passes; a gate the untouched tree already
+  fails; an anchor for a line shape the file lacks. Each reached an implementer whose other move was
+  to bend correct work until the number matched. **Rehearse the check on a scratch copy with the
+  edits applied up to its step, and compare.** Its own failure mode: the copy must hold everything
+  the check reads — measured, a clone whose remote was removed had lost the base branch, so a correct
+  `<base>...HEAD` check died *unknown revision*, which reads exactly as an unsatisfiable one.
 
 #### It ran, but not on what you think
 
