@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.110.5 — 2026-09-17
+- docs(CLAUDE.md): admit the inherited-setting hazard and split its group
+
 ## v0.110.4 — 2026-09-16
 - test(audit): add the hermetic-outside subtree exemption campaign
 

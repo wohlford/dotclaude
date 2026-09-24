@@ -424,7 +424,7 @@ left legal.
   Its own failure mode: tense fixes the sentence, never a pointer to a task identifier that
   resolves for nobody later.
 
-#### Right verdict, wrong population or parameters
+#### The run used parameters you never chose
 
 - **A tool that IGNORES an argument it cannot parse answers with its OWN defaults, and the run looks
   normal.** Neither refusal nor crash: the wrong-shaped input is discarded unread and the tool falls
@@ -434,6 +434,19 @@ left legal.
   out loud before anyone questioned it. Note what does not catch this: the probe really did reach the
   subject, so "did it run on the right thing" clears it. Echo back the parameters the tool reports
   using, or check that the verdict MOVES when you deliberately change them.
+- **A setting EXPORTED to fix your own calls is inherited by every child, and a child that
+  DISCOVERS its subjects through that setting measures less while still printing PASS.** Not an
+  ignored argument: nothing was passed to the child at all; it read the environment it was handed.
+  Measured: a literal-pathspec variable exported inside an engine, meant only for its own
+  checkouts, reached the audit it spawned, whose file discovery used pathspec globs — the verdict
+  went from `checks=17/0/0` to `checks=11/0/6`, six checks SKIPPED as "nothing to check", and the
+  engine's allowlist accepted `RESULT: PASS`. The suite's stub audit never ran the tool the variable
+  changes, so it could not see the leak. **Scope the setting to the call** — a flag or a per-call
+  wrapper, never an export — **and make a test child FAIL when it inherits the setting.** Its own
+  failure mode: a wrapper still reaches whatever the wrapped call itself spawns (hooks, filters),
+  so name what it cannot keep the setting away from.
+
+#### Right verdict, wrong population
 - **A check that ENUMERATES at a coarser unit than the property it asserts passes on the first
   satisfying instance.** Measured: a checker requiring every test file that creates a repository to
   disable commit signing reported `0 violations` over a file where one fixture set the flags and a
