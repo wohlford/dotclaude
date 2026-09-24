@@ -239,6 +239,16 @@ left legal.
   edits applied up to its step, and compare.** Its own failure mode: the copy must hold everything
   the check reads — measured, a clone whose remote was removed had lost the base branch, so a correct
   `<base>...HEAD` check died *unknown revision*, which reads exactly as an unsatisfiable one.
+- **A documented RECOVERY describes the failure path nobody exercises, so it is the sentence most
+  likely to be false.** Not an un-runnable command — there is no command, and the prose reads as
+  settled fact. It gets written while the happy path is fresh, from a model of what the failure
+  must look like, and a later reader meets it as instruction at the one moment they can least
+  afford to check it. Measured: a tool's note said a run killed mid-write always FAILs loudly on
+  the re-run, so the operator would be told which file to restore. Two model reviews passed the
+  sentence; probing the half-written shapes then found one that reads as ALREADY APPLIED and
+  PASSES, and one silently re-applied into corrupt output, also PASSING. **Produce the failure the
+  text promises — cut the input, kill the run, delete the file — and write what you observed**;
+  where you cannot produce it, say the behaviour is unverified instead of describing it.
 
 #### It ran, but not on what you think
 

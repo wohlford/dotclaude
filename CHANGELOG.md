@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.111.3 — 2026-09-17
+- docs(CLAUDE.md): admit the documented-recovery hazard
+
 ## v0.111.2 — 2026-09-17
 - docs(CLAUDE.md): point bulk edits at bulk_edit.py
 
