@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.112.1 — 2026-09-18
+- test(plan-rehearse): add the suite and its plan corpus
+
 ## v0.112.0 — 2026-09-18
 - feat(plan-rehearse): add the plan rehearsal runner
 
