@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.112.0 — 2026-09-18
+- feat(plan-rehearse): add the plan rehearsal runner
+
 ## v0.111.3 — 2026-09-17
 - docs(CLAUDE.md): admit the documented-recovery hazard
 
