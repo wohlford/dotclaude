@@ -1864,11 +1864,13 @@ cap**, against the ladder's 17.89 s at the same length. Both tokenizer calls tog
 of that; the rest is the guard's own per-invocation work. Shipped `dev`, whose tokenizer answers
 the identical input in **0.15 s**, takes **172.40 s** on it. So that guard overruns its 60 s
 registration on `dev` exactly as on this branch, at every value of this constant, and no value has
-ever governed it: the binding term is four `subprocess.run` calls per invocation against one root,
-uncached — **8,212 on BOTH sides** of that fixture, because the extra invocations this branch
-finds are `status`, which the guard's known-safe `continue` skips before judging. That is filed as
-its own work (a per-root memo that must include the alias table, plus a deadline owned by the
-guard process), and it is not a reason to move this number.
+ever governed it: the binding term was four `subprocess.run` calls per invocation against one
+root, uncached — **8,212 on BOTH sides** of that fixture, because the extra invocations this
+branch finds are `status`, which the guard's known-safe `continue` skips before judging. As of
+2026-09-23 that cost is closed — `_git`'s per-judgment memo and its `MAX_GIT_SPAWNS` budget
+replaced the uncached per-invocation spawns (each identical query answered once per judgment), and
+the tag sweep that used to cost two spawns per tag is now the two-query `_tags_block` — and it was
+never a reason to move this number, still is not.
 
 What this cap DOES govern is the right-hand column, and the tokenizer's own share: it holds the
 walk to 128 parses however large `2**k` is, which is what keeps the flat fixture's two tokenizer

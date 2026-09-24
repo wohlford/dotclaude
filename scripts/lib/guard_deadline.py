@@ -9,11 +9,15 @@ can say so, which is indistinguishable from the guard allowing the command.
 
 That is not hypothetical here. the shared tokenizer's `MAX_TOTAL_PARSES` docstring (in `scripts/lib/`) records
 the measurement: a FLAT bundle of ambiguous quoted heredocs padded to 65,529 chars — one command,
-under `MAX_COMMAND_LENGTH` — takes **224.89 s** through `publication-push-guard.py` on this branch
-and **172.40 s** on shipped `dev`, against a **60 s** registration. The binding term is the guard's
+under `MAX_COMMAND_LENGTH` — took **224.89 s** through `publication-push-guard.py` on this branch
+and **172.40 s** on shipped `dev`, against a **60 s** registration. The binding term was the guard's
 own per-invocation `subprocess.run` work (8,212 calls on both sides of that fixture), not the parse
-cap, so no value of `MAX_TOTAL_PARSES` has ever governed it, and the same docstring files the
-remedy as "a deadline owned by the guard process". This module is that deadline.
+cap, so no value of `MAX_TOTAL_PARSES` ever governed it, and the same docstring filed the remedy as
+"a deadline owned by the guard process". This module is that deadline. As of 2026-09-23 the
+per-invocation spawn cost itself is also closed — `_git`'s per-judgment memo, its `MAX_GIT_SPAWNS`
+budget, and the two-query tag sweep replaced the uncached calls this measurement describes — but
+this deadline remains the wall-clock backstop for whatever else runs long (a slow config include,
+a slow tokenizer).
 
 ## Why `os._exit`, and not a raise
 
