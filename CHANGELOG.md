@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.111.0 — 2026-09-17
+- feat(bulk_edit): add the bulk-mechanical-edit safety kit
+
 ## v0.110.7 — 2026-09-17
 - docs(CLAUDE.md): admit the unsatisfiable-check hazard, split its group
 
