@@ -2235,12 +2235,38 @@ def main() -> int:
     cwd = data.get("cwd") or os.getcwd()
     if not isinstance(cwd, str):
         cwd = os.getcwd()
-    if not command or not GIT_WORD_RE.search(_dequote(command)):
+    if not command:
+        return 0  # cheap: nothing resembling a git invocation at all
+    dequoted = _dequote(command)
+    # `opaque_only`: no literal `git` word survives de-quoting, but a `$` or backtick is present --
+    # a command word can still be OPAQUE and reduce to `git` at run time (`g$(true)it`, `gi${X}t`,
+    # `"$X"git`): de-quoting merges quote-split obfuscation, but none of these shapes ever lands on
+    # a bounded `git` GIT_WORD_RE can see, because the opaque fragment still sits between the
+    # letters and a word boundary. A LENIENT TEXT pre-gate was measured instead -- accept once `$`
+    # sigils and substitution punctuation are stripped and the letters `git` remain -- and it would
+    # have newly false-blocked 51 of 32,259 real commands, all unparseable and none carrying a git
+    # word at all: this form adds zero of those. So instead: run the REAL tokenizer, but degrade
+    # EVERY exception it raises here -- `AmbiguousCommand` and the internal-error class alike -- to
+    # `return 0`, exactly what today's pre-gate already does for every one of these commands (none
+    # satisfies `GIT_WORD_RE.search` today, so none ever reached `_find_block_reason` at all).
+    # Without this, a guard BUG would newly exit 2 for ~10% of real commands -- every one carrying
+    # a `$` -- that never reached the tokenizer before. What this still leaves open, pre-existing
+    # and dominated by the wholly-dynamic residual: a hidden git word followed by a tail the
+    # tokenizer cannot parse (`g$(true)it <push> origin dev ; echo $'it\'s'`) still fails open, at
+    # every guard.
+    opaque_only = not GIT_WORD_RE.search(dequoted)
+    if opaque_only and "$" not in dequoted and "`" not in dequoted:
         return 0  # cheap: nothing resembling a git invocation at all, even after de-quoting
 
     try:
         reason = _find_block_reason(command, cwd)
     except AmbiguousCommand as exc:
+        if opaque_only:
+            # No literal git word was ever seen, so today's pre-gate would already have returned 0
+            # here without entering the tokenizer at all -- reaching it only because an opaque word
+            # MIGHT be git must not newly block on an ambiguity the pre-gate itself would never
+            # have surfaced. See the `opaque_only` comment above.
+            return 0
         # DESIGNED ambiguity, not a fault. An unbalanced quote or unterminated context is input the
         # module docstring already defines as unjudgeable, and the walk signals it with ValueError.
         # It used to fall through to the handler below, which labels the refusal "a BUG in the
@@ -2258,6 +2284,12 @@ def main() -> int:
         )
         return 2
     except Exception as exc:  # noqa: BLE001 - deliberate: any crash here must fail CLOSED
+        if opaque_only:
+            # Same reasoning as the AmbiguousCommand arm above: no literal git word was ever seen,
+            # so today's pre-gate would already have returned 0 here without ever entering
+            # `_find_block_reason` -- a guard BUG on a command that only MIGHT carry an opaque git
+            # word must not newly exit 2 for the ~10% of real commands that carry a `$`.
+            return 0
         # Record BEFORE printing: the verdict must not depend on the diagnostic succeeding, and the
         # operator needs the path in the same breath as the refusal. `_record_internal_error` is
         # contractually non-raising, so nothing here can convert a block into a crash.

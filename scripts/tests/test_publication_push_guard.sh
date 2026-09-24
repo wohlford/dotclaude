@@ -211,6 +211,24 @@ assert_contains "$fe_err2" 'could not record a diagnostic' \
   'unwritable diagnostic log is reported as unrecorded, not silently claimed'
 rm -rf "$FE_DIR"
 
+# NEW (the publication guard's opaque-only pre-gate, 2026-09-18): an OPAQUE-ONLY command -- no
+# literal git word survives de-quoting, but a `$` is present -- must still fail OPEN (rc 0) under
+# a forced internal error, exactly as today's pre-gate already did for every one of these
+# commands: none satisfies GIT_WORD_RE.search, so none ever reached _find_block_reason before
+# this branch. Without the opaque_only guard in main()'s except arms, reaching the tokenizer only
+# because an opaque word MIGHT be git would newly convert a guard BUG into an exit 2 for ~10% of
+# real commands (every one carrying a `$`) that never reached the tokenizer before. Contrast with
+# FE_CMD above (a command WITH a literal git word), which still fails CLOSED (rc 2) under the
+# identical forced error.
+FE_OPAQUE_CMD='g$(true)it status'
+
+forced_error_guard 'opaque-only case'
+fe_opaque_rc=0
+push_json "$FE_OPAQUE_CMD" "$PWD" \
+  | PUBLICATION_PUSH_GUARD_LOG="$FE_LOG" python3 "$FE_GUARD" >/dev/null 2>&1 || fe_opaque_rc=$?
+assert_eq "$fe_opaque_rc" 0 'opaque-only command under a forced internal error fails OPEN'
+rm -rf "$FE_DIR"
+
 # ================= BLOCKED: adopted repo, dev-spanning plain refspecs =================
 build_repo 1
 push_run "$REPO" "git push origin dev" 2 "blocked: origin dev"

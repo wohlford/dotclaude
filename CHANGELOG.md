@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.114.2 — 2026-09-18
+- fix(publication-push-guard): judge opaque-only commands
+
 ## v0.114.1 — 2026-09-18
 - fix(git_command): recognise git behind a non-literal command word
 

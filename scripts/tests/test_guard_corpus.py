@@ -2417,6 +2417,115 @@ def _build_rows(
             "the first place -- the denied-key scan runs regardless and blocks. Dies ONLY if "
             "the read-matcher reverts to exact-match, which is exactly what pins that fix",
         ),
+        # ---------- the publication guard's opaque-only pre-gate (2026-09-18): the pre-gate reaches
+        # ---------- the tokenizer for an OPAQUE command word -- `main`'s cheap `GIT_WORD_RE` check
+        # ---------- used to return 0 before the tokenizer ever ran for a command word bash reduces
+        # ---------- to `git` at run time but whose TEXT never contains a bounded literal `git`
+        # ---------- (`g$(true)it`, `gi${X}t`, `"$X"git` -- dequoting merges the quotes but the
+        # ---------- opaque fragment still sits between the letters and a word boundary). All nine
+        # ---------- rows below were ALLOWED on the frozen baseline (782039d, which predates both
+        # ---------- the widened `is_git` and this pre-gate change). Only the first three depend on
+        # ---------- the pre-gate fix itself -- with just the widened `is_git` landed and `main`'s
+        # ---------- pre-gate untouched, they were allowed. The rest already reach the tokenizer via
+        # ---------- GIT_WORD_RE matching a literal `git` token somewhere else in the command; each
+        # ---------- `why` below says which case it is.
+        Row(
+            "pregate_opaque_g_dollartrue_it_blocks",
+            "g$(true)it " + _VERB + " origin dev",
+            MUST_BLOCK,
+            "no literal 'git' word survives de-quoting (the opaque fragment sits between the "
+            "'g' and the 'it'), so before the opaque-only pre-gate landed the pre-gate returned "
+            "0 and never reached the tokenizer at all -- this row pins the pre-gate fix itself",
+        ),
+        Row(
+            "pregate_opaque_gi_dollarbrace_x_t_blocks",
+            "gi${X}t " + _VERB + " origin dev",
+            MUST_BLOCK,
+            "same mechanism as the row above: no bounded literal 'git' substring, so before the "
+            "opaque-only pre-gate landed the pre-gate never reached the tokenizer",
+        ),
+        Row(
+            "pregate_opaque_dollarx_quoted_prefix_git_blocks",
+            '"$X"git ' + _VERB + " origin dev",
+            MUST_BLOCK,
+            "de-quoting merges this into '$Xgit', whose trailing 'git' is preceded by the word "
+            "character 'X' rather than a boundary, so GIT_WORD_RE still does not match and before "
+            "the opaque-only pre-gate landed the pre-gate never reached the tokenizer",
+        ),
+        Row(
+            "pregate_opaque_dollartrue_git_prefix_blocks",
+            "$(true)git " + _VERB + " origin dev",
+            MUST_BLOCK,
+            "blocked by the widened `is_git` itself: the trailing 'git' is preceded by ')', a "
+            "boundary character, so GIT_WORD_RE already matched and the pre-gate change is a "
+            "no-op for this row -- kept as a regression guard against the opaque_only flag ever "
+            "mis-firing on a command the old pre-gate already let through",
+        ),
+        Row(
+            "pregate_opaque_git_dollarx_suffix_blocks",
+            "git$X " + _VERB + " origin dev",
+            MUST_BLOCK,
+            "blocked by the widened `is_git` itself: the leading 'git' sits at the very start of "
+            "the command, a boundary either side, so GIT_WORD_RE already matched regardless of "
+            "the pre-gate change",
+        ),
+        Row(
+            "pregate_opaque_default_expansion_git_blocks",
+            "${X:-git} " + _VERB + " origin dev",
+            MUST_BLOCK,
+            "blocked by the widened `is_git` itself: 'git' inside the braces is bounded by '-' "
+            "and '}', both non-word characters, so GIT_WORD_RE already matched regardless of the "
+            "pre-gate change",
+        ),
+        Row(
+            "pregate_opaque_hookspath_config_blocks",
+            "$(true)git config core.hooksPath /tmp/x",
+            MUST_BLOCK,
+            "blocked by the widened `is_git` itself (GIT_WORD_RE matches, as in the plain "
+            "dollartrue-prefix row above); the one row in this set naming the config-injection "
+            "arm rather than a refspec, so the pre-gate widening is proven not to matter only to "
+            "the push path",
+        ),
+        Row(
+            "pregate_opaque_alias_git_equals_verb_blocks",
+            f"git -c alias.git={_VERB} git origin dev",
+            MUST_BLOCK,
+            "blocked by the widened `is_git` itself: the leading literal 'git' matches "
+            "GIT_WORD_RE trivially, so this row is unaffected by the pre-gate change -- the "
+            "block comes from DENIED_C_KEYS's 'alias.' entry seeing the injected alias, since "
+            "the widened option-run-stop records the invocation at all instead of dropping it",
+        ),
+        Row(
+            "pregate_literal_git_then_opaque_subcommand_preserve",
+            "git $(true)git origin dev",
+            MUST_BLOCK,
+            "a preserve row whose MECHANISM moved, not its verdict: the leading literal 'git' "
+            "already satisfies GIT_WORD_RE, so this row is unaffected by the pre-gate change "
+            "either. On the frozen baseline the opaque subcommand slot refused via "
+            "LITERAL_SUBCOMMAND_RE inside _resolve_alias_chain (the pre-widening walk never "
+            "recognised the placeholder-glued word as git-like and passed its raw text through "
+            "as an ordinary, unresolvable subcommand); the widened `is_git`'s option-run-stop "
+            "branch instead records the git-like word as the subcommand directly, rather than "
+            "falling through to that fallback -- same refusal, different code path",
+        ),
+        # ---------- MUST_ALLOW guards for the publication guard's opaque-only pre-gate fail-open --
+        Row(
+            "pregate_opaque_dollartrue_legit_allowed",
+            "echo $(true) legit",
+            MUST_ALLOW,
+            "opaque_only (a '$' with no literal git word) reaches the tokenizer, which correctly "
+            "finds no git invocation here at all: 'echo' is the command word and 'legit' is "
+            "static text in argument position, not opaque, so is_git never matches it",
+        ),
+        Row(
+            "pregate_unparseable_dollar_no_gitword_allowed",
+            'echo "$X',
+            MUST_ALLOW,
+            "an unparseable command (unbalanced quote) carrying a '$' and no literal git word: "
+            "opaque_only is True, the tokenizer raises on the unbalanced quote, and the new "
+            "AmbiguousCommand arm degrades that to rc 0 rather than rc 2 -- exactly what today's "
+            "pre-gate already did for this command, since it never satisfied GIT_WORD_RE either",
+        ),
     ]
 
 
