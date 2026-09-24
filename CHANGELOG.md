@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.113.1 — 2026-09-18
+- docs(CLAUDE.md): admit two hazards, split the verified-in-mind group
+
 ## v0.113.0 — 2026-09-18
 - feat(feature): document plan-rehearse in step 5
 

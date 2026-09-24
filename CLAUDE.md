@@ -763,6 +763,20 @@ left legal.
   reasoning about what it does when it fires.** What nearly hid it: the plan then asserted the
   block, so a compliant implementer would have written a passing test around the false premise.
 
+- **A mutation campaign measures REDUNDANCY, not OMISSION — it cannot report a claim nobody wrote
+  a row for.** A green campaign says your existing assertions overlap; it never says they are
+  sufficient, and a DUPLICATE mutant inflates the caught count while measuring nothing. Measured: a
+  row added to cover a just-fixed defect was labelled *relocates the call*, but the harness takes a
+  single `(old, new)` replacement, so it DELETED the call — semantically identical to a row already
+  present. The campaign reported `caught=82 survived=0`, truthfully, with one of the 82 a
+  re-spelling of another, while the defect it was added to cover had no coverage at all and the
+  board read perfect. Across nine reviews of that branch, 20 campaign runs found NONE of the seven
+  BLOCKERs. **Apply each new mutant and compare KILL SETS** — the duplicate killed 2 rows, a genuine
+  relocation exactly 1. Its own failure mode: a mutant that kills EVERY row killed collection rather
+  than a check, and scores CAUGHT for free.
+
+#### A RECORD or a SHAPE stood in for the thing itself
+
 - **An impact check driven by RECALL enumerates the subset you remember, and answers truthfully
   about it — so a reassuring blast radius is merely the one you already believed.** Measured:
   *what consumes this working tree* was answered from a memory file recording `~/.claude/skills`
@@ -870,6 +884,17 @@ left legal.
   added case to re-read a wrapper against. **Check a universal against the artifact it quantifies
   over** — count the cases it forbids and require zero. Its own failure mode: that count answers
   only for the file you ran it on; a claim quantified over a tree needs the tree.
+
+- **A justification you write for ONE line usually covers its NEIGHBOURS, and moving only the line
+  you were thinking about leaves the rest behind.** Not the removed-words case: nothing is deleted,
+  so that grep comes back clean, and nothing is split, so there is no wrapper to re-read. You write
+  a correct reason, act on it once, and the siblings it equally governs stay put — inside the diff's
+  own context lines, reading as deliberate. Measured: a call was moved above a function's early
+  return because a failure there leaves a directory the operator then re-runs inside; the two
+  statements directly below it shared that reason word for word and did not move, so the residual
+  directory kept a live remote on the operator's real repository while a docstring three lines up
+  said it had none. **Ask which OTHER statements the reason you just wrote covers** — move the
+  block, not the line.
 
 #### The check itself writes — what it leaves behind is the hazard
 
