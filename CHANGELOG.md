@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.115.1 — 2026-09-23
+- docs(CLAUDE.md): add two measured verification hazards
+
 ## v0.115.0 — 2026-09-23
 - feat(explain-git-command): name the reading behind each invocation
 

@@ -742,6 +742,19 @@ left legal.
   predicate also rejects. **Derive both readings from ONE predicate**; their disagreement is the
   only cheap detector, so two spellings of one intent is itself the defect.
 
+- **A bound governs only the work that passes THROUGH it, so tuning its number answers a
+  question about the wrong cost.** Not a mis-set value — every value is wrong when the
+  expensive part never consults the bound. Measured twice on one change, in both directions a
+  bound can miss. BEFORE it: a budget spent per iteration could not touch the `2**k` list built
+  before the loop, so a 444-BYTE input cost 38s under a cap of 128. BESIDE it: the same cap was
+  then calibrated against a hook's timeout while that hook's OWN per-invocation subprocesses
+  were the binding term — a plain 13,889-byte command with none of the construct under study
+  took 117s against a 60s registration, on the SHIPPED code as much as on the branch, so no cap
+  value had ever governed it. Measure the whole path END TO END, in the process that owns the
+  limit, before believing any headroom figure. Its own failure mode: one end-to-end fixture is
+  what produced the false figure here — the ladder the cap was calibrated on read 3.4x UNDER
+  that registration, while a FLAT command of the same length ran 224.89s, 3.7x OVER it.
+
 #### You verified what you had in mind — the gap is what you did not
 
 - **A suite you wrote for your own fix confirms what you thought of — not that the fix is safe.**
@@ -1008,6 +1021,16 @@ left legal.
   could read, then re-justified by citing a precedence rule that did not say what was claimed; both
   read as authoritative and neither survived a reader who actually checked. Ground a claim in what
   its audience can verify, or drop the claim.
+
+- **A denominator counting the SUBJECT's work says nothing about the CHECKER's, so a healthy
+  one licenses a check that read nothing.** The companion to the zero-denominator rule above,
+  and not covered by it: this denominator is large and true. Measured: a differential oracle's
+  only floor was `git_call_count >= 1000` — invocations the SHELL ran — so a build whose
+  tokenizer raised on every script would still have scored `hidden_valid=0` and passed clean.
+  It gated a whole redesign through three reviews and a spike before anyone asked what the
+  number counted. Assert a floor on the READS the check itself completed — here, runs where
+  both sides produced a comparable answer — and name the two parties separately, since one
+  number cannot be a floor for both.
 
 ### Package Management
 
