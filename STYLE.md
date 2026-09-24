@@ -171,6 +171,11 @@ the import form instead of the command-line form.
 - CLI tools: program output to stdout, diagnostics to stderr (`print(..., file=sys.stderr)` is fine); use `logging` in libraries and long-running services
 - Catch specific exceptions, never bare `except:`
 - Never use mutable default arguments
+- **Split git output on `"\n"` (or `-z` and `"\0"`), never `str.splitlines()` or bare `str.strip()`** —
+  both are Unicode-aware: `splitlines()` also splits on U+2028/U+0085 and `strip()` removes U+00A0,
+  all legal in a ref name, so a guard misreads one ref as another. Measured 2026-09-23: three
+  fail-opens in `publication-push-guard.py`, each passing every suite until a review built a ref
+  name carrying one of those characters
 
 ### Naming
 

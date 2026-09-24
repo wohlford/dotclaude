@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.115.6 — 2026-09-24
+- docs(STYLE.md): forbid splitlines and strip on git output
+
 ## v0.115.5 — 2026-09-24
 - docs(guards): record the spawn cost as closed by the per-judgment memo
 
