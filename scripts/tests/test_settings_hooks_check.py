@@ -446,3 +446,119 @@ def test_unimportable_lib_is_an_error_not_a_verdict(tmp_path, sandbox):
     )
     assert proc.returncode == 2, proc.stdout + proc.stderr
     assert verdict(proc).startswith("RESULT: ERROR rc=2")
+
+
+# --------------------------------------------------------------------------------------------
+# A guard's own deadline must sit BELOW the timeout that kills it.
+#
+# The three PreToolUse gates arm a deadline (`scripts/lib/guard_deadline.py`) because the harness
+# kills a hook at its registered `timeout`, discards its output and tells nobody — so a gate killed
+# there is silent and the guarded command RUNS. A deadline set equal to, or above, that timeout
+# loses the race every time and is decoration. The two numbers live in two files nothing else
+# relates, which is why the checker relates them.
+# --------------------------------------------------------------------------------------------
+
+sys.path.insert(0, str(TOOL.parent / "lib"))
+import guard_deadline  # noqa: E402
+
+REPO = TOOL.parent.parent
+GUARD = guard_deadline.FARM_PREFIX + "publication-push-guard.py"
+GUARD_DEADLINE = guard_deadline.DEADLINES["publication-push-guard.py"].seconds
+GUARD_TRIPLE = ("PreToolUse", "Bash", GUARD)
+
+
+def test_guard_deadline_below_its_timeout_passes(sandbox):
+    """The shipped relationship: 50s under a 60s registration."""
+    doc = with_timeout(hooks(GUARD_TRIPLE), GUARD, GUARD_DEADLINE + 10)
+    commit_settings(sandbox, doc)
+    proc = run(sandbox)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "RESULT: PASS" in verdict(proc)
+    assert "deadlines=1 deadlines_bad=0" in verdict(proc)
+
+
+def test_guard_deadline_EQUAL_to_its_timeout_fails(sandbox):
+    """Equal is not below. The harness and the deadline fire together and the harness wins."""
+    doc = with_timeout(hooks(GUARD_TRIPLE), GUARD, GUARD_DEADLINE)
+    commit_settings(sandbox, doc)
+    proc = run(sandbox)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "RESULT: FAIL" in verdict(proc)
+    assert "deadlines=1 deadlines_bad=1" in verdict(proc)
+    assert "must be strictly lower" in proc.stdout
+    assert "publication-push-guard.py" in proc.stdout
+
+
+def test_guard_deadline_above_its_timeout_fails(sandbox):
+    doc = with_timeout(hooks(GUARD_TRIPLE), GUARD, 1)
+    commit_settings(sandbox, doc)
+    proc = run(sandbox)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "deadlines_bad=1" in verdict(proc)
+
+
+def test_the_lower_of_the_two_documents_binds(sandbox):
+    """A raised RUNTIME timeout is a machine-local choice and never a failure on its own — but the
+    committed side is what a promote installs, so the LOWER of the two is the kill to beat.
+
+    Chosen so the FAIL has exactly one cause: `raised` is reported and never failed, and `lowered`
+    stays 0, so `deadlines_bad=1` is the only thing that can have produced rc=1 here.
+    """
+    commit_settings(sandbox, with_timeout(hooks(GUARD_TRIPLE), GUARD, GUARD_DEADLINE))
+    set_runtime(sandbox, with_timeout(hooks(GUARD_TRIPLE), GUARD, GUARD_DEADLINE + 600))
+    proc = run(sandbox)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "lowered=0" in verdict(proc)
+    assert "missing=0" in verdict(proc)
+    assert "deadlines_bad=1" in verdict(proc)
+
+
+def test_a_registration_naming_no_deadline_bearing_guard_is_not_counted(sandbox):
+    """`deadlines=0` is the honest reading for a scope registering none of the three — which is
+    also why the denominator cannot come from here. The floor is the next test."""
+    commit_settings(sandbox, hooks(A, B))
+    proc = run(sandbox)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "deadlines=0 deadlines_bad=0" in verdict(proc)
+
+
+def test_this_repo_registers_every_deadline_bearing_guard():
+    """THE FLOOR. Discovery cannot detect absence: a guard dropped from `settings.json`, or a
+    registration whose path stops matching `FARM_PREFIX`, makes the checker find one fewer and
+    report success. Named members whose absence must alarm, asserted against the real repo.
+
+    Non-empty by construction too — a `DEADLINES` emptied to `{}` would satisfy every per-row
+    assertion above while measuring nothing.
+    """
+    assert guard_deadline.DEADLINES, (
+        "the deadline table is empty — nothing is being checked"
+    )
+    proc = subprocess.run(
+        [sys.executable, str(TOOL), "--scope", str(REPO)],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "deadlines=%d deadlines_bad=0" % len(guard_deadline.DEADLINES) in verdict(
+        proc
+    )
+
+
+def test_a_lowered_RUNTIME_timeout_is_also_measured_against_the_deadline(sandbox):
+    """The mirror of the test above, and the one the committed side alone cannot see.
+
+    The RUNTIME file is what the harness actually reads, so a machine that lowered a timeout under
+    the guard's deadline has a decorative deadline even though the commit is fine. Written after a
+    mutation SURVIVED: `_deadline_violations(committed_t, runtime_t)` narrowed to `(committed_t)`
+    changed no row, because every other deadline row put the binding number on the committed side.
+    `lowered` fires here too — correctly, it is a second true finding — so this row asserts the
+    deadline counter by name rather than leaning on rc.
+    """
+    commit_settings(
+        sandbox, with_timeout(hooks(GUARD_TRIPLE), GUARD, GUARD_DEADLINE + 600)
+    )
+    set_runtime(sandbox, with_timeout(hooks(GUARD_TRIPLE), GUARD, GUARD_DEADLINE))
+    proc = run(sandbox)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "deadlines=1 deadlines_bad=1" in verdict(proc)
+    assert "lowered=1" in verdict(proc)

@@ -71,8 +71,16 @@ MUTATIONS = [
     ),
     mutate.Mutation(
         "a lowered timeout stops being a failure — caught by the lowered and absent-default rows",
+        '    if lowered or deadline_bad:\n        status, rc = ("FAIL", 1)',
+        '    if deadline_bad:\n        status, rc = ("FAIL", 1)',
+    ),
+    mutate.Mutation(
+        # The guard-deadline half of the same line, mutated separately so the two are not one
+        # row: dropping `deadline_bad` leaves `lowered` intact, so a campaign that only mutated
+        # the whole condition would score this as covered by the lowered rows above.
+        "a guard deadline that does not clear its timeout stops being a failure",
+        '    if lowered or deadline_bad:\n        status, rc = ("FAIL", 1)',
         '    if lowered:\n        status, rc = ("FAIL", 1)',
-        '    if False:\n        status, rc = ("FAIL", 1)',
     ),
     mutate.Mutation(
         "the timeout comparison flips direction — caught by the lowered and raised rows",

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.114.7 — 2026-09-23
+- fix(settings-hooks-check): assert each guard's deadline fits
+
 ## v0.114.6 — 2026-09-23
 - fix(guards): read the lost-reading marker and bound each guard
 

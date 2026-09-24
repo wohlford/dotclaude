@@ -43,10 +43,31 @@ every triple present in both files the EFFECTIVE timeout is compared — absent 
 default, and a triple registered more than once counts its minimum, the earliest kill. Lower is a
 FAIL; higher is reported, never failed, by the same one-directional rule as extra registrations.
 
+## A guard's own deadline must sit BELOW the timeout that kills it
+
+Three PreToolUse gates (`publication-push-guard.py`, `push-guard.py`, `git-timing-guard.py`) arm a
+deadline of their own — `scripts/lib/guard_deadline.py` — precisely because the harness kills a
+hook at its registered `timeout` without telling anyone, so a gate killed there is silent and the
+guarded command RUNS. That only helps while the deadline is STRICTLY LOWER than the timeout: set
+equal, or above, the harness still wins the race and the deadline is decoration.
+
+The two numbers live in two files that nothing otherwise relates, so this check relates them. Both
+sides are read from source — the deadline from `guard_deadline.DEADLINES`, the timeout from the
+same `settings.json` walk as everything else above — never from a hand-copied table. A guard
+registered in both documents is judged against the LOWER of the two effective timeouts, because
+that is the earliest kill it must beat.
+
+Registrations naming no such guard are not counted, so a scope that registers none reports
+`deadlines=0` — true, and no evidence of anything. The floor that makes the non-zero case
+meaningful lives in the suite (`test_this_repo_registers_every_deadline_bearing_guard`), which
+runs this tool against THIS repo and requires every member of `guard_deadline.DEADLINES` to be
+found.
+
 ## Statuses are an allowlist
 
-`PASS` (nothing missing and nothing lowered), `FAIL` (at least one committed registration absent, or registered with a
-lower timeout), `ERROR` (the check could not be made at all — unreadable or malformed input, or a
+`PASS` (nothing missing, nothing lowered, and every guard's deadline below its timeout), `FAIL` (at
+least one committed registration absent, or registered with a
+lower timeout, or a guard whose deadline does not clear the timeout that kills it), `ERROR` (the check could not be made at all — unreadable or malformed input, or a
 committed file declaring zero registrations). ERROR is not FAIL: it means no verdict was reached
 about the runtime file.
 
@@ -73,12 +94,41 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 try:
+    import guard_deadline
     import settings_hooks
 except ImportError as exc:  # reported as ERROR by main(): no walker, no verdict
+    guard_deadline = None
     settings_hooks = None
     _IMPORT_ERROR = exc
 
 SETTINGS = "settings.json"
+
+
+def _deadline_violations(*tables):
+    """Every registration naming a guard that arms its own deadline, and whether it clears it.
+
+    Returns `(checked, violations)`. `checked` is one `(triple, basename, deadline, timeout)` per
+    DISTINCT registration found across the documents passed, with `timeout` the LOWEST effective
+    timeout that registration carries in any of them — the earliest kill the deadline must beat.
+    `violations` is the subset where `deadline < timeout` does NOT hold.
+
+    Derived on both sides: the basename comes from `settings_hooks.hook_basename` over the same
+    farm prefix the table's keys are spelled in, and the deadline from `guard_deadline.DEADLINES`.
+    Nothing here restates either number.
+    """
+    lowest = {}
+    for table in tables:
+        for triple, seconds in table.items():
+            base = settings_hooks.hook_basename(triple[2], guard_deadline.FARM_PREFIX)
+            if base is None or base not in guard_deadline.DEADLINES:
+                continue
+            key = (triple, base)
+            lowest[key] = min(seconds, lowest.get(key, seconds))
+    checked = [
+        (triple, base, guard_deadline.DEADLINES[base].seconds, timeout)
+        for (triple, base), timeout in sorted(lowest.items())
+    ]
+    return checked, [row for row in checked if not row[2] < row[3]]
 
 
 def _registrations(doc, origin):
@@ -134,9 +184,9 @@ def main(argv=None):
     scope = Path(opts.scope)
     runtime_path = scope / SETTINGS
 
-    if settings_hooks is None:
+    if settings_hooks is None or guard_deadline is None:
         sys.stdout.write(
-            "cannot import settings_hooks from %s — %s\n"
+            "cannot import settings_hooks / guard_deadline from %s — %s\n"
             % (Path(__file__).resolve().parent / "lib", _IMPORT_ERROR)
         )
         sys.stdout.write("RESULT: ERROR rc=2\n")
@@ -166,6 +216,7 @@ def main(argv=None):
         sys.stdout.write("RESULT: ERROR rc=2\n")
         return 2
 
+    deadline_checked, deadline_bad = _deadline_violations(committed_t, runtime_t)
     missing = sorted(committed - runtime)
     extra = sorted(runtime - committed)
     lowered = []
@@ -223,11 +274,27 @@ def main(argv=None):
             % runtime_path
         )
 
+    if deadline_bad:
+        sys.stdout.write(
+            "\nGUARD DEADLINE DOES NOT CLEAR ITS TIMEOUT — the harness kills these before their own\n"
+            "deadline can fire, so each deadline is decoration and the gate is silently skippable:\n"
+        )
+        for triple, base, deadline, timeout in deadline_bad:
+            sys.stdout.write(
+                "  - %s: %s arms %gs against a %gs timeout (must be strictly lower)\n"
+                % (_fmt(triple), base, deadline, timeout)
+            )
+        sys.stdout.write(
+            "\nRaise the timeout in settings.json, or lower the guard's entry in\n"
+            "scripts/lib/guard_deadline.py, so the guard stops itself first.\n"
+        )
+
     status, rc = ("FAIL", 1) if missing else ("PASS", 0)
-    if lowered:
+    if lowered or deadline_bad:
         status, rc = ("FAIL", 1)
     sys.stdout.write(
-        "RESULT: %s rc=%d missing=%d lowered=%d extra=%d committed=%d runtime=%d\n"
+        "RESULT: %s rc=%d missing=%d lowered=%d extra=%d committed=%d runtime=%d "
+        "deadlines=%d deadlines_bad=%d\n"
         % (
             status,
             rc,
@@ -236,6 +303,8 @@ def main(argv=None):
             len(extra),
             len(committed),
             len(runtime),
+            len(deadline_checked),
+            len(deadline_bad),
         )
     )
     return rc
