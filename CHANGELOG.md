@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.115.9 — 2026-09-24
+- fix(propagate): describe dropping folds that jump a shared path
+
 ## v0.115.8 — 2026-09-24
 - test(publish-fold-plan): add the jumped-collision mutation campaign
 

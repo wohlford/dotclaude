@@ -607,8 +607,13 @@ session, which is why the tooling below is in the repo.
    **Get the first draft of that mechanically**, then review it:
 
    ```bash
-   ./scripts/publish-fold-plan.py            # still on dev here, so the repo's own copy is fine
+   ./scripts/publish-fold-plan.py > <dir outside the repo>/plan.txt   # repo's own copy: still on dev
    ```
+
+   Save it OUTSIDE the repo — `publish-rehearse.py` below and step 3's `publish-drive.py` both read
+   it as `--plan <file>`, and an untracked copy inside the repo would fail step 3's clean-tree
+   check. The verdict is then the file's LAST line (`tail -n1`), not your screen; the exit status
+   carries it too (0 for PASS).
 
    It classifies every commit in `watermark..dev` by the lines the commit **removes** — removes
    nothing ⇒ its own brick (a `+N/-0` short-circuit needing no `merge-base` call at all, so it runs
@@ -616,14 +621,22 @@ session, which is why the tooling below is in the repo.
    only lines added in-range ⇒ folds into the latest commit that added them. It prints the evidence
    for each call and a proposed `publish-brick.sh` invocation per brick, versions included.
 
-   **It also proves the plan CONVERGES before offering it**, which is not the same question as
-   classifying each commit — a brick sits at its FIRST member's position but materialises at its
-   LAST, so a fold moves content forward while leaving position early, and a later brick sharing
-   one of its paths re-materialises that path at an EARLIER state. Measured: every one of 27
-   per-commit verdicts was right while the plan they composed into would have published a file 10
-   lines short of the tip. A fold that a later brick would overwrite is now **dropped** — never
-   reordered, which is one more composition claim nothing has checked — and the run ends
-   `converges=yes` or `RESULT: FAIL`. Read `dropped=<n>`: those commits stand alone deliberately.
+   **It also proves the plan CONVERGES before its verdict can read PASS**, which is not the same
+   question as classifying each commit — a brick sits at its FIRST member's position but
+   materialises the UNION of its members' paths at its LAST, so any commit strictly between first
+   and last is already baked into that endpoint's tree. When such a jumped commit changes one of
+   the unit's paths, the brick publishes that change early under its own subject: measured, once
+   as a file 10 lines short of the tip (the jumped commit's own brick then re-wrote the path at an
+   earlier state), and once as an alias fix shipped inside `fix(guards): …` with an IDENTICAL final tree,
+   which no convergence check can see. So a fold whose unit **jumps over** a commit changing one
+   of its paths is **dropped** — never reordered, which is one more composition claim nothing has
+   checked. Read `dropped=<n>`: those commits stand alone deliberately. The run ends
+   `converges=yes` or `RESULT: FAIL`; dropping those folds already guarantees convergence for a
+   linear range, so a FAIL means the **range itself** cannot converge as ordered (a merge, or any
+   other non-linear history) — never something this step silently repairs. A surviving fold can
+   still jump over a commit sharing **no** path with it (docs landing one brick before the tool
+   they document); the run lists each such fold and what it jumps over, as a question for you,
+   not something it drops.
 
    Three things it deliberately does **not** do. It never resolves an ambiguity: where the evidence
    does not settle a commit it reports `UNDECIDED` and leaves it standing alone, because a wrong
@@ -633,8 +646,9 @@ session, which is why the tooling below is in the repo.
    setting its exec bit — so merging two proposed bricks for that reason is your call, not its.
    And convergence constrains only the **final** tree, so a surviving fold can still leave an
    intermediate brick that fails its own `/audit` — that failure is loud and halts step 3, unlike
-   the silent one the convergence check closes. The plan is a proposal; the boundaries remain
-   judgment.
+   the silent one the jumped-fold rule closes. `scripts/publish-rehearse.py` predicts that loud
+   failure before step 3 starts — run it on the saved plan (usage in its header); its PASS is a
+   prediction, never a clearance. The plan is a proposal; the boundaries remain judgment.
 
 3. **Apply, prove and tag each brick onto `main`'s tip** — check out `main`, then run the engine
    once per brick, in the order the plan gives:
@@ -654,7 +668,8 @@ session, which is why the tooling below is in the repo.
    where it demonstrably earns its keep: the PLAN, not the loop. Measured on the 25-brick publish —
    the human half of the loop caught nothing (all 25 bricks passed their own audits), while the one
    threatening defect was invisible per-brick and detectable only at convergence, which step 2's
-   planner now proves before offering a plan. Meanwhile the loop was hand-rolled and discarded
+   planner now proves before its verdict can read PASS — the driver never reads that verdict, so
+   hand it only a plan whose run ended `RESULT: PASS`. Meanwhile the loop was hand-rolled and discarded
    three times, each re-derivation dropping a different safety property.
 
    ```bash
