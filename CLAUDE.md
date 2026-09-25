@@ -503,6 +503,14 @@ left legal.
 
 #### Right verdict, wrong population
 - **A check that ENUMERATES at a coarser unit than the property it asserts passes on the first
+- **A check that shells out to a tool reads the SUBJECT's configuration of that tool, so the
+  thing under test decides what the check can see.** Not an argument you passed or an environment
+  you exported: the subject repo's own config file answers. Measured: a drift stamp hashing `git
+  diff` + `git status --porcelain` reported `subject=stable` over a run that left four new files,
+  because the stamped repo set `status.showUntrackedFiles=no`; and `submodule.<name>.ignore=dirty`
+  hid tracked edits even with `--ignore-submodules=none` passed, since that flag does not reach a
+  NESTED submodule. **Pass explicit flags for every setting the subject can hold** — and each fix
+  exposed the next layer: a lossy `textconv` driver still hides edits after all of those.
   satisfying instance.** Measured: a checker requiring every test file that creates a repository to
   disable commit signing reported `0 violations` over a file where one fixture set the flags and a
   newly added one did not — the property is per-REPOSITORY, the enumeration per-FILE, so one

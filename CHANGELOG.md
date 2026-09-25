@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.117.1 — 2026-09-25
+- docs(CLAUDE.md): add the subject-owned tool configuration hazard
+
 ## v0.117.0 — 2026-09-25
 - feat(flake-sweep): measure a check's determinism across N runs
 
