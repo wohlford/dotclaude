@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.117.2 — 2026-09-25
+- docs(CLAUDE.md): point flaky-check measurement at flake-sweep.sh
+
 ## v0.117.1 — 2026-09-25
 - docs(CLAUDE.md): add the subject-owned tool configuration hazard
 

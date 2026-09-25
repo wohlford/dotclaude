@@ -99,6 +99,9 @@ the RED→GREEN rule below sends you to do — use `~/.claude/scripts/lib/mutate
 the `(label, old, new)` list. Ten were hand-rolled and discarded before it existed, each
 re-derivation dropping a different safety property; worst was the unmutated BASELINE, absent from 7
 of 8 — without it an already-red suite scores every mutation CAUGHT and the sweep reads flawless.
+Before re-running a check by hand to learn whether it is flaky, use
+`~/.claude/scripts/flake-sweep.sh -n <N> -- <command>`: it reports each row's RATE over an
+unchanged tree and FAILs on any variance — its header lists what its tree stamp cannot see.
 Before hand-writing a script that applies OLD→NEW edits across files, use
 `~/.claude/scripts/lib/bulk_edit.py`, supplying only the `Edit` list: it judges every file in
 memory before writing any. Four such scripts were hand-written in one session
@@ -500,9 +503,6 @@ left legal.
   wrapper, never an export — **and make a test child FAIL when it inherits the setting.** Its own
   failure mode: a wrapper still reaches whatever the wrapped call itself spawns (hooks, filters),
   so name what it cannot keep the setting away from.
-
-#### Right verdict, wrong population
-- **A check that ENUMERATES at a coarser unit than the property it asserts passes on the first
 - **A check that shells out to a tool reads the SUBJECT's configuration of that tool, so the
   thing under test decides what the check can see.** Not an argument you passed or an environment
   you exported: the subject repo's own config file answers. Measured: a drift stamp hashing `git
@@ -511,6 +511,9 @@ left legal.
   hid tracked edits even with `--ignore-submodules=none` passed, since that flag does not reach a
   NESTED submodule. **Pass explicit flags for every setting the subject can hold** — and each fix
   exposed the next layer: a lossy `textconv` driver still hides edits after all of those.
+
+#### Right verdict, wrong population
+- **A check that ENUMERATES at a coarser unit than the property it asserts passes on the first
   satisfying instance.** Measured: a checker requiring every test file that creates a repository to
   disable commit signing reported `0 violations` over a file where one fixture set the flags and a
   newly added one did not — the property is per-REPOSITORY, the enumeration per-FILE, so one
