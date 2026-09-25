@@ -23,6 +23,7 @@ for how the index below stays in sync.
 | `exec-bit-guard.sh`              | PreToolUse hook — block `git commit` when it would record a new shebang file without the exec bit (or a 755→644 downgrade) |
 | `explain-git-command.py`         | Show WHICH byte broke `scripts/lib/git_command.py`'s parse, or what it found if it didn't                                  |
 | `fixture-signing-check.py`       | Flag test fixtures whose git repos can inherit the operator's global signing config                                        |
+| `flake-sweep.sh`                 | Run a command N times against a verifiably unchanged tree and report each row's pass/fail/skip rate.                       |
 | `git-timing-guard.py`            | PreToolUse hook — block PUBLISHING outside a configured time window                                                        |
 | `git-timing-guard.sh`            | TRANSITIONAL shim — exec's the real hook, scripts/git-timing-guard.py                                                      |
 | `guard-secrets-test.sh`          | PostToolUse hook — run the guard-secrets test suite when the guard changes                                                 |
