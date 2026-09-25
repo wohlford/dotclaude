@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.116.0 — 2026-09-25
+- feat(run-long): add a --stamp mode with a config-proof tree stamp
+
 ## v0.115.9 — 2026-09-24
 - fix(propagate): describe dropping folds that jump a shared path
 

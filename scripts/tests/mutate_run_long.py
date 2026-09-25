@@ -141,10 +141,79 @@ MUTATIONS = [
     # --- the subject stamp: which TREE did this verdict grade? --------------------------------
     mutate.Mutation(
         "the stamp drops uncommitted work, so every dirty-tree edit reads as unchanged",
-        '    git -C "$root" rev-parse HEAD\n'
-        '    git -C "$root" diff HEAD --no-ext-diff\n'
-        '    git -C "$root" status --porcelain',
-        '    git -C "$root" rev-parse HEAD',
+        # RE-ANCHORED (flake-sweep fix wave 2): each git command's output is now captured into
+        # its own variable with its rc checked, and only then hashed; dropping the diff and
+        # status captures from the hashed text is the same property on the new shape.
+        '    "$head" "$diff" "$status" "$subs" | "$hasher"',
+        '    "$head" "" "" "$subs" | "$hasher"',
+    ),
+    # --- fix wave 2: one row per stamp flag and per stamp mechanism -------------------------
+    mutate.Mutation(
+        "the top-level diff drops --ignore-submodules=none, so a commit inside an ignore=all "
+        "submodule no longer moves the stamp (rS25)",
+        'diff="$(git -C "$root" diff "$base" --no-ext-diff --ignore-submodules=none 2> /dev/null)"',
+        'diff="$(git -C "$root" diff "$base" --no-ext-diff 2> /dev/null)"',
+    ),
+    mutate.Mutation(
+        "the top-level status drops --untracked-files=all, so showUntrackedFiles=no and a "
+        "collapsed `?? dir/` line hide new untracked files again (rS12, rS15)",
+        'status="$(git -C "$root" status --porcelain --untracked-files=all 2> /dev/null)"',
+        'status="$(git -C "$root" status --porcelain 2> /dev/null)"',
+    ),
+    mutate.Mutation(
+        "the submodule walk's diff drops --no-ext-diff, so a submodule's own diff.external "
+        "hides a re-edit (rS19)",
+        "&& git diff HEAD --no-ext-diff --ignore-submodules=none &&",
+        "&& git diff HEAD --ignore-submodules=none &&",
+    ),
+    mutate.Mutation(
+        "the submodule walk's diff drops --ignore-submodules=none, so a commit inside a NESTED "
+        "ignore=all submodule no longer moves the stamp (rS26)",
+        "&& git diff HEAD --no-ext-diff --ignore-submodules=none &&",
+        "&& git diff HEAD --no-ext-diff &&",
+    ),
+    mutate.Mutation(
+        "the submodule walk's status drops --untracked-files=all, so a submodule's own "
+        "showUntrackedFiles=no hides a new untracked file (rS18)",
+        "&& git status --porcelain --untracked-files=all'",
+        "&& git status --porcelain'",
+    ),
+    mutate.Mutation(
+        "the submodule walk loses --recursive, so a submodule two levels deep is never stamped "
+        "and its nested ignore=dirty hides tracked edits again (rS16)",
+        "submodule foreach --quiet --recursive",
+        "submodule foreach --quiet",
+    ),
+    mutate.Mutation(
+        "the submodule walk's output is dropped from the hashed text, so everything only a child "
+        "git inside a submodule can see is invisible again (rS14, rS16-rS19, rS26, rS27)",
+        '    "$head" "$diff" "$status" "$subs" | "$hasher"',
+        '    "$head" "$diff" "$status" "" | "$hasher"',
+    ),
+    mutate.Mutation(
+        "the submodule walk's per-submodule path header is dropped, so an untracked file moving "
+        "from one submodule to the next reads as unchanged (rS27)",
+        'printf "%s\\n" "$displaypath" && git diff',
+        "git diff",
+    ),
+    mutate.Mutation(
+        "the stamp's single rc gate is dropped, so a git command dying mid-stamp hashes its "
+        "truncated output into a constant stamp again (rS20-rS22, rS28)",
+        '  [[ "$diff_rc" -eq 0 && "$status_rc" -eq 0 && "$subs_rc" -eq 0 ]] || return 1',
+        "  :",
+    ),
+    mutate.Mutation(
+        "the unborn-branch fallback is dropped, so a freshly created repo with no commits can no longer be "
+        "stamped at all (rS24)",
+        'git -C "$root" symbolic-ref -q HEAD > /dev/null 2>&1 || return 1',
+        "return 1",
+    ),
+    mutate.Mutation(
+        "a launch whose stamp failed records an EMPTY subject, which --status reads as 'outside "
+        "a git repo' instead of 'could not be computed at launch' (rS21b)",
+        '  subject_hash="$(subject_stamp "$subject_root")" || subject_hash="$SUBJECT_UNAVAILABLE"\n'
+        '  [[ -n "$subject_hash" ]] || subject_hash="$SUBJECT_UNAVAILABLE"',
+        '  subject_hash="$(subject_stamp "$subject_root")" || subject_hash=""',
     ),
     mutate.Mutation(
         "a MOVED tree is announced as unchanged — a stale verdict reading as a current one",

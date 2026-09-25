@@ -778,5 +778,489 @@ printf 'RUN_LONG_BEGIN pid=1 label=x\n%s^\n----- output -----\nRUN_LONG_EXIT_STA
 run --status "$xp"
 check_eq "$RC" 5 'x26: a legacy/hand-crafted "^" pattern cannot clear an EMPTY output section'
 
+# --- rS1: --stamp exposes the subject fingerprint instead of callers copying it ---
+# subject_stamp() already hashes HEAD + `git diff HEAD` + `status --porcelain`, and its comment
+# records why a HEAD-only stamp is worse than nothing. A caller that needs tree-stability must reuse
+# it: a hand-made copy is the measured drift hazard, and there is no shell library here to hold it.
+# Run the paired reads inside a git SANDBOX, not this working copy: stamping the live repo makes
+# quiescence part of the fixture, so any peer write between the two reads flakes the row -- a flaky
+# row introduced by the flake detector's own plan.
+mkdir -p "$tmp/stamprepo" && git init -q "$tmp/stamprepo"
+printf 'x\n' > "$tmp/stamprepo/f"
+# subject_stamp hashes `git status --porcelain`, and an UNTRACKED file's porcelain line is just
+# `?? f` regardless of content -- so a content edit to an uncommitted new file is invisible to it.
+# Commit first, so the later edit is a TRACKED-file diff that `git diff HEAD` actually shows.
+# gpgsign MUST be forced off. Measured: global `commit.gpgsign` is true here and a fresh `git init`
+# inherits it, so this commit really does reach for the hardware key -- it survived only because the
+# card's PIN was cached from earlier commits in the same session, and would HANG on a cold cache.
+# `fixture-signing-check` cannot catch this one: it is FILE-scoped, and another fixture higher in
+# this file already sets the flags, so the file passes while this repo signs.
+git -C "$tmp/stamprepo" -c user.email=t@t -c user.name=t add -A
+git -C "$tmp/stamprepo" -c user.email=t@t -c user.name=t \
+  -c commit.gpgsign=false -c tag.gpgsign=false commit -q -m init
+
+st_a="$(cd "$tmp/stamprepo" && "$engine" --stamp 2>/dev/null)"; rc_a=$?
+st_b="$(cd "$tmp/stamprepo" && "$engine" --stamp 2>/dev/null)"
+check_eq "$rc_a" 0 'stamp: exits 0 on a git tree'
+check_eq "$st_a" "$st_b" 'stamp: two reads of an unchanged tree agree'
+if [[ -n "$st_a" ]]; then pass_line 'stamp: a git tree yields a non-empty fingerprint'
+else fail_line 'stamp: a git tree yielded an EMPTY fingerprint'; fi
+
+printf 'y\n' >> "$tmp/stamprepo/f"
+st_c="$(cd "$tmp/stamprepo" && "$engine" --stamp 2>/dev/null)"
+if [[ "$st_c" != "$st_a" ]]; then pass_line 'stamp: an edited tree yields a DIFFERENT fingerprint'
+else fail_line 'stamp: an edited tree yielded the SAME fingerprint -- drift is undetectable'; fi
+
+st_out="$(cd "$tmp" && "$engine" --stamp 2>/dev/null)"; rc_out=$?
+check_eq "$rc_out" 0 'stamp: exits 0 outside a git tree too'
+# This row is the affirmative outside-a-repo case: outside_git_repo() matches git's own "not a
+# git repository (or any of the parent directories)" message for $tmp (genuinely outside any
+# repo) and --stamp exits 0-with-nothing on that match alone -- it never even reaches
+# subject_stamp() here. rS6-rS11 below (MAJOR2) are the fixtures that pin the DISTINCTION this
+# row cannot: a bare repo, a bogus GIT_DIR, and an unrecognized git failure all also produce
+# empty output, and each must exit NONZERO rather than being folded into this same branch.
+check_eq "$st_out" '' 'stamp: entirely outside any git repo, prints nothing'
+
+# --- rS2-rS4: --stamp is its own mode; mixing it with another mode's arguments used to be a
+# silent partial launch (print the stamp, exit 0, create NO artifact) rather than a usage error --
+# MEASURED against the unfixed script: `--stamp --out X -- echo hi` printed a stamp, exited 0, and
+# left no file at X. A caller who typo'd would believe the job had launched. Assert the DISTINCTIVE
+# behaviour, not something a healthy run also produces: rc 2 (this script's usage-error code, same
+# family as u1/u3/w10 above) AND the absence of the artifact the old code silently declined to
+# write -- a mutant that merely restored a nonzero rc without also skipping the write would still
+# fail rS2b.
+rs2_art="$(art rS2)"
+rm -f "$rs2_art"
+(cd "$tmp/stamprepo" && "$engine" --stamp --out "$rs2_art" -- echo hi > /dev/null 2>&1)
+check_eq "$?" 2 'rS2: --stamp with --out is a usage error, not a silent discard'
+if [[ ! -e "$rs2_art" ]]; then pass_line 'rS2b: ...and no artifact is created'
+else fail_line 'rS2b: an artifact WAS created despite the usage error'; fi
+
+(cd "$tmp/stamprepo" && "$engine" --status "$rs2_art" --stamp > /dev/null 2>&1)
+check_eq "$?" 2 'rS3: --status combined with --stamp is a usage error (order-independent: mode flags are tracked by presence, not by which one parses last)'
+
+(cd "$tmp/stamprepo" && "$engine" --stamp -- echo hi > /dev/null 2>&1)
+check_eq "$?" 2 'rS4: --stamp with a bare command (no --out) is a usage error too'
+
+# The legitimate, argument-free shape all six real callers use must still work exactly as before.
+rs5_rc="$(cd "$tmp/stamprepo" && "$engine" --stamp > /dev/null 2>&1; echo $?)"
+check_eq "$rs5_rc" 0 'rS5: bare --stamp (the real call shape) still exits 0'
+
+# --- rS6/rS7: a bare repo is NOT "outside a repo" -- MAJOR2 ---
+# `git rev-parse --show-toplevel` fails in a bare repo exactly as it does outside any repo, but
+# with a DIFFERENT message ("this operation must be run in a work tree", no "not a git
+# repository" at all) -- so outside_git_repo() correctly reads this as "some other failure", not
+# as the affirmative outside-a-repo case, and --stamp now dies nonzero instead of silently
+# printing nothing at rc=0. Pre-MAJOR2 this row asserted rc_bare=0: a bare repo and genuinely
+# being outside a repo were indistinguishable to any caller, exactly the defect class MAJOR2
+# closes. `git -C <bare-dir> rev-parse --git-dir` SUCCEEDS in a bare repo (it IS its own
+# git-dir), which is why subject_stamp()'s OWN internal guard was never sufficient on its own --
+# the outer `outside_git_repo()` check is what has to catch this shape.
+mkdir -p "$tmp/barerepo.git" && git init -q --bare "$tmp/barerepo.git"
+st_bare="$(cd "$tmp/barerepo.git" && "$engine" --stamp 2>/dev/null)"; rc_bare=$?
+check_eq "$st_bare" '' 'rS6: a bare repo (no work tree) prints nothing rather than a bogus fingerprint'
+if [[ "$rc_bare" -ne 0 ]]; then pass_line 'rS7: ...but exits NONZERO -- a bare repo is not "outside a repo"'
+else fail_line 'rS7: a bare repo exited 0 -- indistinguishable from genuinely outside a repo (MAJOR2 unfixed)'
+fi
+
+# --- rS8/rS9: MAJOR2's measured defect -- a bogus GIT_DIR inside a REAL repo ---
+# `GIT_DIR` is exported by every git hook, and this repo runs checks from hooks, so this is
+# reachable in practice, not a contrived edge case. Pre-fix, `git rev-parse --show-toplevel` under
+# a GIT_DIR pointing nowhere real failed with a DIFFERENT stderr message than genuinely being
+# outside a repo (no "(or any of the parent directories)" parenthetical) but the same emptiness
+# and rc=0 either way, so --stamp reported empty/rc=0 from INSIDE a real, tracked-and-dirty repo --
+# byte-identical to the honest outside-a-repo case. `env` scopes GIT_DIR to this one probe only.
+gd_repo="$tmp/gitdirrepo"
+mkdir -p "$gd_repo"
+git init -q "$gd_repo"
+git -C "$gd_repo" config commit.gpgsign false
+git -C "$gd_repo" config tag.gpgsign false
+git -C "$gd_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+gd_out="$(cd "$gd_repo" && env GIT_DIR=/nonexistent/not-real.git "$engine" --stamp 2>/dev/null)"
+gd_rc=$?
+check_eq "$gd_out" '' 'rS8: a bogus GIT_DIR inside a real repo prints nothing (same shape as outside-a-repo)'
+if [[ "$gd_rc" -ne 0 ]]; then pass_line 'rS9: ...but exits NONZERO, distinguishing it from genuinely outside a repo'
+else fail_line 'rS9: a bogus GIT_DIR exited 0 -- indistinguishable from outside-a-repo (MAJOR2 unfixed)'
+fi
+
+# --- rS10/rS11: an UNRECOGNIZED git failure must not be folded into outside-a-repo either ---
+# outside_git_repo() matches ONE specific message; every other git failure -- corrupt repo, a
+# transient error, anything this suite did not anticipate -- must land in the "some other
+# failure" bucket too, not be waved through as a false outside-a-repo. A fake `git` ahead on PATH
+# stands in for "git ran and failed for a reason nobody has enumerated".
+mkdir -p "$tmp/fakebin"
+cat > "$tmp/fakebin/git" <<'FAKEGIT'
+#!/bin/bash
+printf 'fatal: something else entirely\n' >&2
+exit 99
+FAKEGIT
+chmod +x "$tmp/fakebin/git"
+fg_out="$(PATH="$tmp/fakebin:$PATH" "$engine" --stamp 2>/dev/null)"
+fg_rc=$?
+check_eq "$fg_out" '' 'rS10: an unrecognized git failure prints nothing (not a bogus fingerprint)'
+if [[ "$fg_rc" -ne 0 ]]; then pass_line 'rS11: ...but exits nonzero rather than reading as outside-a-repo'
+else fail_line 'rS11: an unrecognized git failure exited 0 -- silently folded into outside-a-repo'
+fi
+
+# --- stamp-de: outside_git_repo()'s message match must survive a translated git locale ---
+# outside_git_repo() matches ONE literal English string against git's stderr. gettext (which git
+# uses for its own diagnostics) translates that string whenever LC_ALL/LANG selects a locale with
+# a German catalogue installed -- measured: MacPorts git on this machine prints "Schwerwiegend:
+# Kein Git-Repository (oder irgendeines der Elternverzeichnisse): .git" under LC_ALL=de_DE.UTF-8.
+# The English match then silently fails, so a caller genuinely outside a repo under that locale
+# is folded into the "some other failure" branch (dies nonzero) instead of the affirmative
+# outside-a-repo case (exit 0, silent) -- the exact false-negative rS6-rS11 above exist to close
+# for OTHER causes of a failed match.
+#
+# Gate on the OBSERVED stderr, never on `locale -a`: Apple's /usr/bin/git carries no translation
+# catalogues at all and prints the English text regardless of locale, so on a machine where this
+# git behaves the same way the defect is unreachable and a "pass" here would prove nothing --
+# skip instead of faking green.
+de_probe_err="$(LC_ALL=de_DE.UTF-8 git -C "$tmp" rev-parse --show-toplevel 2>&1 1>/dev/null)"
+if [[ "$de_probe_err" == *'not a git repository (or any of the parent directories)'* ]]; then
+  printf 'SKIP  stamp-de: this git has no German catalogue (prints English even under LC_ALL=de_DE.UTF-8) -- defect unreachable here\n'
+else
+  de_out="$(cd "$tmp" && LC_ALL=de_DE.UTF-8 "$engine" --stamp 2>/dev/null)"; de_rc=$?
+  check_eq "$de_rc" 0 'stamp-de-a: exits 0 outside a git tree under a translated (German) locale'
+  check_eq "$de_out" '' 'stamp-de-b: ...with empty stdout too'
+fi
+
+# --- rS12-rS14: repo CONFIGURATION must never decide what "unchanged" means ---
+# `git status --porcelain` and `git diff HEAD` both honour settings that hide changes:
+# `status.showUntrackedFiles=no` drops every `??` line, and `submodule.<name>.ignore` (repo config
+# or a committed .gitmodules) drops a dirty submodule entirely -- and even with it shown, the
+# default submodule diff format collapses every further edit inside an already-dirty submodule to
+# the constant `Subproject commit <sha>-dirty`. Measured before the fix: each of the three shapes
+# below left the stamp byte-identical across a real change (flake-sweep reported
+# `RESULT: PASS ... subject=stable` over a subject leaking a new untracked file every run).
+# Every fixture file the rows do NOT deliberately change lives outside the stamped repo; signing
+# is forced off (a fresh `git init` inherits the global commit.gpgsign=true here and would hang on
+# a cold hardware-key PIN); a local file-URL submodule add needs protocol.file.allow=always.
+stamp_in() { (cd "$1" && "$engine" --stamp 2> /dev/null); } # DIR
+cfg_commit() { # DIR MSG
+  git -C "$1" -c user.email=t@t -c user.name=t -c commit.gpgsign=false -c tag.gpgsign=false \
+    commit -q -m "$2"
+}
+
+su_repo="$tmp/showuntracked"
+mkdir -p "$su_repo" && git init -q "$su_repo"
+git -C "$su_repo" config commit.gpgsign false
+git -C "$su_repo" config tag.gpgsign false
+git -C "$su_repo" config status.showUntrackedFiles no
+printf 'x\n' > "$su_repo/f"
+git -C "$su_repo" add f && cfg_commit "$su_repo" init
+su_a="$(stamp_in "$su_repo")"
+: > "$su_repo/leak.1.tmp"
+su_b="$(stamp_in "$su_repo")"
+if [[ -n "$su_a" && "$su_a" != "$su_b" ]]; then
+  pass_line 'rS12: a new untracked file MOVES the stamp even under status.showUntrackedFiles=no'
+else
+  fail_line "rS12: status.showUntrackedFiles=no hid a new untracked file from the stamp (a=[$su_a] b=[$su_b])"
+fi
+
+# One submodule source repo, shared by rS13 and rS14 (each clones its own copy as `vendor`).
+sm_src="$tmp/sm_src"
+mkdir -p "$sm_src" && git init -q "$sm_src"
+git -C "$sm_src" config commit.gpgsign false
+git -C "$sm_src" config tag.gpgsign false
+printf 'v1\n' > "$sm_src/lib.txt"
+git -C "$sm_src" add lib.txt && cfg_commit "$sm_src" init
+
+mk_super() { # DIR -- a superproject with $sm_src committed as submodule `vendor`
+  mkdir -p "$1" && git init -q "$1"
+  git -C "$1" config commit.gpgsign false
+  git -C "$1" config tag.gpgsign false
+  git -C "$1" -c protocol.file.allow=always submodule --quiet add "$sm_src" vendor > /dev/null 2>&1
+  cfg_commit "$1" 'add vendor'
+}
+
+ign_repo="$tmp/ignoredirty"
+mk_super "$ign_repo"
+git -C "$ign_repo" config --file .gitmodules submodule.vendor.ignore dirty
+git -C "$ign_repo" add .gitmodules && cfg_commit "$ign_repo" 'ignore=dirty'
+ign_a="$(stamp_in "$ign_repo")"
+printf 'edited\n' > "$ign_repo/vendor/lib.txt"
+ign_b="$(stamp_in "$ign_repo")"
+if [[ -n "$ign_a" && "$ign_a" != "$ign_b" ]]; then
+  pass_line 'rS13: a tracked edit inside a submodule.<name>.ignore=dirty submodule MOVES the stamp'
+else
+  fail_line "rS13: submodule.vendor.ignore=dirty hid a tracked edit inside the submodule (a=[$ign_a] b=[$ign_b])"
+fi
+
+dd_repo="$tmp/dirtydirty"
+mk_super "$dd_repo"
+printf 'first edit\n' > "$dd_repo/vendor/lib.txt" # already dirty at "launch"
+dd_a="$(stamp_in "$dd_repo")"
+printf 'second edit\n' > "$dd_repo/vendor/lib.txt"
+dd_b="$(stamp_in "$dd_repo")"
+if [[ -n "$dd_a" && "$dd_a" != "$dd_b" ]]; then
+  pass_line 'rS14: a further edit inside an ALREADY-dirty submodule MOVES the stamp'
+else
+  fail_line "rS14: an already-dirty submodule hid a further tracked edit (a=[$dd_a] b=[$dd_b])"
+fi
+
+# rS15: git's DEFAULT untracked mode (`normal`) collapses an untracked directory to one `?? dir/`
+# line, so a NEW file appearing inside an already-untracked directory left the stamp identical --
+# no config involved at all, so this repo sets none (measured on the pre-fix stamp, and on the
+# `--untracked-files=normal` form of the fix: identical both times).
+ud_repo="$tmp/untrackeddir"
+mkdir -p "$ud_repo" && git init -q "$ud_repo"
+git -C "$ud_repo" config commit.gpgsign false
+git -C "$ud_repo" config tag.gpgsign false
+git -C "$ud_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+mkdir -p "$ud_repo/build"
+: > "$ud_repo/build/one.o"
+ud_a="$(stamp_in "$ud_repo")"
+: > "$ud_repo/build/two.o"
+ud_b="$(stamp_in "$ud_repo")"
+if [[ -n "$ud_a" && "$ud_a" != "$ud_b" ]]; then
+  pass_line 'rS15: a new file inside an already-untracked directory MOVES the stamp'
+else
+  fail_line "rS15: an untracked directory collapsed to one porcelain line hid a new file (a=[$ud_a] b=[$ud_b])"
+fi
+
+# --- rS16-rS23: fix wave 2 -- what the top-level flags cannot reach INSIDE a submodule ---
+# The top-level `--ignore-submodules=none`/`--untracked-files=all` flags govern only the top-level
+# commands. Whether a submodule counts as dirty, and what its diff shows, is decided by a child git
+# run INSIDE that submodule under its OWN config and its own .gitmodules. Measured on 991fb57, each
+# shape below left the stamp byte-identical across a real change: a nested submodule's committed
+# ignore=dirty (depth 2), a further untracked file inside a submodule already holding untracked
+# content, a submodule whose own config sets status.showUntrackedFiles=no, and a submodule whose
+# own diff.external prints a constant. Every fixture file the rows do not deliberately change
+# lives outside the stamped repos; signing is off in every repo (the `w2g` wrapper and the
+# explicit per-repo config both force it).
+w2g() {
+  git -c user.email=t@t -c user.name=t -c commit.gpgsign=false -c tag.gpgsign=false \
+    -c protocol.file.allow=always "$@"
+}
+w2_repo() { # DIR FILE CONTENT -- a repo with one committed file, signing off
+  mkdir -p "$1" && git init -q "$1"
+  git -C "$1" config commit.gpgsign false
+  git -C "$1" config tag.gpgsign false
+  printf '%s\n' "$3" > "$1/$2"
+  w2g -C "$1" add "$2" && w2g -C "$1" commit -q -m init
+}
+w2_sup() { # DIR -- a superproject with $sm_src (rS13's source repo) as submodule `vendor`
+  w2_repo "$1" s.txt s
+  w2g -C "$1" submodule --quiet add "$sm_src" vendor > /dev/null 2>&1
+  w2g -C "$1" commit -q -m 'add vendor'
+}
+stamp_rc() { (cd "$1" && "$engine" --stamp > /dev/null 2>&1); echo "$?"; } # DIR
+
+# rS16: depth 2. mid's own committed .gitmodules marks inner ignore=dirty; top stamps.
+w2_repo "$tmp/w2_inner" deep.txt deep
+w2_repo "$tmp/w2_mid" mid.txt mid
+w2g -C "$tmp/w2_mid" submodule --quiet add "$tmp/w2_inner" inner > /dev/null 2>&1
+w2g -C "$tmp/w2_mid" config --file .gitmodules submodule.inner.ignore dirty
+w2g -C "$tmp/w2_mid" add .gitmodules && w2g -C "$tmp/w2_mid" commit -q -m 'inner, ignore=dirty'
+w2_repo "$tmp/w2_top" top.txt top
+w2g -C "$tmp/w2_top" submodule --quiet add "$tmp/w2_mid" mid > /dev/null 2>&1
+w2g -C "$tmp/w2_top" commit -q -m 'add mid'
+w2g -C "$tmp/w2_top" submodule --quiet update --init --recursive > /dev/null 2>&1
+n_a="$(stamp_in "$tmp/w2_top")"
+printf 'e1\n' > "$tmp/w2_top/mid/inner/deep.txt"
+n_b="$(stamp_in "$tmp/w2_top")"
+printf 'e2\n' > "$tmp/w2_top/mid/inner/deep.txt"
+n_c="$(stamp_in "$tmp/w2_top")"
+if [[ -n "$n_a" && "$n_a" != "$n_b" && "$n_b" != "$n_c" ]]; then
+  pass_line 'rS16: tracked edits two submodules deep MOVE the stamp despite a nested committed ignore=dirty'
+else
+  fail_line "rS16: a nested submodule's committed ignore=dirty hid tracked edits (a=[$n_a] b=[$n_b] c=[$n_c])"
+fi
+
+# rS17: a further untracked file inside a submodule that already holds untracked content.
+w2_sup "$tmp/w2_pre"
+: > "$tmp/w2_pre/vendor/u1"
+p_a="$(stamp_in "$tmp/w2_pre")"
+: > "$tmp/w2_pre/vendor/u2"
+p_b="$(stamp_in "$tmp/w2_pre")"
+if [[ -n "$p_a" && "$p_a" != "$p_b" ]]; then
+  pass_line 'rS17: a new untracked file inside an already-untracked-dirty submodule MOVES the stamp'
+else
+  fail_line "rS17: a submodule already holding untracked content hid a new untracked file (a=[$p_a] b=[$p_b])"
+fi
+
+# rS18: the submodule's OWN config sets status.showUntrackedFiles=no.
+w2_sup "$tmp/w2_suno"
+git -C "$tmp/w2_suno/vendor" config status.showUntrackedFiles no
+u_a="$(stamp_in "$tmp/w2_suno")"
+: > "$tmp/w2_suno/vendor/u1"
+u_b="$(stamp_in "$tmp/w2_suno")"
+if [[ -n "$u_a" && "$u_a" != "$u_b" ]]; then
+  pass_line "rS18: a new untracked file MOVES the stamp even when the submodule's own config sets showUntrackedFiles=no"
+else
+  fail_line "rS18: a submodule-level status.showUntrackedFiles=no hid a new untracked file (a=[$u_a] b=[$u_b])"
+fi
+
+# rS19: the submodule's OWN diff.external prints a constant; the tracked file is re-edited.
+printf '#!/bin/sh\necho constant\n' > "$tmp/w2_ext.sh"
+chmod +x "$tmp/w2_ext.sh"
+w2_sup "$tmp/w2_ext"
+git -C "$tmp/w2_ext/vendor" config diff.external "$tmp/w2_ext.sh"
+printf 'one\n' > "$tmp/w2_ext/vendor/lib.txt"
+x_a="$(stamp_in "$tmp/w2_ext")"
+printf 'two\n' > "$tmp/w2_ext/vendor/lib.txt"
+x_b="$(stamp_in "$tmp/w2_ext")"
+if [[ -n "$x_a" && "$x_a" != "$x_b" ]]; then
+  pass_line "rS19: a re-edit inside a submodule MOVES the stamp even when the submodule's own diff.external prints a constant"
+else
+  fail_line "rS19: a submodule-level diff.external hid a re-edit (a=[$x_a] b=[$x_b])"
+fi
+
+# rS20: a git command that FAILS mid-stamp must not yield a (constant) stamp. An ignore=all
+# submodule whose .git/modules/vendor is gone made 991fb57's `git diff --submodule=diff` die
+# fatally at `vendor`; the old `{ ...; } 2>/dev/null | hasher` hashed the truncated output with the rc
+# discarded, so edits to zz.txt (sorting after vendor) read as unchanged (measured on 991fb57:
+# identical stamps, rc 0 both times).
+w2_sup "$tmp/w2_trunc"
+printf 'z\n' > "$tmp/w2_trunc/zz.txt"
+w2g -C "$tmp/w2_trunc" add zz.txt
+w2g -C "$tmp/w2_trunc" config --file .gitmodules submodule.vendor.ignore all
+w2g -C "$tmp/w2_trunc" add .gitmodules && w2g -C "$tmp/w2_trunc" commit -q -m 'zz, ignore=all'
+rm -rf "$tmp/w2_trunc/.git/modules/vendor"
+printf '1\n' > "$tmp/w2_trunc/zz.txt"
+t_out="$(stamp_in "$tmp/w2_trunc")"
+t_rc="$(stamp_rc "$tmp/w2_trunc")"
+if [[ "$t_rc" -ne 0 ]]; then
+  pass_line 'rS20: a git command failing inside the stamp makes --stamp exit NONZERO, never a truncated stamp'
+else
+  fail_line "rS20: a failing git command still produced a stamp at rc 0 (stamp=[$t_out])"
+fi
+check_eq "$t_out" '' 'rS20b: ...and prints no stamp at all'
+
+# rS21: step-3 caller -- a LAUNCH whose stamp cannot be computed must not record a hash that a
+# later --status reads as "unchanged since launch".
+rs21_art="$(art rS21)"
+(cd "$tmp/w2_trunc" && "$engine" --out "$rs21_art" -- true > /dev/null 2>&1)
+wait_done "$rs21_art" || fail_line 'rS21: precondition -- the launched job never finished'
+run --status "$rs21_art"
+check_absent "$OUT" 'SUBJECT: unchanged' 'rS21: a launch whose stamp failed is never reported "unchanged since launch"'
+check_contains "$OUT" 'could not be computed at launch' 'rS21b: ...--status says the stamp could not be computed at launch'
+
+# rS22: step-3 caller -- a healthy launch whose tree BREAKS before --status must say the stamp
+# could not be computed now, not "unchanged" and not a bare MOVED over a truncated re-read.
+w2_sup "$tmp/w2_break"
+w2g -C "$tmp/w2_break" config --file .gitmodules submodule.vendor.ignore all
+w2g -C "$tmp/w2_break" add .gitmodules && w2g -C "$tmp/w2_break" commit -q -m 'ignore=all'
+rs22_art="$(art rS22)"
+(cd "$tmp/w2_break" && "$engine" --out "$rs22_art" -- true > /dev/null 2>&1)
+wait_done "$rs22_art" || fail_line 'rS22: precondition -- the launched job never finished'
+rm -rf "$tmp/w2_break/.git/modules/vendor"
+run --status "$rs22_art"
+check_absent "$OUT" 'SUBJECT: unchanged' 'rS22: a tree whose stamp now fails is never reported "unchanged since launch"'
+check_contains "$OUT" 'could not be computed now' 'rS22b: ...--status says the stamp could not be computed now'
+
+# rS23: controls -- the submodule walk must not make two IDENTICAL calls disagree (a stamp that
+# moves on its own would read every sweep as MOVED): no submodules, an uninitialized submodule,
+# and a clean initialized one. Each also has to produce a real stamp at rc 0.
+w2_repo "$tmp/w2_k1" x.txt x
+w2_repo "$tmp/w2_k2" x.txt x
+w2g -C "$tmp/w2_k2" submodule --quiet add "$sm_src" vendor > /dev/null 2>&1
+w2g -C "$tmp/w2_k2" commit -q -m 'add vendor'
+git -C "$tmp/w2_k2" submodule --quiet deinit -f vendor > /dev/null 2>&1
+w2_sup "$tmp/w2_k3"
+for k in k1:'no submodules' k2:'an uninitialized submodule' k3:'a clean initialized submodule'; do
+  kd="$tmp/w2_${k%%:*}"
+  k_a="$(stamp_in "$kd")"
+  k_b="$(stamp_in "$kd")"
+  k_rc="$(stamp_rc "$kd")"
+  if [[ -n "$k_a" && "$k_a" == "$k_b" && "$k_rc" -eq 0 ]]; then
+    pass_line "rS23-${k%%:*}: two identical stamps agree in a repo with ${k#*:}"
+  else
+    fail_line "rS23-${k%%:*}: identical stamps disagree or failed with ${k#*:} (a=[$k_a] b=[$k_b] rc=$k_rc)"
+  fi
+done
+
+# rS25: a SECOND commit inside an ignore=all submodule. The submodule walk diffs each submodule
+# against its OWN HEAD, so a commit made inside it leaves that walk clean -- only the TOP-LEVEL
+# diff's `--ignore-submodules=none` shows the moved gitlink (`Subproject commit <old>..<new>`);
+# status alone reports a constant ` M vendor` after the first commit.
+w2_sup "$tmp/w2_all"
+w2g -C "$tmp/w2_all" config --file .gitmodules submodule.vendor.ignore all
+w2g -C "$tmp/w2_all" add .gitmodules && w2g -C "$tmp/w2_all" commit -q -m 'ignore=all'
+printf 'c1\n' > "$tmp/w2_all/vendor/lib.txt"
+w2g -C "$tmp/w2_all/vendor" commit -q -a -m c1
+ga_a="$(stamp_in "$tmp/w2_all")"
+printf 'c2\n' > "$tmp/w2_all/vendor/lib.txt"
+w2g -C "$tmp/w2_all/vendor" commit -q -a -m c2
+ga_b="$(stamp_in "$tmp/w2_all")"
+if [[ -n "$ga_a" && "$ga_a" != "$ga_b" ]]; then
+  pass_line 'rS25: a further commit inside an ignore=all submodule MOVES the stamp'
+else
+  fail_line "rS25: an ignore=all submodule hid a commit made inside it (a=[$ga_a] b=[$ga_b])"
+fi
+
+# rS26: the same shape one level DOWN -- a second commit inside `inner`, which mid's own committed
+# .gitmodules marks ignore=all. Top's diff sees only a constant `mid -dirty`; inner's own diff
+# against its own HEAD is clean; only MID's diff with `--ignore-submodules=none` shows inner's
+# gitlink moving.
+w2_repo "$tmp/w2_in2" deep.txt deep
+w2_repo "$tmp/w2_mid2" mid.txt mid
+w2g -C "$tmp/w2_mid2" submodule --quiet add "$tmp/w2_in2" inner > /dev/null 2>&1
+w2g -C "$tmp/w2_mid2" config --file .gitmodules submodule.inner.ignore all
+w2g -C "$tmp/w2_mid2" add .gitmodules && w2g -C "$tmp/w2_mid2" commit -q -m 'inner, ignore=all'
+w2_repo "$tmp/w2_top2" top.txt top
+w2g -C "$tmp/w2_top2" submodule --quiet add "$tmp/w2_mid2" mid > /dev/null 2>&1
+w2g -C "$tmp/w2_top2" commit -q -m 'add mid'
+w2g -C "$tmp/w2_top2" submodule --quiet update --init --recursive > /dev/null 2>&1
+printf 'c1\n' > "$tmp/w2_top2/mid/inner/deep.txt"
+w2g -C "$tmp/w2_top2/mid/inner" commit -q -a -m c1
+g2_a="$(stamp_in "$tmp/w2_top2")"
+printf 'c2\n' > "$tmp/w2_top2/mid/inner/deep.txt"
+w2g -C "$tmp/w2_top2/mid/inner" commit -q -a -m c2
+g2_b="$(stamp_in "$tmp/w2_top2")"
+if [[ -n "$g2_a" && "$g2_a" != "$g2_b" ]]; then
+  pass_line 'rS26: a further commit inside a NESTED ignore=all submodule MOVES the stamp'
+else
+  fail_line "rS26: a nested ignore=all submodule hid a commit made inside it (a=[$g2_a] b=[$g2_b])"
+fi
+
+# rS27: an untracked file MOVING from one submodule to the next. Both already hold untracked
+# content (top-level status stays ` M a`/` M b` throughout), and the names sort so the two
+# submodules' concatenated status text is identical before and after -- only the per-submodule
+# path header tells the two states apart.
+w2_repo "$tmp/w2_two" s.txt s
+w2g -C "$tmp/w2_two" submodule --quiet add "$sm_src" a > /dev/null 2>&1
+w2g -C "$tmp/w2_two" submodule --quiet add "$sm_src" b > /dev/null 2>&1
+w2g -C "$tmp/w2_two" commit -q -m 'add a, b'
+: > "$tmp/w2_two/a/a0"
+: > "$tmp/w2_two/b/zz"
+: > "$tmp/w2_two/a/m"
+mv_a="$(stamp_in "$tmp/w2_two")"
+mv "$tmp/w2_two/a/m" "$tmp/w2_two/b/m"
+mv_b="$(stamp_in "$tmp/w2_two")"
+if [[ -n "$mv_a" && "$mv_a" != "$mv_b" ]]; then
+  pass_line 'rS27: an untracked file moving from one submodule to another MOVES the stamp'
+else
+  fail_line "rS27: an untracked file moving between submodules left the stamp identical (a=[$mv_a] b=[$mv_b])"
+fi
+
+# rS28: a gitlink with NO .gitmodules entry (an embedded repo `git add`ed by accident) makes the
+# submodule walk fail, so the stamp is REFUSED -- pinned as the safe direction: no stamp, never
+# one that silently skips the embedded repo's content. (On 991fb57 this repo stamped at rc 0.)
+w2_repo "$tmp/w2_orph" s.txt s
+w2_repo "$tmp/w2_orph/emb" e.txt e
+w2g -C "$tmp/w2_orph" add emb > /dev/null 2>&1
+w2g -C "$tmp/w2_orph" commit -q -m 'embedded repo, no .gitmodules'
+if [[ "$(stamp_rc "$tmp/w2_orph")" -ne 0 && -z "$(stamp_in "$tmp/w2_orph")" ]]; then
+  pass_line 'rS28: a gitlink with no .gitmodules entry gets NO stamp (refused, nonzero) -- never a partial one'
+else
+  fail_line 'rS28: a gitlink with no .gitmodules entry still produced a stamp'
+fi
+
+# rS24: PRESERVE row -- an UNBORN branch (fresh `git init`, no commit) is stampable. The old
+# stamp hashed a failing `git diff HEAD` with its rc discarded and still moved on a new untracked
+# file (measured on 991fb57); checking every rc must not turn this ordinary state into a failure.
+mkdir -p "$tmp/w2_unborn" && git init -q "$tmp/w2_unborn"
+ub_a="$(stamp_in "$tmp/w2_unborn")"
+ub_rc="$(stamp_rc "$tmp/w2_unborn")"
+: > "$tmp/w2_unborn/first.txt"
+ub_b="$(stamp_in "$tmp/w2_unborn")"
+if [[ "$ub_rc" -eq 0 && -n "$ub_a" && "$ub_a" != "$ub_b" ]]; then
+  pass_line 'rS24: an unborn branch yields a stamp at rc 0, and a new file MOVES it'
+else
+  fail_line "rS24: an unborn branch failed to stamp or did not move (rc=$ub_rc a=[$ub_a] b=[$ub_b])"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

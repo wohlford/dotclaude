@@ -6,6 +6,7 @@ set -uo pipefail
 # Usage: run-long.sh --out <path> [--label <text>] [--expect <ere>] [--force] -- <command> [args...]
 #        run-long.sh --status <path> [--expect <ere>]
 #        run-long.sh --wait <path> [--interval <seconds>] [--expect <ere>]
+#        run-long.sh --stamp
 #
 # Why this exists. A check that outruns the tool timeout has to be backgrounded, and a
 # backgrounded run is where "no FAIL in the output" stops meaning "passed": a killed run prints a
@@ -46,6 +47,8 @@ readonly BEGIN_PREFIX='RUN_LONG_BEGIN'
 readonly STATUS_PREFIX='RUN_LONG_EXIT_STATUS='
 readonly SUBJECT_PREFIX='RUN_LONG_SUBJECT='
 readonly SUBJECT_ROOT_PREFIX='RUN_LONG_SUBJECT_ROOT='
+# Recorded in place of a digest when the launch was inside a repo but the stamp failed.
+readonly SUBJECT_UNAVAILABLE='unavailable'
 readonly EXPECT_PREFIX='RUN_LONG_EXPECT='
 readonly DEFAULT_INTERVAL=15
 
@@ -54,6 +57,7 @@ usage() {
 Usage: run-long.sh --out <path> [--label <text>] [--expect <ere>] [--force] -- <command> [args...]
        run-long.sh --status <path> [--expect <ere>]
        run-long.sh --wait <path> [--interval <seconds>] [--expect <ere>]
+       run-long.sh --stamp
        run-long.sh --help
 
 Launch mode:
@@ -91,9 +95,24 @@ Wait mode:
   INDETERMINATE as well as on DONE — a hand-rolled `until [ $? -eq 0 ]` hangs forever on a job
   that was killed.
 
+Stamp mode:
+  --stamp          print the current directory's git working-tree fingerprint (the same one
+                   used for SUBJECT drift detection) and exit 0, or print nothing and exit 0
+                   ONLY when git affirmatively reports the directory is outside any repo.
+                   Every OTHER reason a fingerprint could not be produced -- git itself absent,
+                   a GIT_DIR pointing nowhere real, a bare repo with no work tree, no
+                   sha1sum/shasum installed, any git command inside the stamp failing --
+                   exits NONZERO instead of folding into the same silent branch, so a
+                   caller's own bad-stamp-count gate can tell "ran fine, found nothing to
+                   stamp" apart from "the stamp cannot be trusted". Exposes subject_stamp()
+                   so callers reuse the stamp's git commands instead of hand-copying them.
+                   Cannot be combined with --out/--status/--wait or a command: each is its own
+                   mode, mixing them is a usage error rather than a silent partial launch.
+
 Both read modes also report SUBJECT: whether the git working tree has MOVED since the run was
-launched, i.e. whether the verdict still describes the tree you have now. Best-effort (silent
-outside a git repo) and a WARNING only — it never changes the exit code.
+launched, i.e. whether the verdict still describes the tree you have now. Best-effort (it says
+so outside a git repo, and says UNAVAILABLE/UNREADABLE when the stamp could not be computed at
+launch or now) and a WARNING only — it never changes the exit code.
 EOF
 }
 
@@ -112,6 +131,7 @@ status_path=""
 mode="launch"
 interval="$DEFAULT_INTERVAL"
 interval_set=0
+stamp_set=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -157,6 +177,11 @@ while [[ $# -gt 0 ]]; do
       interval_set=1
       shift 2
       ;;
+    --stamp)
+      mode="stamp"
+      stamp_set=1
+      shift
+      ;;
     --)
       shift
       break
@@ -171,6 +196,17 @@ if [[ "$interval_set" -eq 1 ]]; then
   [[ "$mode" == "wait" ]] || die '--interval applies to --wait only'
   [[ "$interval" =~ ^[1-9][0-9]*$ ]] ||
     die "--interval needs a positive whole number of seconds: $interval"
+fi
+
+# --stamp is checked by presence (stamp_set), never by `$mode == stamp`: whichever mode flag is
+# parsed LAST wins the $mode variable, so `--status X --stamp` would otherwise read as pure stamp
+# mode and never trip this. Without this guard, `--stamp --out X -- cmd` used to print the stamp,
+# exit 0, and launch nothing — a caller who typo'd would believe the job had started. Each mode is
+# now mutually exclusive with the others, so a mix is a usage error instead of a silent discard.
+if [[ "$stamp_set" -eq 1 ]]; then
+  [[ -z "$out" ]] || die '--stamp cannot be combined with --out; run one mode at a time'
+  [[ -z "$status_path" ]] || die '--stamp cannot be combined with --status/--wait; run one mode at a time'
+  [[ $# -eq 0 ]] || die '--stamp cannot be combined with a command; run one mode at a time'
 fi
 
 # --label is validated HERE and not only for tidiness: it is written RAW into the header, so a
@@ -208,27 +244,109 @@ fi
 
 # ---------- the subject: which tree did this verdict actually grade? ----------
 
-# Fingerprint the git working state under $1. Best-effort by contract: prints nothing when the
-# subject is not a git tree, so a caller outside a repo gets no stamp rather than a usage error.
+# Fingerprint the git working state under $1. Contract: on success, print one digest and return
+# 0; on ANY failure, print NOTHING and return 1. There is no third outcome -- every caller must
+# treat "no stamp" as "could not be computed", never as "unchanged".
 #
 # `git rev-parse HEAD` alone would be WORSE than nothing. The tree under a long check is normally
 # dirty — uncommitted work is usually the entire reason for running it — so a HEAD-only stamp
 # reports "unchanged" across exactly the edits this exists to catch.
+#
+# Every git command's exit status is checked, each captured into its own variable rather than
+# piped straight into the hasher: the old `{ ...; } 2> /dev/null | hasher` discarded every rc, so
+# a git command dying mid-stream hashed its TRUNCATED output into a constant stamp (measured: an
+# ignore=all submodule whose .git/modules dir was gone made edits to a later file read as
+# unchanged). Captures are in memory -- nothing is routed through a file at a path.
 subject_stamp() { # repo-root
-  local root="$1" hasher=""
-  git -C "$root" rev-parse --git-dir > /dev/null 2>&1 || return 0
+  local root="$1" hasher="" head="" base="HEAD" diff status subs digest diff_rc status_rc subs_rc
+  git -C "$root" rev-parse --git-dir > /dev/null 2>&1 || return 1
   if command -v shasum > /dev/null 2>&1; then
     hasher="shasum"
   elif command -v sha1sum > /dev/null 2>&1; then
     hasher="sha1sum"
   else
-    return 0
+    return 1
   fi
-  {
-    git -C "$root" rev-parse HEAD
-    git -C "$root" diff HEAD --no-ext-diff
-    git -C "$root" status --porcelain
-  } 2> /dev/null | "$hasher" | awk '{print $1}'
+  # An UNBORN branch (a fresh `git init`, no commit yet) has no HEAD to diff against, yet its tree
+  # is perfectly stampable: diff against the empty tree instead. Only a HEAD that is a symbolic
+  # ref to a not-yet-existing branch counts as unborn; any other rev-parse failure is a failure.
+  if ! head="$(git -C "$root" rev-parse --verify -q HEAD 2> /dev/null)"; then
+    git -C "$root" symbolic-ref -q HEAD > /dev/null 2>&1 || return 1
+    head="unborn"
+    base="$(git -C "$root" hash-object -t tree /dev/null 2> /dev/null)" || return 1
+  fi
+  # Explicit flags override SPECIFIC change-hiding config keys, and only those:
+  # status.showUntrackedFiles, diff.ignoreSubmodules, submodule.<name>.ignore (at any depth, via
+  # the walk below), diff.external, and a submodule's own untracked settings. Other configuration
+  # that hides a change is NOT overridden and still decides what "unchanged" means here -- e.g. a
+  # lossy or constant `diff.<driver>.textconv` (no `--no-textconv` is passed; measured: a tracked
+  # edit to such a file leaves the stamp identical), clean/smudge filters, core.fileMode=false,
+  # and assume-unchanged/skip-worktree; see flake-sweep.sh's NOT-covered list. Each flag below is
+  # the ONLY thing that catches its case (the named test row fails without it):
+  #   - top diff `--ignore-submodules=none`: a commit made INSIDE a submodule marked ignore=all
+  #     moves its gitlink, which that config would otherwise hide (rS25);
+  #   - top status `--untracked-files=all`: a new untracked file under showUntrackedFiles=no
+  #     (rS12), and a new file inside an already-untracked directory, which `normal` collapses to
+  #     a constant `?? dir/` line (rS15).
+  # Fix wave 2 REMOVED the top-level `--submodule=diff` and the status `--ignore-submodules=none`:
+  # the per-submodule walk below stamps every submodule's content directly, and no row failed
+  # without them (measured by mutation) -- they read as safety while deciding nothing.
+  # Every rc is captured (diff_rc/status_rc/subs_rc) and checked in ONE place below, before any
+  # hashing; see the contract comment above this function.
+  diff="$(git -C "$root" diff "$base" --no-ext-diff --ignore-submodules=none 2> /dev/null)"
+  diff_rc=$?
+  status="$(git -C "$root" status --porcelain --untracked-files=all 2> /dev/null)"
+  status_rc=$?
+  # The top-level flags reach only the top-level commands. Whether a submodule reads as dirty, and
+  # what its diff shows, is decided by a child git run INSIDE it, under that submodule's OWN
+  # config and its own .gitmodules -- measured to hide: a nested submodule's committed
+  # ignore=dirty (depth 2), a further untracked file in a submodule already holding untracked
+  # content, a submodule-level showUntrackedFiles=no, and a submodule-level diff.external. So
+  # every checked-out submodule, at every depth (`--recursive`; rS16), is stamped directly, with
+  # the same flags overriding the same keys (and no others -- a submodule's own textconv or
+  # filters still apply inside it): its
+  # own diff with `--no-ext-diff` (rS19) and `--ignore-submodules=none` (a commit inside ITS
+  # ignore=all child; rS26), and its own status with `--untracked-files=all` (rS18). Each
+  # block is headed by its path, so an untracked file moving between two submodules cannot read
+  # as unchanged (rS27). `&&` makes any inner failure fail the whole walk. A gitlink with no
+  # .gitmodules entry (an embedded repo `git add`ed by accident) makes the walk fail, so such a
+  # repo gets NO stamp -- the safe direction (rS28).
+  # shellcheck disable=SC2016 # expanded by the per-submodule shell git spawns, not here
+  subs="$(git -C "$root" submodule foreach --quiet --recursive \
+    'printf "%s\n" "$displaypath" && git diff HEAD --no-ext-diff --ignore-submodules=none && git status --porcelain --untracked-files=all' \
+    2> /dev/null)"
+  subs_rc=$?
+  # The single rc gate: a git command that died mid-stream leaves TRUNCATED output, and hashing
+  # that would yield a constant stamp (rS20); any failure means no stamp at all.
+  [[ "$diff_rc" -eq 0 && "$status_rc" -eq 0 && "$subs_rc" -eq 0 ]] || return 1
+  # The hasher reads its pipe to EOF, so pipefail cannot misfire on an early-exiting reader here.
+  digest="$(printf 'head %s\n--diff\n%s\n--status\n%s\n--submodules\n%s\n' \
+    "$head" "$diff" "$status" "$subs" | "$hasher" | awk '{print $1}')" \
+    || return 1
+  [[ -n "$digest" ]] || return 1
+  printf '%s\n' "$digest"
+}
+
+# Affirmatively determines whether $1 (default: cwd) is OUTSIDE any git repository, as distinct
+# from every other reason a git query can fail: git itself absent, a GIT_DIR pointing nowhere
+# real, a bare repo with no work tree, a corrupt repo, ... The pre-fix --stamp mode inferred
+# "outside a repo" from mere EMPTINESS of `git rev-parse --show-toplevel`, which folded all of
+# those into one silent "print nothing, exit 0" branch -- measured false clean: GIT_DIR pointed
+# at a nonexistent path inside a real repo whose tracked file the subject edited every run, and
+# --stamp reported empty/rc=0 exactly as it does genuinely outside a repo. True only for git's
+# own "not a git repository (or any of the parent directories)" message -- measured to differ
+# from a bogus GIT_DIR's "fatal: not a git repository: '<path>'" (no parenthetical) and from a
+# bare repo's "fatal: this operation must be run in a work tree", so neither is mistaken for
+# genuinely being outside one.
+outside_git_repo() { # [dir]
+  local dir="${1:-.}" err
+  command -v -- git > /dev/null 2>&1 || return 1
+  # LC_ALL=C: gettext ignores LANGUAGE when the locale is C, so the matched English text is what
+  # git emits, regardless of the caller's own locale (e.g. LC_ALL=de_DE.UTF-8).
+  if err="$(LC_ALL=C git -C "$dir" rev-parse --show-toplevel 2>&1 1>/dev/null)"; then
+    return 1
+  fi
+  [[ "$err" == *'not a git repository (or any of the parent directories)'* ]]
 }
 
 # Every branch prints SOMETHING. Silence would be indistinguishable from "checked, and unchanged",
@@ -243,12 +361,21 @@ subject_report() { # artifact
     printf 'SUBJECT: not recorded — the launch was outside a git repo, so drift cannot be judged\n'
     return 0
   fi
+  # The launch was inside a repo, but subject_stamp() failed there: a distinct recorded value, so
+  # it is never mistaken for "outside a repo" and never compared as if it were a digest.
+  if [[ "$recorded" == "$SUBJECT_UNAVAILABLE" ]]; then
+    printf 'SUBJECT: UNAVAILABLE — the stamp could not be computed at launch in %s, so drift cannot be judged\n' \
+      "${root:-?}"
+    return 0
+  fi
 
   now=""
-  [[ -n "$root" && -d "$root" ]] && now="$(subject_stamp "$root")"
+  if [[ -n "$root" && -d "$root" ]]; then
+    now="$(subject_stamp "$root")" || now=""
+  fi
 
   if [[ -z "$now" ]]; then
-    printf 'SUBJECT: UNREADABLE — cannot re-read %s, so this verdict cannot be tied to a tree\n' \
+    printf 'SUBJECT: UNREADABLE — the stamp could not be computed now for %s, so this verdict cannot be tied to a tree\n' \
       "${root:-?}"
   elif [[ "$now" == "$recorded" ]]; then
     printf 'SUBJECT: unchanged since launch (%s)\n' "${recorded:0:12}"
@@ -432,6 +559,33 @@ report() { # artifact -> prints the verdict, returns its exit code
   esac
 }
 
+# --stamp returns BEFORE every other mode's logic, deliberately: six callers and every mutation
+# campaign depend on this file, so a new mode earns its place only if it cannot perturb the three
+# that exist. It exposes subject_stamp rather than making callers copy the stamp's git commands,
+# which is the measured hand-made-copy drift hazard.
+#
+# The exit code is derived from outside_git_repo(), the SAME predicate subject_stamp() itself
+# does not need to duplicate -- two independently-driftable spellings of "outside a repo" is how
+# the pre-fix defect arose (subject_stamp's own emptiness silently absorbed git-absent, a bogus
+# GIT_DIR, and no-hasher right alongside the genuine outside-a-repo case). Only the affirmative
+# reading exits 0-with-nothing; every other reason a fingerprint could not be produced dies
+# nonzero, so a caller's bad-stamp-count gate can tell the two apart instead of classifying both
+# as "ran fine, found nothing".
+if [[ "$mode" == "stamp" ]]; then
+  if outside_git_repo "."; then
+    exit 0 # affirmatively outside any repo: silent, by contract
+  fi
+  root="$(git rev-parse --show-toplevel 2>/dev/null)"
+  if [[ -z "$root" ]]; then
+    die '--stamp: git could not resolve a repo root, and did not report "not a git repository" either -- treating this as a real failure rather than silently reporting "outside a repo"'
+  fi
+  if ! hash="$(subject_stamp "$root")" || [[ -z "$hash" ]]; then
+    die "--stamp: inside $root but could not compute a fingerprint (a git command inside the stamp failed, or no sha1sum/shasum is installed)"
+  fi
+  printf '%s\n' "$hash"
+  exit 0
+fi
+
 if [[ "$mode" == "status" || "$mode" == "wait" ]]; then
   [[ -f "$status_path" ]] || die "no such artifact: $status_path"
 
@@ -470,7 +624,12 @@ mkdir -p "$out_dir" || die "cannot create directory: $out_dir"
 # sides resolve differently could never match. Costs one git invocation at launch.
 subject_root="$(git rev-parse --show-toplevel 2>/dev/null)"
 subject_hash=""
-[[ -n "$subject_root" ]] && subject_hash="$(subject_stamp "$subject_root")"
+if [[ -n "$subject_root" ]]; then
+  # Inside a repo but the stamp failed: record that fact, never an empty value that --status would
+  # read as "outside a repo" (see subject_report).
+  subject_hash="$(subject_stamp "$subject_root")" || subject_hash="$SUBJECT_UNAVAILABLE"
+  [[ -n "$subject_hash" ]] || subject_hash="$SUBJECT_UNAVAILABLE"
+fi
 subject_block="$(printf '%s%s\n%s%s' \
   "$SUBJECT_ROOT_PREFIX" "$subject_root" \
   "$SUBJECT_PREFIX" "${subject_hash:-none}")"
