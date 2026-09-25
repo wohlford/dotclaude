@@ -27,15 +27,40 @@ evidence does not settle it, the commit stands alone. A missed fold costs tidine
 fold misrepresents which brick fixed what, permanently and in public.
 
 **Classifying each commit right does not make the PLAN right.** A brick sits at its FIRST
-member's position but materialises at its LAST, so a fold moves content forward while leaving
-position early — and a later brick sharing one of its paths then re-materialises that path at
-an EARLIER state. Every per-commit verdict can be correct while the plan they compose into
-ends a file at the wrong content. Measured on a 27-commit publish: the final tree would have
-been 10 lines short, catchable only by the publish path's own convergence check, i.e. after
-every brick was built and tagged. So the plan is now checked for convergence HERE, before any
-of that work: a fold is emitted only if no later brick overwrites it, and one that would be is
-DROPPED rather than reordered — reordering is one more composition claim nothing has checked,
-and standing a commit alone costs only tidiness.
+member's position but materialises the UNION of its members' paths at its LAST. Every non-member
+commit strictly between first and last is therefore already baked into that endpoint's tree — if
+it touches a path in the union, the brick publishes that commit's change early, under the wrong
+subject. Two shapes were measured:
+
+- Overwrite: the later brick holding the jumped commit then re-materialises the shared path at
+  an EARLIER state. On a 27-commit publish the final tree would have been 10 lines short —
+  visible to final-tree convergence, but only by the publish path's own check, after every brick
+  was built and tagged.
+- Misattribution: on the 28-commit `055a44d..85458d6` range, `3ee47c4` folding into
+  `9c1cf46` (`fix(guards): …`) jumped `51a8127` (the alias fix), which rewrites three of that
+  unit's paths — so the alias fix would have shipped one brick early under the `fix(guards)`
+  subject, and its own brick would have been a near no-op. The final tree was IDENTICAL, so no
+  convergence check could see it: attribution is wrong, the content is not.
+
+So a fold is now dropped whenever its unit **jumps over** a commit sharing one of its paths — a
+rule that SUBSUMES the overwrite shape too: collision-free implies convergent, for a
+LINEAR range. Proof sketch: let a path `p`'s last toucher `t` sit in unit `U` (first `f`, last
+`e`; `f < e` only when `U` is multi-member — a singleton has nothing strictly between). If `U` is
+the last-positioned unit touching `p`, nothing after `t` touches it, so `blob(e, p) ==
+blob(tip, p)`. Otherwise a later-positioned unit `V` (first `v > f`) holds some toucher `t'` of
+`p` with `v <= t' <= e`; since `t' not in U`, `t'` is a jumped non-member of `U` that touches `p`
+— a collision. So collision-free forces convergence, and the repair stays DROP, never reorder:
+reordering is one more composition claim nothing has checked, and standing a commit alone costs
+only tidiness.
+
+The convergence check STAYS — not as the thing that catches this rule's own defect (it
+structurally cannot, by the proof above), but as the plan's postcondition on everything the
+jumped rule does not decide for it: a `RESULT: FAIL` there means the RANGE cannot converge AS
+ORDERED (a merge, or any other non-linear history) — a fact about the range this file was asked
+to plan over, not a silent repair and not a bug in this file to reorder its way out of. A
+surviving fold can still jump over a commit that shares NO path with it at all (docs landing one
+brick before the tool they document) — no path set can see that by construction, so it is listed
+as an advisory for the operator to judge, never dropped on its own.
 
 The `--audit`-style holistic pairings the publish path requires (a skill and its regenerated
 sync-docs index entry in one brick; a shebang file and its exec bit in one brick) are NOT
@@ -54,13 +79,15 @@ Usage: publish-fold-plan.py [--scope <path>] [--watermark <ref>] [--published <r
 
 Exit codes: 0 a plan was produced and PROVEN convergent, 1 nothing to plan (empty range) or a
 residual divergence, 2 usage/precondition error.
-Terminal verdict line: `RESULT: <STATUS> rc=<n> commits=<n> bricks=<n> folds=<n>
-undecided=<n> dropped=<n> converges=yes`.
+Terminal verdict line: `RESULT: PASS rc=0 commits=<n> bricks=<n> folds=<n> undecided=<n>
+dropped=<n> converges=yes`; on a residual divergence `RESULT: FAIL rc=1 … dropped=<n>
+diverging=<n>`; on an empty range `RESULT: FAIL rc=1 commits=0 bricks=0 folds=0 undecided=0`.
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 import re
 import subprocess
 import sys
@@ -77,9 +104,19 @@ class PlanError(Exception):
 
 
 def git(scope: str, *args: str) -> str:
-    """Run git in `scope` and return its stdout, raising PlanError on failure."""
+    """Run git in `scope` and return its stdout, raising PlanError on failure.
+
+    Every git call here decodes with `surrogateescape`: this file reads paths unquoted (`-z`,
+    `core.quotePath=false`), so a name that is not valid UTF-8 arrives as raw bytes. Measured,
+    strict decoding raised UnicodeDecodeError on a Latin-1 name — a traceback and no verdict
+    line. Surrogate-escaped, the same string round-trips back into the next git call's argv.
+    """
     proc = subprocess.run(
-        ["git", "-C", scope, *args], capture_output=True, text=True, check=False
+        ["git", "-C", scope, *args],
+        capture_output=True,
+        text=True,
+        errors="surrogateescape",
+        check=False,
     )
     if proc.returncode != 0:
         raise PlanError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
@@ -90,7 +127,11 @@ def git_ok(scope: str, *args: str) -> bool:
     """True when the git command exits 0. For predicates, where failure is an answer."""
     return (
         subprocess.run(
-            ["git", "-C", scope, *args], capture_output=True, text=True, check=False
+            ["git", "-C", scope, *args],
+            capture_output=True,
+            text=True,
+            errors="surrogateescape",
+            check=False,
         ).returncode
         == 0
     )
@@ -105,9 +146,31 @@ def diff_lines(
     only manufacture a false verdict, never support a true one. The RAW count is returned
     alongside so the caller can still tell "removed nothing at all" from "removed only blanks"
     — reporting the second as the first would be a false statement about the commit.
+
+    `-c core.quotePath=false` on the `show` call: without it, git C-quotes a non-ASCII path in
+    the `--- a/`/`+++ b/` headers (`"a/caf\\303\\251.md"`), and this function's `target[2:]`
+    prefix-strip then drops the leading `"a` and keeps the rest, octal escapes and trailing
+    quote included (`/caf\\303\\251.md"`) — the extracted path is garbage, though the SAME
+    garbage on both sides of every diff for that file (git's quoting is deterministic), so it
+    stays a stable dict key here and folding still works. What breaks is `published_lines()`,
+    called with that same garbled key: `git show ref:<garbage>` cannot resolve a real blob, so
+    it always reads empty — a commit that removes a still-published line in a non-ASCII-named
+    file is misclassified as FOLD/UNDECIDED instead of OWN BRICK, which is the wrong direction
+    to be wrong in. `quotePath=false` fixes the common
+    case (accented and other non-ASCII bytes); it does NOT fix a path containing a literal quote,
+    backslash, tab or newline — git C-quotes those unconditionally, `quotePath` or not — and this
+    function does not attempt to un-quote that shape.
     """
     out = git(
-        scope, "show", "--format=", "--unified=0", "--no-renames", "--no-color", sha
+        scope,
+        "-c",
+        "core.quotePath=false",
+        "show",
+        "--format=",
+        "--unified=0",
+        "--no-renames",
+        "--no-color",
+        sha,
     )
     removed: dict[str, set[str]] = {}
     added: dict[str, set[str]] = {}
@@ -156,6 +219,7 @@ def base_version(scope: str, published: str) -> str:
         ["git", "-C", scope, "describe", "--tags", "--abbrev=0", published],
         capture_output=True,
         text=True,
+        errors="surrogateescape",
         check=False,
     )
     tag = proc.stdout.strip()
@@ -185,6 +249,7 @@ class Planner:
                 ["git", "-C", self.scope, "show", f"{self.published}:{path}"],
                 capture_output=True,
                 text=True,
+                errors="surrogateescape",
                 check=False,
             )
             body = proc.stdout if proc.returncode == 0 else ""
@@ -308,10 +373,21 @@ def assemble(results: list[dict]) -> list[dict]:
     return bricks
 
 
-def commit_paths(scope: str, sha: str) -> set[str]:
-    """The paths one commit touches — a brick's file set is the union over its members."""
-    out = git(scope, "show", "--format=", "--name-only", "--no-renames", sha)
-    return {line for line in out.split("\n") if line.strip()}
+@functools.lru_cache(maxsize=None)
+def commit_paths(scope: str, sha: str) -> frozenset[str]:
+    """The paths one commit touches — a brick's file set is the union over its members.
+
+    Cached: `jumped_collisions` calls this once per (member, jumped-commit) pair per candidate
+    brick, so a busy range calls it O(bricks × jumps) times over the SAME (scope, sha) pairs
+    every prune-loop iteration. Read via `-z`, which git never quotes or escapes — unlike a
+    plain `--name-only` listing (or the diff headers `diff_lines` parses), which C-quotes a
+    non-ASCII path and was measured blind to it: on a fixture pairing this with `diverging_paths`
+    (`ordering`'s shape, on a `café.md`-named file), the quoted path made `blob()` read `None` on
+    BOTH sides of the comparison, and `None != None` is `False` — the fold was proposed and
+    reported `converges=yes` while actually overwriting the file.
+    """
+    out = git(scope, "show", "--format=", "--name-only", "-z", "--no-renames", sha)
+    return frozenset(p for p in out.split("\0") if p)
 
 
 def blob(scope: str, ref: str, path: str) -> str | None:
@@ -320,19 +396,19 @@ def blob(scope: str, ref: str, path: str) -> str | None:
         ["git", "-C", scope, "rev-parse", f"{ref}:{path}"],
         capture_output=True,
         text=True,
+        errors="surrogateescape",
         check=False,
     )
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
-def diverging_paths(scope: str, bricks: list[dict], working: str) -> set[str]:
-    """Paths the plan would NOT leave at the working tip's content.
+def brick_writers(scope: str, bricks: list[dict]) -> dict[str, str]:
+    """Map path -> the endpoint sha that LAST writes it, applying bricks in plan order.
 
-    This is the publish path's own convergence predicate, decided here instead of after
-    every brick has been built and tagged. Applying a brick writes its whole file set at its
-    ENDPOINT, so a path's final content is whatever the LAST brick touching it materialises
-    — which is not the last commit that touched it once a fold moves a brick's content
-    forward while leaving its position early.
+    A brick materialises its whole file set at its endpoint; walking bricks in order and
+    letting the last write win follows `publish-brick.sh`'s application order. Not its file set
+    exactly: for a RENAME the engine's publish mode lists only the new path, where this file's
+    `--no-renames` lists both — so a `converges=yes` here does not vouch for a renamed path.
     """
     writer: dict[str, str] = {}
     for brick in bricks:
@@ -341,6 +417,18 @@ def diverging_paths(scope: str, bricks: list[dict], working: str) -> set[str]:
             *(commit_paths(scope, sha) for sha in brick["members"])
         ):
             writer[path] = endpoint
+    return writer
+
+
+def diverging_paths(scope: str, bricks: list[dict], working: str) -> set[str]:
+    """Paths the plan would NOT leave at the working tip's content.
+
+    This is the publish path's own convergence predicate — no longer what PRUNES an unsafe
+    fold (see `jumped_collisions`), but the plan's postcondition on everything that rule does
+    not decide for it: a range that cannot converge as ordered (a merge, or any other
+    non-linear history) still fails here, loudly, rather than shipping silently wrong.
+    """
+    writer = brick_writers(scope, bricks)
     return {
         path
         for path, endpoint in writer.items()
@@ -348,37 +436,77 @@ def diverging_paths(scope: str, bricks: list[dict], working: str) -> set[str]:
     }
 
 
-def prune_unsafe_folds(scope: str, results: list[dict], working: str) -> list[str]:
-    """Unfold every fold whose brick a later brick would overwrite. Returns what was dropped.
+def jumped_commits(brick: dict, order: list[str]) -> list[str]:
+    """Non-member commits strictly between a brick's first and last member, in range order.
+
+    A brick sits at its first member's position but is applied at its last, so everything
+    strictly between them is already baked into the last member's tree by the time the brick
+    would publish — this is what the brick JUMPS OVER.
+    """
+    members = set(brick["members"])
+    first_idx = order.index(brick["members"][0])
+    last_idx = order.index(brick["members"][-1])
+    return [sha for sha in order[first_idx + 1 : last_idx] if sha not in members]
+
+
+def jumped_collisions(
+    scope: str, brick: dict, order: list[str]
+) -> dict[str, list[str]]:
+    """{path: [shas]} for every jumped commit touching a path in the brick's own file set.
+
+    Covers both measured shapes (module docstring): the one that leaves a path short of the tip,
+    and the one `diverging_paths` can never see, where the final tree still matches the tip and
+    only the subject the change shipped under is wrong.
+    """
+    union = set().union(*(commit_paths(scope, sha) for sha in brick["members"]))
+    collisions: dict[str, list[str]] = {}
+    for sha in jumped_commits(brick, order):
+        for path in commit_paths(scope, sha) & union:
+            collisions.setdefault(path, []).append(sha)
+    return collisions
+
+
+def prune_unsafe_folds(scope: str, results: list[dict]) -> list[str]:
+    """Unfold every brick whose unit jumps over a commit sharing one of its paths.
 
     A fold is only ever a tidiness win, so the repair is to DROP it — never to reorder the
-    bricks, which would assert one more composition claim nothing has checked. Unfolding
-    strictly reduces the fold count, so this terminates; with no folds at all the bricks are
-    in commit order and the last brick touching a path is the last commit that touched it,
-    which converges by construction.
+    bricks, which would assert one more composition claim nothing has checked. The culprit is
+    the LAST-positioned multi-member brick with a collision; dropping strictly reduces the fold
+    count each pass, so this terminates. `diverging_paths` is deliberately NOT consulted here —
+    collision-free implies convergent for a linear range (module docstring), so once this loop
+    finishes it finds nothing on a linear range; what it can still find — a range that cannot
+    converge as ordered, such as one carrying a merge — is not repairable by dropping a fold,
+    and is left to `report()`'s postcondition to FAIL.
     """
+    order = [item["sha"] for item in results]
     dropped: list[str] = []
     while True:
         bricks = assemble(results)
-        bad = diverging_paths(scope, bricks, working)
-        if not bad:
+        culprit = None
+        collisions: dict[str, list[str]] = {}
+        for brick in reversed(bricks):
+            if len(brick["members"]) <= 1:
+                continue
+            found = jumped_collisions(scope, brick, order)
+            if found:
+                culprit, collisions = brick, found
+                break
+        if culprit is None:
             return dropped
-        culprit = next(
-            brick
-            for brick in reversed(bricks)
-            if len(brick["members"]) > 1
-            and bad
-            & set().union(*(commit_paths(scope, sha) for sha in brick["members"]))
-        )
         for sha in culprit["members"][1:]:
             item = next(entry for entry in results if entry["sha"] == sha)
             item["target"] = None
             item["verdict"] = "OWN BRICK"
             item["detail"] = (
-                "would have folded, but a later brick re-materialises a shared path at an "
-                "earlier state — the fold is dropped so the plan converges"
+                "its unit would have jumped over a commit changing one of its paths — the "
+                "brick would publish that change early under its own subject, so the fold is "
+                "dropped"
             )
-            item["evidence"] = [f"collides on: {path}" for path in sorted(bad)[:3]]
+            item["evidence"] = [
+                f"collides on: {path} (changed by "
+                f"{', '.join(jumped[:7] for jumped in shas)})"
+                for path, shas in sorted(collisions.items())[:3]
+            ]
             dropped.append(sha)
 
 
@@ -395,8 +523,9 @@ def report(
     ).split()
     if merges:
         print(
-            f"NOTE: {len(merges)} merge commit(s) in range are not classified — "
-            "they are proposed as their own bricks and need a human call"
+            f"NOTE: {len(merges)} merge commit(s) in range went through the same classifier, "
+            "which reads a merge's diff as an ordinary one, so their verdicts are unreliable — "
+            "each needs a human call before running the plan"
         )
     print()
 
@@ -409,7 +538,10 @@ def report(
         # these three sites can embed arbitrary text — a commit subject, removed source, or
         # evidence — that happens to name `publish-brick.sh` and would otherwise misparse as
         # an invocation. Render-site prefixing, not per-producer, catches all three known
-        # producers (:217-228, :247-248, :381) and any future one in one place.
+        # producers (`classify`'s still-published evidence, `classify`'s fold-target
+        # evidence, and `prune_unsafe_folds`'s collision evidence) and any future one in one
+        # place — named by function here rather than by line, which rots the moment any of
+        # them moves.
         print(f"# [{n}] {item['sha'][:7]}  {item['subject']}")
         print(f"    # -> {head} — {item['detail']}")
         for line in item["evidence"]:
@@ -435,23 +567,53 @@ def report(
         )
     if dropped:
         print(
-            f"\n{len(dropped)} fold(s) were DROPPED because a later brick would have "
-            "re-materialised a shared path at an earlier state:"
+            f"\n{len(dropped)} fold(s) were DROPPED because their unit would have jumped "
+            "over a commit changing one of its paths:"
         )
         for sha in dropped:
             print(f"  {sha[:7]} stands alone")
 
-    # Postcondition, not decoration: every fold above was accepted only because this held.
-    # It is the publish path's own convergence predicate, and the ONE question the per-commit
-    # verdicts never answer — each can be right while the order they compose into is wrong.
+    # A surviving multi-member brick can still jump over a commit that shares NO path with
+    # it — nothing here can drop that (no path set sees it: docs landing one brick before
+    # the tool they document is the measured case), so it is surfaced as a question for the
+    # operator instead. `#`-prefixed, shas only, and the sentence below deliberately never
+    # names publish-brick.sh, so parse_plan's real consumers cannot misread this block.
+    order = [item["sha"] for item in results]
+    jump_notes: list[str] = []
+    for brick in bricks:
+        if len(brick["members"]) <= 1:
+            continue
+        jumps = jumped_commits(brick, order)
+        if not jumps:
+            continue
+        first, *others = brick["members"]
+        tail = "".join(f" +{sha[:7]}" for sha in others)
+        shas = " ".join(sha[:7] for sha in jumps)
+        jump_notes.append(f"# {first[:7]}{tail} jumps over {len(jumps)}: {shas}")
+    if jump_notes:
+        print(
+            "\nA surviving fold can still jump over a commit sharing none of its paths — "
+            "ordering that no path set can see; the operator should judge it:"
+        )
+        for note in jump_notes:
+            print(note)
+
+    # Postcondition, not decoration: a PASS is offered only when this holds. A FAIL here
+    # means the RANGE cannot converge as ordered — a merge, or any other non-linear history —
+    # which is a fact about the range, not a bug in this file to silently repair by reordering.
     residual = diverging_paths(scope, bricks, args.working)
     if residual:
         print(
             f"\nRESULT: FAIL rc=1 commits={len(results)} bricks={len(bricks)} "
-            f"folds={folds} undecided={undecided} diverging={len(residual)}"
+            f"folds={folds} undecided={undecided} dropped={len(dropped)} "
+            f"diverging={len(residual)}"
         )
+        writer = brick_writers(scope, bricks)
         for path in sorted(residual)[:5]:
-            print(f"  would not converge: {path}", file=sys.stderr)
+            print(
+                f"  would not converge: {path} (last written by brick {writer[path][:7]})",
+                file=sys.stderr,
+            )
         return 1
 
     if folds:
@@ -477,6 +639,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--published", default=DEFAULT_PUBLISHED)
     parser.add_argument("--working", default=DEFAULT_WORKING)
     args = parser.parse_args(argv)
+    # A surrogate-escaped path (see `git`) cannot be encoded back out strictly, so printing one
+    # in evidence would raise at the last step. `backslashreplace` prints the surrogate code
+    # point instead (measured: `caf\udce9.txt` for the Latin-1 byte 0xE9), not the raw byte.
+    sys.stdout.reconfigure(errors="backslashreplace")
+    sys.stderr.reconfigure(errors="backslashreplace")
 
     scope = args.scope or "."
     if not git_ok(scope, "rev-parse", "--show-toplevel"):
@@ -523,7 +690,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     try:
-        dropped = prune_unsafe_folds(scope, results, args.working)
+        dropped = prune_unsafe_folds(scope, results)
     except PlanError as exc:
         print(f"cannot plan: {exc}", file=sys.stderr)
         return 2

@@ -14,6 +14,7 @@ motivated the rule: several commits touching the SAME file that must stay separa
 
 import importlib.util
 import os
+import random
 import re
 import subprocess
 import sys
@@ -56,6 +57,25 @@ def commit(repo, message, **files):
         (repo / name.replace("__", "/")).write_text(body)
     git(repo, "add", "-A")
     git(repo, "commit", "-qm", message)
+    return git(repo, "rev-parse", "HEAD")
+
+
+def commit_dated(repo, message, date, **files):
+    """Like `commit`, but pins GIT_COMMITTER_DATE/GIT_AUTHOR_DATE — for fixtures that need a
+    specific commit order regardless of wall-clock creation order (e.g. a side-branch commit
+    that must sort AFTER a mainline commit it did not descend from)."""
+    for name, body in files.items():
+        (repo / name.replace("__", "/")).write_text(body)
+    git(repo, "add", "-A")
+    env = {**os.environ, "GIT_COMMITTER_DATE": date, "GIT_AUTHOR_DATE": date}
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "commit", "-qm", message],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(f"git commit failed: {proc.stderr}")
     return git(repo, "rev-parse", "HEAD")
 
 
@@ -753,3 +773,607 @@ def test_the_silent_shape_inflates_the_count_past_the_hand_declared_fixture_size
     parse_plan = load_parse_plan()
     bricks = parse_plan(out)
     assert len(bricks) == 2
+
+
+# ---------- a fold that jumps over a commit sharing one of its paths (2026-09-24 plan) ----------
+#
+# A brick sits at its FIRST member's position but materialises the UNION of its members' paths
+# at its LAST member's content. For a linear range, a non-member commit strictly between
+# first and last is already baked into that last member's tree — if that non-member touched a
+# path in the union, the brick publishes the non-member's change under the wrong subject, one
+# brick early. The final tree can still match the dev tip exactly (the jumped commit's content
+# is a strict prefix of what the endpoint already carries), which is why `diverging_paths` —
+# the plan's only postcondition — was measured not to fire on this shape at all.
+
+
+@pytest.fixture
+def jumped(tmp_path):
+    """dev: w(x.txt "x0", y.txt "y0") -> A(x +"ax", y +"ay") -> B(y +"by") -> C(x -"ax").
+
+    C removes only "ax", which A alone added, so C folds into A. B sits strictly between A and
+    C and touches y.txt, which is also in {A, C}'s union of paths (A added "ay" there). The
+    brick {A, C} would materialise y.txt at C's content — which already carries B's "by" line,
+    since history is linear — one brick before B's own brick runs.
+    """
+    d = tmp_path / "j"
+    d.mkdir()
+    git(d, "init", "-q", "-b", "dev", ".")
+    git(d, "config", "user.email", "test@test.invalid")
+    git(d, "config", "user.name", "test")
+    git(d, "config", "commit.gpgsign", "false")
+    git(d, "config", "tag.gpgsign", "false")
+    (d / ".publication.toml").write_text('production = "dev"\n')
+    w = commit(d, "feat(xy): start", **{"x.txt": "x0\n", "y.txt": "y0\n"})
+    a = commit(d, "feat(xy): extend both", **{"x.txt": "x0\nax\n", "y.txt": "y0\nay\n"})
+    b = commit(d, "feat(y): extend y again", **{"y.txt": "y0\nay\nby\n"})
+    c = commit(d, "fix(x): revert the extension", **{"x.txt": "x0\n"})
+    git(d, "update-ref", "refs/published/main", w)
+    git(d, "branch", "main", w)
+    box = Sandbox(d)
+    box.shas = {"w": w, "a": a, "b": b, "c": c}
+    return box
+
+
+def test_a_fold_jumping_a_commit_that_shares_a_path_is_dropped(jumped):
+    """Measured on this fixture before the jumped-collision rule: the planner proposed {a, c}
+    as one brick, because its only pruning (diverging_paths) checked final-tree convergence,
+    and this fold's final tree matches the dev tip on every path — B's content is a strict
+    prefix of C's y.txt. The fold is dropped instead: C stands alone."""
+    out = run(jumped).stdout
+    assert "dropped=1" in out, out
+    assert "folds=0" in out, out
+
+
+def test_the_dropped_fold_names_the_shared_path_and_the_jumped_commit(jumped):
+    """The dropped commit's block should name the colliding path and the commit that jumped
+    over — the evidence an operator needs to see WHY a fold that looked safe was refused.
+
+    Checked as ONE output line carrying both facts (planned evidence format:
+    `collides on: <path> (changed by <sha7>[, <sha7>...])`), not merely that both substrings
+    appear somewhere in the tail of the output — `short(sha)` alone is satisfied by unrelated
+    text, including the proposed `publish-brick.sh ... <sha7> ...` line further down.
+    """
+    out = run(jumped).stdout
+    b7 = short(jumped.shas["b"])
+    matching = [
+        ln
+        for ln in out.splitlines()
+        if "collides on: y.txt" in ln and f"changed by {b7}" in ln
+    ]
+    assert matching, out
+
+
+def test_the_jumped_fold_converges_so_convergence_cannot_see_it(jumped):
+    """CONTROL: applying the fold the planner used to propose — {a, c} then {b} — converges
+    to the dev tip on every path. This is the measured reason the convergence postcondition
+    could not catch the defect: it is green here before AND after the jumped-collision rule,
+    because the fold really does converge; only its attribution is wrong."""
+    plan = [
+        (jumped.shas["c"][:7], [jumped.shas["a"][:7], jumped.shas["c"][:7]]),
+        (jumped.shas["b"][:7], [jumped.shas["b"][:7]]),
+    ]
+    final = simulate(jumped, plan)
+    assert final == dev_tip_blobs(jumped, final)
+
+
+@pytest.fixture
+def leap(tmp_path):
+    """dev: w(x.txt "x0") -> A(x +"ax") -> B(new z.txt) -> C(x -"ax", folds into A).
+
+    B sits strictly between A and C but touches z.txt, a path entirely disjoint from the
+    fold's union ({x.txt}) — nothing collides, so the fold is safe to keep. It is still worth
+    surfacing as an advisory: the operator sees which commit the surviving fold jumped over.
+    """
+    d = tmp_path / "lp"
+    d.mkdir()
+    git(d, "init", "-q", "-b", "dev", ".")
+    git(d, "config", "user.email", "test@test.invalid")
+    git(d, "config", "user.name", "test")
+    git(d, "config", "commit.gpgsign", "false")
+    git(d, "config", "tag.gpgsign", "false")
+    (d / ".publication.toml").write_text('production = "dev"\n')
+    w = commit(d, "feat(x): start", **{"x.txt": "x0\n"})
+    a = commit(d, "feat(x): extend", **{"x.txt": "x0\nax\n"})
+    b = commit(d, "feat(z): add z", **{"z.txt": "z0\n"})
+    c = commit(d, "fix(x): revert", **{"x.txt": "x0\n"})
+    git(d, "update-ref", "refs/published/main", w)
+    git(d, "branch", "main", w)
+    box = Sandbox(d)
+    box.shas = {"w": w, "a": a, "b": b, "c": c}
+    return box
+
+
+def test_a_fold_jumping_only_disjoint_commits_survives_and_is_listed(leap):
+    """The surviving fold should be listed as an advisory naming what it jumped over, and the
+    parsed plan's brick count should match the planner's own verdict line."""
+    out = run(leap).stdout
+    assert "folds=1" in out, out
+    jump_lines = [
+        ln
+        for ln in out.splitlines()
+        if ln.lstrip().startswith("#") and "jumps over" in ln
+    ]
+    assert jump_lines, out
+    assert "jumps over 1" in jump_lines[0]
+    assert short(leap.shas["b"]) in jump_lines[0]
+    # Counted with the hardened drive parser — the one the real consumers (publish-drive.py,
+    # publish-rehearse.py) actually read — rather than the local `parse_plan` helper above.
+    # For this fixture the two cannot disagree: the advisory line is `#`-prefixed AND never
+    # contains "publish-brick.sh", so a mutant that dropped its leading "#" would be invisible
+    # to either parser (design: consumers key on the substring, not the prefix alone). This is
+    # still the right instrument to reach for, since it is what production actually runs.
+    parse_plan_drive = load_parse_plan()
+    bricks = parse_plan_drive(out)
+    assert len(bricks) == bricks_from_verdict(out)
+
+
+def test_an_adjacent_fold_lists_no_jump(repo):
+    """CONTROL: `repo`'s fold {c2, c3} is adjacent — nothing sits strictly between them — so
+    no advisory line should ever be emitted for it, before or after any change here."""
+    out = run(repo).stdout
+    jump_lines = [ln for ln in out.splitlines() if "jumps over" in ln]
+    assert not jump_lines, out
+
+
+# ---------- property: no plan ever publishes a jumped commit's path early ----------
+
+
+RANDOM_HISTORY_FILES = ("alpha.txt", "beta.txt", "gamma.txt")
+
+
+def build_random_history(d, seed):
+    """A small history over 3 files: 4-7 commits, each touching 1-2 files, each touched file
+    either gaining a unique appended line or (40% of the time, once it has one available)
+    losing a previously in-range-added line. Deterministic per seed."""
+    d.mkdir()
+    git(d, "init", "-q", "-b", "dev", ".")
+    git(d, "config", "user.email", "test@test.invalid")
+    git(d, "config", "user.name", "test")
+    git(d, "config", "commit.gpgsign", "false")
+    git(d, "config", "tag.gpgsign", "false")
+    (d / ".publication.toml").write_text('production = "dev"\n')
+    for f in RANDOM_HISTORY_FILES:
+        (d / f).write_text("seed\n")
+    git(d, "add", "-A")
+    git(d, "commit", "-qm", "feat(r): start")
+    w = git(d, "rev-parse", "HEAD")
+    git(d, "update-ref", "refs/published/main", w)
+    git(d, "branch", "main", w)
+
+    rng = random.Random(seed)
+    added = {f: [] for f in RANDOM_HISTORY_FILES}
+    counter = 0
+    for i in range(rng.randint(4, 7)):
+        touched = rng.sample(RANDOM_HISTORY_FILES, rng.choice([1, 2]))
+        payload = {}
+        for f in touched:
+            text = (d / f).read_text()
+            if added[f] and rng.random() < 0.4:
+                victim = rng.choice(added[f])
+                remaining = [ln for ln in text.splitlines() if ln != victim]
+                payload[f] = "\n".join(remaining) + ("\n" if remaining else "")
+                added[f].remove(victim)
+            else:
+                counter += 1
+                unique = f"s{seed}n{counter}"
+                payload[f] = text + unique + "\n"
+                added[f].append(unique)
+        commit(d, f"feat(r): step {i}", **payload)
+    return d
+
+
+def full_sha_map(repo):
+    """Map every 7-char sha prefix reachable in this repo to its full sha."""
+    out = git(repo, "log", "--all", "--format=%H")
+    return {sha[:7]: sha for sha in out.split("\n") if sha}
+
+
+def touched_paths(repo, sha):
+    out = git(repo, "show", "--format=", "--name-only", "--no-renames", sha)
+    return {line for line in out.split("\n") if line}
+
+
+def test_random_histories_never_publish_a_jumped_commit_early(tmp_path):
+    """Property: for every multi-member unit the planner proposes, no commit strictly between
+    its first and last member (in watermark..dev order) may share a path with the unit's own
+    union of paths — that is exactly the shape a brick publishes one position early. Checked
+    entirely test-side from git, never by importing the planner's own functions, so the check
+    cannot inherit whatever the planner gets wrong. Measured: 7 of these 15 seeded histories
+    reproduced the defect on the planner before the jumped-collision rule."""
+    total_multi_member = 0
+    total_dropped = 0
+    for seed in range(15):
+        d = tmp_path / f"rh{seed}"
+        build_random_history(d, seed)
+
+        proc = run(d)
+        assert proc.returncode == 0, f"seed {seed}: {proc.stdout}{proc.stderr}"
+        assert "converges=yes" in proc.stdout, f"seed {seed}: {proc.stdout}"
+
+        dropped_match = re.search(r"dropped=(\d+)", proc.stdout)
+        total_dropped += int(dropped_match.group(1)) if dropped_match else 0
+
+        sha_map = full_sha_map(d)
+        full_order = git(d, "rev-list", "--reverse", "refs/published/main..dev").split()
+        plan = parse_plan(proc.stdout)
+
+        for _endpoint, members in plan:
+            full_members = [sha_map[s] for s in members]
+            if len(full_members) < 2:
+                continue
+            total_multi_member += 1
+            first_idx = full_order.index(full_members[0])
+            last_idx = full_order.index(full_members[-1])
+            jumped_commits = [
+                sha
+                for sha in full_order[first_idx + 1 : last_idx]
+                if sha not in full_members
+            ]
+            union_paths: set[str] = set()
+            for member_sha in full_members:
+                union_paths |= touched_paths(d, member_sha)
+            for jumped_sha in jumped_commits:
+                collision = union_paths & touched_paths(d, jumped_sha)
+                assert not collision, (
+                    f"seed {seed}: fold {[s[:7] for s in full_members]} jumps over "
+                    f"{jumped_sha[:7]} sharing {sorted(collision)}"
+                )
+
+        final = simulate(d, plan)
+        assert final == dev_tip_blobs(d, final), f"seed {seed}: plan does not converge"
+
+    assert total_multi_member >= 1, "no seed produced a folded (multi-member) unit"
+    # Weak on its own: measured, this already held before the jumped-collision rule, satisfied
+    # entirely by OTHER seeds' drops through the divergence-based prune that rule replaced — it
+    # would pass even if the rule were never built.
+    # See the pinned-seed row below for the assertion that actually depends on the new rule.
+    assert total_dropped >= 1, "no seed produced any dropped fold"
+
+
+def test_a_seed_with_a_collision_but_no_divergence_is_still_dropped(tmp_path):
+    """Pinned regression for the property test's own `total_dropped >= 1` floor above, which was
+    already satisfied before the jumped-collision rule by other seeds' divergence-based drops.
+    Seed 3 of the same generator (`build_random_history`) is the seed whose outcome depends on
+    the rule: measured, it produced a surviving fold sharing a path with a commit it jumps over,
+    while `diverging_paths` never fired for it (the fold still converges), so the planner
+    reported `dropped=0` for this exact history."""
+    d = tmp_path / "rh_pinned_3"
+    build_random_history(d, 3)
+    out = run(d).stdout
+    dropped = int(re.search(r"dropped=(\d+)", out).group(1))
+    assert dropped >= 1, out
+
+
+# ---------- a merge-bearing range crashed instead of reporting a verdict (plan review) ----------
+#
+# A pre-existing, unrelated bug surfaced while probing the jumped-collision shape with a merge:
+# `prune_unsafe_folds`'s old culprit search looked only among MULTI-member bricks; when the
+# divergence it hunted was owned by a SINGLE-commit brick instead, its `next(...)` matched
+# nothing, and an uncaught StopIteration killed the process before `report()` ever ran — no
+# `RESULT:` line at all.
+
+
+@pytest.fixture(params=["p.txt", "pé.txt"], ids=["ascii", "non-ascii"])
+def merge_bearing(tmp_path, request):
+    """Parametrized over an ASCII and a non-ASCII name for p.txt. The non-ASCII case once
+    passed silently: a quoted `--name-only` path made `blob()` read None on both sides, so the
+    divergence below never registered.
+
+    dev: BASE(p.txt "p0") -> M1(p.txt +"m1", OLDER date) on dev directly; separately, a side
+    branch off BASE carries S1(p.txt +"s1", NEWER date); dev then merges the side branch with
+    `-s ours` (keeping M1's content byte-for-byte, so the merge commit's own diff is empty) ->
+    X(new q.txt). Watermark/main at BASE.
+
+    Nothing here removes an in-range line, so every commit is its own singleton brick. Yet
+    `diverging_paths` still flags p.txt: in commit (hence brick) order M1, S1, merge, X, the
+    LAST brick recorded as "owning" p.txt in the writer dict is S1's singleton — whose content
+    the `-s ours` merge discarded — so `blob(S1, p.txt) != blob(dev tip, p.txt)`. The old
+    culprit search for a MULTI-member brick to unfold found none among four singletons.
+    """
+    name = request.param
+    d = tmp_path / "mb"
+    d.mkdir()
+    git(d, "init", "-q", "-b", "dev", ".")
+    git(d, "config", "user.email", "test@test.invalid")
+    git(d, "config", "user.name", "test")
+    git(d, "config", "commit.gpgsign", "false")
+    git(d, "config", "tag.gpgsign", "false")
+    (d / ".publication.toml").write_text('production = "dev"\n')
+    base = commit(d, "feat(p): start", **{name: "p0\n"})
+    git(d, "update-ref", "refs/published/main", base)
+    git(d, "branch", "main", base)
+
+    m1 = commit_dated(
+        d, "feat(p): mainline extends", "2026-01-01T00:00:00", **{name: "p0\nm1\n"}
+    )
+
+    git(d, "checkout", "-q", "-b", "side", base)
+    s1 = commit_dated(
+        d, "feat(p): side extends", "2026-01-02T00:00:00", **{name: "p0\ns1\n"}
+    )
+
+    git(d, "checkout", "-q", "dev")
+    env = {
+        **os.environ,
+        "GIT_COMMITTER_DATE": "2026-01-03T00:00:00",
+        "GIT_AUTHOR_DATE": "2026-01-03T00:00:00",
+    }
+    proc = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(d),
+            "merge",
+            "-s",
+            "ours",
+            "-q",
+            "-m",
+            "feat(p): keep mainline",
+            "side",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(f"git merge failed: {proc.stderr}")
+    merge = git(d, "rev-parse", "HEAD")
+
+    x = commit_dated(d, "feat(q): add q", "2026-01-04T00:00:00", **{"q.txt": "q0\n"})
+
+    box = Sandbox(d)
+    box.shas = {"base": base, "m1": m1, "s1": s1, "merge": merge, "x": x}
+    return box
+
+
+def test_a_merge_bearing_range_reports_a_verdict_instead_of_crashing(merge_bearing):
+    """Measured: the planner died with an uncaught StopIteration on this fixture (traceback on
+    stderr, rc=1, and stdout EMPTY — `report()`, which prints every line including the
+    `RESULT:` line, never ran, since the crash was in `prune_unsafe_folds`, called before it).
+    It now reaches `report()`'s own postcondition and fails loudly there."""
+    order = git(
+        merge_bearing, "rev-list", "--reverse", "refs/published/main..dev"
+    ).split()
+    assert order.index(merge_bearing.shas["s1"]) > order.index(
+        merge_bearing.shas["m1"]
+    ), order
+
+    proc = run(merge_bearing)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    last_line = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
+    assert last_line.startswith("RESULT: FAIL rc=1"), (
+        f"stdout: {proc.stdout!r}\nstderr: {proc.stderr!r}"
+    )
+    assert "diverging=" in last_line, last_line
+    assert "dropped=" in last_line, last_line
+
+
+# ---------- a non-ASCII path is invisible to the convergence check (plan review) ----------
+#
+# Git quotes/escapes a non-ASCII path by default in plain `--name-only` output and in the
+# `--- a/`/`+++ b/` diff headers, and this tool once read paths from both — so the extracted
+# path string did not match the real bytes. `blob()`'s `git rev-parse ref:<mangled path>` then
+# failed on BOTH sides of a divergence comparison, and `None != None` is False: the `ordering`
+# shape went unreported, because the check never resolved either side.
+
+
+@pytest.fixture
+def cafe_ordering(tmp_path):
+    """The `ordering` fixture's exact shape (w -> a add L2 -> b add L3 -> c drop L2, so c folds
+    into a) on a file whose name is not pure ASCII. b sits between a and c and touches the same
+    path, so the jumped-collision rule drops this fold. It does so whether or not paths are
+    read quoted — the rule compares the quoted string with itself — so this row does NOT pin the
+    `-z` read; measured, reverting `commit_paths`'s `-z` alone left it green, and only
+    `merge_bearing[non-ascii]` went red. That row is the `-z` regression; this one pins the
+    drop on a non-ASCII name.
+    """
+    d = tmp_path / "cf"
+    d.mkdir()
+    git(d, "init", "-q", "-b", "dev", ".")
+    git(d, "config", "user.email", "test@test.invalid")
+    git(d, "config", "user.name", "test")
+    git(d, "config", "commit.gpgsign", "false")
+    git(d, "config", "tag.gpgsign", "false")
+    (d / ".publication.toml").write_text('production = "dev"\n')
+    name = "café.md"
+    w = commit(d, "feat(doc): add doc", **{name: "L1\n"})
+    a = commit(d, "feat(doc): add L2", **{name: "L1\nL2\n"})
+    b = commit(d, "feat(doc): add L3", **{name: "L1\nL2\nL3\n"})
+    c = commit(d, "fix(doc): drop L2", **{name: "L1\nL3\n"})
+    git(d, "update-ref", "refs/published/main", w)
+    git(d, "branch", "main", w)
+    box = Sandbox(d)
+    box.shas = {"w": w, "a": a, "b": b, "c": c}
+    # NOT `box.path` — `Sandbox.path` already holds the repo's real directory, and assigning
+    # over it silently breaks `run()`'s `--scope`, which reads `str(box)` -> `str(box.path)`.
+    box.filename = name
+    return box
+
+
+def touched_paths_z(repo, sha):
+    """Like `touched_paths` above, but via `-z`, which git never quotes or escapes — unlike the
+    shared `simulate`/`touched_paths` helpers elsewhere in this file, which read a plain
+    (quoted) `--name-only` and would be blind to this exact defect the way the planner was. A
+    correctness check for a non-ASCII path must not reuse those helpers."""
+    out = git(repo, "show", "--format=", "--name-only", "--no-renames", "-z", sha)
+    return [p for p in out.split("\0") if p]
+
+
+def test_a_fold_over_a_non_ascii_path_is_not_proposed_and_actually_converges(
+    cafe_ordering,
+):
+    """Same claim as `test_a_fold_that_would_be_overwritten_by_a_later_brick_is_not_proposed`
+    (the `ordering` fixture's ASCII version): the fold should not be proposed, because it does
+    not actually converge. Convergence is checked with `-z`-based path reading (see
+    `touched_paths_z`) so this test's own check does not share the quoted-name blindness the
+    planner's convergence postcondition once had.
+    """
+    out = run(cafe_ordering).stdout
+    plan = parse_plan(out)
+    assert [members for _, members in plan] == [
+        [cafe_ordering.shas["a"][:7]],
+        [cafe_ordering.shas["b"][:7]],
+        [cafe_ordering.shas["c"][:7]],
+    ], out
+
+    final: dict[str, str] = {}
+    for endpoint, members in plan:
+        paths: set[str] = set()
+        for sha in members:
+            paths |= set(touched_paths_z(cafe_ordering, sha))
+        for path in paths:
+            final[path] = git(cafe_ordering, "rev-parse", f"{endpoint}:{path}")
+    dev_tip = {path: git(cafe_ordering, "rev-parse", f"dev:{path}") for path in final}
+    assert final == dev_tip, f"plan does not converge on the non-ASCII path:\n{out}"
+
+
+# ---------- a published line removed from a non-ASCII path must stay its own brick ----------
+
+
+@pytest.fixture
+def cafe_published(tmp_path):
+    """w publishes café.md ("keep", "pub"); a removes the PUBLISHED line "pub"."""
+    d = tmp_path / "cp"
+    d.mkdir()
+    git(d, "init", "-q", "-b", "dev", ".")
+    git(d, "config", "user.email", "test@test.invalid")
+    git(d, "config", "user.name", "test")
+    git(d, "config", "commit.gpgsign", "false")
+    git(d, "config", "tag.gpgsign", "false")
+    (d / ".publication.toml").write_text('production = "dev"\n')
+    w = commit(d, "feat(doc): start", **{"café.md": "keep\npub\n"})
+    a = commit(d, "fix(doc): trim", **{"café.md": "keep\n"})
+    git(d, "update-ref", "refs/published/main", w)
+    git(d, "branch", "main", w)
+    box = Sandbox(d)
+    box.shas = {"w": w, "a": a}
+    return box
+
+
+def test_removing_a_published_line_from_a_non_ascii_path_is_its_own_brick(
+    cafe_published,
+):
+    """Measured: `diff_lines` read the C-quoted `--- a/` header, so the removed line was keyed
+    under a mangled path, `published_lines` could never resolve it, and the commit came out
+    UNDECIDED — evidence of a published line lost to the quoting, and one step from a FOLD, the
+    wrong direction to be wrong in on the publish path."""
+    out = run(cafe_published).stdout
+    verdict = out.split(short(cafe_published.shas["a"]))[1].split("\n")[1]
+    assert "OWN BRICK" in verdict, out
+    assert "still present in published" in verdict, out
+
+
+# ---------- a path that is not valid UTF-8 must still reach a verdict ----------
+
+LATIN1_NAME = os.fsdecode(b"caf\xe9.txt")
+
+
+def commit_blobs(repo, message, files):
+    """Commit `files` ({path: text}) through the index directly, so a path whose bytes are not
+    valid UTF-8 can be committed without the filesystem having to accept it."""
+    for path, body in files.items():
+        blob_sha = (
+            subprocess.run(
+                ["git", "-C", str(repo), "hash-object", "-w", "--stdin"],
+                input=body.encode(),
+                capture_output=True,
+                check=True,
+            )
+            .stdout.decode()
+            .strip()
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                f"100644,{blob_sha},{path}",
+            ],
+            capture_output=True,
+            check=True,
+        )
+    git(repo, "commit", "-qm", message)
+    return git(repo, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+def latin1_jumped(tmp_path):
+    """The `jumped` shape with the SHARED path named in Latin-1 bytes: a folds c into itself
+    across b, and b changes the Latin-1 path, so the drop's evidence must print that name."""
+    d = tmp_path / "l1"
+    d.mkdir()
+    git(d, "init", "-q", "-b", "dev", ".")
+    git(d, "config", "user.email", "test@test.invalid")
+    git(d, "config", "user.name", "test")
+    git(d, "config", "commit.gpgsign", "false")
+    git(d, "config", "tag.gpgsign", "false")
+    (d / ".publication.toml").write_text('production = "dev"\n')
+    git(d, "add", ".publication.toml")
+    w = commit_blobs(d, "feat(l): start", {"x.txt": "x0\n", LATIN1_NAME: "y0\n"})
+    a = commit_blobs(
+        d, "feat(l): extend both", {"x.txt": "x0\nax\n", LATIN1_NAME: "y0\nay\n"}
+    )
+    b = commit_blobs(d, "feat(l): extend y again", {LATIN1_NAME: "y0\nay\nby\n"})
+    c = commit_blobs(d, "fix(l): revert the extension", {"x.txt": "x0\n"})
+    git(d, "update-ref", "refs/published/main", w)
+    git(d, "branch", "main", w)
+    box = Sandbox(d)
+    box.shas = {"w": w, "a": a, "b": b, "c": c}
+    return box
+
+
+def test_a_path_that_is_not_utf8_still_reaches_a_verdict(latin1_jumped):
+    """Measured by the final branch review: once git stopped quoting path names (`-z`,
+    `core.quotePath=false`), a Latin-1 path reached `text=True` decoding raw and raised
+    UnicodeDecodeError — a traceback and no `RESULT:` line, where the quoted form had parsed.
+    The fold here must still be dropped, with evidence naming the path, and a verdict printed."""
+    proc = run(latin1_jumped)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    last_line = proc.stdout.strip().split("\n")[-1]
+    assert last_line.startswith("RESULT: PASS rc=0"), proc.stdout + proc.stderr
+    assert "dropped=1" in last_line, last_line
+    b7 = short(latin1_jumped.shas["b"])
+    assert any(
+        "collides on: caf" in ln and f"changed by {b7}" in ln
+        for ln in proc.stdout.split("\n")
+    ), proc.stdout
+
+
+@pytest.fixture
+def latin1_in_range(tmp_path):
+    """A Latin-1-named file that is NOT published: a adds it, b trims a line a added (so b folds
+    into a), c deletes it (its line was a's too, so c folds as well). Classifying b and c asks
+    the published tree for that path, and the convergence check asks every ref for it — each a
+    lookup that FAILS, so git's error names the raw bytes on stderr."""
+    d = tmp_path / "l2"
+    d.mkdir()
+    git(d, "init", "-q", "-b", "dev", ".")
+    git(d, "config", "user.email", "test@test.invalid")
+    git(d, "config", "user.name", "test")
+    git(d, "config", "commit.gpgsign", "false")
+    git(d, "config", "tag.gpgsign", "false")
+    (d / ".publication.toml").write_text('production = "dev"\n')
+    git(d, "add", ".publication.toml")
+    w = commit_blobs(d, "feat(l): start", {"x.txt": "x0\n"})
+    commit_blobs(d, "feat(l): add the latin file", {LATIN1_NAME: "keep\ncut\n"})
+    commit_blobs(d, "fix(l): trim it", {LATIN1_NAME: "keep\n"})
+    git(d, "rm", "-q", "--cached", LATIN1_NAME)
+    git(d, "commit", "-qm", "fix(l): retire it")
+    git(d, "update-ref", "refs/published/main", w)
+    git(d, "branch", "main", w)
+    return Sandbox(d)
+
+
+def test_an_unpublished_non_utf8_path_is_looked_up_without_crashing(latin1_in_range):
+    """Measured by the tip review: with `surrogateescape` removed from `published_lines` and
+    `blob` alone, this shape crashed (UnicodeDecodeError, no `RESULT:` line) while every other
+    row stayed green — `latin1_jumped` never reaches a FAILING lookup of a non-UTF-8 path, and
+    only a failing lookup puts the raw bytes on stderr."""
+    proc = run(latin1_in_range)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    last_line = proc.stdout.strip().split("\n")[-1]
+    assert last_line.startswith("RESULT: PASS rc=0"), proc.stdout + proc.stderr
+    assert "folds=2" in last_line, last_line

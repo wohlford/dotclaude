@@ -21,7 +21,8 @@ runs, at the artifact the operator actually reads, and an edited plan is the nor
 Measured, and this is what unblocked the driver: on the 25-brick publish the human half of the
 LOOP caught nothing — all 25 bricks passed their own audits, while the only threatening defect was
 invisible per-brick and detectable only at convergence. `publish-fold-plan.py` now proves
-convergence before offering a plan, so what this drives is a plan already proven to converge.
+convergence before its verdict can read PASS — but it prints the plan either way, and this driver
+never reads that verdict, so confirm the plan's `RESULT: PASS` before handing it over.
 
 **It is not a publisher.** It never pushes and never moves the watermark; both remain foreground,
 human, and after this step. A halt leaves the published branch exactly where the last proven brick
