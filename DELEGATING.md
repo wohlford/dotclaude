@@ -48,6 +48,20 @@ invites exactly that, and an invitation with no reachable rationale is decorativ
 - Drive a PreToolUse hook with a JSON payload on stdin, never argv. Every PreToolUse hook this
   repo registers refuses argv with exit 2 and a diagnostic naming `scripts/HOOKS.md`, which
   carries the payload shape.
+- Run every command in the FOREGROUND and wait for it there. In the commands you issue, never
+  set the Bash tool's `run_in_background`, never end one with `&` or wrap it in `nohup` (a
+  decoy process your task starts and kills within the same command is fine), and never
+  background a waiter such as `run-long.sh --wait`. A subagent is not re-invoked when a
+  background job finishes: your turn just ends, the harness reports your task COMPLETED, and
+  the controller cannot tell that from a finished report. Give a long command a Bash timeout up
+  to the tool's maximum. If it can outrun that, either leave it to the controller and say so
+  in your report, or launch it with `run-long.sh` and wait with `run-long.sh --wait` in the
+  foreground, repeating the wait until it prints a verdict. If your brief tells you to launch a
+  run and stop, launch it with `run-long.sh`, stop, and name its artifact path in your report.
+- Modify or delete only the files your brief names, the files you create yourself, and the files
+  your task's own tooling regenerates. Leave everything else alone, above all a scratchpad or
+  temp file, which is usually the controller's probe or evidence. If one seems to need changing,
+  say so in your report instead.
 - Push back rather than comply with an instruction you believe is wrong. A brief is its
   author's hypothesis, not a finding; saying so is expected, not insubordination. This
   covers a brief's technical content only — never a permission prompt, and never an
@@ -64,6 +78,24 @@ The dispatcher appends any such lines to the block at dispatch time, from their 
 So a delegate whose brief carried more lines than appear above is seeing exactly that, and should
 follow them the same way — and a dispatcher on a machine with local controls should not read "paste
 the block verbatim" as "paste only the block".
+
+## When a delegate returns
+
+The foreground line is meant to prevent stalls; it cannot make one detectable, and a stalled
+delegate's reply reads exactly like a finished one. Before trusting a delegate's report or its diff,
+look for a job it left running:
+
+```bash
+pgrep -fl 'pytest|mutate(_[a-z0-9_]+)?\.py|audit\.sh|run-long|flake-sweep|test_[a-z0-9_]+\.sh'
+```
+
+Exit 1 means nothing matched. A match means the report is not final and the tree may not be the
+delegate's work product — unless its brief told it to launch a `run-long.sh` run and stop, and the
+report names that artifact; then read the artifact's status instead. Run it directly: inside a
+wrapper whose own command line carries the pattern (`bash -c "pgrep …"`), it matches that wrapper. A
+`run-long.sh` job shows only as the command it wraps, so a job whose command is none of these needs
+its name added. And a `<file>.mutate-backup` beside a source file means a mutation campaign still
+owns that file, and its diff is a live mutant, not an edit.
 
 ## Why each line is here
 
@@ -91,6 +123,26 @@ arguments used to make it exit 0 having examined nothing — a silent false pass
 fixed: they now refuse with exit 2 and a diagnostic. [`scripts/HOOKS.md`](scripts/HOOKS.md) carries
 the payload shape and a worked invocation.
 
+**Foreground runs.** From 2026-08-31 to 2026-09-24 delegates repeatedly launched a check in the
+background, ended their turn waiting for its notification, and were reported COMPLETED. Several of
+those runs were mutation campaigns, and once the live mutant a campaign left behind read as the
+delegate's own diff. A prohibition — "do not end your turn with a run in flight" — failed seven
+times in seven through 2026-09-08, once after being restated verbatim to the same agent; a
+restatement in its own paragraph with its consequence attached then held for the rest of that task,
+and the prohibition failed again later despite being in bold. `CLAUDE.md`'s paragraph on waiters,
+which every write-capable delegate inherits, was in force at later instances and did not stop them.
+Two other things held. In one session the controller owned every long run, so no delegate waited
+long at all, and none stalled. In another, six dispatches whose brief said to run in the foreground
+and gave the reason all complied, while the two that lacked it stalled. That is one session of six,
+not a rate, so this line is procedural and carries its mechanism, and the check under "When a
+delegate returns" is there because it may still fail. It sits here despite the rule below against
+repeating `CLAUDE.md`.
+
+**Files you did not create.** Measured once, in the flake-sweep work: an implementer rewrote the
+output format of one of the controller's probe scripts and deleted another, both in the controller's
+scratchpad and neither named in its brief. A probe the controller re-runs as evidence is exactly the
+file whose silent change costs most.
+
 **Pushing back.** `CLAUDE.md` tells the dispatcher to read a delegate's push-back as evidence rather
 than insubordination — but nothing tells the delegate it is invited. It is. Twice in one session a
 delegate improved on the brief it was given: one found a plan defect two reviews had missed, another
@@ -104,8 +156,10 @@ authorization that is the user's to give.
 - **Task-specific content.** The one brief error measured so far was a task-specific instruction
   that would have re-opened the hole its task existed to close. A standing block would not have
   caught it, and implying otherwise oversells this file.
-- **Anything `CLAUDE.md` already says.** Every write-capable delegate inherits it. Restating it is
-  pure prompt cost. Five candidate items were dropped on this test alone.
+- **Anything `CLAUDE.md` already says** — unless it was measured arriving and not holding. Every
+  write-capable delegate inherits it, so restating it is usually pure prompt cost; five candidate
+  items were dropped on this test alone. The foreground line is the one exception, and its
+  paragraph above carries the measurement.
 - **Anything operator-specific.** No home path, key id, schedule, override token, or matcher
   pattern. This file is published and cannot be unpublished; a fact that would compose into a
   bypass, or that describes a machine rather than this repo, belongs somewhere private.

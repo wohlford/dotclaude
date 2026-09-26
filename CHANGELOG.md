@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.117.3 — 2026-09-25
+- docs(delegating): require foreground runs and a return-time job check
+
 ## v0.117.2 — 2026-09-25
 - docs(CLAUDE.md): point flaky-check measurement at flake-sweep.sh
 
