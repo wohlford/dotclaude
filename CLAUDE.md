@@ -310,6 +310,16 @@ left legal.
   override returned rc=2 naming the deadline. Choose the check by asking what the old version would
   have answered. Its own failure mode: a new-only behaviour can be absent for an unrelated reason —
   a flag, an env override — so it proves the new code is PRESENT, never that the rest of it works.
+- **A test that calls the subject's OWN entry point IN-PROCESS never reaches what happens at PROCESS
+  EXIT — and the verdict a hook's caller reads is the exit code.** Not the re-implemented-loop
+  case: the right function ran, unmodified. Measured: a hook's fix wrapped a failing stderr write
+  and returned 2, and an in-process row calling its `main()` passed; as a real process with a
+  broken-pipe stderr the unflushed bytes made the interpreter's SHUTDOWN flush fail, so it exited
+  **120** — an allow — on two interpreters. A task review and a scoped re-review both verdicted it
+  ADDRESSED on that row; only a whole-branch review driving the real process caught it. **Drive the
+  shipped process, and watch that row go RED on the old code.** Its own failure mode: a subprocess
+  row reaches exit behaviour only for the environment it constructs — the closed and broken-pipe
+  stderr cases each needed their own row.
 
 #### A second run proves less than it looks like
 
