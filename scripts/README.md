@@ -36,6 +36,8 @@ for how the index below stays in sync.
 | `md-links-check.py`              | PostToolUse hook — verify relative links and anchors in edited markdown resolve                                            |
 | `memory-index-check-test.sh`     | PostToolUse hook — run the memory-index-check test suite when the checker changes                                          |
 | `memory-index-check.py`          | PostToolUse hook — flag a memory-index entry, or the whole file, grown too large                                           |
+| `mutate-edit-guard-test.sh`      | PostToolUse hook — run the mutate-edit-guard test suite when the guard or mutate.py changes                                |
+| `mutate-edit-guard.py`           | PreToolUse hook — refuse an edit to a file a mutation campaign owns (its sidecar exists)                                   |
 | `mutation-anchors-check-test.sh` | PostToolUse hook — run the mutation-anchors-check test suite when the checker changes                                      |
 | `mutation-anchors-check.py`      | Assert every mutation campaign's `old` anchor still resolves exactly once in its subject                                   |
 | `plan-rehearse.py`               | Run an implementation plan's verification checks in an isolated clone and report what ran                                  |

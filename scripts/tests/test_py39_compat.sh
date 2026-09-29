@@ -59,6 +59,12 @@ else
   probe push-guard.py             "$payload_safe" 0 'push-guard allows a non-push under 3.9'
   probe publication-push-guard.py "$payload_push" 2 'publication-push-guard BLOCKS a dev push under 3.9'
   probe recast-commit-gate.py     "$payload_safe" 0 'recast-commit-gate allows a non-commit under 3.9'
+  owned39=$(mktemp -d)
+  : > "$owned39/f.py"
+  : > "$owned39/f.py.mutate-backup"
+  probe mutate-edit-guard.py "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$owned39/f.py\"}}" 2 'mutate-edit-guard BLOCKS an owned file under 3.9'
+  probe mutate-edit-guard.py "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$owned39/g.py\"}}" 0 'mutate-edit-guard allows a free file under 3.9'
+  rm -rf "$owned39"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

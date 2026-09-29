@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.118.0 — 2026-09-26
+- feat(hooks): refuse edits to a file a mutation campaign owns
+
 ## v0.117.4 — 2026-09-26
 - fix(mutate): write the backup sidecar atomically beside the real file
 

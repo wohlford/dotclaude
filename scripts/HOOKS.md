@@ -1,7 +1,7 @@
 # Authoring hooks
 
 The scripts in this directory are Claude Code hooks — most are **PostToolUse** (run after every
-`Edit`/`Write`, waving the change through or blocking it), plus a **PreToolUse** deny-gate (see
+`Edit`/`Write`, waving the change through or blocking it), plus several **PreToolUse** deny-gates (see
 below). They share one protocol; a new hook should follow it. The existing scripts are the worked
 examples.
 
@@ -125,6 +125,17 @@ Accepted limits of that guard, for the record: it intercepts **file tools only**
 Bash tool still reaches the file); it matches **basenames** (a file inside a directory named `.env`
 slips); and `*.key`/`*.pem` occasionally hit non-secrets (Keynote decks, public certs) — a rare,
 explainable false block we accept for a tight deny list.
+
+Another deny-gate, `mutate-edit-guard.py`, refuses `Edit`/`Write`/`MultiEdit`/`NotebookEdit` on a
+file whose `<file>.mutate-backup` sidecar exists — the signal `lib/mutate.py` leaves while a
+mutation campaign owns the file, whose end-of-run restore would silently overwrite the edit. It
+checks the sidecar beside the path as given and beside its realpath, copies (never imports) the
+suffix so it keeps working while `mutate.py` is itself a campaign subject, and fails open on any
+internal error. Accepted limits: a shell write (`sed -i`, a heredoc, `cp`) through the Bash tool is
+not intercepted; reads are not refused; a live campaign and a dead one's stranded sidecar block
+alike, which is correct, since either way the file is not safe to edit; and a campaign that STARTS
+between this check and the write it allowed still clobbers that write (an unavoidable
+check-then-act window).
 
 ## Regression-guard pairing
 

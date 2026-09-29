@@ -11,6 +11,15 @@
         ]
       },
       {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/mutate-edit-guard.py"
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
@@ -104,6 +113,10 @@
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/env-claims-check-test.sh"
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/mutate-edit-guard-test.sh"
           },
           {
             "type": "command",

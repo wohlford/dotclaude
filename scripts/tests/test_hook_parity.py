@@ -136,14 +136,14 @@ def _has_grep_line(text: str) -> bool:
 # The measured population on 2026-09-04, when the class had grown 9 -> 14 unnoticed. Asserting
 # against len(FLOOR) instead would be strictly subsumed by test_floor_members_are_all_registered
 # — FLOOR being a subset, no state exists where that passes and a >= len(FLOOR) row fails.
-# 15 measured on 2026-09-16.
-MEASURED_POPULATION = 15
+# 15 measured on 2026-09-16; 16 on 2026-09-26 (mutate-edit-guard-test.sh).
+MEASURED_POPULATION = 16
 
 
 def test_population_is_non_trivial():
     """A sweep over a shrunken population passes against anything and reads like a clean run."""
     assert len(HOOKS) >= MEASURED_POPULATION, (
-        "derived only %d hooks, expected at least the %d measured on 2026-09-16: %s — if a hook "
+        "derived only %d hooks, expected at least the %d measured on 2026-09-26: %s — if a hook "
         "was deregistered deliberately, lower this number in the same commit"
         % (len(HOOKS), MEASURED_POPULATION, HOOKS)
     )

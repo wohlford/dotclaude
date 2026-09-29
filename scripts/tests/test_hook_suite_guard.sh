@@ -199,6 +199,7 @@ ppg-commit-advisor|publication-push-guard-test.sh|scripts/commit-subject-advisor
 ppg-commit-guard|publication-push-guard-test.sh|scripts/commit-subject-guard.py|scripts/tests/test_commit_subject_guard.sh
 ppg-commit-subject-lib|publication-push-guard-test.sh|scripts/lib/commit_subject.py|scripts/tests/test_commit_subject.py
 env-claims-check|env-claims-check-test.sh|scripts/env-claims-check.py|scripts/tests/test_env_claims_check.py
+mutate-edit-guard|mutate-edit-guard-test.sh|scripts/mutate-edit-guard.py|scripts/tests/test_mutate_edit_guard.py
 mutation-anchors-check|mutation-anchors-check-test.sh|scripts/mutation-anchors-check.py|scripts/tests/test_mutation_anchors_check.py
 recast|recast-test.sh|skills/recast/recast-recon-history.sh|skills/recast/tests/test_recast_recon_history.py
 hook-machinery|hook-machinery-test.sh|scripts/style-check-test.sh|scripts/tests/test_hook_suite_guard.sh scripts/tests/test_hook_parity.py scripts/tests/test_hook_argv_refusal.py scripts/tests/test_hook_budget.py
