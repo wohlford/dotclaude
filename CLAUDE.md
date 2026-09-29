@@ -102,6 +102,11 @@ of 8 — without it an already-red suite scores every mutation CAUGHT and the sw
 Before re-running a check by hand to learn whether it is flaky, use
 `~/.claude/scripts/flake-sweep.sh -n <N> -- <command>`: it reports each row's RATE over an
 unchanged tree and FAILs on any variance — its header lists what its tree stamp cannot see.
+Before hand-building a replay of transcript commands through two guard builds — a harness rebuilt
+and lost at least three times — use `~/.claude/scripts/guard-parity.py --old <rev> --new <rev>
+--artifact-dir <a directory outside the repo>` through `run-long.sh`: it judges the four
+tokenizer-sharing guards over the real population, audits its own fast path against genuine
+processes on every run, and ends in one verdict line.
 Before hand-writing a script that applies OLD→NEW edits across files, use
 `~/.claude/scripts/lib/bulk_edit.py`, supplying only the `Edit` list: it judges every file in
 memory before writing any. Four such scripts were hand-written in one session
