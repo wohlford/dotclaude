@@ -26,6 +26,7 @@ for how the index below stays in sync.
 | `flake-sweep.sh`                 | Run a command N times against a verifiably unchanged tree and report each row's pass/fail/skip rate.                       |
 | `git-timing-guard.py`            | PreToolUse hook — block PUBLISHING outside a configured time window                                                        |
 | `git-timing-guard.sh`            | TRANSITIONAL shim — exec's the real hook, scripts/git-timing-guard.py                                                      |
+| `guard-parity.py`                | Replay every distinct transcript Bash command through two pinned guard builds and list each verdict difference             |
 | `guard-secrets-test.sh`          | PostToolUse hook — run the guard-secrets test suite when the guard changes                                                 |
 | `guard-secrets.sh`               | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem)                                              |
 | `hook-machinery-test.sh`         | PostToolUse hook — run the hook tests when a test-runner hook or the machinery around it changes                           |

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.119.0 — 2026-09-29
+- feat(guard-parity): replay real commands through two guard builds
+
 ## v0.118.1 — 2026-09-26
 - docs(CLAUDE.md): add the in-process exit-code hazard
 
