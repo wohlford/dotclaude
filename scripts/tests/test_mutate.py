@@ -819,6 +819,73 @@ def test_a_stale_backup_over_an_INTACT_subject_is_cleared_and_the_run_proceeds(b
     assert not backup.exists()
 
 
+def test_the_backup_sits_beside_the_REAL_file_whatever_spelling_the_subject_had(bed):
+    """The edit guard looks for the sidecar beside the file an edit RESOLVES to.
+
+    A campaign handed a FILE symlink used to park its sidecar beside the link, so an edit through
+    the real path found nothing — the one spelling pair scripts/mutate-edit-guard.py cannot reach
+    on its own. Both spellings must now name the one sidecar beside the real file.
+    """
+    root, subject, _ = bed
+    link = root / "link.py"
+    link.symlink_to(subject)
+    linkdir = root / "linkdir"
+    linkdir.symlink_to(root, target_is_directory=True)
+    want = root / ("subject.py" + mutate.BACKUP_SUFFIX)
+    assert mutate.backup_path(subject) == want
+    assert mutate.backup_path(link) == want, (
+        "a file-symlink subject parked its sidecar by the link"
+    )
+    assert mutate.backup_path(linkdir / "subject.py") == want
+
+
+def test_a_TORN_backup_write_leaves_no_partial_sidecar(bed, monkeypatch):
+    """A partial sidecar would be PRESENTED AS THE ORIGINAL.
+
+    scripts/mutate-edit-guard.py blocks any file whose sidecar exists and prints
+    `cp <sidecar> <subject>` as the recovery, so a torn write left on disk turns a disk-full
+    moment into an instructed overwrite of a pristine subject with a truncated one.
+    """
+    _, subject, suite = bed
+    backup = mutate.backup_path(subject)
+    real = mutate.Path.write_text
+
+    def torn(self, data, *a, **kw):
+        if self.name.startswith(backup.name):  # the sidecar and any temp beside it
+            real(self, data[:5], *a, **kw)
+            raise OSError("simulated disk full")
+        return real(self, data, *a, **kw)
+
+    monkeypatch.setattr(mutate.Path, "write_text", torn)
+    report = mutate.run(subject, suite(), [DROP_GUARD])
+    assert report.status == "ERROR", report.text
+    assert "cannot write the backup" in report.text
+    leftovers = sorted(
+        p.name for p in subject.parent.iterdir() if p.name.startswith(backup.name)
+    )
+    assert leftovers == [], f"a torn write left {leftovers} on disk"
+    assert subject.read_text() == SUBJECT_SRC
+
+
+def test_a_campaign_through_a_FILE_SYMLINK_restores_the_target_and_clears_the_sidecar(
+    bed,
+):
+    """PRESERVE (green before and after this change): end to end through a link.
+
+    Its job is to go red if resolving the sidecar path ever changes WHERE the restore lands or
+    strands a sidecar beside either spelling.
+    """
+    root, subject, suite = bed
+    link = root / "link.py"
+    link.symlink_to(subject)
+    report = mutate.run(link, suite(), [DROP_GUARD])
+    assert report.status == "PASS", report.text
+    assert link.is_symlink(), "the restore replaced the link with a regular file"
+    assert subject.read_text() == SUBJECT_SRC
+    assert not mutate.backup_path(subject).exists()
+    assert not (root / ("link.py" + mutate.BACKUP_SUFFIX)).exists()
+
+
 def test_the_backup_exists_while_the_suite_runs_and_is_gone_afterwards(bed):
     """Asserts the protection window, not merely the absence of litter.
 

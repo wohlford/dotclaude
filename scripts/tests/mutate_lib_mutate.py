@@ -124,8 +124,13 @@ MUTATIONS = [
     ),
     mutate.Mutation(
         "the backup is never written, so nothing survives an uncatchable SIGKILL",
-        "        backup.write_text(original)",
+        "        _write_atomic(backup, original)",
         "        pass",
+    ),
+    mutate.Mutation(
+        "the backup is written in place, so a torn write leaves a partial sidecar",
+        "        tmp.write_text(text)\n        os.replace(tmp, path)",
+        "        path.write_text(text)",
     ),
     mutate.Mutation(
         "a stale backup is ignored, so a campaign runs against an already-mutated subject",

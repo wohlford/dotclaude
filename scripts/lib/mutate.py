@@ -82,7 +82,9 @@ changes the fixture's environment — and a suite that resolves paths, reads git
 own evidence before it ships, so it is not offered yet.
 
 **Consequence of in-place, and it has bitten:** editing the subject while a campaign is running
-gets clobbered by the restore. Do not edit the subject until the run finishes.
+gets clobbered by the restore. `scripts/mutate-edit-guard.py` now refuses a file-tool edit
+(Edit/Write/MultiEdit/NotebookEdit) while the sidecar exists; a SHELL write is not intercepted,
+so do not edit the subject from the shell until the run finishes.
 """
 
 from __future__ import annotations
@@ -220,13 +222,41 @@ def is_caught(
 
 
 def backup_path(subject) -> Path:
-    """Where a campaign parks the pristine subject. Public: it is what a human recovers from."""
-    subject = Path(subject)
+    """Where a campaign parks the pristine subject. Public: it is what a human recovers from.
+
+    Beside the RESOLVED file, whatever spelling the campaign was given, because
+    scripts/mutate-edit-guard.py refuses an edit by looking beside the file the edit resolves to.
+    Beside a symlink instead, an edit through the real path would find no sidecar. Consequence:
+    a sidecar an OLDER copy of this module parked beside a link is invisible to this module's
+    start-time stale-backup check (the edit guard still sees it, through its as-given candidate,
+    when the edit uses that same link spelling).
+    """
+    subject = Path(subject).resolve()
     return subject.with_name(subject.name + BACKUP_SUFFIX)
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Write `text` so that `path` holds either nothing or ALL of it — never a torn copy.
+
+    The backup sidecar is what a human, and scripts/mutate-edit-guard.py's printed recovery, copy
+    back over the subject. A partial sidecar left by a failed in-place write would be presented as
+    the original and restored over a pristine file. So the bytes go to a sibling temp file, which
+    is renamed into place only once complete, and removed on any failure.
+
+    This covers a failed or killed PROCESS — the disk-full moment it names above — not power
+    loss: there is no fsync, so a crash between the write and the rename can still lose the
+    rename's durability on an unclean shutdown.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(text)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _clear_pycache(subject: Path) -> None:
@@ -482,7 +512,7 @@ def run(
     original = subject.read_text()
     before = _sha256(subject)
     try:
-        backup.write_text(original)
+        _write_atomic(backup, original)
     except OSError as exc:
         lines.append(f"ERROR  cannot write the backup {backup} — {exc}")
         return _report("ERROR", 2, 0, 0, total, lines)
