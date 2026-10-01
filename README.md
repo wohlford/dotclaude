@@ -61,6 +61,8 @@ Wondering how the pieces fit — what takes effect where, and what owns what? Se
 
 ### Agents
 
+Unlike the reviewer agents in the table below, [`prose-writer`](agents/prose-writer.md) writes documents. It is pinned to `opus`, whose row in the model policy of [agents/README.md](agents/README.md) lists authoring (not reviewing) standalone documentation prose alongside architecture and design, whole-branch review and final gates. It has no shell — its tools are Read, Grep, Glob, Write and Edit — so the session that dispatches it commits what it returns. [CLAUDE.md](CLAUDE.md) routes standalone documents to it, says to dispatch it with no `model` override, which would defeat the pin, and has the dispatching session verify every return itself. Where the facts live picks the mode: in *author* mode it writes from the tree, and in *revise* mode it rewrites a draft of decisions or measurements, supplied in the brief or as the target file itself, marking each missing fact as a gap rather than filling it.
+
 <!-- sync:agents cols=Agent:key,Model:auto,Purpose:auto -->
 | Agent                    | Model  | Purpose                                                                                                                                                                                                                        |
 | :----------------------- | :----- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
