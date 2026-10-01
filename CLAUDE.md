@@ -222,6 +222,20 @@ left legal.
   CLAUDE.md prose edit, argued in two consecutive sessions to be unable to reach any suite — one grep
   then found a suite that reads CLAUDE.md and asserts on the very marker region the edit sat beside.
 
+- **Reviews and a green suite never exercise a tool's LIFECYCLE — kill, resume and sustained load
+  exist only in a long real run, so "every task passed review" excuses nothing.** Measured: a
+  replay tool passed seven task reviews, two fix passes and a 188-test suite; then a real run
+  killed with `timeout` found what none had. SIGTERM (what `timeout` and a stopped job send) skips
+  every `finally`, so all 8 workers — each given its own session so a hung one could be killed as
+  a group — outlived the tool; and a run killed mid-sweep kept NO resumable state, because the
+  parent wrote shard keys only while collecting, after every shard had finished. The full-size run
+  added one more: a guard's own 50 s deadline, under the tool's own load, read as an ordinary
+  refusal on BOTH builds. **Kill a real run, count what survives, resume it, and run it at full
+  size once** before calling it done. Its own failure mode: zero survivors proves nothing when no
+  unit can have finished yet, under a correct design too — size the input so some finish before
+  the kill (3,000 rows: 8 shards keyed at 75 s after the fix; the pre-fix tool at 400 s on
+  101,000 rows kept none).
+
 #### You wrote it down and never ran it — prose review cannot tell
 
 - **A command you write into documentation is unverified until you run it.** An un-runnable one reads
