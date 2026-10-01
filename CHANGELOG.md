@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.123.1 — 2026-09-30
+- docs(CLAUDE.md): give the run-long waiter the maximum timeout
+
 ## v0.123.0 — 2026-09-30
 - feat(feature): require a tip suite run before the oracle freezes
 
