@@ -485,8 +485,9 @@ history never had to be.
 
 1. **Freeze the oracle.** The feature-tip tree — the SDD-reviewed, gate-passed final state from steps
    1–3 above — is the convergence target; it is never re-coded, only repartitioned into bricks.
-   **Record the feature-tip SHA now**, before the branch is discarded — the tip tree-compare in point
-   4 needs it. **Assert the commit that SDD's final whole-branch review judged and the feature tip
+   **Record the feature-tip SHA at the freeze** — after the full-suite precondition below has passed
+   on it, and before the branch is discarded — the tip tree-compare in point 4 needs it. (Order: the
+   review's tree assert, then that suite run, then the freeze.) **Assert the commit that SDD's final whole-branch review judged and the feature tip
    have the same tree** before freezing; on mismatch, do not freeze — re-run that review on the tip
    and freeze only if **that review comes back clean**, or stop and report; a FAIL there is a stop,
    not a formality discharged by having re-run it — never freeze a broken tip as the oracle. Point 4
@@ -496,15 +497,37 @@ history never had to be.
    - **Precondition (BLOCKER): `dev` must not have moved since the branch was cut.** Assert
      `git merge-base dev <feature-tip>` equals `dev`'s current tip. `/feature` spans sessions, so
      `dev` advancing underneath a long-running branch is plausible, not a corner case. If `dev`
-     moved, **rebase the feature branch onto `dev`'s current tip, re-run at minimum the test suite
-     and SDD's final whole-branch review, since a rebase changes the tree that review judged — and
-     freeze the *rebased* tip** as the oracle instead. Skip this and the
+     moved, **rebase the feature branch onto `dev`'s current tip, re-run at minimum SDD's final
+     whole-branch review, since a rebase changes the tree that review judged, and the full-suite
+     run below — and freeze the *rebased* tip** as the oracle instead. Skip this and the
      tip `git diff --quiet` in point 4 would still pass — but only by *reverting* `dev`'s interim commits back out, a false
      GREEN that silently deletes work `dev` already has. If the rebase conflicts, resolve them against
      each commit's frozen intent (never silently drop a hunk) — and if one cannot be resolved without
      altering what a commit was meant to do, **stop and report**; never force a resolution that
-     changes the brick's intent. If the post-rebase suite **or review** fails, **stop
+     changes the brick's intent. If the post-rebase review **or the full-suite run below** fails, **stop
      and report — do not freeze a broken tip as the oracle.**
+   - **Precondition: the full suite has passed on this exact tip.** Step 2's `/audit` and every
+     per-brick `/audit` below are the plain sweep, which runs no suite — so without this run the
+     first suite to grade the change is point 4's, after the bricks are already on `dev`, and a
+     failure there costs a reset of `dev` and a full re-derivation. Order it: rebase if `dev`
+     moved, settle the final review and its tree assert, **then** run this, then freeze. One run
+     serves the rebase too. From the repo root, with a fresh `--out` path each run (it refuses an
+     existing one):
+
+     ```bash
+     ~/.claude/scripts/run-long.sh --out <file outside the repo> \
+       --expect 'RESULT: (PASS|FAIL|ERROR|INCOMPLETE) rc=[0-9]+' -- \
+       skills/audit/audit.sh --scope "$PWD" --tests
+     ```
+
+     Wait on it with `run-long.sh --wait` through `run_in_background`, and read its verdict back with
+     `--status`. Freeze only on `RESULT: PASS rc=0`; a `FAIL`, any other value, or an absent
+     line is a stop — point 4 needs a passing suite, so a pre-existing FAIL would stop there too.
+     It grades the tree as of its launch, so any change to the tip afterwards — a fix for a FAIL, a
+     rebase — re-runs it, **and re-runs the final review and its tree assert**, which judged a
+     tree that no longer exists. A repo with no `skills/audit/audit.sh` of its own has no sweep to run; run its full
+     suite by hand instead. Point 4's tip suite is **unchanged and still mandatory**: this is an
+     earlier run that keeps a failure cheap, not a substitute for the one that gates the deploy.
 2. **Re-plan a clean brick sequence.** Working from `dev..<feature-tip>`, narrate the total change as
    a ground-up sequence of bricks — **repartitioning the reviewed code, not re-inventing it**. This is
    a mini-recast per feature: a foreground, judgment-driven re-narration that cannot be delegated to a
