@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.124.1 — 2026-09-30
+- test(publish-postflight): add the hermetic postflight suite
+
 ## v0.124.0 — 2026-09-30
 - feat(publish-postflight): add the read-only postflight script
 
