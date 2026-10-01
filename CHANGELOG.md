@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.125.0 — 2026-09-30
+- feat(propagate): add a postflight step verifying the publish end state
+
 ## v0.124.2 — 2026-09-30
 - test(publish-postflight): add the mutation campaign
 

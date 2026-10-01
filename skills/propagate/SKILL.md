@@ -812,7 +812,51 @@ session, which is why the tooling below is in the repo.
    Advancing it earlier, followed by a failed push, would leave the watermark asserting bricks are
    published that never reached `origin`. The watermark's ref mechanics, its `--cutover` mode, and its
    integrity/absent-abort rules are documented in the watermark ref convention below; this step only
-   fixes *when* the advance happens relative to the push.
+   fixes *when* the advance happens relative to the push. Step 8 follows.
+
+8. **Postflight — verify what the publish left behind.** Run it **after** step 7's advance, since
+   its watermark checks judge the advanced ref:
+
+   ```bash
+   ./scripts/publish-postflight.sh
+   ```
+
+   **Run the copy belonging to the repo being published, and say which copy gave the verdict**, for
+   the reason given in step 1. Prefer `<repo>/scripts/publish-postflight.sh`; failing that,
+   `~/.claude/scripts/publish-postflight.sh --scope <repo>`.
+
+   **Treat the publish as verified only on `RESULT: PASS rc=0`**, read as an allowlist exactly as in
+   step 1: `FAIL`, `ERROR`, `INCOMPLETE`, and an **absent** line are each a failure to establish the
+   outcome, and the absent line means the run died. A `SKIP` never blocks. **On any non-PASS, stop
+   and report the verdict line and every `FAIL` it named.** Steps 6 and 7 have already happened and
+   this step reverses neither: a failure is never a reason to re-push, force, or re-run step 6 —
+   read what it named and decide from there. An adopted repo carrying neither copy still publishes
+   — assert the nine checks below by hand, from the repo root; that list is the specification.
+
+   The nine checks, in the script's output order (its identifiers in parentheses): `origin`'s fetch
+   URL is its one and only push URL (`origin-url`); `origin` is readable and non-empty
+   (`remote-read`); `origin` advertises only `HEAD` (while its sha equals `main`'s),
+   `refs/heads/main` (matched exactly) and tags with their `^{}` peels, so no `dev` ref is
+   advertised (`remote-refs`); `origin`'s `main` equals the local `main` (`main-sync`); `origin`'s
+   tag set equals the tags merged into `main`, compared as sets of `name object` lines under
+   `LC_ALL=C`, so a retargeted tag or an equal count of different tags still fails (`tags-parity`);
+   the watermark exists (`watermark-present`); its tree equals `main`'s
+   modulo `CHANGELOG.md` (`watermark-tree`); it is an ancestor of `dev` (`watermark-ancestor`); and
+   no `dev` commit is unpublished past it (`watermark-current`). It does **not** check tag or commit
+   signatures, `CHANGELOG.md` contents, whether the production clone has the new tags (it lags a
+   publish until the next plain `/propagate`), whether commits and tags matched one-for-one while
+   the bricks were built (the driver's concern), refs `origin` hides from `ls-remote`
+   (`uploadpack.hideRefs`), or the tip suite. An `origin` carrying a legitimate
+   `refs/pull/*` fails the ref allowlist by design. **It verifies and never repairs:** a failure
+   names what it found and prescribes nothing, and the operator decides.
+
+   **Until a postflight has PASSED against the real `origin`, read a `FAIL` as one of two things:** a
+   true defect, or a wrong assumption about `origin`. Two facts about it could not be verified
+   beforehand: that its ref namespaces are exactly `HEAD`, `refs/heads/main` and `refs/tags/*`, and
+   that its tag set equals the dev clone's tags merged into `main`. The allowlist lives in the
+   `remote-refs` check of `scripts/publish-postflight.sh`. A ref outside it is a true defect unless
+   you can show it is legitimate, and only then does the operator decide whether to widen the
+   allowlist — **never widen it to make a run green without reading what it named.**
 
 **Shared-engine parameterization.** This same procedure is written to be reused, not forked, by the
 one-time orphan cutover. The cutover substitutes two mechanical axes — the **application base**
@@ -821,7 +865,9 @@ one-time orphan cutover. The cutover substitutes two mechanical axes — the **a
 the `--cutover` gate that bypasses the absent-watermark abort. **Step 1's start-invariant does not
 apply to a first cutover** (there is no `origin/main` yet to fetch or compare against); steps 2–7 —
 re-derivation, per-brick `/audit`, tag+CHANGELOG, convergence check, watermark advance — apply
-unchanged with those substitutions. The cutover itself is out of scope here.
+unchanged with those substitutions. The cutover itself is out of scope here, and so is step 8 for
+it: the postflight is written for the steady-state append and has not been exercised against a
+cutover, so it is not claimed to apply.
 
 **Honest guarantee — do not overclaim.** Step 5's tree-compare proves **losslessness**: `main`'s tip
 tree equals `dev`'s tip tree, modulo `CHANGELOG.md`. It does **not** prove **fold-correctness** — a
