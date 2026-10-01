@@ -40,7 +40,7 @@ for how the index below stays in sync.
 | `mutate-edit-guard-test.sh`      | PostToolUse hook — run the mutate-edit-guard test suite when the guard or mutate.py changes                                |
 | `mutate-edit-guard.py`           | PreToolUse hook — refuse an edit to a file a mutation campaign owns (its sidecar exists)                                   |
 | `mutation-anchors-check-test.sh` | PostToolUse hook — run the mutation-anchors-check test suite when the checker changes                                      |
-| `mutation-anchors-check.py`      | Assert every mutation campaign's `old` anchor still resolves exactly once in its subject                                   |
+| `mutation-anchors-check.py`      | Assert every mutation campaign's `old` anchor resolves exactly once and its mutant parses                                  |
 | `plan-rehearse.py`               | Run an implementation plan's verification checks in an isolated clone and report what ran                                  |
 | `propagate-postcheck.sh`         | Verify /propagate's LOCAL promote landed and, where configured, that the boundary hook and config farm are current         |
 | `prose-diff.py`                  | Verify a restructuring is lossless by diffing word or line multisets in both directions                                    |

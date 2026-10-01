@@ -289,7 +289,9 @@ def check_mutation_anchors(clone: Path) -> tuple[str, str]:
     if proc.returncode != 0:
         return (
             "FAIL",
-            "a campaign anchor no longer resolves, or a campaign went unjudged",
+            "an anchor no longer resolves, a mutant does not parse, or no verdict was "
+            "reached (an unjudged campaign, a parse check that could not run, or a "
+            "stranded or unimportable runner)",
         )
     return "PASS", ""
 

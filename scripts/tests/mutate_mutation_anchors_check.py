@@ -106,13 +106,64 @@ MUTATIONS = [
     ),
     mutate.Mutation(
         "the verdict under-reports coverage, claiming nothing was skipped when something was",
-        "% (status, rc, len(campaigns), rows_checked, len(findings), len(untracked))",
-        "% (status, rc, len(campaigns), rows_checked, len(findings), 0)",
+        "            len(untracked),\n",
+        "            0,\n",
     ),
     mutate.Mutation(
         "the campaign-name rule widens to every .py file, sweeping the runner itself",
         '        if name.startswith(CAMPAIGN_PREFIX) and name.endswith(".py"):',
         '        if name.endswith(".py"):',
+    ),
+    # ---- a mutant that does not PARSE. Each of these leaves the sweep reading clean over a
+    # campaign whose mutant never exercises its suite.
+    mutate.Mutation(
+        "the parse judgment is never run, so an unparseable mutant is never found",
+        "    for job, (verdict, detail) in zip(jobs, verdicts):",
+        "    for job, (verdict, detail) in []:",
+    ),
+    mutate.Mutation(
+        "an invalid mutant stops failing the run — it is printed and the verdict is PASS",
+        "    elif findings or invalids:",
+        "    elif findings:",
+    ),
+    mutate.Mutation(
+        "`unchecked` is reported as 0, so a clean run claims coverage it does not have",
+        "            len(invalids),\n            sum(unchecked.values()),",
+        "            len(invalids),\n            0,",
+    ),
+    mutate.Mutation(
+        # Expect: test_a_pool_that_raises_anything_else_still_falls_back_to_serial.
+        "the pool fallback is narrowed back to (BrokenProcessPool, OSError)",
+        "    except Exception:  # noqa: BLE001 — see below",
+        "    except (concurrent.futures.process.BrokenProcessPool, OSError):",
+    ),
+    mutate.Mutation(
+        # Expect: test_a_judge_that_raises_is_CANNOT_RUN_with_a_RESULT_line.
+        "the per-row judge no longer catches a raise — main dies with no RESULT line",
+        "    except Exception as exc:  # noqa: BLE001 — a judge that raised reached no verdict",
+        "    except ZeroDivisionError as exc:  # noqa: BLE001 — a judge that raised reached no verdict",
+    ),
+    mutate.Mutation(
+        # Expect: test_a_bash_parser_that_cannot_run_is_ERROR_and_not_counted_unchecked.
+        "CANNOT_RUN rows fall into the unchecked bucket — a failed parser reads as by-design",
+        "        elif verdict == mutate.CANNOT_RUN:",
+        "        elif False:",
+    ),
+    mutate.Mutation(
+        # Expect: test_a_bash_parser_that_cannot_run_is_ERROR_and_not_counted_unchecked.
+        "CANNOT_RUN rows are collected but never become an ERROR entry — the run PASSes",
+        "    if cannot_run:\n        errors.append(",
+        "    if False:\n        errors.append(",
+    ),
+    mutate.Mutation(
+        "a row whose `new` cannot be read is treated as valid: neither judged nor counted",
+        '            unchecked.append("`new` is not a static literal")',
+        "            pass",
+    ),
+    mutate.Mutation(
+        "a stranded mutate.py sidecar stops refusing a verdict from a possibly-mutated judge",
+        "    return sorted(p for p in found if p.exists())",
+        "    return []",
     ),
 ]
 

@@ -77,8 +77,9 @@ documented environment claims still hold on this machine);
 `script-headers` (opt-in, see Rules; every scripts-index script's bound `# Purpose:` header reads
 as one self-contained line);
 `mutation-anchors` (every mutation campaign's anchor still resolves exactly once in the file it
-mutates); `pre-push-installed` (adopted repos: the tracked `git-hooks/pre-push` is installed at
-the resolved hooks path, executable, and matches its source); `timing-guard-conf` (registered
+mutates, and each mutant still parses (each checkable mutant; rows it cannot judge are counted, not
+failed)); `pre-push-installed` (adopted repos: the tracked `git-hooks/pre-push` is installed at the
+resolved hooks path, executable, and matches its source); `timing-guard-conf` (registered
 repos: the timing guard's local policy file is usable — see Rules); `tests` (shell suites +
 pytest); `hermetic` (the suite left the working tree as it found it); and `hermetic-outside` (the
 suite wrote nothing under the Claude config root). The last three run only with `--tests`.

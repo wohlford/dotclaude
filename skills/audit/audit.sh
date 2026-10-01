@@ -832,11 +832,13 @@ check_script_headers() {
 # re-pointing its campaign, and a campaign whose anchor no longer resolves ERRORs rather than
 # grading anything. The same check catches a mutant STRANDED in the tree by a killed campaign
 # (its own anchor is then absent), which is the more dangerous of the two — a verification tool
-# left inverted into a rubber stamp, showing nothing unusual in `git status`.
+# left inverted into a rubber stamp, showing nothing unusual in `git status`. It also asserts
+# that every mutant PARSES: one that does not never exercises the suite (pytest aborts
+# collection, bash refuses the script) yet the runner would score it CAUGHT.
 #
 # Static, so it belongs in this half of the sweep: the checker reads campaigns with `ast` and
-# never imports them, which is what keeps it out of the hermetic window that only brackets
-# `--tests`.
+# never imports them, and parses mutants with `compile()`/`bash -n` without executing them, which
+# is what keeps it out of the hermetic window that only brackets `--tests`.
 check_mutation_anchors() {
   local scope="$1" runner campaigns f
   runner="$script_dir/../../scripts/mutation-anchors-check.py"
@@ -872,10 +874,12 @@ check_mutation_anchors() {
   local out rc
   out="$(python3 "$runner" --scope "$scope" 2>&1)"; rc=$?
   if [[ "$rc" -ne 0 ]]; then
-    # rc 1 is a rotted or ambiguous anchor; rc 2 is a campaign that went unjudged — unreadable,
-    # or present in the tree but untracked. Naming only the first would prescribe the wrong
-    # repair for the second, so defer to the checker's own output, which says which it found.
-    verdict_fail mutation-anchors 'a campaign anchor no longer resolves, or a campaign went unjudged'
+    # rc 1 is a rotted or ambiguous anchor, or a mutant that does not parse. rc 2 is no verdict:
+    # a campaign that is unreadable or untracked, a parse check that could not run, or a checker
+    # runner that is stranded (a `mutate.py` sidecar) or unimportable. Naming only the first
+    # would prescribe the wrong repair for the others, so defer to the checker's own output,
+    # which says which it found.
+    verdict_fail mutation-anchors 'an anchor no longer resolves, a mutant does not parse, or no verdict was reached (an unjudged campaign, a parse check that could not run, or a stranded or unimportable runner)'
     print_offenders "$out" mutation-anchors
   else
     verdict_pass mutation-anchors

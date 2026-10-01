@@ -192,12 +192,19 @@ def copy_all_checkers(repo: Path) -> None:
     (repo / "scripts").mkdir(parents=True, exist_ok=True)
     for name in REAL_CHECKER_FILES:
         shutil.copy(REPO_ROOT / "scripts" / name, repo / "scripts" / name)
+    # `mutation-anchors-check.py` imports its parse predicate from the `lib/` beside it, so a
+    # scope carrying the checker alone would ERROR instead of grading anything.
+    (repo / "scripts" / "lib").mkdir(parents=True, exist_ok=True)
+    shutil.copy(
+        REPO_ROOT / "scripts" / "lib" / "mutate.py",
+        repo / "scripts" / "lib" / "mutate.py",
+    )
 
 
 def write_mutation_campaign(repo: Path) -> None:
     """The smallest campaign `mutation-anchors-check.py` will grade as PASS: one row whose
     `old` anchor occurs exactly once in its subject. Verified by hand against the real checker
-    before use (`RESULT: PASS rc=0 campaigns=1 rows=1 bad=0 untracked=0`).
+    before use (`RESULT: PASS rc=0 campaigns=1 rows=1 bad=0 untracked=0 invalid=0 unchecked=0`).
     """
     write(
         repo / "scripts" / "dummy_subject.py",

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.121.0 — 2026-09-29
+- feat(audit): fail mutation-anchors on an unparseable mutant
+
 ## v0.120.0 — 2026-09-29
 - feat(mutate): score unparseable or aborted mutants INVALID
 
