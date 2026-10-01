@@ -12,7 +12,7 @@ agents ride model upgrades for free.
 | :----- | :------ | :--- |
 | `haiku` | Compliance against an explicit rubric — is a field present, does a name match its directory, does a required section exist | The rubric answers it; no interpretation needed |
 | `sonnet` | Judgment against a rubric **with carve-outs and exceptions** — prose quality, idiom, "is this exempt?" | A wrong call costs the caller a triage pass |
-| `opus` | Architecture and design, whole-branch review, final gates | Being wrong is expensive and hard to detect |
+| `opus` | Architecture and design, whole-branch review, final gates, authoring (not reviewing) standalone documentation prose | Being wrong is expensive and hard to detect |
 | `fable` | Diverse-model review — a reviewer that **differs from the author** (see `/feature`) | Same-model blind spots are the risk |
 
 Two rules that decide most cases:
@@ -30,10 +30,11 @@ Two rules that decide most cases:
 Authored or edited agents are vetted with `/vet agents/<name>.md`, which dispatches `agent-reviewer`.
 
 <!-- sync:agents cols=Agent:key,Model:auto,Purpose:auto -->
-| Agent                    | Model  | Purpose                                                                                                     |
-| :----------------------- | :----- | :---------------------------------------------------------------------------------------------------------- |
-| `agent-reviewer`         | haiku  | Review agent definition files for compliance with the canonical agent frontmatter and structure             |
-| `skill-content-reviewer` | sonnet | Review SKILL.md files for prose and content quality — clarity, completeness, consistency, and actionability |
-| `skill-reviewer`         | haiku  | Review SKILL.md files for compliance with the repo's canonical skill structure                              |
-| `style-reviewer`         | sonnet | Review code files for compliance with the global STYLE.md standards                                         |
+| Agent                    | Model  | Purpose                                                                                                                                                                                                                        |
+| :----------------------- | :----- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent-reviewer`         | haiku  | Review agent definition files for compliance with the canonical agent frontmatter and structure                                                                                                                                |
+| `prose-writer`           | opus   | Write or rewrite standalone documents a reader opens to learn how the project works — README, architecture and reference docs, policy guides, release notes; author mode reads the tree, revise mode rewrites a supplied draft |
+| `skill-content-reviewer` | sonnet | Review SKILL.md files for prose and content quality — clarity, completeness, consistency, and actionability                                                                                                                    |
+| `skill-reviewer`         | haiku  | Review SKILL.md files for compliance with the repo's canonical skill structure                                                                                                                                                 |
+| `style-reviewer`         | sonnet | Review code files for compliance with the global STYLE.md standards                                                                                                                                                            |
 <!-- /sync:agents -->

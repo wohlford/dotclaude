@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.122.0 — 2026-09-30
+- feat(agents): add the Opus-pinned prose-writer
+
 ## v0.121.0 — 2026-09-29
 - feat(audit): fail mutation-anchors on an unparseable mutant
 
