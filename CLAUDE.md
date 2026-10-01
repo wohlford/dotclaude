@@ -445,7 +445,11 @@ left legal.
   non-empty BEFORE comparing** — a non-zero denominator is no help here, since nothing is
   counted. Its own failure mode: that guard proves the readings EXIST, never that the probe can
   still SEE a change — pair it with a control that must MOVE, or a probe watching the wrong
-  attribute passes both checks.
+  attribute passes both checks. Nor does a floor taken BEFORE a transform survive it: a tag-set check
+  floored its source strings, then a failing `sort`/`comm` printed nothing, both derived sets went
+  empty, and a real mismatch printed `PASS` — reproduced by a reviewer with a `sort` that exits 1,
+  not by the author's 111-assertion suite. **Capture each transform's status; floor the DERIVED
+  reading.**
 
 #### Every row got the same verdict, whatever it contained
 

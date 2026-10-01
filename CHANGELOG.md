@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.125.1 — 2026-10-01
+- docs(CLAUDE.md): a floor before a transform does not survive it
+
 ## v0.125.0 — 2026-09-30
 - feat(propagate): add a postflight step verifying the publish end state
 
