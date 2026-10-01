@@ -76,6 +76,19 @@ owns. Never give your own remaining context as a reason to stop; the real ceilin
 GRAPH (disjoint file sets parallelize; two tasks rewriting one function do not), which is checkable,
 where "low on context" is not.
 
+**Standalone documents a reader opens to learn how the project works go to the `prose-writer` agent
+(Opus) — dispatch it with no `model` override, which would defeat its pin.** That means a README,
+architecture and reference docs, the policy guides and CLAUDE.md, but only when you compose the text
+rather than transcribe text already written. Choose the mode by where the facts live. When every
+fact is in the tree, brief it to *author*: name the file, what changed and pointers, and include any
+`git log` excerpt it needs, since it has no shell. When the facts are decisions or measurements that
+exist only in your session — a hazard bullet, a policy paragraph, and so CLAUDE.md's own prose —
+draft the text yourself and hand it over to *revise*: it rewrites for prose and marks a gap without
+filling it. `<!-- sync:* -->` regions belong to `/sync-docs`. Specs, plans, memory entries, code
+comments, commit messages and skill or agent bodies stay with you. **After every return, verify it
+yourself — this step is not delegable:** diff the file, grep it for words the edit removed, check
+each number and path it cites against its source, and resolve every `[GAP:` marker.
+
 ## Skills, agents, hooks, and plugins
 
 **[~/.claude/README.md](./README.md) carries the full generated indexes** — every skill, agent,
