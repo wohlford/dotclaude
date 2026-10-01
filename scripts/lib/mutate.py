@@ -36,9 +36,19 @@ is not green.
 ## Statuses are an allowlist, and ERROR is not FAIL
 
 `PASS` (every mutation caught), `FAIL` (at least one survivor), `ERROR` (the campaign could not
-judge at all — a red baseline, an empty mutation list, or a subject it failed to restore). The
-distinction matters because ERROR means no verdict was reached, and a gate that failed closed on
-an internal error has not judged your subject.
+judge at all — a red baseline, an empty mutation list, a subject it failed to restore, a mutation
+that timed out, a mutant that is INVALID, a control whose parse check could not run, or a
+collection-abort predicate that matches a green baseline). The distinction matters because ERROR means no verdict was reached, and a gate that
+failed closed on an internal error has not judged your subject.
+
+`INVALID` is a per-mutant outcome that is neither caught nor survived, and it exists because
+"the suite exited non-zero" is satisfied exactly as well by a suite that never RAN as by one that
+noticed. Three detectors feed it: the mutated subject does not parse (checked BEFORE the suite
+runs, so the suite is not run for it), the parse check itself could not run for that mutant
+(`CANNOT_RUN`, also before the suite), or pytest printed the banner it prints when collection
+aborted (`COLLECTION_ABORT_PATTERN`, read from the output). The parse check judges `.py` and `.sh`
+subjects, or a file whose shebang names python or bash; for any other kind it is OFF, and the
+report says so on a `parse check:` line instead of treating an unjudged subject as valid.
 
 ## Surviving a killed run
 
@@ -97,6 +107,7 @@ import signal
 import subprocess
 import sys
 import time
+import warnings
 from pathlib import Path
 from typing import Iterable, NamedTuple, Sequence
 
@@ -122,7 +133,20 @@ DEFAULT_FAIL_PATTERN = r"^FAIL"
 CAUGHT = "CAUGHT"
 SURVIVED = "SURVIVED"
 TIMEOUT = "TIMEOUT"
-OUTCOME_STATUSES = (CAUGHT, SURVIVED, TIMEOUT)
+INVALID = "INVALID"
+OUTCOME_STATUSES = (CAUGHT, SURVIVED, TIMEOUT, INVALID)
+
+PARSES, UNPARSEABLE, UNCHECKED = "parses", "unparseable", "unchecked"
+# A parser that FAILED to run (timeout, spawn failure, recursion limit) — never "no parser".
+CANNOT_RUN = "cannot-run"
+
+# pytest prints this line ALONE on its line when a collection error interrupted the session, so
+# no test ran. Anchored at both ends: text that merely MENTIONS the phrase (a diagnostic echoed
+# into the suite's output) must not trip it.
+COLLECTION_ABORT_PATTERN = r"^!+ Interrupted: [0-9]+ errors? during collection !+$"
+
+_PARSE_LIMIT_SECONDS = 30.0
+_BASH_SYNTAX_ERROR_RCS = (1, 2)
 
 # A hung suite is the killed-run defect's twin, and strictly worse: a killed campaign at least
 # ends, while a hung one never fires the restore at all — not `finally`, not the SIGTERM handler.
@@ -195,6 +219,7 @@ class Report(NamedTuple):
     text: str
     verdict: str
     timedout: int = 0
+    invalid: int = 0
 
 
 class _Run(NamedTuple):
@@ -219,6 +244,114 @@ def is_caught(
       and would otherwise be silently scored as a survivor.
     """
     return returncode != 0 or re.search(fail_pattern, stdout, re.M) is not None
+
+
+def _shebang_interpreter(first: str):
+    """The basename of the interpreter a `#!` line names, looking through `env`; else None.
+
+    `#!` then an optional `env` (with its flags and any NAME=value words), then the interpreter.
+    Only its BASENAME is judged: a substring test read `#!/usr/bin/env python3 # was bash` as bash.
+    """
+    if not first.startswith("#!"):
+        return None
+    words = first[2:].split()
+    if words and Path(words[0]).name == "env":
+        words = words[1:]
+        while words and (words[0].startswith("-") or "=" in words[0]):
+            words = words[1:]
+    return Path(words[0]).name if words else None
+
+
+def _parse_kind(name, text: str) -> str:
+    """Pick the parser a file's name or shebang implies; 'unchecked' when there is none.
+
+    The SUFFIX decides first, so a `.py` file stays python whatever its shebang line says; only a
+    file with neither suffix falls back to the shebang's interpreter.
+    """
+    suffix = Path(name).suffix
+    if suffix == ".sh":
+        return "bash"
+    if suffix == ".py":
+        return "python"
+    interpreter = _shebang_interpreter(text.split("\n", 1)[0])
+    if interpreter == "bash":
+        return "bash"
+    if interpreter is not None and interpreter.startswith("python"):
+        return "python"
+    return "unchecked"
+
+
+def check_parse(name, text):
+    """Does `text` parse as the kind of file `name` (or its shebang) says it is? (verdict, detail).
+
+    Four-valued on purpose: UNCHECKED (no parser exists for this kind) is a different answer from
+    PARSES, and collapsing them would hand every subject this module cannot judge a clean bill of
+    health. CANNOT_RUN (a parser exists and FAILED to run) is a different answer again: reading it
+    as UNCHECKED let a transient `bash -n` failure pass as by-design reduced coverage.
+    `scripts/lib/bulk_edit.py`'s `_syntax_error` is the sibling and is not shared: it returns None for both "parses" and "no parser" and lets
+    TimeoutExpired/OSError escape, so it cannot carry this verdict.
+
+    Like it, this runs THIS machine's `compile()` and the PATH's `bash`, not the file's own
+    interpreter; the pristine-control in `judge_mutant_parse` is what keeps a version skew there
+    from marking every mutant invalid.
+    """
+    kind = _parse_kind(name, text)
+    if kind == "python":
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                compile(text, str(name), "exec")
+        except RecursionError as exc:
+            return CANNOT_RUN, f"compile() gave up: {exc}"
+        except (SyntaxError, ValueError) as exc:
+            first = str(exc).splitlines()
+            return UNPARSEABLE, first[0] if first else type(exc).__name__
+        return PARSES, ""
+    if kind == "bash":
+        try:
+            proc = subprocess.run(
+                ["bash", "-n"],
+                input=text,
+                capture_output=True,
+                # Not text=True: that encodes stdin with the LOCALE codec, so a non-ASCII
+                # `new` literal under a Latin-1 locale raised UnicodeEncodeError.
+                encoding="utf-8",
+                errors="surrogateescape",
+                timeout=_PARSE_LIMIT_SECONDS,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return CANNOT_RUN, f"bash -n could not run: {exc}"
+        if proc.returncode == 0:
+            return PARSES, ""
+        lines = proc.stderr.strip().splitlines()
+        if proc.returncode in _BASH_SYNTAX_ERROR_RCS and lines:
+            # rc 2 (bash 3.2, and most errors on bash 5) or rc 1 (bash 5.3, for a syntax error
+            # inside an array assignment) WITH a message is bash saying "this text does not
+            # parse". The same rc with no message, rc >= 126 (a wrapper that could not exec
+            # bash) and a signal death (negative rc) are the PARSER failing, and reading them
+            # as UNPARSEABLE would blame the mutant for it.
+            return UNPARSEABLE, lines[0]
+        return CANNOT_RUN, f"bash -n exited {proc.returncode}"
+    suffix = Path(name).suffix
+    return UNCHECKED, f"no parser for {suffix or 'an extensionless file'}"
+
+
+def judge_mutant_parse(name, original, mutated, control):
+    """The ONE predicate for "this mutant does not parse" — the runner and the audit share it.
+
+    `control` is `check_parse(name, original)`, computed once per subject by the caller. A mutant
+    is only UNPARSEABLE when the PRISTINE subject parses under this same check: an interpreter or
+    bash older than the suite's own would otherwise mark every mutant invalid for a reason that
+    has nothing to do with the mutation. A control that could not RUN is CANNOT_RUN, not UNCHECKED:
+    "no parser" and "the parser failed" are different answers. A mutant's own CANNOT_RUN is
+    propagated by `check_parse`.
+    """
+    if control[0] == CANNOT_RUN:
+        return CANNOT_RUN, f"no control: {control[1]}"
+    if control[0] != PARSES:
+        detail = control[1] or "the pristine subject does not parse under this check"
+        return UNCHECKED, f"no control: {detail}"
+    return check_parse(name, mutated)
 
 
 def backup_path(subject) -> Path:
@@ -274,11 +407,19 @@ def _clear_pycache(subject: Path) -> None:
 
 
 def _verdict(
-    status: str, rc: int, caught: int, survived: int, total: int, timedout: int = 0
+    status: str,
+    rc: int,
+    caught: int,
+    survived: int,
+    total: int,
+    timedout: int = 0,
+    invalid: int = 0,
 ) -> str:
+    # `invalid=` goes AFTER `total=`: campaigns are launched with an unanchored `--expect` regex
+    # that ends at `total=[0-9]+`, and a field inserted before it would stop every one matching.
     return (
         f"RESULT: {status} rc={rc} caught={caught} survived={survived} "
-        f"timedout={timedout} total={total}"
+        f"timedout={timedout} total={total} invalid={invalid}"
     )
 
 
@@ -315,8 +456,8 @@ def _headroom_line(
       beside an actual failure. `exhausted` LEADS instead, the timed-out rows are named, and the
       completed rows follow explicitly marked secondary.
     * Rows that ran but none COMPLETED get prose. Never `0%`, which is indistinguishable from a
-      fast healthy run, and never a division. Reachable when every row was NOT APPLIED — which
-      has `timedout == 0`, so it must not say "exhausted" either.
+      fast healthy run, and never a division. Reachable when every row was NOT APPLIED or
+      unparseable — which has `timedout == 0`, so it must not say "exhausted" either.
     * The normal state names the row's LABEL, not just a number. A campaign where every row is
       caught fast has enormous headroom and says nothing; the figure is only meaningful against
       the row it belongs to, and without the label it invites raising the cap when the answer may
@@ -360,8 +501,8 @@ def _headroom_line(
     if slowest is None:
         return (
             f"HEADROOM: not measured cap={limit:.0f}s{derived}{base}"
-            " — rows ran but none completed a suite run (all NOT APPLIED), so there is no"
-            " percentage to report"
+            " — rows ran but none completed a suite run (not applied or unparseable), so there"
+            " is no percentage to report"
         )
     return (
         f"HEADROOM: slowest={slowest[1]:.1f}s cap={limit:.0f}s"
@@ -389,8 +530,9 @@ def _report(
     lines,
     outcomes=(),
     timedout: int = 0,
+    invalid: int = 0,
 ) -> Report:
-    verdict = _verdict(status, rc, caught, survived, total, timedout)
+    verdict = _verdict(status, rc, caught, survived, total, timedout, invalid)
     return Report(
         status=status,
         rc=rc,
@@ -401,6 +543,7 @@ def _report(
         text="\n".join([*lines, verdict]),
         verdict=verdict,
         timedout=timedout,
+        invalid=invalid,
     )
 
 
@@ -551,10 +694,11 @@ def run(
             pass
 
     outcomes = []
-    caught = survived = timedout = 0
+    caught = survived = timedout = invalid = 0
     # Per-row elapsed, RETAINED rather than only streamed, because `_headroom_line` reads it. The
-    # two lists are disjoint and neither holds a NOT APPLIED row: such a row never runs the suite
-    # at all, which is why "none completed" is a state of its own rather than a zero.
+    # two lists are disjoint and neither holds a NOT APPLIED, a statically unparseable or a CANNOT_RUN row: such
+    # a row never runs the suite at all, which is why "none completed" is a state of its own. A row
+    # made INVALID by a collection abort DID run the suite, so it IS appended to `completed`.
     completed, timedout_labels = [], []
 
     try:
@@ -580,12 +724,40 @@ def run(
                 "second thing this check is for)",
             ]
             return _report("ERROR", 2, 0, 0, total, lines)
+        if re.search(COLLECTION_ABORT_PATTERN, baseline.stdout, re.M):
+            # The baseline validates the predicate, as it does for `fail_pattern`: a banner in
+            # GREEN output would score every later mutant INVALID for no mutant's fault.
+            lines.append(
+                "ERROR  the collection-abort predicate matches a green baseline — every "
+                "mutant would read INVALID"
+            )
+            return _report("ERROR", 2, 0, 0, total, lines)
         limit = derive_timeout(baseline.elapsed, timeout)
         lines.append(
             f"BASELINE green  rc={baseline.returncode}  {baseline.elapsed:.1f}s "
             f"(per-mutant timeout {limit:.0f}s)"
         )
         emit(f"[0/{total}] {lines[-1]}")
+        # Computed once, from the PRISTINE subject. A subject this module cannot judge is
+        # REPORTED, never silently treated as valid.
+        control = check_parse(subject, original)
+        if control[0] == CANNOT_RUN:
+            # Before any mutation: with no parser there is no verdict about any mutant, and
+            # scoring them by the suite alone would hide a broken parser behind a green sweep.
+            # "OFF" would misdescribe this (OFF means no parser exists for the kind).
+            lines.append(f"parse check: COULD NOT RUN — {control[1]}")
+            emit(lines[-1])
+            lines.append(
+                f"ERROR  the parse check could not run — {control[1]}; "
+                "no verdict about any mutant can be reached"
+            )
+            return _report("ERROR", 2, 0, 0, total, lines)
+        lines.append(
+            "parse check: on"
+            if control[0] == PARSES
+            else f"parse check: OFF — {control[1]}"
+        )
+        emit(lines[-1])
 
         for n, m in enumerate(mutations, 1):
             count = original.count(m.old)
@@ -603,7 +775,37 @@ def run(
                 emit(f"[{n}/{total}] {SURVIVED:9s} {m.label}  (not applied)")
                 continue
 
-            subject.write_text(original.replace(m.old, m.new, 1))
+            mutated = original.replace(m.old, m.new, 1)
+            verdict, detail = judge_mutant_parse(subject, original, mutated, control)
+            if verdict == UNPARSEABLE:
+                # Not run at all: a suite fed a file that cannot parse exits non-zero, which the
+                # predicate would credit as a catch though nothing was exercised.
+                outcomes.append(
+                    Outcome(
+                        m.label,
+                        INVALID,
+                        f"the mutated subject does not parse — {detail}; the suite was NOT run",
+                    )
+                )
+                invalid += 1
+                emit(f"[{n}/{total}] {INVALID:9s} {m.label}  (does not parse)")
+                continue
+
+            if verdict == CANNOT_RUN:
+                outcomes.append(
+                    Outcome(
+                        m.label,
+                        INVALID,
+                        f"the parse check could not run — {detail}; the suite was NOT run",
+                    )
+                )
+                invalid += 1
+                emit(
+                    f"[{n}/{total}] {INVALID:9s} {m.label}  (parse check could not run)"
+                )
+                continue
+
+            subject.write_text(mutated)
             run = run_suite(limit)
             if run is None:
                 # NEITHER caught nor survived. A hang is indeterminate — the suite may or may
@@ -620,6 +822,17 @@ def run(
                 )
                 timedout += 1
                 timedout_labels.append(m.label)
+            elif re.search(COLLECTION_ABORT_PATTERN, run.stdout, re.M):
+                # Before `noticed`, which is true for this run too: pytest exits 2 having run
+                # no test, and that is not a catch.
+                outcomes.append(
+                    Outcome(
+                        m.label,
+                        INVALID,
+                        "pytest's collection aborted, so no test ran — indeterminate",
+                    )
+                )
+                invalid += 1
             elif run.noticed:
                 tail = (run.stdout.strip().split("\n") or [""])[-1]
                 outcomes.append(Outcome(m.label, CAUGHT, tail[:96]))
@@ -663,8 +876,9 @@ def run(
     # carry it: the normal one and the restore-failure ERROR alike. Appending it just before the
     # final `_report` instead would silently drop the line from the restore-failure path, which is
     # the report a reader has most reason to grep. The pre-loop early returns (stale backup, empty
-    # mutation list, backup-write failure, baseline timeout, baseline red) legitimately do not emit
-    # it: they have no rows, and the baseline paths have no `limit` computed at all.
+    # mutation list, backup-write failure, baseline timeout, baseline red, the collection-abort
+    # predicate matching a green baseline, a control whose parse check cannot run) legitimately
+    # do not emit it: they have no rows, and the baseline paths have no `limit` computed at all.
     lines.append(
         _headroom_line(
             completed, timedout_labels, limit, baseline.elapsed, baseline_limit, timeout
@@ -680,20 +894,36 @@ def run(
             f"       cp {backup} {subject} && rm {backup}",
         ]
         return _report(
-            "ERROR", 2, caught, survived, total, lines, outcomes, timedout=timedout
+            "ERROR",
+            2,
+            caught,
+            survived,
+            total,
+            lines,
+            outcomes,
+            timedout=timedout,
+            invalid=invalid,
         )
     lines.append(f"restored: sha256 unchanged ({before[:16]})")
 
-    # ERROR outranks FAIL: a timed-out mutation means no verdict was reached about it, and a
-    # campaign that could not judge every row has not judged the change.
-    if timedout:
+    # ERROR outranks FAIL: a timed-out or INVALID mutation means no verdict was reached about it,
+    # and a campaign that could not judge every row has not judged the change.
+    if timedout or invalid:
         status, rc = "ERROR", 2
     elif survived:
         status, rc = "FAIL", 1
     else:
         status, rc = "PASS", 0
     report = _report(
-        status, rc, caught, survived, total, lines, outcomes, timedout=timedout
+        status,
+        rc,
+        caught,
+        survived,
+        total,
+        lines,
+        outcomes,
+        timedout=timedout,
+        invalid=invalid,
     )
 
     if report_path is not None:
@@ -755,6 +985,8 @@ def _usage() -> str:
             "  * The unmutated BASELINE must be green, or the campaign is ERROR, not PASS.",
             "  * The subject is mutated in place and restored; do not edit it during a run.",
             "  * Each old string must appear EXACTLY ONCE in the subject.",
+            "  * A mutant that does not parse, or aborts pytest's collection, is INVALID: the suite",
+            "    proved nothing, and the campaign is ERROR (parse check is OFF for other kinds).",
             "",
             "Worked examples: scripts/tests/mutate_*.py",
         ]

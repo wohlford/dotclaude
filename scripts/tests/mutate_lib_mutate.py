@@ -98,6 +98,161 @@ MUTATIONS = [
         "    if True:\n"
         '        dest = Path(report_path or (subject.parent / "mutate-report.txt"))',
     ),
+    # ---- INVALID: a mutant that never exercised the suite. Each row plants ONE defect in the
+    # detector or its wiring. The expected killer is named per row; the controller compares KILL
+    # SETS, since a duplicate mutant inflates the caught count while measuring nothing.
+    mutate.Mutation(
+        # Expect: test_an_UNPARSEABLE_mutant_is_INVALID_and_ends_the_campaign_ERROR (+ the
+        # never-runs-the-suite row, which sees the counter reach 2).
+        "the parse check is never consulted, so an unparseable mutant runs the suite and reads CAUGHT",
+        "            if verdict == UNPARSEABLE:",
+        "            if False:",
+    ),
+    mutate.Mutation(
+        # Expect: test_a_PRISTINE_subject_that_does_not_parse_leaves_the_check_OFF and
+        # test_judge_mutant_parse_needs_a_PARSING_control.
+        "the pristine control is dropped, so a subject that never parsed marks every mutant INVALID",
+        "    if control[0] != PARSES:\n        detail = ",
+        "    if False:\n        detail = ",
+    ),
+    mutate.Mutation(
+        # Expect: test_a_QUOTED_banner_beside_a_real_failure_is_still_CAUGHT[mid-line].
+        "the collection-abort pattern loses its ^ anchor, so a MENTION of the banner mid-line "
+        "reads as a collection abort",
+        'COLLECTION_ABORT_PATTERN = r"^!+ Interrupted',
+        'COLLECTION_ABORT_PATTERN = r"!+ Interrupted',
+    ),
+    mutate.Mutation(
+        # Expect: test_a_QUOTED_banner_beside_a_real_failure_is_still_CAUGHT[trailing-text].
+        "the collection-abort pattern loses its $ anchor, so a banner followed by more text "
+        "reads as a collection abort",
+        'during collection !+$"',
+        'during collection !+"',
+    ),
+    mutate.Mutation(
+        # Expect: test_a_collection_abort_banner_ALONE_on_its_line_is_INVALID (noticed is true
+        # for that run, so a later placement scores it CAUGHT).
+        "the collection-abort branch is tried AFTER run.noticed, so an aborted run reads CAUGHT",
+        r"""            elif re.search(COLLECTION_ABORT_PATTERN, run.stdout, re.M):
+                # Before `noticed`, which is true for this run too: pytest exits 2 having run
+                # no test, and that is not a catch.
+                outcomes.append(
+                    Outcome(
+                        m.label,
+                        INVALID,
+                        "pytest's collection aborted, so no test ran — indeterminate",
+                    )
+                )
+                invalid += 1
+            elif run.noticed:
+                tail = (run.stdout.strip().split("\n") or [""])[-1]
+                outcomes.append(Outcome(m.label, CAUGHT, tail[:96]))
+                caught += 1
+""",
+        r"""            elif run.noticed:
+                tail = (run.stdout.strip().split("\n") or [""])[-1]
+                outcomes.append(Outcome(m.label, CAUGHT, tail[:96]))
+                caught += 1
+            elif re.search(COLLECTION_ABORT_PATTERN, run.stdout, re.M):
+                outcomes.append(
+                    Outcome(
+                        m.label,
+                        INVALID,
+                        "pytest's collection aborted, so no test ran — indeterminate",
+                    )
+                )
+                invalid += 1
+""",
+    ),
+    mutate.Mutation(
+        # Expect: the two INVALID rows asserting (status, rc) == ("ERROR", 2).
+        "an INVALID mutant no longer forces ERROR, so an unjudged campaign reports PASS",
+        "    if timedout or invalid:",
+        "    if timedout:",
+    ),
+    mutate.Mutation(
+        # Expect: the verdict-shape rows (well_formed, never_disagree, BYTE_IDENTICAL).
+        "the invalid= verdict field is dropped, so a consumer cannot see why the campaign errored",
+        'f"timedout={timedout} total={total} invalid={invalid}"',
+        'f"timedout={timedout} total={total}"',
+    ),
+    mutate.Mutation(
+        # Expect: test_the_banner_on_a_GREEN_baseline_is_an_ERROR_before_any_mutation.
+        "the baseline is not checked against the collection-abort predicate",
+        "        if re.search(COLLECTION_ABORT_PATTERN, baseline.stdout, re.M):",
+        "        if False:",
+    ),
+    mutate.Mutation(
+        # Expect: the parse-check ON/OFF report-line rows.
+        "the parse-check line is dropped, so an unjudged subject kind reads as validated",
+        r"""        lines.append(
+            "parse check: on"
+            if control[0] == PARSES
+            else f"parse check: OFF — {control[1]}"
+        )
+        emit(lines[-1])
+""",
+        "        pass\n",
+    ),
+    mutate.Mutation(
+        # Expect: test_an_UNPARSEABLE_mutant_is_INVALID_and_ends_the_campaign_ERROR (invalid==1).
+        "a statically INVALID mutant is not counted, so the campaign can still end PASS",
+        '                invalid += 1\n                emit(f"[{n}/{total}] {INVALID:9s} {m.label}  (does not parse)")',
+        '                emit(f"[{n}/{total}] {INVALID:9s} {m.label}  (does not parse)")',
+    ),
+    # ---- CANNOT_RUN: a parser that FAILED to run is not "no parser for this kind". Each row
+    # collapses or drops one hop of the path from `check_parse` to the campaign's verdict.
+    mutate.Mutation(
+        # Expect: test_check_parse_of_a_bash_parser_that_cannot_run_is_CANNOT_RUN (3 params) and
+        # test_a_control_whose_parse_check_CANNOT_RUN_ends_the_campaign_ERROR_untouched.
+        "a bash -n that cannot run collapses back to UNCHECKED (a transient failure reads as by-design)",
+        '            return CANNOT_RUN, f"bash -n could not run: {exc}"',
+        '            return UNCHECKED, f"bash -n could not run: {exc}"',
+    ),
+    mutate.Mutation(
+        # Expect: test_check_parse_of_a_python_compile_that_gives_up_is_CANNOT_RUN.
+        "a compile() that gives up collapses back to UNCHECKED",
+        '            return CANNOT_RUN, f"compile() gave up: {exc}"',
+        '            return UNCHECKED, f"compile() gave up: {exc}"',
+    ),
+    mutate.Mutation(
+        # Expect: test_judge_mutant_parse_propagates_a_control_that_CANNOT_RUN.
+        "a control that cannot run is downgraded to UNCHECKED by judge_mutant_parse",
+        '    if control[0] == CANNOT_RUN:\n        return CANNOT_RUN, f"no control: {control[1]}"',
+        '    if False:\n        return CANNOT_RUN, f"no control: {control[1]}"',
+    ),
+    mutate.Mutation(
+        # Expect: test_a_control_whose_parse_check_CANNOT_RUN_ends_the_campaign_ERROR_untouched.
+        "the failed-control ERROR is removed — mutants are scored by the suite with no parser",
+        "        if control[0] == CANNOT_RUN:\n            # Before any mutation",
+        "        if False:\n            # Before any mutation",
+    ),
+    mutate.Mutation(
+        # Expect: test_a_mutant_whose_parse_check_CANNOT_RUN_is_INVALID_and_never_runs.
+        "a mutant whose parse check cannot run is no longer INVALID — the suite scores it",
+        "            if verdict == CANNOT_RUN:\n                outcomes.append(",
+        "            if False:\n                outcomes.append(",
+    ),
+    mutate.Mutation(
+        # Expect: test_a_bash_n_exit_other_than_1_or_2_is_the_PARSER_failing_not_the_mutant (126,
+        # 127, 137, -9 params: a nonzero rc with stderr would read UNPARSEABLE).
+        "any nonzero bash -n exit is UNPARSEABLE — a parser that died blames the mutant",
+        "        if proc.returncode in _BASH_SYNTAX_ERROR_RCS and lines:",
+        "        if proc.returncode:",
+    ),
+    mutate.Mutation(
+        # Expect: test_a_bash_n_exit_1_with_stderr_is_UNPARSEABLE_carrying_the_first_line and
+        # test_a_bash_n_exit_2_is_an_UNPARSEABLE_verdict_carrying_bashs_own_words.
+        "the bash -n rc classification branch is inert — every syntax error reads CANNOT_RUN",
+        "        if proc.returncode in _BASH_SYNTAX_ERROR_RCS and lines:",
+        "        if False:",
+    ),
+    mutate.Mutation(
+        # Expect: test_check_parse_passes_utf8_surrogateescape_not_the_locale_codec.
+        "the bash -n stdin encoding kwargs are dropped — the locale codec encodes the subject",
+        '                encoding="utf-8",\n                errors="surrogateescape",\n',
+        "",
+    ),
     mutate.Mutation(
         "the verdict stops being the last line of the report",
         'text="\\n".join([*lines, verdict]),',
@@ -168,8 +323,8 @@ MUTATIONS = [
     ),
     mutate.Mutation(
         "a timeout stops forcing ERROR, so an unjudged campaign reports PASS",
-        '    if timedout:\n        status, rc = "ERROR", 2',
-        '    if False:\n        status, rc = "ERROR", 2',
+        '    if timedout or invalid:\n        status, rc = "ERROR", 2',
+        '    if invalid:\n        status, rc = "ERROR", 2',
     ),
     mutate.Mutation(
         "the derived timeout loses its FLOOR, so a fast suite gets a uselessly tight cap",

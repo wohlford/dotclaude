@@ -527,6 +527,10 @@ def test_verdict_line_is_last_and_well_formed(bed):
     assert "caught=1" in report.verdict
     assert "survived=0" in report.verdict
     assert "total=1" in report.verdict
+    assert report.verdict.endswith("total=1 invalid=0"), (
+        "invalid= is appended AFTER total=, so an unanchored `--expect ... total=[0-9]+` "
+        "pattern keeps matching"
+    )
 
 
 @pytest.mark.parametrize("status", ["PASS", "FAIL", "ERROR"])
@@ -542,7 +546,7 @@ def test_rc_and_status_never_disagree(bed):
         assert (
             report.verdict == f"RESULT: {report.status} rc={report.rc} "
             f"caught={report.caught} survived={report.survived} "
-            f"timedout={report.timedout} total={report.total}"
+            f"timedout={report.timedout} total={report.total} invalid={report.invalid}"
         )
         assert (report.rc == 0) == (report.status == "PASS")
 
@@ -1123,7 +1127,9 @@ def test_the_RESULT_line_is_BYTE_IDENTICAL_beside_the_headroom_line(bed):
     """
     _, subject, suite = bed
     report = mutate.run(subject, suite(), [DROP_GUARD], timeout=30)
-    assert report.verdict == "RESULT: PASS rc=0 caught=1 survived=0 timedout=0 total=1"
+    assert report.verdict == (
+        "RESULT: PASS rc=0 caught=1 survived=0 timedout=0 total=1 invalid=0"
+    )
     assert re.match(r"RESULT: (PASS|FAIL) rc=[0-9]+ caught=", report.verdict), (
         "the prefix-anchored --expect shape these campaigns are actually launched with"
     )
@@ -1286,6 +1292,462 @@ def test_the_restore_FAILURE_report_carries_the_line_too(bed, monkeypatch):
     assert report.status == "ERROR", "precondition: the restore really did fail"
     line = _headroom(report)
     assert line.startswith("HEADROOM: slowest="), line
+
+
+# ---------- P12: INVALID — a mutant that never exercised the suite must not score CAUGHT ----------
+
+# `is_caught` reads "non-zero exit" as a catch, and a mutant that makes the suite unable to RUN
+# satisfies that exactly as a real catch does. Two detectors, one outcome: the mutant does not
+# parse (checked before the suite runs), or pytest's collection aborted (read from the output).
+# Each row below names the shape it pins; the mention-versus-perform rows put the banner text in
+# output that only QUOTES it, because a match that cannot tell the two apart is the defect.
+
+UNPARSEABLE = mutate.Mutation("does not parse", "GUARD = True", "GUARD = (")
+
+# Counts every run of the suite, so a row can prove a mutant never reached it.
+SUITE_COUNTING_SRC = """#!/usr/bin/env bash
+printf 'x\\n' >> "{counter}"
+""" + SUITE_SRC.split("\n", 1)[1]
+
+# Green on the pristine subject; on a mutant prints pytest's banner ALONE on its line and exits 2,
+# with other lines before AND after it as real pytest output has, so the banner is neither the first
+# nor the last line and a search that drops `re.M` cannot find it.
+SUITE_BANNER_SRC = """#!/usr/bin/env bash
+if grep -q 'GUARD = True' "$1"; then
+  printf 'PASS  guard intact\\n'
+  exit 0
+fi
+printf 'ERROR test_bad.py\\n'
+printf '!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!\\n'
+printf '1 error in 0.2s\\n'
+exit 2
+"""
+
+# The banner phrase only QUOTED (mid-line / with trailing text) beside a genuine failing row.
+SUITE_QUOTED_BANNER_SRC = """#!/usr/bin/env bash
+if grep -q 'GUARD = True' "$1"; then
+  printf 'PASS  guard intact\\n'
+  exit 0
+fi
+printf '{quoted}\\n'
+printf 'FAIL  guard missing\\n'
+exit 1
+"""
+
+# Prints the banner even on a GREEN run: a predicate that matches the unmutated baseline.
+SUITE_BANNER_ON_GREEN_SRC = """#!/usr/bin/env bash
+printf 'collected 1 item\\n'
+printf '!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!\\n'
+printf 'PASS  guard intact\\n'
+exit 0
+"""
+
+
+def _suite_for(root, subject, src, name="suite2.sh"):
+    path = root / name
+    path.write_text(src)
+    path.chmod(0o755)
+    return ["bash", str(path), str(subject)]
+
+
+def test_an_UNPARSEABLE_mutant_is_INVALID_and_ends_the_campaign_ERROR(bed):
+    """Old code: the suite fails on the broken file, so it scored CAUGHT and the campaign PASSed."""
+    _, subject, suite = bed
+    report = mutate.run(subject, suite(), [UNPARSEABLE])
+    assert [o.status for o in report.outcomes] == [mutate.INVALID]
+    assert report.invalid == 1
+    assert report.caught == 0
+    assert (report.status, report.rc) == ("ERROR", 2)
+    assert report.verdict.endswith("total=1 invalid=1")
+    assert "does not parse" in report.outcomes[0].detail
+
+
+def test_an_UNPARSEABLE_mutant_never_runs_the_suite_and_the_subject_is_restored(bed):
+    root, subject, suite = bed
+    counter = root / "runs.txt"
+    command = suite(SUITE_COUNTING_SRC.replace("{counter}", str(counter)))
+    report = mutate.run(subject, command, [UNPARSEABLE])
+    assert report.invalid == 1
+    assert counter.read_text().count("x") == 1, (
+        "the baseline ran; the invalid mutant did not"
+    )
+    assert subject.read_text() == SUBJECT_SRC
+    assert "restored: sha256 unchanged" in report.text
+
+
+def test_a_PARSEABLE_mutant_still_runs_the_suite_beside_an_INVALID_one(bed):
+    """Control: INVALID must not deflate a real catch — the suite runs for the row that parses."""
+    root, subject, suite = bed
+    counter = root / "runs.txt"
+    command = suite(SUITE_COUNTING_SRC.replace("{counter}", str(counter)))
+    report = mutate.run(subject, command, [UNPARSEABLE, DROP_GUARD])
+    assert (report.invalid, report.caught) == (1, 1)
+    assert counter.read_text().count("x") == 2, "baseline + the one parseable mutant"
+
+
+def test_a_collection_abort_banner_ALONE_on_its_line_is_INVALID(bed):
+    _, subject, suite = bed
+    report = mutate.run(subject, suite(SUITE_BANNER_SRC), [DROP_GUARD])
+    assert [o.status for o in report.outcomes] == [mutate.INVALID]
+    assert report.caught == 0
+    assert (report.status, report.rc) == ("ERROR", 2)
+    assert "collection aborted" in report.outcomes[0].detail
+
+
+@pytest.mark.parametrize(
+    "quoted",
+    [
+        "note: !!!! Interrupted: 1 error during collection !!!!",
+        "!!!! Interrupted: 1 error during collection !!!! (from an inner run)",
+    ],
+    ids=["mid-line", "trailing-text"],
+)
+def test_a_QUOTED_banner_beside_a_real_failure_is_still_CAUGHT(bed, quoted):
+    """Mention versus perform: the pattern is anchored at BOTH ends (`^` and `$`)."""
+    _, subject, suite = bed
+    src = SUITE_QUOTED_BANNER_SRC.replace("{quoted}", quoted)
+    report = mutate.run(subject, suite(src), [DROP_GUARD])
+    assert [o.status for o in report.outcomes] == [mutate.CAUGHT]
+    assert (report.status, report.rc) == ("PASS", 0)
+
+
+def test_the_banner_on_a_GREEN_baseline_is_an_ERROR_before_any_mutation(bed):
+    _, subject, suite = bed
+    report = mutate.run(subject, suite(SUITE_BANNER_ON_GREEN_SRC), [DROP_GUARD])
+    assert (report.status, report.rc) == ("ERROR", 2)
+    assert report.outcomes == ()
+    assert "collection-abort predicate matches a green baseline" in report.text
+
+
+def test_a_subject_kind_with_no_parser_is_reported_OFF_and_judged_by_the_suite(bed):
+    root, _, _ = bed
+    txt = root / "subject.txt"
+    txt.write_text("GUARD = True\n")
+    command = _suite_for(root, txt, SUITE_SRC)
+    report = mutate.run(txt, command, [UNPARSEABLE])
+    assert "parse check: OFF" in report.text
+    assert [o.status for o in report.outcomes] == [mutate.CAUGHT]
+    assert (report.status, report.invalid) == ("PASS", 0)
+
+
+def test_a_parseable_subject_reports_the_parse_check_ON(bed):
+    _, subject, suite = bed
+    report = mutate.run(subject, suite(), [DROP_GUARD])
+    assert "parse check: on" in report.text
+
+
+def test_a_PRISTINE_subject_that_does_not_parse_leaves_the_check_OFF(bed):
+    """Without the control every mutant of such a subject would read INVALID for no mutant's fault."""
+    root, subject, _ = bed
+    subject.write_text(SUBJECT_SRC + "LIMIT = (\n")
+    command = _suite_for(root, subject, SUITE_SRC)
+    report = mutate.run(subject, command, [UNPARSEABLE])
+    assert "parse check: OFF" in report.text
+    assert [o.status for o in report.outcomes] == [mutate.CAUGHT]
+    assert report.invalid == 0
+
+
+def test_an_UNPARSEABLE_bash_mutant_is_INVALID(bed):
+    root, _, _ = bed
+    sh = root / "subject.sh"
+    sh.write_text("#!/usr/bin/env bash\nGUARD=1\necho hi\n")
+    command = _suite_for(
+        root,
+        sh,
+        SUITE_SRC.replace("GUARD = True", "GUARD=1"),
+    )
+    bad = mutate.Mutation("bash does not parse", "GUARD=1", "GUARD=$(")
+    report = mutate.run(sh, command, [bad])
+    assert [o.status for o in report.outcomes] == [mutate.INVALID]
+    assert (report.status, report.rc) == ("ERROR", 2)
+
+
+def test_check_parse_picks_its_parser_from_the_SHEBANG_too():
+    assert (
+        mutate.check_parse("tool", "#!/usr/bin/env python3\nx = (\n")[0]
+        == mutate.UNPARSEABLE
+    )
+    assert (
+        mutate.check_parse("tool", "#!/usr/bin/env python3\nx = 1\n")[0]
+        == mutate.PARSES
+    )
+    assert mutate.check_parse("tool", "#!/bin/bash\nif then\n")[0] == mutate.UNPARSEABLE
+    assert mutate.check_parse("tool", "no shebang\n")[0] == mutate.UNCHECKED
+    assert mutate.check_parse("conf.jsonc", "{}")[0] == mutate.UNCHECKED
+
+
+@pytest.mark.parametrize(
+    "name, text, kind",
+    [
+        # The suffix decides first: a comment on the shebang line naming the OTHER kind must not.
+        ("a.py", "#!/usr/bin/env python3 # was bash\nif True:\n    pass\n", "python"),
+        ("a.py", "#!/bin/bash\nx = 1\n", "python"),
+        ("a.sh", "#!/usr/bin/env python3\nfi\n", "bash"),
+        # No suffix: the interpreter's BASENAME, after `env` and its flags.
+        ("tool", "#!/usr/bin/env python3 # was bash\nx = 1\n", "python"),
+        ("tool", "#!/usr/bin/env -S python3 -u\nx = 1\n", "python"),
+        ("tool", "#!/usr/bin/env -i bash\nx=1\n", "bash"),
+        ("tool", "#!/usr/bin/env FOO=1 bash\nx=1\n", "bash"),
+        ("tool", "#!/opt/bin/python3.11\nx = 1\n", "python"),
+        ("tool", "#!/bin/bash\nx=1\n", "bash"),
+        ("tool", "#!/usr/local/bin/mybash\nx=1\n", "unchecked"),
+        ("tool", "#!/usr/bin/env node # python\nx=1\n", "unchecked"),
+        ("tool", "#!/bin/sh\nx=1\n", "unchecked"),
+        ("tool", "#!\nx=1\n", "unchecked"),
+        ("tool", "#!/usr/bin/env\nx=1\n", "unchecked"),
+    ],
+)
+def test_parse_kind_reads_the_suffix_first_then_the_shebang_interpreter_basename(
+    name, text, kind
+):
+    assert mutate._parse_kind(name, text) == kind
+
+
+def test_a_py_file_whose_shebang_comment_says_bash_is_parsed_as_python():
+    text = "#!/usr/bin/env python3 # was bash\nif True:\n    pass\n"
+    assert mutate.check_parse("a.py", text)[0] == mutate.PARSES
+
+
+def test_judge_mutant_parse_needs_a_PARSING_control():
+    ok = mutate.check_parse("a.py", "x = 1\n")
+    assert (
+        mutate.judge_mutant_parse("a.py", "x = 1\n", "x = (\n", ok)[0]
+        == mutate.UNPARSEABLE
+    )
+    bad = mutate.check_parse("a.py", "x = (\n")
+    assert (
+        mutate.judge_mutant_parse("a.py", "x = (\n", "y = (\n", bad)[0]
+        == mutate.UNCHECKED
+    )
+
+
+# ---------- CANNOT_RUN: a parser that FAILED to run is not "no parser for this kind" ----------
+
+# UNCHECKED means "no parser for this kind" (by design, visible, a non-failure). A `bash -n` that
+# timed out or could not spawn is a different answer, and reading it as UNCHECKED let a transient
+# infrastructure failure pass as reduced coverage. Every row below patches `subprocess.run` ONLY:
+# the suite runs through `Popen`, so the campaign's own suite is untouched by the patch.
+
+
+def _run_raises(exc):
+    def fake(*args, **kwargs):
+        raise exc
+
+    return fake
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        subprocess.TimeoutExpired(["bash", "-n"], 1),
+        OSError("no bash"),
+        subprocess.SubprocessError("boom"),
+    ],
+)
+def test_check_parse_of_a_bash_parser_that_cannot_run_is_CANNOT_RUN(monkeypatch, exc):
+    monkeypatch.setattr(mutate.subprocess, "run", _run_raises(exc))
+    verdict, detail = mutate.check_parse("tool.sh", "echo hi\n")
+    assert verdict == mutate.CANNOT_RUN
+    assert "bash -n could not run" in detail
+    # The kind with no parser keeps its own answer, under the same patch.
+    assert mutate.check_parse("notes.txt", "hi\n")[0] == mutate.UNCHECKED
+
+
+@pytest.mark.parametrize("rc", [126, 127, 137, -9])
+def test_a_bash_n_exit_other_than_1_or_2_is_the_PARSER_failing_not_the_mutant(
+    monkeypatch, rc
+):
+    """rc 1/2 are bash reporting a syntax error; a wrapper that cannot exec bash exits 126/127."""
+
+    def fake(*args, **kwargs):
+        return subprocess.CompletedProcess(args, rc, "", "bash: cannot execute\n")
+
+    monkeypatch.setattr(mutate.subprocess, "run", fake)
+    verdict, detail = mutate.check_parse("tool.sh", "echo hi\n")
+    assert verdict == mutate.CANNOT_RUN
+    assert f"exited {rc}" in detail
+
+
+@pytest.mark.parametrize("rc", [1, 2])
+def test_a_bash_n_syntax_exit_with_EMPTY_stderr_is_the_PARSER_failing(monkeypatch, rc):
+    """A syntax error always comes with a message; rc 1/2 and silence is a parser that died."""
+
+    def fake(*args, **kwargs):
+        return subprocess.CompletedProcess(args, rc, "", "")
+
+    monkeypatch.setattr(mutate.subprocess, "run", fake)
+    verdict, detail = mutate.check_parse("tool.sh", "echo hi\n")
+    assert verdict == mutate.CANNOT_RUN
+    assert f"bash -n exited {rc}" in detail
+
+
+def test_a_bash_n_exit_1_with_stderr_is_UNPARSEABLE_carrying_the_first_line(
+    monkeypatch,
+):
+    """bash 5.3 exits 1, not 2, for a syntax error inside an array assignment."""
+
+    def fake(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args, 1, "", "bash: line 2: syntax error: unexpected end of file\nsecond\n"
+        )
+
+    monkeypatch.setattr(mutate.subprocess, "run", fake)
+    verdict, detail = mutate.check_parse("tool.sh", "a=(\n")
+    assert verdict == mutate.UNPARSEABLE
+    assert detail == "bash: line 2: syntax error: unexpected end of file"
+
+
+def _path_bash_accepts(text):
+    return (
+        subprocess.run(
+            ["bash", "-n"], input=text, capture_output=True, text=True
+        ).returncode
+        == 0
+    )
+
+
+def test_a_REAL_bash_rejects_an_unterminated_array_assignment():
+    """Real bash, not a fake: 5.3 exits 1 here, and a rule keyed on rc 2 alone misread it."""
+    if _path_bash_accepts("a=(\n"):
+        pytest.skip("this PATH bash accepts `a=(` (bash 3.2 returns rc 0)")
+    assert mutate.check_parse("x.sh", "a=(\n")[0] == mutate.UNPARSEABLE
+    multi = "arr=(\n  one\n  two\nif true; then :; fi\n"
+    if not _path_bash_accepts(multi):
+        assert mutate.check_parse("x.sh", multi)[0] == mutate.UNPARSEABLE
+
+
+def test_check_parse_passes_utf8_surrogateescape_not_the_locale_codec(monkeypatch):
+    seen = {}
+
+    def fake(*args, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(mutate.subprocess, "run", fake)
+    assert mutate.check_parse("tool.sh", "echo hi\n")[0] == mutate.PARSES
+    assert seen.get("encoding") == "utf-8"
+    assert seen.get("errors") == "surrogateescape"
+    assert "text" not in seen
+
+
+def test_a_REAL_bash_parses_a_non_ascii_literal():
+    assert mutate.check_parse("x.sh", "echo \u2014 hi\n")[0] == mutate.PARSES
+
+
+def test_a_bash_n_exit_2_is_an_UNPARSEABLE_verdict_carrying_bashs_own_words(
+    monkeypatch,
+):
+    def fake(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args, 2, "", "line 1: syntax error near `fi'\n"
+        )
+
+    monkeypatch.setattr(mutate.subprocess, "run", fake)
+    verdict, detail = mutate.check_parse("tool.sh", "fi\n")
+    assert verdict == mutate.UNPARSEABLE
+    assert "syntax error" in detail
+
+
+def test_check_parse_of_a_python_compile_that_gives_up_is_CANNOT_RUN(monkeypatch):
+    def deep(*args, **kwargs):
+        raise RecursionError("too deep")
+
+    # A module-global shadow: patching the builtin would break pytest's own traceback rendering.
+    monkeypatch.setattr(mutate, "compile", deep, raising=False)
+    verdict, detail = mutate.check_parse("a.py", "x = 1\n")
+    assert verdict == mutate.CANNOT_RUN
+    assert "compile() gave up" in detail
+
+
+def test_judge_mutant_parse_propagates_a_control_that_CANNOT_RUN():
+    control = (mutate.CANNOT_RUN, "bash -n could not run: x")
+    verdict, detail = mutate.judge_mutant_parse("a.sh", "echo\n", "fi\n", control)
+    assert verdict == mutate.CANNOT_RUN
+    assert detail.startswith("no control: ")
+
+
+def test_judge_mutant_parse_keeps_UNCHECKED_for_an_unchecked_or_unparseable_control():
+    for control in (
+        mutate.check_parse("c.jsonc", "{}"),
+        mutate.check_parse("a.py", "x = (\n"),
+    ):
+        assert control[0] in (mutate.UNCHECKED, mutate.UNPARSEABLE)
+        verdict, _ = mutate.judge_mutant_parse("a.py", "x\n", "y\n", control)
+        assert verdict == mutate.UNCHECKED
+
+
+def test_judge_mutant_parse_propagates_a_mutants_own_CANNOT_RUN(monkeypatch):
+    control = (mutate.PARSES, "")
+    monkeypatch.setattr(mutate.subprocess, "run", _run_raises(OSError("gone")))
+    assert (
+        mutate.judge_mutant_parse("a.sh", "echo\n", "echo 2\n", control)[0]
+        == mutate.CANNOT_RUN
+    )
+
+
+def _sh_bed(root):
+    """A `.sh` subject plus a counting suite for it: (subject, command, counter)."""
+    sh = root / "subject.sh"
+    sh.write_text("#!/usr/bin/env bash\nGUARD=1\necho hi\n")
+    counter = root / "runs.txt"
+    command = _suite_for(
+        root,
+        sh,
+        SUITE_COUNTING_SRC.replace("{counter}", str(counter)).replace(
+            "GUARD = True", "GUARD=1"
+        ),
+    )
+    return sh, command, counter
+
+
+def test_a_control_whose_parse_check_CANNOT_RUN_ends_the_campaign_ERROR_untouched(
+    bed, monkeypatch
+):
+    root, _, _ = bed
+    sh, command, counter = _sh_bed(root)
+    monkeypatch.setattr(mutate.subprocess, "run", _run_raises(OSError("no bash")))
+    before = sh.read_text()
+    report = mutate.run(sh, command, [mutate.Mutation("m", "GUARD=1", "GUARD=2")])
+    assert (report.status, report.rc) == ("ERROR", 2)
+    assert "the parse check could not run" in report.text
+    assert "no verdict about any mutant can be reached" in report.text
+    assert "parse check: OFF" not in report.text, (
+        "a misleading OFF line preceded the ERROR"
+    )
+    assert "parse check: COULD NOT RUN" in report.text
+    assert len(report.outcomes) == 0 and report.caught == 0
+    assert counter.read_text().count("x") == 1, "only the baseline ran; no mutant did"
+    assert sh.read_text() == before
+    assert not mutate.backup_path(sh).exists()
+
+
+def test_a_mutant_whose_parse_check_CANNOT_RUN_is_INVALID_and_never_runs(
+    bed, monkeypatch
+):
+    root, _, _ = bed
+    sh, command, counter = _sh_bed(root)
+    before = sh.read_text()
+    real = mutate.subprocess.run
+    calls = []
+
+    def flaky(*args, **kwargs):
+        # The control (first call) parses; the mutant's check (second) cannot run.
+        calls.append(1)
+        if len(calls) == 1:
+            return real(*args, **kwargs)
+        raise subprocess.TimeoutExpired(["bash", "-n"], 1)
+
+    monkeypatch.setattr(mutate.subprocess, "run", flaky)
+    report = mutate.run(sh, command, [mutate.Mutation("m", "GUARD=1", "GUARD=2")])
+    assert len(calls) == 2, "the control and the one mutant were each checked"
+    assert [o.status for o in report.outcomes] == [mutate.INVALID]
+    assert "the parse check could not run" in report.outcomes[0].detail
+    assert "the suite was NOT run" in report.outcomes[0].detail
+    assert report.invalid == 1 and report.caught == 0
+    assert (report.status, report.rc) == ("ERROR", 2)
+    assert "parse check could not run" in report.text
+    assert counter.read_text().count("x") == 1
+    assert sh.read_text() == before
 
 
 # ---------- the module's own gates ----------

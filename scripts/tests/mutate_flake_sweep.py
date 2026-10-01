@@ -65,8 +65,9 @@ runs, and the campaign's own log is no exception.
 
 The `--expect` pattern matches the SHAPE of `mutate.py`'s own `_verdict()` line -- `RESULT: {status}
 rc={rc} caught={caught} survived={survived} timedout={timedout} total={total}` (see `_verdict()` in
-scripts/lib/mutate.py), where `status` is one of `STATUSES = ("PASS", "FAIL", "ERROR")` and every
-other field is a bare integer (no `/`, unlike flake-sweep.sh's OWN `RESULT:` line, which this
+scripts/lib/mutate.py; the line always ends with ` invalid={invalid}` after `total=`, and the
+pattern above is unanchored at its end, so it still matches), where `status` is one of
+`STATUSES = ("PASS", "FAIL", "ERROR")` and every other field is a bare integer (no `/`, unlike flake-sweep.sh's OWN `RESULT:` line, which this
 campaign's subject prints and which this pattern is not matching) -- not a passing value: an
 `--expect` written against the PASSING value (e.g. `survived=0`) would report INDETERMINATE on a
 genuine FAIL, which is worse than useless -- it hides the very outcome the campaign exists to
