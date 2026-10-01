@@ -166,6 +166,8 @@ MUTATIONS = [
         "snapshot-failure-aborts: a snapshot that cannot be written now kills the save instead of "
         "warning. This is the WRONG direction — blocking a legitimate edit because a secondary "
         "artifact failed is worse than the risk the artifact covers",
+        "            print(\n"
+        '                f"backlog: no snapshot written to {snapshot} ({exc}) — the edit itself "\n'
         '                f"proceeds, but there is nothing to restore from",\n'
         "                file=sys.stderr,\n"
         "            )\n"

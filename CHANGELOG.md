@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.119.3 — 2026-09-29
+- fix(mutate_backlog.py): make the snapshot-failure mutant parse
+
 ## v0.119.2 — 2026-09-29
 - docs(CLAUDE.md): add the lifecycle-not-exercised hazard
 
