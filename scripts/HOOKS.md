@@ -46,6 +46,28 @@ printf '{"tool_name":"Bash","tool_input":{"command":"git status"},"cwd":"%s"}' "
   | python3 scripts/push-guard.py
 ```
 
+To run **every** hook `settings.json` registers for an edit — matcher, payload, timeout and the
+exit-code verdicts handled the way the harness does — use `scripts/run-hooks.py` rather than hand-building
+a payload per hook. It is the re-check for an edit that bypassed the hooks (a file written through the Bash
+tool) and the survey of how long each hook takes against its registered timeout:
+
+```bash
+scripts/run-hooks.py --list scripts/md-links-check.py        # what would run; nothing executes
+scripts/run-hooks.py --concurrent scripts/md-links-check.py  # all at once, as the harness runs them
+scripts/run-hooks.py --settings "$PWD/settings.json" --scripts-dir "$PWD/scripts" scripts/md-links-check.py  # grade THIS tree
+```
+
+By default it reads `~/.claude/settings.json` and runs the installed copies, which is production; the last
+form grades this tree's registrations and scripts instead. A run (not `--list`, which prints no `RESULT:`
+line) ends in one `RESULT:` line, and anything but `PASS` is not clean; a `PASS` with `skipped=` or
+`filtered=` above 0 is partial coverage — a PreToolUse Bash `PASS` never consults the exec-bit-guard gate. It never invokes an `exec-bit-guard` registration itself (standing constraint) and
+refuses a file of that name (a registration whose first word, a plain path or the `$HOME/.claude/scripts/` form, resolves through a symlink to a guard file is skipped too; wrapped, prefixed or quoted forms are text-matched only), but it does not look inside hooks: a hook that runs other suites runs them
+exactly as the harness does on an edit of that file. For the machinery subjects (`settings.json`,
+`scripts/lib/settings_hooks.py`, `scripts/tests/test_hook_suite_guard.sh`) that means
+`hook-machinery-test.sh` executes the guard's test-runner script with inert inputs and the guard
+suite's stub-backed rows, never `exec-bit-guard.sh` itself or its real suite. Read the header of `scripts/run-hooks.py` for what it
+measured and what it does not model.
+
 ## The shape
 
 Extract the edited path, then guard from cheapest to most expensive, exiting `0` the instant the hook

@@ -107,7 +107,14 @@ otherwise hand-roll what it already does:
 | `/recast`    | Re-develop a git source repo into a target as a genuine ground-up, proven-per-commit history converging to functional equivalence (never copies the tree, never pushes) |
 <!-- /sync:skills -->
 
-**Non-skills earn a place here on the same test.** Before hand-writing a mutation harness — which
+**Non-skills earn a place here on the same test.** Before hand-building a stdin payload to re-run a
+hook an edit bypassed (a file written through the Bash tool trips no PostToolUse hook), or
+hand-writing a script to time hooks against their registered timeouts, use
+`~/.claude/scripts/run-hooks.py <path>`: it derives the matching registrations from `settings.json`,
+runs each with the harness's measured matcher and payload, and ends in one `RESULT:` line, clean only
+at `RESULT: PASS` — and a PASS with `skipped=` or `filtered=` above 0 is partial coverage, since it never consults the
+exec-bit-guard gate. Measured: a bypassed memory-index check was re-run with a hand-built payload, and
+one timing survey took two hand-written scripts. Before hand-writing a mutation harness — which
 the RED→GREEN rule below sends you to do — use `~/.claude/scripts/lib/mutate.py`, supplying only
 the `(label, old, new)` list. Ten were hand-rolled and discarded before it existed, each
 re-derivation dropping a different safety property; worst was the unmutated BASELINE, absent from 7

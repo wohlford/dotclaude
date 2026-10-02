@@ -65,8 +65,12 @@ whose symlink target's basename, matches the pattern is refused; the skipped cou
 the verdict line (the pattern is searched in the whole command text, so a checkout under a directory
 with that name skips every hook — the safe direction). This tool does not look INSIDE hooks: a hook that itself runs other suites
 (`hook-machinery-test.sh`, for the `settings.json`, `scripts/lib/settings_hooks.py`,
-`scripts/tests/test_hook_suite_guard.sh` and similar subjects) reaches the guard suite exactly as the
-harness does on an edit of those files. The commands run are the ones the settings file names, so a
+`scripts/tests/test_hook_suite_guard.sh` and similar subjects) does what it does on an edit of those
+files. Measured by reading its subject table: those subjects run the argv-refusal module, which
+executes the guard's test-runner SCRIPT (`exec-bit-guard-test.sh`) with an inert payload, and
+`test_hook_suite_guard.sh` also selects the guard suite's stub-backed rows. No accepted subject
+reaches `exec-bit-guard.sh` itself or its real suite `test_exec_bit_guard.sh`; the executions that do
+happen are the ones `/audit --tests` makes before every publish. The commands run are the ones the settings file names, so a
 hook edited in a branch is graded by the INSTALLED copy unless `--scripts-dir` points at the branch's.
 """
 

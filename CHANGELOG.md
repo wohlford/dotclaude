@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.126.3 — 2026-10-02
+- docs(hooks): name run-hooks.py before a hand-built hook payload
+
 ## v0.126.2 — 2026-10-01
 - test(run-hooks): add the mutation campaign
 
