@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.126.2 — 2026-10-01
+- test(run-hooks): add the mutation campaign
+
 ## v0.126.1 — 2026-10-01
 - test(run-hooks): add the hermetic suite and payload fixtures
 
