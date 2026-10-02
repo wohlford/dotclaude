@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.126.0 — 2026-10-01
+- feat(run-hooks): add the hook re-runner
+
 ## v0.125.1 — 2026-10-01
 - docs(CLAUDE.md): a floor before a transform does not survive it
 
