@@ -112,8 +112,8 @@ hook an edit bypassed (a file written through the Bash tool trips no PostToolUse
 hand-writing a script to time hooks against their registered timeouts, use
 `~/.claude/scripts/run-hooks.py <path>`: it derives the matching registrations from `settings.json`,
 runs each with the harness's measured matcher and payload, and ends in one `RESULT:` line, clean only
-at `RESULT: PASS` — and a PASS with `skipped=` or `filtered=` above 0 is partial coverage, since it never consults the
-exec-bit-guard gate. Measured: a bypassed memory-index check was re-run with a hand-built payload, and
+at `RESULT: PASS` — and a PASS with `skipped=` or `filtered=` above 0 is partial coverage (`skipped=` is the
+exec-bit-guard gate it never consults, `filtered=` what `--only` dropped). Measured: a bypassed memory-index check was re-run with a hand-built payload, and
 one timing survey took two hand-written scripts. Before hand-writing a mutation harness — which
 the RED→GREEN rule below sends you to do — use `~/.claude/scripts/lib/mutate.py`, supplying only
 the `(label, old, new)` list. Ten were hand-rolled and discarded before it existed, each
@@ -149,6 +149,10 @@ while a backgrounded one is a tracked task the operator can see and it notifies 
 ends; measured four times in one session. Stopping it does not stop the job. Give that waiter
 `timeout: 7200000`, the maximum — the 30-minute default killed one before the `--tests` run it
 watched had finished, and that kill too reads like the job dying when only the waiter died.
+**`kill <pid>` of the job itself stops only its wrapper** — measured, the `audit.sh --tests` tree it had
+spawned reparented to init and went on grading a tree about to be edited, while `--status` reported
+DIED. Take the group from a surviving descendant (`ps -o pgid= -p <it>`), `kill -TERM -- -<pgid>`, then
+`pgrep` for survivors before touching the repo.
 **That notification reaches only the session that armed the waiter — a subagent is never
 re-invoked by it**, so a delegate that backgrounds its waiter ends its turn with no verdict: inside
 a delegate, wait in the foreground within the tool timeout, or leave the long job to the

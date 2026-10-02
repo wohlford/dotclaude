@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.126.4 — 2026-10-02
+- docs(CLAUDE.md): kill run-long by group; say what filtered= means
+
 ## v0.126.3 — 2026-10-02
 - docs(hooks): name run-hooks.py before a hand-built hook payload
 
