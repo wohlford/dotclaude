@@ -1,0 +1,1 @@
+{"cwd":"/CWD","hook_event_name":"PreToolUse","permission_mode":"bypassPermissions","prompt_id":"PROMPT","session_id":"SESSION","tool_input":{"content":"hi","file_path":"/CWD/a.txt"},"tool_name":"Write","tool_use_id":"TOOLUSE","transcript_path":"/TRANSCRIPT.jsonl"}
