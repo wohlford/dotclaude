@@ -226,7 +226,9 @@ def _argparse_rejected(proc) -> bool:
     return proc.returncode == 2 and "unrecognized arguments" in combined
 
 
-# ---------- the four always-run cross-file checks, mirroring audit.sh's check_* exactly ----------
+# ---------- the four always-run cross-file checks, mirroring audit.sh's check_* ----------
+# One deliberate difference: check_sync_docs reads its python >= 3.10 floor from sys.version_info,
+# the interpreter this tool itself runs the checker with, where audit.sh probes `python3`.
 
 
 def check_sync_docs(clone: Path) -> tuple[str, str]:
@@ -236,6 +238,14 @@ def check_sync_docs(clone: Path) -> tuple[str, str]:
     hits = run(["git", "-C", str(clone), "grep", "-l", "<!-- sync:", "--", "*.md"])
     if not hits.stdout.strip():
         return "SKIP", "no sync markers in scope"
+    if sys.version_info < (3, 10):
+        # Mirrors audit.sh's interpreter floor: sync_docs.py needs zip(strict=), so a < 3.10
+        # interpreter's rc 2 is the machine's, not the tree's. Judged on the tool's own
+        # interpreter because that is the one the next line would run.
+        return "SKIP", (
+            f"python3 {sys.version_info[0]}.{sys.version_info[1]} < 3.10 -- sync_docs.py needs "
+            "zip(strict=), so drift cannot be judged here"
+        )
     proc = run([sys.executable, str(runner), "--scope", str(clone), "sync", "--check"])
     if _argparse_rejected(proc):
         return "UNMEASURABLE", "the materialised checker rejected a modern flag"

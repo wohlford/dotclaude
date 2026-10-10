@@ -587,6 +587,87 @@ assert_not_has 'FAIL' 'r12: restricted PATH, clean repo -> no FAIL lines'
 assert_rc 0 'r12: restricted PATH, no violations -> exit 0'
 
 # ============================================================================
+# 12b. A FAIL must describe the tree, not the interpreter. Measured 2026-10-08: with python3 =
+#      macOS /usr/bin/python3 (3.9.6) sync_docs.py crashed per region on zip(strict=) and the sweep
+#      printed `FAIL sync-docs reported drift` for a tree with none. r12's fixture carries no sync
+#      marker, so its `no FAIL` row never reached the interpreter and passed for free; this fixture
+#      carries one, so the check runs. Three cells: (i-a) a stub python3 that REPORTS 3.9 and
+#      (i-b) one that reports NOTHING -- both deterministic on any host -- and (ii) the real
+#      restricted PATH with an empty HOME.
+# ============================================================================
+if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
+  printf 'skip - python3 >= 3.10 needed to build the r12b fixture with sync_docs.py\n'
+else
+  r12b="$tmp/r12b_sync_py_floor"
+  mkrepo "$r12b"
+  mkdir -p "$r12b/skills/aaa"
+  printf -- '---\ndescription: d\n---\n# aaa\n' > "$r12b/skills/aaa/SKILL.md"
+  printf '# Index\n\n<!-- sync:skills cols=Command:key,Purpose:auto -->\n<!-- /sync:skills -->\n' \
+    > "$r12b/INDEX.md"
+  python3 "$here/../../skills/sync-docs/sync_docs.py" --scope "$r12b" sync >/dev/null 2>&1
+  commit_all "$r12b" seed
+  r12b_real_py="$(command -v python3)"
+  r12b_old_path="$PATH"
+
+  # (i-a) a python3 that reports 3.9 to the version probe, whatever the host really has.
+  r12b_stub_old="$tmp/r12b_stub_old"
+  mkdir -p "$r12b_stub_old"
+  printf '#!/bin/sh\ncase "$*" in *version_info*) echo "3 9"; exit 0 ;; esac\nexec "%s" "$@"\n' \
+    "$r12b_real_py" > "$r12b_stub_old/python3"
+  chmod +x "$r12b_stub_old/python3"
+  PATH="$r12b_stub_old:$PATH"
+  run_engine "$r12b"
+  PATH="$r12b_old_path"
+  assert_has 'SKIP sync-docs' 'r12b(i-a): an interpreter reporting 3.9 -> SKIP sync-docs'
+  assert_has 'python3 3.9 < 3.10' 'r12b(i-a): ...the reason names the MEASURED version'
+  assert_not_has 'FAIL sync-docs' 'r12b(i-a): ...(control) no FAIL that blames the tree'
+  assert_not_has 'PASS sync-docs' 'r12b(i-a): ...and the SKIP is final: the runner is not run on top of it'
+  assert_not_has 'render failed' 'r12b(i-a): ...(control) no crash text reaches the report'
+
+  # (i-b) a python3 that reports NOTHING to the version probe: unmeasured, never claimed to be old.
+  r12b_stub_mute="$tmp/r12b_stub_mute"
+  mkdir -p "$r12b_stub_mute"
+  printf '#!/bin/sh\ncase "$*" in *version_info*) exit 1 ;; esac\nexec "%s" "$@"\n' \
+    "$r12b_real_py" > "$r12b_stub_mute/python3"
+  chmod +x "$r12b_stub_mute/python3"
+  PATH="$r12b_stub_mute:$PATH"
+  run_engine "$r12b"
+  PATH="$r12b_old_path"
+  assert_has 'SKIP sync-docs' 'r12b(i-b): an interpreter reporting no version -> SKIP sync-docs'
+  assert_has 'did not report its version' 'r12b(i-b): ...the reason says it was NOT measured'
+  assert_not_has 'PASS sync-docs' 'r12b(i-b): ...and the runner is not run on top of the SKIP'
+
+  # (i-c) the floor itself: 3.10 is capable, so the runner RUNS (a floor drifting up to 3.11 dies here).
+  # (i-d) a banner printed ahead of the version must not turn a capable interpreter into a SKIP.
+  for r12b_cell in c:'3 10' d:'banner\n3 12'; do
+    r12b_id="${r12b_cell%%:*}"; r12b_say="${r12b_cell#*:}"
+    r12b_stub="$tmp/r12b_stub_$r12b_id"
+    mkdir -p "$r12b_stub"
+    printf '#!/bin/sh\ncase "$*" in *version_info*) printf "%s\\n"; exit 0 ;; esac\nexec "%s" "$@"\n' \
+      "$r12b_say" "$r12b_real_py" > "$r12b_stub/python3"
+    chmod +x "$r12b_stub/python3"
+    PATH="$r12b_stub:$PATH"
+    run_engine "$r12b"
+    PATH="$r12b_old_path"
+    assert_has 'PASS sync-docs' "r12b(i-$r12b_id): a capable interpreter reporting '$r12b_say' -> the runner RAN and passed"
+    assert_not_has 'SKIP sync-docs' "r12b(i-$r12b_id): ...and it is not skipped"
+  done
+
+  # (ii) the real restricted environment: empty HOME, minimal PATH.
+  r12b_home="$tmp/r12b_home"
+  mkdir -p "$r12b_home"
+  OUT="$(HOME="$r12b_home" PATH=/usr/bin:/bin "$engine" --scope "$r12b" 2>&1)"; RC=$?
+  assert_not_has 'FAIL' 'r12b(ii): restricted PATH + empty HOME, sync marker present -> no FAIL lines'
+  assert_rc 0 'r12b(ii): ...exit 0'
+  if (PATH=/usr/bin:/bin; python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)') \
+    >/dev/null 2>&1; then
+    assert_has 'PASS sync-docs' 'r12b(ii): the restricted python3 is >= 3.10 -> sync-docs RAN and passed'
+  else
+    assert_has 'SKIP sync-docs' 'r12b(ii): the restricted python3 is absent or < 3.10 -> SKIP, not drift'
+  fi
+fi
+
+# ============================================================================
 # 13. Untracked violation file (never git add'ed) -> still exit 0 (tracked-only)
 # ============================================================================
 r13="$tmp/r13_untracked"
@@ -2132,8 +2213,8 @@ fi
 #     widening the diff is empty (measured 0 lines) and this row would be RED before AND
 #     after the fix. `skills/<name>/SKILL.md` + `<!-- sync:skills -->` is production's own
 #     mechanism (README.md/CLAUDE.md/skills/README.md all use it), so no synthetic handler.
-if ! command -v python3 >/dev/null 2>&1; then
-  printf 'skip - python3 not available for row 1b\n'
+if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
+  printf 'skip - python3 >= 3.10 needed for row 1b (check_sync_docs SKIPs below it)\n'
 else
   r1b="$tmp/r1b_sync_drift"
   mkrepo "$r1b"
@@ -2170,7 +2251,7 @@ EOF
   assert_not_has 'SENTINEL-1B-WIDENED-ROW' \
     '1b: the widened row is ABSENT from the inline excerpt (past the 50-line cap)'
 
-  # Report the measured facts, mirroring check_sync_docs' own invocation exactly (audit.sh:704).
+  # Report the measured facts, mirroring check_sync_docs' own invocation exactly.
   r1b_probe_out="$(python3 "$r1b_sync_runner" --scope "$r1b" sync --check 2>&1)"
   r1b_total_lines="$(printf '%s\n' "$r1b_probe_out" | wc -l | tr -d ' ')"
   r1b_row_line="$(printf '%s\n' "$r1b_probe_out" \

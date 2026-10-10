@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.126.6 — 2026-10-08
+- fix(audit): skip sync-docs below python 3.10, not call it drift
+
 ## v0.126.5 — 2026-10-05
 - docs(DELEGATING.md): add fixture rule for write-capable tools
 

@@ -766,6 +766,24 @@ check_sync_docs() {
     verdict_skip sync-docs 'no sync markers in scope'
     return
   fi
+  # sync_docs.py needs python >= 3.10 (formatters.py uses zip(strict=)). On older interpreters
+  # (macOS's /usr/bin/python3 is 3.9.6) it crashes per region and exits rc 2, which the branch
+  # below would call "drift" -- a FAIL describing the machine, not the tree. An interpreter that
+  # cannot run the tool is a SKIP, the same line check_toml draws for tomllib. The probe PRINTS
+  # the version rather than testing it, so the reason can name what was measured and an
+  # interpreter that reports nothing is not mislabelled as an old one.
+  local py_ver py_major py_minor
+  py_ver="$(python3 -c 'import sys; print(*sys.version_info[:2])' 2>/dev/null)"
+  py_ver="${py_ver##*$'\n'}"   # a banner printed ahead of the version must not hide it
+  read -r py_major py_minor <<< "$py_ver"
+  if [[ ! "${py_major:-}" =~ ^[0-9]+$ || ! "${py_minor:-}" =~ ^[0-9]+$ ]]; then
+    verdict_skip sync-docs 'python3 did not report its version -- sync_docs.py needs python >= 3.10, so drift cannot be judged here'
+    return
+  fi
+  if (( py_major < 3 || (py_major == 3 && py_minor < 10) )); then
+    verdict_skip sync-docs "python3 ${py_major}.${py_minor} < 3.10 -- sync_docs.py needs zip(strict=), so drift cannot be judged here"
+    return
+  fi
   local out rc
   out="$(python3 "$runner" --scope "$scope" sync --check 2>&1)"; rc=$?
   if [[ "$rc" -ne 0 ]]; then

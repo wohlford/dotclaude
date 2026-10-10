@@ -21,10 +21,12 @@ docstring before touching it.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import re
 import shutil
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -1214,3 +1216,46 @@ def test_row13_cross_brick_modify_then_delete_needs_git_rm_dash_f(root: Path) ->
         "the endpoint deletes target.txt — it must not survive materialisation in the "
         f"cumulative clone:\n{sorted(p.name for p in clone_dir.iterdir())}"
     )
+
+
+def test_row14_sync_docs_interpreter_floor_is_a_skip_not_drift(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirrors audit.sh's sync-docs interpreter floor: sync_docs.py needs `zip(strict=)`, so
+    under a < 3.10 interpreter the rehearsal must say SKIP, not a false 'drift' FAIL.
+
+    Only the MODULE's own `sys` name is replaced (never the real `sys`, which pytest and the
+    subprocess helpers are running on), so `check_sync_docs` sees a 3.9 interpreter while the
+    rest of the process is untouched."""
+    spec = importlib.util.spec_from_file_location(
+        "publish_rehearse_under_test", REPO_ROOT / "scripts" / "publish-rehearse.py"
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    repo = root / "r14-repo"
+    init_repo(repo)
+    copy_sync_docs(repo)
+    write(
+        repo / "INDEX.md",
+        "# Index\n\n<!-- sync:skills cols=Command:key,Purpose:auto -->\n<!-- /sync:skills -->\n",
+    )
+    commit_all(repo, "feat: sync-docs fixture")
+
+    if sys.version_info >= (3, 10):
+        control, _ = mod.check_sync_docs(repo)
+        assert control in {"PASS", "FAIL"}, (
+            "the fixture must reach the runner: " + control
+        )
+
+    monkeypatch.setattr(
+        mod,
+        "sys",
+        types.SimpleNamespace(
+            version_info=(3, 9, 6, "final", 0), executable=sys.executable
+        ),
+    )
+    verdict, reason = mod.check_sync_docs(repo)
+    assert verdict == "SKIP", (verdict, reason)
+    assert "3.9" in reason, reason

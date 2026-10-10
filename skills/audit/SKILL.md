@@ -266,6 +266,13 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   hooks table, which this check does not read. Complete today by overlap, not by construction:
   every registered hook resolves inside `scripts/*.{sh,py}`, but a hook registered from
   `scripts/lib/` or `skills/*/` would sit outside the scripts index and go unchecked.
+- `sync-docs` `SKIP`s when `python3` is older than 3.10, or reports no version at all —
+  `sync_docs.py` cannot run there (`zip(strict=)`), and its rc 2 would otherwise read as
+  `FAIL … drift`, a failure that describes the interpreter rather than the tree. The `< 3.10`
+  reason names the version that was measured; the no-version reason says the interpreter reported
+  none. That is the line `check_toml` draws for `tomllib` and the `script-headers` bullet above
+  draws for an absent `python3`: an interpreter that cannot run the tool is `SKIP`, not `FAIL`. It
+  is a coverage gap — on such a machine, index drift is not being checked.
 - `pre-push-installed` only runs in adopted repos (any `refs/heads/*` branch carrying a
   tracked `.publication.toml`) — `SKIP` elsewhere. It answers registration only: whether the
   hook that would enforce the push boundary is actually installed, executable, and current.
