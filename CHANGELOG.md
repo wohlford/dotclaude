@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.126.5 — 2026-10-05
+- docs(DELEGATING.md): add fixture rule for write-capable tools
+
 ## v0.126.4 — 2026-10-02
 - docs(CLAUDE.md): kill run-long by group; say what filtered= means
 

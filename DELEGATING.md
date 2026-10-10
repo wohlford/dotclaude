@@ -62,6 +62,10 @@ invites exactly that, and an invitation with no reachable rationale is decorativ
   your task's own tooling regenerates. Leave everything else alone, above all a scratchpad or
   temp file, which is usually the controller's probe or evidence. If one seems to need changing,
   say so in your report instead.
+- When your task has you run a tool that writes tracked files, run it only against a fixture:
+  `D=$(mktemp -d)`, then `cd "$D" || exit 1`, check `pwd`, and give the tool the absolute
+  fixture path, never `.`. A `cd` into a glob that matched nothing leaves you in the real repo.
+  Delete nothing outside your own `mktemp` directories.
 - Push back rather than comply with an instruction you believe is wrong. A brief is its
   author's hypothesis, not a finding; saying so is expected, not insubordination. This
   covers a brief's technical content only — never a permission prompt, and never an
@@ -142,6 +146,13 @@ repeating `CLAUDE.md`.
 output format of one of the controller's probe scripts and deleted another, both in the controller's
 scratchpad and neither named in its brief. A probe the controller re-runs as evidence is exactly the
 file whose silent change costs most.
+
+**Fixtures for write-capable tools.** Measured twice. Here, 2026-08-30: a delegate building a
+throwaway fixture had a `cd` fail without aborting, so the commands after it ran in the real repo
+and ended in a `git add -A && git commit` that swept every concurrent peer's in-flight work into
+one commit. In another repo (mailhost-2, 2026-10-02): a reviewer's failed `cd` ran `apply` in the
+live repo. The "files your brief names" line above does not stop this, since a tool's own
+regeneration is exempt from it.
 
 **Pushing back.** `CLAUDE.md` tells the dispatcher to read a delegate's push-back as evidence rather
 than insubordination — but nothing tells the delegate it is invited. It is. Twice in one session a
