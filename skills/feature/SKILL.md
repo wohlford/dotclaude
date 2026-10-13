@@ -1,6 +1,7 @@
 ---
 name: feature
 description: Run the methodical, risk-tiered pipeline for a change (triage → spec → spike → plan → reviews), then continue through subagent-driven execution to an integrated change; --plan-only stops at the reviewed plan
+model: sonnet
 ---
 
 # /feature — Methodical Change Pipeline
@@ -33,6 +34,33 @@ The user may optionally provide:
   durability rule; the legacy design-only behavior) instead
   of executing and merging.
 
+### Models
+
+Three roles, each with a default model (implementers follow the tier ladder under **Execute and integrate**),
+so the pipeline's independence never depends on remembering it:
+
+- **Author and orchestrator: Sonnet.** The frontmatter requests `model: sonnet`. Measured on each path
+  (claude 2.1.296, headless `claude -p`, 2026-10-12, a probe skill requesting `opus` from a Sonnet session):
+  honoured when the model invoked the skill through the Skill tool, ignored when the prompt typed the
+  command; the interactive typed path is untested. The harness docs scope any such override to the current
+  turn. So it starts a run in Sonnet at best and never pins one. State your own model id (from your system
+  prompt) in Step 0's announcement; if it is not Sonnet, say so and continue — never block. Every rule below
+  keys on the models that actually wrote the artifact, not on the alias this section hopes for.
+- **Reviewer: Opus** — see **Diverse-model review**.
+- **Open questions: Fable first.** Any genuinely open question that arises — a design fork, an ambiguity,
+  and the clarifying questions `superpowers:brainstorming` would put to the user — goes to a Fable subagent
+  (`model: fable`) before it reaches the user, per the global CLAUDE.md's "Asking Questions": ask it to
+  answer on the merits **and** to judge whether the question is really the user's, and bring back a
+  conclusion, not a menu, and send the questions brainstorming would ask at one checkpoint in a single
+  dispatch. Fable cannot supply a fact only the user holds, so its second answer is what routes
+  those back; **batch the questions it returns as the user's and ask them once, before the work that needs
+  the answers.** **Authorization — pushing,
+  publishing, anything outward-facing or hard to reverse — never goes to Fable**, and neither do the consent
+  pauses named under **Design approval** (Step 0.5's branch confirmation among them): those ask the user
+  directly. Risk appetite and scope still go to Fable first, which judges whether they are the user's. This
+  section changes who answers a design question, never *may I?*. If Fable is unavailable, ask an Opus
+  subagent instead (a Sonnet one if you are Opus) and say so; if that is unavailable too, ask the user.
+
 ### Process
 
 #### Step 0 — Risk triage (always; state the verdict)
@@ -49,7 +77,7 @@ Judge the work's **risk** on two axes. They are independent — either one alone
 - large blast radius (hard to reverse; many consumers).
 
 Otherwise the **fast lane**. Announce the lane, **which axis routed it** (or that neither fired), and
-why. Bias borderline cases to the full lane.
+why. Bias borderline cases to the full lane. Include your own model id in that announcement (see **Models**).
 
 **The security trigger is absolute:** a security-flagged change *is* a full-lane change, so no
 fast-lane change is ever security-flagged. If security surfaces after triage, the triage was wrong —
@@ -134,7 +162,8 @@ honoring any one of them re-creates the same stall one step further on. Identify
 behavior, not by quoted text or line number**, since the plugin is versioned and its wording moves
 between releases; but identify them **only as design-approval gates**. That skill waits for other
 things too (its one-question-at-a-time dialogue, its visual-companion offer); those are not design
-approval, are outside this override, and stand.
+approval and are outside this override, so they stand — except that the dialogue's questions go to a
+Fable subagent first, per **Models**.
 
 **The authority is the user-instruction layer, and it is checkable.** `CLAUDE.md` names
 `workflows.md` as this pipeline's definition, and `workflows.md` states that the design half ends in
@@ -317,11 +346,14 @@ still stop and report, and nothing here licenses continuing past one.
 #### Diverse-model review
 
 The value is a **different model than the author** catching blind spots same-model review misses.
-- **Pick a reviewer that differs from you (the author).** Prefer **Fable** (Agent-tool alias `fable`;
-  underlying `claude-fable-5`) **when it is available** — *unless you are Fable, then use Opus.* **If
-  Fable is unavailable** (when Anthropic has it disabled, the Agent returns a "Fable … currently
-  unavailable" error), **explicitly fall back to Sonnet** (Opus only if you are Sonnet), and
-  state which model actually reviewed (not Fable). Announce the choice.
+- **Pick a reviewer that differs from every model that wrote the artifact.** Normally that is Sonnet
+  alone (**Models**), so the default is **Opus**. If Opus wrote any of it (you are Opus now, or Step 0
+  announced Opus), use **Fable**; if Fable did, use Opus; if both did, use Sonnet. **If that reviewer is
+  unavailable** (when
+  Anthropic has it disabled, the Agent returns a "… currently unavailable" error), take whichever of Opus
+  and Fable still differs from every author. **If no such model is available**, review with Sonnet
+  anyway; when Sonnet wrote the artifact, announce that pass as same-model, not diverse, and do not count
+  it as the diverse review. State which model actually reviewed. Announce the choice.
 - Spawn it with the **Agent tool**, `model:` = the chosen **alias** — `fable`, `sonnet`, or `opus`.
   **Never `haiku`:** critiquing a plan is design judgment, the top of the tier ladder
   ([agents/README.md](../../agents/README.md)), and a cheap reviewer here buys a cheap review of
@@ -329,8 +361,10 @@ The value is a **different model than the author** catching blind spots same-mod
   prioritized findings
   (`[BLOCKER|MAJOR|MINOR] location — problem — fix`), passing the artifact path + relevant files.
 - **Detect silent degradation:** ask the reviewer to state its exact model id as the first line of its
-  reply; if it doesn't match what you requested, treat the pass as the fallback and say so. **Never
-  block** — degrade and tell the user which model actually reviewed.
+  reply; if it doesn't match what you requested, treat the pass as reviewed by the model it states: if that
+  is an author's model it is same-model and not the diverse review, so dispatch the next reviewer in the
+  chain above once, then degrade as above. **Never block** — degrade and tell the user which model actually
+  reviewed.
 
 #### Execute and integrate (default; both lanes)
 
@@ -363,12 +397,12 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
    subject and signing itself) — where a tag applies it skips the tag and corrupts the release
    sequence, and in every case it skips `/commit`'s foreground-signing discipline.
 
-   **Scale execution to Step 0's lane** — the triage governs rigor here too, not just the design half.
+   **Execution tiers do not vary by lane** — the triage governs the design half and, through the plan, what is executed.
    **Scale by model tier, never by dropping a review.** SDD's per-task review and its final
    whole-branch review ask different questions of the same code (did this task build what its brief
    demanded, vs. does the branch hold together), and SDD names skipping either a hard *never* — even
    on a single-task plan, where they read the same diff through different rubrics. Honor its contract:
-   the lane changes *what you pay per pass*, not *how many gates the code clears*.
+   the model tier changes *what you pay per pass*, never *how many gates the code clears*.
    - **Always pass the model explicitly.** SDD inherits *your session's* model when none is given, so
      every implementer and reviewer silently runs at the session tier — usually the most capable and
      most expensive. That one omission costs more than every review in this pipeline combined, and it
@@ -383,7 +417,11 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
    - Dispatch per the tier ladder in [agents/README.md](../../agents/README.md): **implementers** at
      the cheapest tier that fits (a task whose plan text carries the complete code is transcription →
      `haiku`; multi-file integration or judgment → `sonnet`); **task reviewers** at `sonnet`; the
-     **final whole-branch review** at `opus` on the full lane, `sonnet` on the fast lane.
+     **final whole-branch review** at `opus` on **both** lanes: implementers and task reviewers are
+     normally Sonnet and this ladder never dispatches an implementer at `opus`, so this is the pass that
+     gives the code a different model's read, the same reason **Diverse-model review** exists for the plan.
+     If Opus is unavailable, use Fable; if neither, review at Sonnet and announce it as same-model when
+     Sonnet wrote the code.
    - **Parallelize writes, serialize the suite.** Concurrent tasks may edit freely, but only **one**
      agent runs the tests at a time, and only after the writes it depends on have landed — suites read
      the code under test from the shared working tree, so a peer mid-write means a sibling executes a
@@ -659,13 +697,13 @@ step — e.g.
   step 5 and fast-lane step 2 also run the plan's checks, which cost their own runtime; the spike
   substitutes for a second reasoning pass; the fast lane skips the diverse pass unless stakes
   warrant it. The default execute-then-integrate phase adds the SDD subagent passes (one implementer +
-  reviews per task, plus the final whole-branch review) — and `/vet`'s reviewer dispatch when the
+  reviews per task, plus the final whole-branch review, `opus` on both lanes, so a fast-lane run pays that Opus pass) — and `/vet`'s reviewer dispatch when the
   diff touches a skill or agent (`/audit` is
   deterministic and near-free — excluded from this accounting, and never cut for budget); `--plan-only`
   skips all execution cost. The adopted arm adds one cost the non-adopted merge finish never pays: the
   re-derivation's per-brick re-narration (**Adopted-repo finish**, point 2) is foreground,
   judgment-driven, and non-delegable to a subagent. **Execution spend is controlled by tier, not by
-  cutting gates** — see "Scale execution to Step 0's lane"; never trade a review away to save budget.
+  cutting gates** — see "Scale by model tier, never by dropping a review"; never trade a review away to save budget.
 - **Never spend two same-model passes on one artifact.** Each sub-skill (`brainstorming`,
   `writing-plans`) already self-reviews its own output against a mechanical checklist; the
   ultrathink steps own the altitude question those checklists cannot ask, plus the rehearsal that
