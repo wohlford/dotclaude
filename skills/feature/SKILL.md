@@ -1,7 +1,6 @@
 ---
 name: feature
 description: Run the methodical, risk-tiered pipeline for a change (triage → spec → spike → plan → reviews), then continue through subagent-driven execution to an integrated change; --plan-only stops at the reviewed plan
-model: sonnet
 ---
 
 # /feature — Methodical Change Pipeline
@@ -36,20 +35,28 @@ The user may optionally provide:
 
 ### Models
 
-Three roles, each with a default model (implementers follow the tier ladder under **Execute and integrate**),
+Four roles, each with a default model (implementers follow the tier ladder under **Execute and integrate**),
 so the pipeline's independence never depends on remembering it:
 
-- **Author and orchestrator: Sonnet.** The frontmatter requests `model: sonnet`. Measured on each path
-  (claude 2.1.296, headless `claude -p`, 2026-10-12, a probe skill requesting `opus` from a Sonnet session):
-  honoured when the model invoked the skill through the Skill tool, ignored when the prompt typed the
-  command; the interactive typed path is untested. The harness docs scope any such override to the current
-  turn. So it starts a run in Sonnet at best and never pins one. State your own model id (from your system
-  prompt) in Step 0's announcement; if it is not Sonnet, say so and continue — never block. Every rule below
-  keys on the models that actually wrote the artifact, not on the alias this section hopes for.
-- **Reviewer: Opus** — see **Diverse-model review**.
+- **Controller: the session's own model, whatever it is.** It dispatches, verifies every return by content,
+  commits, runs the long-run waiters, routes every question, and writes no design content and no task code
+  (**Execute and integrate** names the two finish operations it keeps). The frontmatter carries no `model:` on
+  purpose. Measured (claude 2.1.296, headless `claude -p`, 2026-10-12, a probe skill requesting `opus` from a
+  Sonnet session): a frontmatter `model:` is honoured when the model invoked the skill through the Skill tool and
+  ignored when the prompt typed the command, and the harness docs scope any such override to the current turn — so
+  it could only downgrade an Opus controller's verification turn and never pin an author. State your own model id
+  (from your system prompt) in Step 0's announcement.
+- **Author: a pinned Sonnet subagent** — the Agent tool's `model: sonnet`, which does hold. It drafts the spec, the
+  plan and every fold, through **Authoring dispatch**. Step 0 announces the REQUESTED author model; the actual one
+  is the model id on line 1 of each return, and the presentation reports it. Every rule below keys on the
+  **author set** — the models that actually wrote the artifact — never on the controller's model or on the alias
+  this section requests.
+- **Reviewer: Opus**, on the spec and on the plan of a full-lane run — see **Diverse-model review**, which also
+  names the arbiter when author and reviewer disagree.
 - **Open questions: Fable first.** Any genuinely open question that arises — a design fork, an ambiguity,
   and the clarifying questions `superpowers:brainstorming` would put to the user — goes to a Fable subagent
-  (`model: fable`) before it reaches the user, per the global CLAUDE.md's "Asking Questions": ask it to
+  (`model: fable`) before it reaches the user — a fold's own questions are the one exception, ruled by the controller
+  under **Authoring dispatch** — per the global CLAUDE.md's "Asking Questions": ask it to
   answer on the merits **and** to judge whether the question is really the user's, and bring back a
   conclusion, not a menu, and send the questions brainstorming would ask at one checkpoint in a single
   dispatch. Fable cannot supply a fact only the user holds, so its second answer is what routes
@@ -59,7 +66,7 @@ so the pipeline's independence never depends on remembering it:
   pauses named under **Design approval** (Step 0.5's branch confirmation among them): those ask the user
   directly. Risk appetite and scope still go to Fable first, which judges whether they are the user's. This
   section changes who answers a design question, never *may I?*. If Fable is unavailable, ask an Opus
-  subagent instead (a Sonnet one if you are Opus) and say so; if that is unavailable too, ask the user.
+  subagent instead (a Sonnet one if Opus is in the author set) and say so; if that is unavailable too, ask the user.
 
 ### Process
 
@@ -77,12 +84,13 @@ Judge the work's **risk** on two axes. They are independent — either one alone
 - large blast radius (hard to reverse; many consumers).
 
 Otherwise the **fast lane**. Announce the lane, **which axis routed it** (or that neither fired), and
-why. Bias borderline cases to the full lane. Include your own model id in that announcement (see **Models**).
+why. Bias borderline cases to the full lane. Include your own model id (the controller's) and the requested
+author model, a pinned Sonnet subagent, in that announcement (see **Models**).
 
 **The security trigger is absolute:** a security-flagged change *is* a full-lane change, so no
 fast-lane change is ever security-flagged. If security surfaces after triage, the triage was wrong —
-re-triage to the full lane rather than staying in it. The full lane buys a spec, a spike and a
-diverse-model review of the plan; **no separate security gate runs at the finish**, so the design
+re-triage to the full lane rather than staying in it. The full lane buys a spec, a spike and two
+diverse-model reviews of the spec and of the plan; **no separate security gate runs at the finish**, so the design
 half is where a security-flagged change actually gets its scrutiny. Spend it there.
 
 #### Step 0.5 — Create the work branch (always)
@@ -101,7 +109,7 @@ left in place at the end (no merge).
 
 **Tagging is marker-scoped for every commit this pipeline makes — set once, here, for the whole
 run.** In an adopted repo (`.publication.toml` present) **every** pipeline commit — the design-phase
-spec/plan/recommit commits (fast lane steps 1 and 3; full lane steps 1, 4, and 6) and the
+spec/plan/recommit commits (the draft, and the recommit after every fold, in either lane) and the
 execution/gate commits under **Execute and integrate** alike — is a dev-side commit and goes through
 `/commit --no-tag` (no tag, no `CHANGELOG` entry; versioning is `main`-only, minted at publish). (The
 adopted finish's re-derivation bricks are the one exception to *going through `/commit`*: the brick
@@ -130,7 +138,10 @@ integrate** apply this rule; they do not re-decide it.
   directory is keyed to its path, where no later session will look.) One file per change named for
   the artifact's `YYYY-MM-DD-<name>` slug, spec and plan together, written to `/debrief` step 5's
   bar: **self-contained enough to re-derive the plan from scratch, including the rationale and any
-  defect a review caught.** **Update that same file in place** at every later fold/recommit — a
+  defect a review caught.** **The controller writes this record, carrying each artifact VERBATIM beside a
+  transcription of the review findings and rulings** — no design content of its own — so a restore reproduces the
+  author's text and does not make the controller its author.
+  **Update that same file in place** at every later fold/recommit — a
   record that exists but has gone stale rebuilds this same bug one level up. **This record is a
   restore source**, and the two roots reroute independently, so keep out of it anything that must
   never reach a tracked path — where only one root is ignored, a restore writes it straight into
@@ -150,8 +161,10 @@ The design-lane steps below apply this rule too; they do not re-decide it.
 The design half ends in a **presentation, not a gate.** At the end of either lane, present the
 recorded spec/plan and **continue into Execute and integrate in the same turn** — never stop and
 wait for the user to approve the design. The presentation is not optional and not abbreviated: it
-is the record of what was decided and the user's opportunity to redirect. Only the *blocking wait*
-is gone. If the user objects — then, or after execution has started — stop, revise, and re-present;
+is the record of what was decided and the user's opportunity to redirect. It names, per artifact, the actual author
+model id, the reviewer and the arbiter, every dissent, every second-batch ruling, any arbitration that was not
+diverse, and any ruling left unapplied. Only the *blocking wait*
+is gone. If the user objects — then, or after execution has started — stop, dispatch the revision, and re-present;
 work already done is discarded, not defended — unwind the commits the superseded plan produced
 rather than building on them.
 
@@ -162,8 +175,8 @@ honoring any one of them re-creates the same stall one step further on. Identify
 behavior, not by quoted text or line number**, since the plugin is versioned and its wording moves
 between releases; but identify them **only as design-approval gates**. That skill waits for other
 things too (its one-question-at-a-time dialogue, its visual-companion offer); those are not design
-approval and are outside this override, so they stand — except that the dialogue's questions go to a
-Fable subagent first, per **Models**.
+approval and are outside this override — but no one can answer them from inside an authoring dispatch, so the author
+skips both and its `OPEN QUESTIONS` reach a Fable subagent first (**Authoring dispatch**, per **Models**).
 
 **The authority is the user-instruction layer, and it is checkable.** `CLAUDE.md` names
 `workflows.md` as this pipeline's definition, and `workflows.md` states that the design half ends in
@@ -197,30 +210,91 @@ untouched category: an `/audit` FAIL this branch introduced, a failing suite, an
 conflict, a convergence check that does not match. Those
 still stop and report, and nothing here licenses continuing past one.
 
+#### Authoring dispatch (how every draft and every fold is made)
+
+The spec, the plan and every fold are drafted by a **pinned Sonnet subagent** (Agent tool, `model: sonnet`), never
+by the controller, which dispatches, verifies, commits and asks. A frontmatter pin does not hold (**Models**); the
+Agent tool's parameter does.
+
+- **Brief.** It sees none of this conversation, so carry everything: the change; Step 0's verdict; the branch and
+  base; the ABSOLUTE artifact path and the durability rule (Step 0.5 — the author writes the working file even where
+  the root is gitignored, and you record it to memory); the required shape, by pointer to the
+  `superpowers:brainstorming` or `superpowers:writing-plans` skill file with its sections identified by behavior; for
+  a plan, the spec path, the spike result and the rulings so far; the required sections (under **Verify by content**)
+  and that the artifact file is written whichever path `brainstorming` would take; the return format below; that the user is
+  unreachable from inside the dispatch; that it has Bash but no Grep (measured 2026-10-12, a general-purpose Sonnet
+  subagent). Name the gates to skip, by behavior:
+  `brainstorming`'s clarifying dialogue, its approval gates, its commit-the-design-document step and its terminal
+  "invoke `writing-plans`" step, and `writing-plans`' execution hand-off — each asks a user a subagent cannot
+  reach, and a stalled delegate reads as
+  COMPLETED. It DOES run the parts that are its own: the spec's sectioned design and spec self-review; the plan's
+  header, `## Global Constraints`, task structure, `Expected:` rows and plan self-review. Paste
+  [`DELEGATING.md`](../../DELEGATING.md)'s block **last** and whole, its path cited around it, as for any implementer.
+- **No nested pipeline.** Tell it, as procedure with the reason: do not dispatch any agent (Fable included) and do
+  not invoke `/feature` or any pipeline skill — it inherits the global CLAUDE.md, which says to run `/feature` and to
+  put questions to a Fable subagent, and either would add an author the reviewer chain cannot see. Questions go in
+  `OPEN QUESTIONS`; the controller owns both. It reads the superpowers skills as shape references only. Tool use
+  inside a subagent is not visible, so `DISPATCHES: none` is a self-report, never a measurement; the structural
+  remedy, an agent definition whose `tools:` omits `Agent`, is not built here — it loads only after a promote and a
+  restart, so it cannot be measured in the run that writes it.
+- **Return — for drafts and folds alike.** Line 1: its exact model id. Then `OPEN QUESTIONS` (each: the question, the
+  assumption the draft took, its recommended answer — present even if "none"), `FILES READ`, `INTENTIONAL MATCHES`
+  (any placeholder-pattern hit that is real content) and `DISPATCHES: none`. The artifact carries NO placeholders: an
+  assumption is taken for every open point. A fold's return adds its disposition per finding (below) and gets the same
+  content check, because a fresh Sonnet may be a new model id.
+- **Verify by content, never from the report.** Line 1 names a model id; the artifact has its required sections
+  (spec: goal, decisions or design, out of scope; plan: header, `## Global Constraints`, tasks each with files
+  and a verification; the fast lane's combined artifact: what/why and the task steps, each with a verification, and
+  nothing more is required of it); `grep -E 'TBD|TODO|FIXME|XXX|\[GAP|<placeholder'` over it is empty, or every hit is listed under
+  `INTENTIONAL MATCHES` — recorded, never refolded; `OPEN QUESTIONS` and `DISPATCHES: none` are present. A non-Sonnet
+  model id joins the **author set**. An author that cannot be established gets ONE re-ask (SendMessage for its id); if
+  that fails too, the author set is Sonnet plus the controller's own model. Silence is not a report: re-derive the
+  whole verification from the artifact. A draft or fold that fails the check gets ONE re-dispatch with the failures
+  named, counted inside that artifact's budget; failing again stops and reports.
+- **One question round per artifact version.** Send the `OPEN QUESTIONS` to Fable in one dispatch (the merits, and
+  whether each is really the user's — **Models**); batch the survivors to the user once. The rulings go back to the
+  same author (SendMessage), or to a fresh Sonnet handed the artifact path and the rulings; recommit once they are
+  applied. A fold's own `OPEN QUESTIONS` form a second batch, which you rule yourself and list in the presentation —
+  an exception to Fable-first that keeps the user's own: authorization and anything only the user can answer (scope, a
+  fact only they hold) go to the user.
+- **Folds.** Review findings go back to the author, which returns the revised artifact plus a disposition per
+  finding, `FOLDED` or `DECLINED — reason`. The fold is its own re-derivation of the finding, never a transcription of
+  the reviewer's suggested repair. The controller does not edit design content: if tempted, dispatch the fold. That
+  covers every revision in the design half — step 2's and step 5's findings, the spike's result and the record of each
+  unrun check included. An author declining a finding the *controller* raised is the controller's ruling, not an
+  arbitration. A ruling of yours that differs from what the artifact says — a MINOR the author declined, a second
+  batch, a controller finding it declined — travels in the next scheduled author dispatch (a review fold or the
+  post-ruling fold); if none remains, record it as unapplied in the presentation.
+- **Who counts as an author.** A model that wrote content a reviewer could find against. Committing, fixing a
+  filename date and pasting the constraint block are not authoring. If the controller ever authors content (a failed
+  post-ruling fold, under **Diverse-model review**), its model joins the author set.
+
 #### Fast lane (low risk on both axes)
 
-1. Use `superpowers:brainstorming` lightly to produce a **short combined spec+plan** (a few sentences
+1. Dispatch the author (**Authoring dispatch**) for a **short combined spec+plan** (a few sentences
    of what/why + the task steps) — or just a short plan if there's no design to settle. "Lightly"
-   trims the collaborative dialogue (the one-question-at-a-time exploration, the 2–3 alternative
-   approaches) — **not** its spec self-review, which still runs and which step 2 depends on having
-   run. Save to `plans/YYYY-MM-DD-<name>.md`; commit via `/commit` (tagging and durability per the Step 0.5 rules).
-2. **Ultrathink the design, not `brainstorming`'s checklist.** If `brainstorming` ran, its own
+   trims what the brief asks for: no collaborative dialogue, no 2–3 alternative
+   approaches — **not** the author's self-review, which still runs and which step 2 depends on having
+   run. One author dispatch drafts the whole combined artifact, so an Opus controller never becomes its author. It
+   saves to `plans/YYYY-MM-DD-<name>.md`; commit via `/commit` (tagging and durability per the Step 0.5 rules).
+2. **Ultrathink the design, not the author's checklist.** The author's own
    self-review already covered placeholders, internal consistency, scope, and ambiguity — do **not**
-   repeat that. If you took the short-plan path and skipped brainstorming, nothing has run those
+   repeat that. If the short-plan path skipped the spec half of that self-review, nothing has run those
    checks: do one quick pass over them first. Either way, the pass that earns its keep is the one no
    checklist can make: is this the right design, is the decomposition sound, does it solve the
    actual problem? Then ask the full lane's step-5 questions of any task that carries a
    verification: **is that check falsifiable, and can it pass at all?** Judge both by step 5's
    tests, and run the check the way step 5 says — the defect class does not care which lane
-   produced the plan. Revise inline.
+   produced the plan. Dispatch the fold of what it finds, and recommit via `/commit` (or update the memory record, per
+   Step 0.5); step 3's recommit covers only the fold of a review.
 3. Run a diverse-model review **only if** the change's **stakes** are real even though they stayed
    under Step 0's bar — the fast lane means the design is easy to reason about, not that being wrong
    is cheap. The clearest case is stakes that sit in the **rework, not the reach**: a long mechanical
    change, few consumers, cleanly reversible, but a wrong plan means implementing all of it twice.
    One outside read is worth it there; a spec and a spike are not. Above Step 0's bar you would be on
    the full lane, whose step 6 reviews the plan regardless. Else skip. Pick the reviewer per
-   **Diverse-model review** below. If it ran, **fold its findings; revise, re-running per step 5
-   any check the fold changes; recommit via `/commit`**
+   **Diverse-model review** below. If it ran, **dispatch the fold of its findings, run the fold check and any
+   arbitration (there), re-run per step 5 any check the fold changes, and recommit via `/commit`**
    (tagging and durability per the Step 0.5 rules) — same as the full lane's step 6. A review whose findings are not
    folded is a review you paid for and did not use.
 4. Present the recorded spec+plan (committed, or in memory per Step 0.5's durability rule), then
@@ -229,30 +303,34 @@ still stop and report, and nothing here licenses continuing past one.
 
 #### Full lane (real unknowns or high stakes)
 
-1. **Spec.** Use `superpowers:brainstorming` to produce the spec. When brainstorming reaches its
-   terminal "invoke `writing-plans`" step, **do NOT follow it** — return here to step 2 (you interpose
-   the spike + reviews first). Save the spec to `specs/YYYY-MM-DD-<name>.md`; commit via `/commit`
-   (tagging and durability per the Step 0.5 rules).
-2. **Ultrathink the spec — the design, not `brainstorming`'s checklist.** `brainstorming` already
+1. **Spec.** Dispatch the author (**Authoring dispatch**) to produce the spec; its `OPEN QUESTIONS` take the
+   question round there. Among the gates the brief names to skip is `brainstorming`'s terminal "invoke
+   `writing-plans`" step — **do NOT follow it**: you interpose the spike + reviews first. The author saves the
+   spec to `specs/YYYY-MM-DD-<name>.md`; commit via `/commit` (tagging and durability per the Step 0.5 rules).
+2. **Ultrathink the spec — the design, not the author's self-review.** The author already
    self-reviewed for placeholders, internal consistency, scope, and ambiguity; re-running that list
-   is a second same-model pass over the same blind spot, which is exactly what the step-6 diverse
+   is a second same-model pass over the same blind spot, which is exactly what the diverse
    review exists to cover. Ask instead what its checklist cannot: is this the right approach, are the
-   boundaries sound, what did we fail to consider? Revise inline. **High stakes** here means Step 0's
-   stakes axis — the one naming security and large blast radius. For such designs a second
-   diverse-model review of the *spec* (the step-6 mechanism) is opt-in — **decide it yourself
-   here**, before the spike, on Step 0's stakes signal (default to running it for security or large
-   blast radius), and state the call in the presentation. Do not stop to ask: which reviews to buy
-   is a budget decision this pipeline owns, not a design approval.
+   boundaries sound, what did we fail to consider? Dispatch the fold of what you find and recommit it. **Then the spec gets the
+   diverse-model review (see below) on the full lane — always, before the spike**, so a finding can still
+   redirect the spike: Opus reviews it, the author folds, the fold check and any arbitration run, and you
+   recommit via `/commit` (tagging and durability per the Step 0.5 rules). It is the one outside read the
+   design gets before anything is built on it. Do not stop to ask: which reviews to buy is a budget decision
+   this pipeline owns, not a design approval.
 3. **Spike the #1 risk.** Name the assumption whose failure invalidates the most downstream work. If
    it is **empirical** and its cheapest *decisive* signal is **cheap to probe**, run a throwaway
    probe of that one assumption now — probe the decisive signal ("does GRUB appear when a blank VM
-   boots the ISO?"), not the whole thing ("does the 60-min install finish?"). Fold the result in
-   (invalidated → adjust, maybe loop to step 1). If the top risk is empirical but **not** cheaply
+   boots the ISO?"), not the whole thing ("does the 60-min install finish?"). Dispatch the fold of the result
+   (invalidated → adjust, maybe loop to step 1 — a loop-back starts a new artifact version with fresh review
+   counters), then recommit via `/commit` (or update the memory record, per Step 0.5); a fold that only adjusts the
+   spec gets no review of its own, and the plan's Opus review reads the adjusted spec. If the top risk is empirical but **not** cheaply
    probeable, say so and rely on the plan's decision-gates instead. If it isn't empirical, say "no
    spike" and continue.
-4. **Plan.** Use `superpowers:writing-plans`. Save to `plans/YYYY-MM-DD-<name>.md`; commit via
+4. **Plan.** Dispatch the author (**Authoring dispatch**), pointing it at `superpowers:writing-plans` with the
+   spec path, the spike result and the rulings so far; the brief names the execution hand-off among the gates to
+   skip. It saves to `plans/YYYY-MM-DD-<name>.md`; commit via
    `/commit` (tagging and durability per the Step 0.5 rules).
-5. **Ultrathink the plan — the design, not `writing-plans`' checklist.** `writing-plans` already
+5. **Ultrathink the plan — the design, not the author's checklist.** The author's `writing-plans` pass already
    self-reviewed for spec coverage, placeholders, and type consistency. Your pass asks what it
    cannot: does the task decomposition hold, does the spike's result still hold, is each task
    independently reviewable, and **is each task's verification falsifiable** — would it actually fail
@@ -327,18 +405,24 @@ still stop and report, and nothing here licenses continuing past one.
    **Read each check before running it:**
    re-point every path and `-C` target at the clone, since one still aimed at the real checkout
    grades the unedited tree; a check that would still reach outside the clone — a write, a push, a
-   signing prompt, a network call — is itself a finding: fix it where you can, and never run it as
+   signing prompt, a network call — is itself a finding: dispatch the fix where you can, and never run it as
    it stands. Then run each check from inside the clone; one that outruns a tool call goes through
    `~/.claude/scripts/run-long.sh`, as any long check does. Leave a check unrun only when it cannot
    be expressed as a command, must reach outside the clone, or depends on an edit the task leaves
-   to the implementer's judgment; record each unrun check and why in the plan, where its reviewers
-   and the implementer will see it. Re-run every check you revise. Measured: seven unsatisfiable
+   to the implementer's judgment; have the author record each unrun check and why in the plan, where its reviewers
+   and the implementer will see it. Re-run every check that is revised — but rehearsal drives ONE fold per artifact
+   version: brief that fold with the rehearsal clone's ABSOLUTE path and this step's rules — read each check before
+   running it, re-point every path and `-C` target at the clone, run only inside it — so it re-runs the checks it
+   changes there. A check that must reach outside the clone, or would outrun a tool call, it records as unrun, with
+   why, for you to run through `run-long.sh`; any still failing it records in the plan and in its return. Your own
+   re-run confirms it, and a disagreement goes in the presentation, never into another fold. Measured: seven unsatisfiable
    checks passed this step, each caught later by a reviewer doing exactly this or by a delegate
-   refusing to bend correct work to a wrong number. Revise inline.
-6. **One diverse-model review of the plan** (see below). Fold findings; revise, re-running per
-   step 5 any check the fold changes; recommit via
+   refusing to bend correct work to a wrong number. Dispatch the fold of what it finds.
+6. **One diverse-model review of the plan** (see below). Dispatch the fold of its findings, then run the fold
+   check and any arbitration there; re-run per step 5 any check the fold changes (one still failing is recorded as
+   unrun by the fold itself, per step 5, and the fold check reads that note); recommit via
    `/commit` (tagging and durability per the Step 0.5 rules). (If a review at this stage invalidates the spec, loop
-   back to step 1 as with spike invalidation.)
+   back to step 1 as with spike invalidation — a new artifact version, fresh counters.)
 7. Present the recorded spec + plan (committed, or in memory per Step 0.5's durability rule), then
    **execute and integrate** (below) **in the same turn** — per **Design approval — present and
    proceed** above.
@@ -346,9 +430,9 @@ still stop and report, and nothing here licenses continuing past one.
 #### Diverse-model review
 
 The value is a **different model than the author** catching blind spots same-model review misses.
-- **Pick a reviewer that differs from every model that wrote the artifact.** Normally that is Sonnet
-  alone (**Models**), so the default is **Opus**. If Opus wrote any of it (you are Opus now, or Step 0
-  announced Opus), use **Fable**; if Fable did, use Opus; if both did, use Sonnet. **If that reviewer is
+- **Pick a reviewer that differs from every model in the author set** (**Authoring dispatch**). Normally that is
+  Sonnet alone (**Models**), so the default is **Opus**. If Opus is in the author set, use **Fable**; if Fable
+  is, use Opus; if both are, use Sonnet. **If that reviewer is
   unavailable** (when
   Anthropic has it disabled, the Agent returns a "… currently unavailable" error), take whichever of Opus
   and Fable still differs from every author. **If no such model is available**, review with Sonnet
@@ -365,6 +449,35 @@ The value is a **different model than the author** catching blind spots same-mod
   is an author's model it is same-model and not the diverse review, so dispatch the next reviewer in the
   chain above once, then degrade as above. **Never block** — degrade and tell the user which model actually
   reviewed.
+- **Fold check.** After a fold, the same reviewer (the original by SendMessage, or a fresh dispatch of the same
+  model handed the artifact and the findings) re-reads only the BLOCKER and MAJOR findings against the fold,
+  returns `ADDRESSED` or `NOT ADDRESSED` for each, and names any NEW breakage the fold introduced. One per artifact
+  version, on both lanes wherever a review ran, by the model the chain picked for that review. It is not SDD's
+  "re-review", which judges task code. New BLOCKER or MAJOR breakage counts as a contested finding below.
+- **Arbitration (design half only, both lanes).** A disagreement exists iff the author marks a BLOCKER or MAJOR
+  `DECLINED`, or the fold check returns `NOT ADDRESSED` on one or names new BLOCKER or MAJOR breakage; declare it
+  from those two artifacts, never on
+  either party's say-so. A MINOR the author declines you rule and record. Send every contested finding, with the
+  author's reason and the fold-check verdict, to ONE arbiter dispatch per artifact version, chosen by the same chain
+  as the reviewer — a model that differs from every author **and** from the reviewer (Fable in the normal case of a
+  Sonnet author and an Opus reviewer). Its ruling decides, over an Opus BLOCKER too. If the chain yields none, you
+  rule and the presentation says the arbitration was not diverse. A Fable that already ruled a fork the reviewer is
+  now contesting is named in the dissent line and dispatched without its earlier ruling's reasoning.
+  **It ends there.** The author gets exactly one post-ruling fold dispatch. Its content check is the usual one plus:
+  every ruled finding's disposition matches the ruling (a finding the ruling upheld is `FOLDED`; one it rejected
+  leaves the text unchanged). If that fold fails the check, you author it: your model joins the author set, the
+  chain re-picks, that one fold is reviewed once, and you rule on what it finds with no further arbitration. A later
+  review that re-raises a ruled finding is closed by citing the ruling, unless it carries a measurement the ruling
+  lacked — that is a spike result, and it loops back to step 1 as a **new artifact version with fresh counters**.
+  A run takes at most two loop-backs; a third stops and reports that the design keeps invalidating itself.
+  A ruling that the change is security-flagged or larger in blast radius re-triages to the full lane, which counts as a
+  new artifact version but not as a loop-back; a user's objection after the presentation likewise starts a new version
+  at the stage it concerns, and the ceiling never limits the user. The arbiter's own model id is checked on line 1
+  exactly as the reviewer's is. Authorization
+  and anything only the user can answer never reach the arbiter (**Models**); the user is pulled in only for
+  authorization, for a question Fable says is theirs, and for the pipeline's failure-driven stops. The presentation
+  records each dissent: finding — severity — the author's reason — the ruling in one line — the reviewer's
+  dissent, if any.
 
 #### Execute and integrate (default; both lanes)
 
@@ -397,6 +510,21 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
    subject and signing itself) — where a tag applies it skips the tag and corrupts the release
    sequence, and in every case it skips `/commit`'s foreground-signing discipline.
 
+   **The controller writes no task code either.** A throwaway spike probe and the scratch edits in step 5's rehearsal
+   clone are measurements, not task code or design content, and stay the controller's to run. It dispatches,
+   verifies, commits and asks, in the design half and
+   in SDD alike. An `/audit` FAIL or a `/vet` finding the branch introduced is fixed by a dispatched implementer,
+   and a plan defect found mid-execution is an author fold: you record it in the end-of-run report (your closing
+   message at the finish), update the memory
+   record in place and recommit via `/commit` (SDD's own rulings govern there, not arbitration; the final
+   whole-branch review covers the edit).
+   Two finish operations stay the controller's,
+   because they repartition or reconcile code a review already judged: this skill marks the adopted finish's brick
+   re-narration non-delegable, and whether a rebase conflict can be resolved without altering a commit's frozen
+   intent is the controller's own stop-or-resolve call. A plan-supplied driver that writes tracked files is run by
+   the controller too, since the constraint block rightly forbids a delegate to run one outside a fixture; a
+   task reviewer then reviews the applied diff.
+
    **Execution tiers do not vary by lane** — the triage governs the design half and, through the plan, what is executed.
    **Scale by model tier, never by dropping a review.** SDD's per-task review and its final
    whole-branch review ask different questions of the same code (did this task build what its brief
@@ -422,13 +550,18 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
      gives the code a different model's read, the same reason **Diverse-model review** exists for the plan.
      If Opus is unavailable, use Fable; if neither, review at Sonnet and announce it as same-model when
      Sonnet wrote the code.
+   - **Escalation ceiling.** SDD's fix rounds 1–3 resume the implementer and rounds 4–5 use a fresh **Sonnet**: a
+     task that began at haiku reaches Sonnet there, and this overrides SDD's "a tier above the stuck implementer"
+     for a Sonnet one, since this ladder never dispatches an implementer at Opus. SDD's round-5 breaker is the
+     controller's adjudication — park the task or rule — and a plan defect it finds takes the fold route above.
    - **Parallelize writes, serialize the suite.** Concurrent tasks may edit freely, but only **one**
      agent runs the tests at a time, and only after the writes it depends on have landed — suites read
      the code under test from the shared working tree, so a peer mid-write means a sibling executes a
      half-written file. Never explain away a contended run as flakiness: its verdict proves nothing
      either way, so quiesce the writes and re-run rather than re-reading the result.
 2. **Sweep the mechanics — `/audit` (always).** Run `/audit` over the repo before the branch integrates
-   and fix, via `/commit`, every `FAIL` **this branch introduced**. **It is MECHANICAL ONLY: a plain
+   and have a dispatched implementer fix every `FAIL` **this branch introduced** — you commit the fix via `/commit`,
+   in the foreground. **It is MECHANICAL ONLY: a plain
    `/audit` does not run the test suite, which is a separate requirement behind `--tests`.** So a
    plain `RESULT: PASS` is never evidence the suite passed — reading `audit.sh`'s source confirms
    the wrong belief here, since its pytest call sits inside the opt-in branch and looks
@@ -478,7 +611,8 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
    `skills/*/SKILL.md` or `agents/*.md`, run **`/vet <paths>`** over them. Nothing else here knows the
    canonical skill/agent shape: SDD's reviewers judge the code as code and will pass a `SKILL.md`
    whose `name` contradicts its directory or whose frontmatter is malformed. `/vet` dispatches the
-   reviewers that do. Fold findings (fixing via `/commit`) and re-run until clean; **verify each
+   reviewers that do. Fold findings (a dispatched implementer fixes them; you commit via `/commit`, in the foreground)
+   and re-run until clean; **verify each
    finding against the artifact and `STYLE.md`'s documented carve-outs before applying it** — the
    reviewers are advisory and do produce false positives. A finding you verified as a false positive
    and said so does **not** block "clean" if a re-run restates it — record the dismissal and move on.
@@ -690,13 +824,19 @@ step — e.g.
   judge code as code; only `/vet`'s reviewers know the canonical skill/agent shape. Self-limiting — the
   condition never fires in a repo that has neither.
 - **A security-flagged change routes to the full lane and is scrutinised THERE** — in its spec, its
-  spike, and the diverse-model review of its plan. There is no separate security gate at the finish;
+  spike, and the diverse-model reviews of its spec and its plan. There is no separate security gate at the finish;
   `/audit` and `/vet` are the only gates the branch clears before it integrates.
 - Scope the spike to one assumption; bias borderline triage to the full lane.
-- Budget: the diverse-model agent pass — default to **one** (on the plan); ultrathink is cheap, but
+- Budget, per artifact version (a loop-back counts separately, and a run takes at most two): the diverse-model passes — on the full lane
+  **two**, Opus on the spec and Opus on the plan, each with at most one fold check and one arbitration; on the fast
+  lane none unless stakes warrant one, on the plan. Author dispatches are bounded per trigger — the draft, one
+  question round, one fold per batch of controller findings from step 2 or 5, one fold of the spike's result (the
+  spec only), one fold per review, and one post-ruling fold (the single re-dispatch of a failed content check repeats
+  the dispatch it follows and takes no new slot): at most five per artifact version and six for the
+  spec, so a full-lane run pays up to six for the spec and five for the plan, and a fast-lane run typically one to
+  three and at most five. Ultrathink is cheap, but
   step 5 and fast-lane step 2 also run the plan's checks, which cost their own runtime; the spike
-  substitutes for a second reasoning pass; the fast lane skips the diverse pass unless stakes
-  warrant it. The default execute-then-integrate phase adds the SDD subagent passes (one implementer +
+  substitutes for a second reasoning pass. The default execute-then-integrate phase adds the SDD subagent passes (one implementer +
   reviews per task, plus the final whole-branch review, `opus` on both lanes, so a fast-lane run pays that Opus pass) — and `/vet`'s reviewer dispatch when the
   diff touches a skill or agent (`/audit` is
   deterministic and near-free — excluded from this accounting, and never cut for budget); `--plan-only`
@@ -704,8 +844,8 @@ step — e.g.
   re-derivation's per-brick re-narration (**Adopted-repo finish**, point 2) is foreground,
   judgment-driven, and non-delegable to a subagent. **Execution spend is controlled by tier, not by
   cutting gates** — see "Scale by model tier, never by dropping a review"; never trade a review away to save budget.
-- **Never spend two same-model passes on one artifact.** Each sub-skill (`brainstorming`,
-  `writing-plans`) already self-reviews its own output against a mechanical checklist; the
+- **Never repeat the author's mechanical checklist as a second pass on one artifact.** The author already self-reviews its own
+  output against each sub-skill's (`brainstorming`, `writing-plans`) mechanical checklist; the
   ultrathink steps own the altitude question those checklists cannot ask, plus the rehearsal that
   runs each plan check, and nothing else.
   Repeating a checklist doubles the pass that shares the author's blind spot — the reason the
