@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.128.1 — 2026-10-12
+- docs(feature): name the author, reviewer, arbiter roles in indexes
+
 ## v0.128.0 — 2026-10-12
 - feat(feature): pinned sonnet authors, opus reviews spec and plan
 

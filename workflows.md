@@ -20,20 +20,20 @@ reviewed, committed plan instead of executing.
   gate; or large blast radius (hard to reverse, many consumers). Bias borderline cases here.
 - **Fast lane** otherwise.
 
-**Full lane:** brainstorming → **spec** → ultrathink self-review → **spike the #1 risk** (a throwaway
-probe of the one assumption whose failure invalidates the most downstream work — probe the decisive
-signal, not the whole thing) → **writing-plans** → ultrathink → **diverse-model review** of the plan →
-execute → integrate.
+**Full lane:** a pinned Sonnet author drafts the **spec** → ultrathink → **diverse-model review** of the
+spec → **spike the #1 risk** (a throwaway probe of the one assumption whose failure invalidates the most
+downstream work — probe the decisive signal, not the whole thing) → the author drafts the plan →
+ultrathink → **diverse-model review** of the plan → execute → integrate.
 
-**Fast lane:** a short combined spec+plan → one deep (ultrathink-level) self-review → a diverse review
-only when stakes warrant it → execute → integrate.
+**Fast lane:** the author drafts a short combined spec+plan → one deep (ultrathink-level) review → a
+diverse review only when stakes warrant it → execute → integrate.
 
 **Execute & integrate (both lanes):** present the reviewed plan and **continue in the same turn** —
 the design half ends in a presentation, not an approval gate, though authorization gates are a
 separate question and still apply — then
 `subagent-driven-development` runs it task-by-task — a fresh subagent per task with per-task and
 whole-branch reviews. When triage flagged security — which means the full lane — that scrutiny is
-bought in the **design half** (spec, spike, diverse-model review of the plan); no separate security
+bought in the **design half** (spec, spike, diverse-model reviews of the spec and the plan); no separate security
 gate runs before the branch integrates. Then, per whether `.publication.toml` marks the repo as adopted: a **non-adopted**
 repo tags each task commit as today and `finishing-a-development-branch` verifies the suite passes and
 merges the branch to its base; an **adopted** repo commits each task untagged (`--no-tag`, versioning
@@ -74,8 +74,9 @@ why alongside the fix — in the commit message or a code comment.
 ## Cross-cutting disciplines
 
 - **Diverse-model review.** A *different* model than the author catches blind spots that same-model
-  review glosses over. `/feature` bakes this into the plan review; use it for any high-stakes artifact.
-  `/feature` requests Sonnet as its author; Opus reviews the plan (Fable when Opus wrote any of it), and
+  review glosses over. `/feature` bakes this into the spec and plan reviews; use it for any high-stakes artifact.
+  `/feature` drafts through a pinned Sonnet subagent; Opus reviews the spec and the plan on the full lane (Fable
+  when Opus is in the author set), an arbiter — normally Fable — rules once per artifact on a disagreement, and
   open questions go to Fable before the user.
   **Verify the reviewer's model — don't assume it.** The `model:` override can silently fall back to
   the author's own model, and a *stated* id can even be false; treat any review that won't confirm its
