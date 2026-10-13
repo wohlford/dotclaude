@@ -412,7 +412,9 @@ left legal.
   twenty runs would have. Its own failure mode: identical bytes prove the SUBJECT identical, never
   the ENVIRONMENT, so this tells you the instrument varied without telling you on which axis — and
   it says nothing about whether the instrument is RIGHT, since both sides can agree and both be
-  wrong.
+  wrong. For a WALL-CLOCK row the axis is machine load, and the log cannot name it: two rows read
+  8.9s against 6.5s and 50.9s against 30s while another user's build held load ~23 on 16 cores,
+  and one idle re-run passed 20/0/0 — `uptime` and `ps` told, so read them before a timing failure.
 
 #### It ran and could never have failed
 
