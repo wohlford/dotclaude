@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.129.0 — 2026-10-12
+- feat(feature): hand controller findings to the review, fold once
+
 ## v0.128.2 — 2026-10-12
 - docs(claude-md): let feature dispatch its author, name what stays yours
 

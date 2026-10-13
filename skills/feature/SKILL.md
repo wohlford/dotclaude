@@ -29,8 +29,7 @@ The user must provide:
 - `<one-line description of the change>` — seeds the brainstorming.
 
 The user may optionally provide:
-- `--plan-only` — stop at the reviewed, durably recorded plan (committed, or in memory per Step 0.5's
-  durability rule; the legacy design-only behavior) instead
+- `--plan-only` — stop at the reviewed, durably recorded plan (the legacy design-only behavior) instead
   of executing and merging.
 
 ### Models
@@ -260,11 +259,18 @@ Agent tool's parameter does.
 - **Folds.** Review findings go back to the author, which returns the revised artifact plus a disposition per
   finding, `FOLDED` or `DECLINED — reason`. The fold is its own re-derivation of the finding, never a transcription of
   the reviewer's suggested repair. The controller does not edit design content: if tempted, dispatch the fold. That
-  covers every revision in the design half — step 2's and step 5's findings, the spike's result and the record of each
-  unrun check included. An author declining a finding the *controller* raised is the controller's ruling, not an
-  arbitration. A ruling of yours that differs from what the artifact says — a MINOR the author declined, a second
-  batch, a controller finding it declined — travels in the next scheduled author dispatch (a review fold or the
-  post-ruling fold); if none remains, record it as unapplied in the presentation.
+  covers every revision in the design half — the review's findings (the controller's step 2 and step 5 findings the
+  reviewer confirmed, or the controller kept, among them), the spike's result and the record of each unrun check (a
+  non-empty unrun-check list alone triggers the fold); and, on the fast lane when no review runs, the controller's
+  step 2 findings. An author declining a controller finding that is a MINOR one, or any on a fast lane with no
+  review, is the controller's ruling, not an arbitration; a controller finding
+  confirmed at BLOCKER or MAJOR or raised to one of them by the severity floor, or one the controller kept over a
+  dismissal and rated BLOCKER or MAJOR (the dismissal, floor and rating rules are in **Diverse-model review**), is
+  treated as the reviewer's for this purpose and goes through arbitration if declined. A ruling of yours that differs from what the artifact says — a MINOR the author
+  declined, a second batch, a controller finding it declined (a MINOR one, or any on a fast lane with no review) —
+  travels in the next scheduled
+  author dispatch (a review fold or the post-ruling fold); if none remains, record it as unapplied in the
+  presentation.
 - **Who counts as an author.** A model that wrote content a reviewer could find against. Committing, fixing a
   filename date and pasting the constraint block are not authoring. If the controller ever authors content (a failed
   post-ruling fold, under **Diverse-model review**), its model joins the author set.
@@ -276,7 +282,7 @@ Agent tool's parameter does.
    trims what the brief asks for: no collaborative dialogue, no 2–3 alternative
    approaches — **not** the author's self-review, which still runs and which step 2 depends on having
    run. One author dispatch drafts the whole combined artifact, so an Opus controller never becomes its author. It
-   saves to `plans/YYYY-MM-DD-<name>.md`; commit via `/commit` (tagging and durability per the Step 0.5 rules).
+   saves to `plans/YYYY-MM-DD-<name>.md`; commit via `/commit`.
 2. **Ultrathink the design, not the author's checklist.** The author's own
    self-review already covered placeholders, internal consistency, scope, and ambiguity — do **not**
    repeat that. If the short-plan path skipped the spec half of that self-review, nothing has run those
@@ -285,19 +291,28 @@ Agent tool's parameter does.
    actual problem? Then ask the full lane's step-5 questions of any task that carries a
    verification: **is that check falsifiable, and can it pass at all?** Judge both by step 5's
    tests, and run the check the way step 5 says — the defect class does not care which lane
-   produced the plan. Dispatch the fold of what it finds, and recommit via `/commit` (or update the memory record, per
-   Step 0.5); step 3's recommit covers only the fold of a review.
+   produced the plan. Number what you find `C1..Cn`, list the checks you left unrun and why, and decide step 3 first,
+   before anything is dispatched: if step 3 buys a review, hand the findings and the unrun-check list to it
+   (**Diverse-model review**) and dispatch no fold of your own; if it buys none, dispatch ONE fold of them and of the
+   unrun-check list (a non-empty list alone triggers it), briefed with the rehearsal clone's ABSOLUTE path and step
+   5's rules, and recommit via `/commit` (no fold check and no arbitration: both belong to a review). Step 3's
+   recommit covers the review's fold, the controller findings included. With no findings and an empty unrun-check
+   list, no fold is dispatched, and a review step 3 bought still runs, with no second turn since there is nothing to
+   hand it; a non-empty list alone triggers the artifact's one fold (the review's, or this one), in the same slot, so
+   the list always reaches the plan.
 3. Run a diverse-model review **only if** the change's **stakes** are real even though they stayed
    under Step 0's bar — the fast lane means the design is easy to reason about, not that being wrong
    is cheap. The clearest case is stakes that sit in the **rework, not the reach**: a long mechanical
    change, few consumers, cleanly reversible, but a wrong plan means implementing all of it twice.
    One outside read is worth it there; a spec and a spike are not. Above Step 0's bar you would be on
    the full lane, whose step 6 reviews the plan regardless. Else skip. Pick the reviewer per
-   **Diverse-model review** below. If it ran, **dispatch the fold of its findings, run the fold check and any
-   arbitration (there), re-run per step 5 any check the fold changes, and recommit via `/commit`**
-   (tagging and durability per the Step 0.5 rules) — same as the full lane's step 6. A review whose findings are not
+   **Diverse-model review** below. If it ran, **dispatch the one fold of its findings, the controller findings it
+   confirmed or kept and the unrun-check list (a non-empty list alone triggers the fold), briefed with the rehearsal
+   clone's ABSOLUTE path and step 5's rules, run the fold check and any arbitration (there), re-run per step 5 any
+   check the fold changes, and recommit via `/commit`** — same as the full
+   lane's step 6. A review whose findings are not
    folded is a review you paid for and did not use.
-4. Present the recorded spec+plan (committed, or in memory per Step 0.5's durability rule), then
+4. Present the recorded spec+plan, then
    **execute and integrate** (below) **in the same turn** — per **Design approval — present and
    proceed** above.
 
@@ -306,15 +321,17 @@ Agent tool's parameter does.
 1. **Spec.** Dispatch the author (**Authoring dispatch**) to produce the spec; its `OPEN QUESTIONS` take the
    question round there. Among the gates the brief names to skip is `brainstorming`'s terminal "invoke
    `writing-plans`" step — **do NOT follow it**: you interpose the spike + reviews first. The author saves the
-   spec to `specs/YYYY-MM-DD-<name>.md`; commit via `/commit` (tagging and durability per the Step 0.5 rules).
+   spec to `specs/YYYY-MM-DD-<name>.md`; commit via `/commit`.
 2. **Ultrathink the spec — the design, not the author's self-review.** The author already
    self-reviewed for placeholders, internal consistency, scope, and ambiguity; re-running that list
    is a second same-model pass over the same blind spot, which is exactly what the diverse
    review exists to cover. Ask instead what its checklist cannot: is this the right approach, are the
-   boundaries sound, what did we fail to consider? Dispatch the fold of what you find and recommit it. **Then the spec gets the
+   boundaries sound, what did we fail to consider? Number what you find `C1..Cn` and hand it to the review below as
+   controller findings (a second turn after the reviewer's own pass); dispatch no fold of your own. **Then the spec gets the
    diverse-model review (see below) on the full lane — always, before the spike**, so a finding can still
-   redirect the spike: Opus reviews it, the author folds, the fold check and any arbitration run, and you
-   recommit via `/commit` (tagging and durability per the Step 0.5 rules). It is the one outside read the
+   redirect the spike: Opus reviews it, the author makes the one fold (the review's findings and the controller
+   findings it confirmed or kept), the fold check and any arbitration run, and you
+   recommit via `/commit`. It is the one outside read the
    design gets before anything is built on it. Do not stop to ask: which reviews to buy is a budget decision
    this pipeline owns, not a design approval.
 3. **Spike the #1 risk.** Name the assumption whose failure invalidates the most downstream work. If
@@ -322,14 +339,14 @@ Agent tool's parameter does.
    probe of that one assumption now — probe the decisive signal ("does GRUB appear when a blank VM
    boots the ISO?"), not the whole thing ("does the 60-min install finish?"). Dispatch the fold of the result
    (invalidated → adjust, maybe loop to step 1 — a loop-back starts a new artifact version with fresh review
-   counters), then recommit via `/commit` (or update the memory record, per Step 0.5); a fold that only adjusts the
+   counters), then recommit via `/commit`; a fold that only adjusts the
    spec gets no review of its own, and the plan's Opus review reads the adjusted spec. If the top risk is empirical but **not** cheaply
    probeable, say so and rely on the plan's decision-gates instead. If it isn't empirical, say "no
    spike" and continue.
 4. **Plan.** Dispatch the author (**Authoring dispatch**), pointing it at `superpowers:writing-plans` with the
    spec path, the spike result and the rulings so far; the brief names the execution hand-off among the gates to
    skip. It saves to `plans/YYYY-MM-DD-<name>.md`; commit via
-   `/commit` (tagging and durability per the Step 0.5 rules).
+   `/commit`.
 5. **Ultrathink the plan — the design, not the author's checklist.** The author's `writing-plans` pass already
    self-reviewed for spec coverage, placeholders, and type consistency. Your pass asks what it
    cannot: does the task decomposition hold, does the spike's result still hold, is each task
@@ -343,8 +360,10 @@ Agent tool's parameter does.
    new text adds; a count omitting occurrences its other edits add; rows expected red that the old
    code already passes; a gate the untouched tree already fails; an anchor for a line shape the
    file does not have. **Answer by running the check, never from your model of the finished tree**
-   — that model wrote the check. Rehearse in a scratch clone made outside the repo and discarded
-   afterwards, keeping the base branch and dropping the remote:
+   — that model wrote the check. Rehearse in a scratch clone made outside the repo and discarded once the one fold that
+   follows the review (on the fast lane without a review, the controller's own fold) and the controller's confirming
+   re-run of what it changes are done, or when the review returns with nothing to fold, or, on a fast lane with no
+   review, no findings and no unrun checks, when the controller's pass ends, keeping the base branch and dropping the remote:
    `git clone -q -b <branch> <repo> <dir>`, `git -C <dir> branch <base> origin/<base>`,
    `git -C <dir> remote remove origin`, `git -C <dir> config commit.gpgsign false`,
    `git -C <dir> config tag.gpgsign false`. Those settings
@@ -404,26 +423,33 @@ Agent tool's parameter does.
    would have landed in exactly that exempted bucket.
    **Read each check before running it:**
    re-point every path and `-C` target at the clone, since one still aimed at the real checkout
-   grades the unedited tree; a check that would still reach outside the clone — a write, a push, a
-   signing prompt, a network call — is itself a finding: dispatch the fix where you can, and never run it as
-   it stands. Then run each check from inside the clone; one that outruns a tool call goes through
+   grades the unedited tree; a check that would still reach outside the clone — a write, a push, a signing prompt, a
+   network call — is itself a finding: hand it to step 6's review as a controller finding (a check never run has no
+   run behind it, so the rehearsal tool's refused row or the controller's reading of the check is its evidence; for
+   the dismissal standard and the severity floor in **Diverse-model review** it counts as run-backed, with result
+   class `REACHES-OUTSIDE`), and never run it as it stands. Then run each check from inside the
+   clone; one that outruns a tool call goes through
    `~/.claude/scripts/run-long.sh`, as any long check does. Leave a check unrun only when it cannot
    be expressed as a command, must reach outside the clone, or depends on an edit the task leaves
-   to the implementer's judgment; have the author record each unrun check and why in the plan, where its reviewers
-   and the implementer will see it. Re-run every check that is revised — but rehearsal drives ONE fold per artifact
-   version: brief that fold with the rehearsal clone's ABSOLUTE path and this step's rules — read each check before
+   to the implementer's judgment; hand each unrun check and why to the review as an un-numbered list in the second
+   turn, and have the fold record it in the plan, where the implementer will see it. Re-run every check that is
+   revised — but rehearsal drives ONE fold per artifact
+   version: brief the fold that follows the review (on the fast lane with no review, the controller's own fold) with the rehearsal clone's ABSOLUTE path and this step's rules — read each check before
    running it, re-point every path and `-C` target at the clone, run only inside it — so it re-runs the checks it
    changes there. A check that must reach outside the clone, or would outrun a tool call, it records as unrun, with
    why, for you to run through `run-long.sh`; any still failing it records in the plan and in its return. Your own
    re-run confirms it, and a disagreement goes in the presentation, never into another fold. Measured: seven unsatisfiable
    checks passed this step, each caught later by a reviewer doing exactly this or by a delegate
-   refusing to bend correct work to a wrong number. Dispatch the fold of what it finds.
-6. **One diverse-model review of the plan** (see below). Dispatch the fold of its findings, then run the fold
+   refusing to bend correct work to a wrong number. Number what it finds `C1..Cn`, carrying the output and the task and
+   step the clone had reached for each finding backed by a run, and hand it to step 6's review as controller findings
+   (a second turn to the reviewer, after its own pass); dispatch no fold at this step.
+6. **One diverse-model review of the plan** (see below). Dispatch one fold of its findings, of the controller
+   findings it confirmed or kept and of the unrun-check list (a non-empty list alone triggers the fold), then run the fold
    check and any arbitration there; re-run per step 5 any check the fold changes (one still failing is recorded as
    unrun by the fold itself, per step 5, and the fold check reads that note); recommit via
-   `/commit` (tagging and durability per the Step 0.5 rules). (If a review at this stage invalidates the spec, loop
+   `/commit`. (If a review at this stage invalidates the spec, loop
    back to step 1 as with spike invalidation — a new artifact version, fresh counters.)
-7. Present the recorded spec + plan (committed, or in memory per Step 0.5's durability rule), then
+7. Present the recorded spec + plan, then
    **execute and integrate** (below) **in the same turn** — per **Design approval — present and
    proceed** above.
 
@@ -449,8 +475,71 @@ The value is a **different model than the author** catching blind spots same-mod
   is an author's model it is same-model and not the diverse review, so dispatch the next reviewer in the
   chain above once, then degrade as above. **Never block** — degrade and tell the user which model actually
   reviewed.
+- **Controller findings — a second turn, never part of the first brief.** In the design half the controller's own
+  reasoning pass and its runs (full-lane steps 2 and 5, fast-lane step 2) are inputs to the review, not folds of their
+  own. Number each finding `C<n>`, with its location, the problem and, for a finding backed by a run, the command
+  exactly as run, the tree or clone state it ran in (the task and step the clone had reached) and the output verbatim,
+  as text in the brief or as a file path named in it, never summarised: a summary of a run is a model of the run.
+  Attach no suggested repair, no severity and no result class, since severity is the reviewer's call and a repair is
+  the author's own re-derivation (`Folds`, in **Authoring dispatch**); the severity floor on a run-backed finding is
+  applied afterwards, by the dismissal bullet below. The reviewer's first dispatch carries no controller findings and
+  returns its own findings, its model id on line 1. The controller then sends the `C<n>` list by SendMessage to the
+  reviewer whose pass counts as the diverse review (after **Detect silent degradation**, the reviewer of record, never
+  a model it replaced); if that fails, a fresh dispatch of the same model is handed the artifact, the reviewer's
+  first-pass findings verbatim and the list. If every reviewer in the chain degraded to a same-model pass, no pass
+  counts as the diverse review: the second turn goes to the reviewer that did read the artifact, and its replies are
+  recorded as non-diverse in the presentation. The reviewer's first-pass findings are frozen: it does not revise them after reading
+  the list. It returns, per controller finding, `C<n> CONFIRMED [BLOCKER|MAJOR|MINOR] — reason` or
+  `C<n> DISMISSED — reason`, and a controller finding that duplicates one of its own is `CONFIRMED` with the label
+  "same as own finding at <location>" and enters the fold once, at the reviewer's severity. Verify by content that
+  every `C<n>` has a disposition; a missing one gets ONE re-ask (SendMessage, or the fresh dispatch above), and one still
+  missing after it is treated as kept under the floor in the dismissal bullet below (a reasoning-only one enters at the
+  controller's own rating). The second turn and a re-ask are neither author dispatches nor diverse-model passes: they
+  take no author slot and no review slot. The checks the controller left unrun, with why, travel in the same second
+  turn as an un-numbered list. It is information, not a finding: it is not dispositioned, and it always goes to the
+  fold brief, which records it in the plan; a non-empty unrun-check list alone triggers the artifact's one fold, in the
+  slot already counted. The reviewer may raise its own finding that a check should have been run, but it cannot dismiss
+  the list. Confirmed findings enter the fold at the reviewer's severity, raised only by the floor in the dismissal
+  bullet below; a controller finding confirmed at BLOCKER or MAJOR, or raised to one of them by the floor, is read by
+  the fold check and counts for arbitration as the reviewer's.
+- **Dismissing a controller finding that rests on a run.** The reviewer is read-only and runs nothing, so a dismissal
+  of such a finding stands only if it carries a misrun showing — it quotes the lines of the controller's own handed
+  output that show the run did not measure what it was taken to measure (wrong tree or path, a refusal read as a
+  failure, a TAINTED row read as a result, state not yet produced) — or a requested counter-run: the exact command it
+  wants run and the state that command needs, named as a task and step of the plan. The controller adjudicates by
+  RUNNING, never from a model of the tree: in a fresh clone made with `plan-rehearse.py --create` and brought to the
+  named task and step by applying the plan's edits as step 5 does, never in the clone the review fold is briefed with,
+  at the coordinate the reviewer named or, where it named none, the one recorded with the finding. It reads the
+  requested command under step 5's rules first; a command that reaches outside the clone or would outrun a tool call
+  is not run, and the dismissal then carries no counter-measurement. It runs the check the finding rests on and the
+  requested command in that one state, then discards the clone. The dismissal is accepted only when the controller's
+  own run of the check the finding rests on, in the state the reviewer named (or the corrected state a misrun showing
+  points at), shows it passes: the requested command shows the check passes, or, for a misrun showing, a re-run of the
+  check in the state it should have been in passes. The finding is then dropped and recorded in the presentation.
+  Where that run still fails, the finding is kept and its result class is read from that run. Otherwise the finding is
+  kept over a dismissal. A dismissal of a run-backed finding
+  that carries neither a misrun showing nor a requested counter-run is not accepted, and the finding is kept with no
+  counter-run to make. A severity floor, which is a property of the run's result, applies to ANY run-backed controller
+  finding whatever its disposition (confirmed at any severity, kept after a dismissal, or left undispositioned after
+  the re-ask): when the controller's run shows the check fails its own `Expected:` row (`FAILS-EXPECTED`), cannot pass
+  against the tree the plan produces (`CANNOT-PASS`), or reaches outside the clone as written (`REACHES-OUTSIDE`), the
+  finding enters the fold at AT LEAST MAJOR. Only the controller raises, only after the dispositions are in, only
+  upward, and the reviewer's own severity stands everywhere else; MAJOR versus BLOCKER is the controller's call for a
+  finding it rates; a run showing only a MINOR-grade discrepancy (the verdict unchanged, a diagnostic line or a path
+  that still resolves is off) (`MINOR-DISCREPANCY`) leaves the finding where it stands, and a kept one may be rated
+  MINOR. A
+  finding at BLOCKER or MAJOR enters the fold and the fold check, and if the author declines it, arbitration applies
+  as for any declined BLOCKER or MAJOR; the arbiter receives, besides the author's reason and the fold-check verdict,
+  the controller's run output, the reviewer's dismissal with its reason and the counter-run's result. A dismissal that
+  rests on reasoning alone, with no run behind the finding, stands. The presentation records each dismissal and each
+  raise beside the dissents, one row each: a raise reads `C<n>` — confirmed at X, raised to Y — result class — the
+  reason; a dismissal reads `C<n>` — location — DISMISSED — the reviewer's reason — accepted, or kept at
+  [BLOCKER|MAJOR|MINOR] — result class (`FAILS-EXPECTED`, `CANNOT-PASS`, `REACHES-OUTSIDE` or `MINOR-DISCREPANCY`) —
+  the reason for the rating.
 - **Fold check.** After a fold, the same reviewer (the original by SendMessage, or a fresh dispatch of the same
-  model handed the artifact and the findings) re-reads only the BLOCKER and MAJOR findings against the fold,
+  model handed the artifact and the findings) re-reads only the BLOCKER and MAJOR findings against the fold (a
+  controller finding confirmed at BLOCKER or MAJOR or raised to one of them by the severity floor, and a finding kept
+  over a dismissal and rated BLOCKER or MAJOR, included),
   returns `ADDRESSED` or `NOT ADDRESSED` for each, and names any NEW breakage the fold introduced. One per artifact
   version, on both lanes wherever a review ran, by the model the chain picked for that review. It is not SDD's
   "re-review", which judges task code. New BLOCKER or MAJOR breakage counts as a contested finding below.
@@ -481,7 +570,7 @@ The value is a **different model than the author** catching blind spots same-mod
 
 #### Execute and integrate (default; both lanes)
 
-With the plan reviewed and durably recorded (committed, or in memory per Step 0.5's durability rule),
+With the plan reviewed and durably recorded,
 **continue** (do not stop). **Check the publication model
 once, here, before starting** — Step 0.5 already set the pipeline-wide tagging rule; this check
 determines how *this phase's* commits carry that rule out and how the branch finishes, and nothing
@@ -582,23 +671,15 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
    backstop. Read-only, deterministic, seconds — run it **first**, before the model gates below, so
    mechanical breakage fails fast instead of after a paid review. Relay any `SKIP` — each is a
    coverage gap, not a clean bill of health. **Read the verdict from `audit.sh`'s last line of
-   stdout, and read it as answering two separate questions.** First: *can this run be believed at
-   all?* Only `RESULT: PASS` and `RESULT: FAIL` mean the sweep ran to completion; `ERROR`,
-   `INCOMPLETE`, a hedged or unrecognized value, and **an absent line** all mean it did not, and
-   none of them may be treated as a result — that is an allowlist, so anything not named here is
-   not-clean by default. Second, and only once the run is believable: *did it find anything, and is
-   that anything this branch's to fix?* — which is the pre-existing/introduced bucketing above.
-   So a `RESULT: FAIL` whose FAILs are **all** mechanically confirmed pre-existing still clears this
-   gate, exactly as the paragraph above intends; an introduced FAIL does not. The verdict line
-   governs whether the run is trustworthy, never whether every check passed — `fail_count` is
-   repo-wide, not diff-scoped, so a repo carrying pre-existing FAILs can never reach `PASS` and
-   demanding it would make the gate unreachable.
-   Do not decide by counting `FAIL`
-   lines or by reading the harness's report of the exit code — a sweep killed partway through prints
-   a *prefix* of `PASS` lines and exits non-zero, so "no `FAIL` lines" and even "a non-zero exit with
-   no verdict lines" both miss it, and a backgrounded run is announced as "completed (exit code 0)"
-   whatever actually happened. The `rc=` inside the line is what makes the verdict readable without
-   trusting either. "Say so and
+   stdout, as an allowlist.** Only `RESULT: PASS` and `RESULT: FAIL` are results; `ERROR`, `INCOMPLETE`, a hedged or
+   unrecognized value, and **an absent line** are not a result and are not clean — anything not named here is
+   not-clean by default. Once the last line is `RESULT: PASS` or `RESULT: FAIL`, the bucketing above decides whether
+   the FAILs are this branch's to fix: a `RESULT: FAIL` whose FAILs are **all** mechanically confirmed pre-existing still clears this gate, and an
+   introduced FAIL does not. `fail_count` is repo-wide, not diff-scoped, so a repo carrying pre-existing FAILs can
+   never reach `PASS` and demanding it would make the gate unreachable. Why the last line of stdout, and not a count of
+   `FAIL` lines or an exit code: CLAUDE.md's hazard groups `Nothing ever ran — silence is not a pass` (a killed sweep,
+   and "no `FAIL`" is not a pass) and `The exit status you read is not the verdict` (an exit code, or a harness's
+   "completed", is not the verdict) say why, and the `rc=` inside the line is part of what is read. "Say so and
    continue" is the *wrong* answer here, unlike step 3 below: continuing past the pipeline's
    only deterministic gate is exactly integrating on judgment alone. A usage error (`RESULT: ERROR
    rc=2` — a bad flag, a
@@ -786,8 +867,7 @@ per-brick suite coverage this procedure does not run.
 
 #### Stop at the plan (`--plan-only`)
 
-When invoked with `--plan-only`, `/feature` **ends at the reviewed, durably recorded plan** (committed,
-or in memory per Step 0.5's durability rule). Do not invoke
+When invoked with `--plan-only`, `/feature` **ends at the reviewed, durably recorded plan**. Do not invoke
 an execution skill — when `writing-plans` offers to set up execution, **decline it.** Tell the user
 the plan is reviewed and recorded, the feature branch is left in place, and execution is a separate
 step — e.g.
@@ -830,11 +910,13 @@ step — e.g.
 - Budget, per artifact version (a loop-back counts separately, and a run takes at most two): the diverse-model passes — on the full lane
   **two**, Opus on the spec and Opus on the plan, each with at most one fold check and one arbitration; on the fast
   lane none unless stakes warrant one, on the plan. Author dispatches are bounded per trigger — the draft, one
-  question round, one fold per batch of controller findings from step 2 or 5, one fold of the spike's result (the
-  spec only), one fold per review, and one post-ruling fold (the single re-dispatch of a failed content check repeats
-  the dispatch it follows and takes no new slot): at most five per artifact version and six for the
-  spec, so a full-lane run pays up to six for the spec and five for the plan, and a fast-lane run typically one to
-  three and at most five. Ultrathink is cheap, but
+  question round, one fold of the spike's result (the spec only), one fold per review (which also carries the
+  confirmed and kept controller findings and the unrun-check list; a non-empty list alone triggers it), one fold of the controller findings when no review
+  runs (the fast lane only; where a review runs, the controller findings ride its fold, so the two are never both
+  paid), and one post-ruling fold (the single re-dispatch of a failed content check repeats
+  the dispatch it follows and takes no new slot): at most four per artifact version and five for the
+  spec, so a full-lane run pays up to five for the spec and four for the plan, and a fast-lane run typically one to
+  three and at most four. Ultrathink is cheap, but
   step 5 and fast-lane step 2 also run the plan's checks, which cost their own runtime; the spike
   substitutes for a second reasoning pass. The default execute-then-integrate phase adds the SDD subagent passes (one implementer +
   reviews per task, plus the final whole-branch review, `opus` on both lanes, so a fast-lane run pays that Opus pass) — and `/vet`'s reviewer dispatch when the
