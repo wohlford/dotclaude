@@ -70,11 +70,12 @@ item arises.
 ## Delegating
 
 **Dispatch subagents freely — the standing preference is MORE of them, not fewer**, and no
-per-dispatch permission is needed. Once a plan is reviewed, delegate execution by default; keep only
-what is genuinely yours — verifying each returned result, foreground commits, and decisions the user
-owns. Never give your own remaining context as a reason to stop; the real ceiling is the DEPENDENCY
-GRAPH (disjoint file sets parallelize; two tasks rewriting one function do not), which is checkable,
-where "low on context" is not.
+per-dispatch permission is needed. Delegate execution once a plan is reviewed, and hand `/feature`'s
+spec, plan and folds to its pinned author from the start; keep only what is genuinely yours —
+verifying each returned result, foreground commits, long-running waiters, routing every question,
+and decisions the user owns. Never give your own remaining context as a reason to stop; the real
+ceiling is the DEPENDENCY GRAPH (disjoint file sets parallelize; two tasks rewriting one function do
+not), which is checkable, where "low on context" is not.
 
 **Standalone documents a reader opens to learn how the project works go to the `prose-writer` agent
 (Opus) — dispatch it with no `model` override, which would defeat its pin.** That means a README,
@@ -84,10 +85,13 @@ fact is in the tree, brief it to *author*: name the file, what changed and point
 `git log` excerpt it needs, since it has no shell. When the facts are decisions or measurements that
 exist only in your session — a hazard bullet, a policy paragraph, and so CLAUDE.md's own prose —
 draft the text yourself and hand it over to *revise*: it rewrites for prose and marks a gap without
-filling it. `<!-- sync:* -->` regions belong to `/sync-docs`. Specs, plans, memory entries, code
-comments, commit messages and skill or agent bodies stay with you. **After every return, verify it
-yourself — this step is not delegable:** diff the file, grep it for words the edit removed, check
-each number and path it cites against its source, and resolve every `[GAP:` marker.
+filling it. `<!-- sync:* -->` regions belong to `/sync-docs`. Inside `/feature`, its pinned author
+drafts specs, plans and folds and its implementers write task code — skill and agent bodies included
+— and you verify each return (`skills/feature/SKILL.md`, **Models**); outside it, specs, plans,
+memory entries, code comments, commit messages and skill or agent bodies stay with you rather than
+going to `prose-writer`. **After every return, verify it yourself — this step is not delegable:**
+diff the file, grep it for words the edit removed, check each number and path it cites against its
+source, and resolve every `[GAP:` marker.
 
 ## Skills, agents, hooks, and plugins
 
