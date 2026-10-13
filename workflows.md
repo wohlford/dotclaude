@@ -75,6 +75,8 @@ why alongside the fix — in the commit message or a code comment.
 
 - **Diverse-model review.** A *different* model than the author catches blind spots that same-model
   review glosses over. `/feature` bakes this into the plan review; use it for any high-stakes artifact.
+  `/feature` requests Sonnet as its author; Opus reviews the plan (Fable when Opus wrote any of it), and
+  open questions go to Fable before the user.
   **Verify the reviewer's model — don't assume it.** The `model:` override can silently fall back to
   the author's own model, and a *stated* id can even be false; treat any review that won't confirm its
   real id under a direct re-ask as same-model and **void**. When working autonomously, a

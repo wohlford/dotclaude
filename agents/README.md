@@ -12,8 +12,8 @@ agents ride model upgrades for free.
 | :----- | :------ | :--- |
 | `haiku` | Compliance against an explicit rubric — is a field present, does a name match its directory, does a required section exist | The rubric answers it; no interpretation needed |
 | `sonnet` | Judgment against a rubric **with carve-outs and exceptions** — prose quality, idiom, "is this exempt?" | A wrong call costs the caller a triage pass |
-| `opus` | Architecture and design, whole-branch review, final gates, authoring (not reviewing) standalone documentation prose | Being wrong is expensive and hard to detect |
-| `fable` | Diverse-model review — a reviewer that **differs from the author** (see `/feature`) | Same-model blind spots are the risk |
+| `opus` | Architecture and design, whole-branch review, final gates, the diverse-model review of `/feature`'s plan (when its author is Sonnet), authoring (not reviewing) standalone documentation prose | Being wrong is expensive and hard to detect |
+| `fable` | Open questions, put to it before the user (see `/feature`); the diverse reviewer when the author is Opus | Same-model blind spots are the risk |
 
 Two rules that decide most cases:
 

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.127.1 — 2026-10-12
+- docs(feature): name the sonnet, opus and fable roles in the indexes
+
 ## v0.127.0 — 2026-10-12
 - feat(feature): sonnet authors, opus reviews, fable takes questions
 
