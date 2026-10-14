@@ -22,6 +22,7 @@ for how the index below stays in sync.
 | `exec-bit-guard-test.sh`         | PostToolUse hook — run the exec-bit-guard test suite when the gate or its suite changes                                    |
 | `exec-bit-guard.sh`              | PreToolUse hook — block `git commit` when it would record a new shebang file without the exec bit (or a 755→644 downgrade) |
 | `explain-git-command.py`         | Show WHICH byte broke `scripts/lib/git_command.py`'s parse, or what it found if it didn't                                  |
+| `farm-drift-check.py`            | SessionStart hook — warn when the ~/.claude symlink farm has drifted from its source clone                                 |
 | `fixture-signing-check.py`       | Flag test fixtures whose git repos can inherit the operator's global signing config                                        |
 | `flake-sweep.sh`                 | Run a command N times against a verifiably unchanged tree and report each row's pass/fail/skip rate.                       |
 | `git-timing-guard.py`            | PreToolUse hook — block PUBLISHING outside a configured time window                                                        |

@@ -164,6 +164,18 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/farm-drift-check.py",
+            "timeout": 15
+          }
+        ]
+      }
     ]
   },
   "enabledPlugins": {

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.130.0 — 2026-10-13
+- feat(hooks): warn at session start when the symlink farm drifts
+
 ## v0.129.2 — 2026-10-13
 - test(guard-parity): add the flush-wording mutation rows
 
