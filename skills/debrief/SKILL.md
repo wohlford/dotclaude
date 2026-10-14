@@ -95,6 +95,22 @@ asking, and never offer a resume on `MALFORMED`.
 This skill stops at the hand-off. It CANNOT run `/compact`, exit Claude, or restart it —
 those remain manual steps for the user.
 
+### Models
+
+**Controller: the session's own model, whatever it is.** The frontmatter carries no `model:` on
+purpose: the skill has `disable-model-invocation: true`, so every invocation is typed, and a
+frontmatter `model:` was measured ignored on the typed path (`skills/feature/SKILL.md`, **Models**,
+cites the probe: headless `claude -p`; the interactive typed path was not measured). The only
+pinned delegate is `prose-writer` (`agents/prose-writer.md`, `model: opus`), and the one thing
+routed to it is step 1's CLAUDE.md prose composed from session-only facts (see step 1). Nearly
+every artifact the debrief produces derives from the conversation rather than the tree: a subagent
+has none of the session, so a brief complete enough to do the work would BE the work, and no
+author, reviewer or Fable role exists here. Every step stays with the controller, step 1 apart from
+that revision; steps 1, 2 and 4 additionally run as plugin skills inside the controller's own
+context, because a subagent version would recreate the closing-ask halt that **Overriding a
+delegate's closing pause** documents. Step 5 dispatches `/feature --plan-only` and inherits its
+**Models**.
+
 ### Process
 
 0. **Follow up on open deferrals.** `BACKLOG.md` lives in this session's memory directory; skip
@@ -177,6 +193,45 @@ those remain manual steps for the user.
    Note the routing in the hand-off. **End this invocation's arguments with the return
    instruction** (see **Overriding a delegate's closing pause** below) — this delegate's own
    workflow ends at "Apply with Approval", and the next step here is 2.
+
+   **CLAUDE.md prose composed from session-only facts is drafted here and revised by
+   `prose-writer`.** That means a new hazard bullet above all, but also a revised bullet or a policy
+   paragraph. The controller drafts, because revise mode never adds a fact and so cannot invent a
+   measurement only the session holds; `prose-writer` rewrites for prose (the global CLAUDE.md's
+   "Delegating" paragraph states the same rule). **Sequence:** when the refresh — the plugin's
+   proposed additions or your own reading of the session — yields such text, do NOT apply it with
+   Edit or Write. Treat it as the draft (rewrite it from the session's measured facts where it is
+   thinner than they are), apply the sensitivity carve-out above to it BEFORE dispatching, because
+   `prose-writer` edits tracked files directly (tools: Read, Grep, Glob, Write, Edit — see
+   `agents/prose-writer.md`), and hand it over in REVISE mode. The **Auto-apply** above covers
+   every other proposal; this one is excepted in the invocation's arguments, the one position that
+   outranks the plugin's own text (**Overriding a delegate's closing pause**). So when you compose
+   step 1's return instruction, amend the template's first clause to read `apply your
+   recommendations without asking EXCEPT any addition composed from session-only facts — leave
+   that one unapplied as a draft for step 1's prose-writer routing` and its last clause to end
+   `route that draft, then continue to /debrief step 2`. That placement is advisory and unverified
+   until a plain `/debrief` has run unattended start to finish. On a resumed run, check CLAUDE.md
+   for the bullet before dispatching, so it is not inserted twice. Dispatch with NO `model`
+   override, which would defeat its Opus pin (`model: opus` in that file), and brief it with the
+   absolute path to the CLAUDE.md file, the draft, the target group (your pick, from the session's
+   facts), and the fact that it has no shell. **On return, verify by content — this is not
+   delegable.** It cannot correct a session-only fact, because none is in the tree
+   (`agents/prose-writer.md`: "Never add a fact the draft or the tree does not contain"), so a fact
+   wrong in the draft survives the rewrite. Check every number, date, version and qualifier against
+   what was measured; in the repo that holds the edited file, run
+   `git -C "$(dirname <path>)" diff -U0 -- <path> | grep '^+' |
+   grep -E 'TBD|TODO|FIXME|XXX|\[GAP|<placeholder'`, which must print
+   nothing (a whole-file grep cannot pass: CLAUDE.md itself names the `[GAP:` marker); resolve any
+   marker `prose-writer` wrote; grep the file for the words the rewrite removed; and run
+   `scripts/claude-md-structure.py --file <path>` afterwards, because
+   `prose-writer` has no shell and cannot run it. A failed check is corrected in the file and
+   re-run; if it still fails, revert to your own draft applied directly and name that in the step-7
+   hand-off. Report a group over its cap there too — the script measures and gates nothing, and
+   regrouping is not this step's job. Show the resulting diff only after this verification, and
+   record step 1 in the ledger only once it passes. If the dispatch errors (for example Opus is
+   unavailable), apply your own draft, name that in the hand-off, and do not stop — a plain
+   `/debrief` never pauses. This fallback has not been exercised: an unavailable-Opus error cannot
+   be produced on demand.
 
 2. **Audit CLAUDE.md (length-gated).** Judge the session's size: treat it as substantial if
    it covered several distinct tasks or topics, or ran long. State the judgment and the
