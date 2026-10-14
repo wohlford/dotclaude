@@ -4,7 +4,7 @@
 Deliberately NOT named `test_*`: it mutates a tracked file in place, so pytest must not collect
 it. Run it on demand through `run-long.sh` — `./scripts/tests/mutate_guard_parity.py` — and never
 while editing the subject, since the restore would clobber your edits. One survivor costs a full
-suite run (about three minutes); most rows die inside the fast unit tests, so a whole campaign is
+suite run (about 3.5 minutes); most rows die inside the fast unit tests, so a whole campaign is
 the better part of an hour.
 
 Every row disables ONE property and requires `scripts/tests/test_guard_parity.py` to notice. This
@@ -32,6 +32,8 @@ Pieces of the subject deliberately NOT mutated, and why:
 * The write limit (`_limit_writes`, `FSIZE_CAP`). Its mutant is a guard writing until the disk
   fills, which a campaign may not produce; the suite's endless-writer row is what proves the limit
   today.
+* The `stderr` skip in `_flushed`. A failed stderr flush leaves no stream to carry a message, so
+  no capture can observe the difference and its mutant would be equivalent.
 """
 
 from __future__ import annotations
@@ -621,6 +623,57 @@ MUTATIONS = [
         "shard-key-omits-the-env-values: a changed variable value reuses a shard read under the old one",
         "                            env_values_digest(env),\n",
         "",
+    ),
+    # ---- the shutdown-flush wording is probed from the shebang interpreter
+    M(
+        "flush-wording-hard-coded: the header is typed, not probed",
+        "                header = render_flush_header(_FLUSH_TEMPLATE, name, repr(stream))\n",
+        '                header = f"Exception ignored on flushing sys.{name}:"\n',
+    ),
+    M(
+        "flush-probe-accepts-any-wording: the validation is dropped",
+        "    if not recognised:\n",
+        "    if False:\n",
+    ),
+    M(
+        "flush-probe-never-runs: the template stays unset",
+        "        _FLUSH_TEMPLATE = probe_flush_wording(args.neutral)\n",
+        "        pass\n",
+    ),
+    M(
+        "flush-never-probed-check-deleted: a child runs without a template",
+        "        if _FLUSH_TEMPLATE is None:\n",
+        "        if False:\n",
+    ),
+    M(
+        "flush-probe-runs-the-worker-interpreter: the probe is not the shebang",
+        '_PROBE_COMMAND = ["/usr/bin/env", "python3", "-c", _PROBE_SOURCE]\n',
+        '_PROBE_COMMAND = [sys.executable, "-c", _PROBE_SOURCE]\n',
+    ),
+    M(
+        "flush-probe-keeps-pythonunbuffered: the probe inherits the variable",
+        '    probe_env = {k: v for k, v in base.items() if k != "PYTHONUNBUFFERED"}\n',
+        "    probe_env = dict(base)\n",
+    ),
+    M(
+        "flush-closed-stream-is-flushed: a closed stream is not skipped",
+        '    if getattr(stream, "closed", False):\n',
+        "    if False:\n",
+    ),
+    M(
+        "shard-key-omits-the-genuine-interpreter: shards read under another python3 are reused",
+        "                            genuine,\n",
+        "",
+    ),
+    M(
+        "shard-key-reads-the-wrong-environment: the key asks os.environ, not the stage's env",
+        "    genuine = _python_version(env)\n",
+        "    genuine = _python_version(os.environ)\n",
+    ),
+    M(
+        "python-version-unbounded: a hung `python3 --version` holds every stage",
+        "            timeout=TIMEOUT_S,\n            check=False,\n",
+        "            check=False,\n",
     ),
 ]
 
