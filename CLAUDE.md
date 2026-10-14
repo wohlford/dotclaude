@@ -111,67 +111,76 @@ otherwise hand-roll what it already does:
 | `/recast`    | Re-develop a git source repo into a target as a genuine ground-up, proven-per-commit history converging to functional equivalence (never copies the tree, never pushes) |
 <!-- /sync:skills -->
 
-**Non-skills earn a place here on the same test.** Before hand-building a stdin payload to re-run a
-hook an edit bypassed (a file written through the Bash tool trips no PostToolUse hook), or
-hand-writing a script to time hooks against their registered timeouts, use
-`~/.claude/scripts/run-hooks.py <path>`: it derives the matching registrations from `settings.json`,
-runs each with the harness's measured matcher and payload, and ends in one `RESULT:` line, clean only
-at `RESULT: PASS` — and a PASS with `skipped=` or `filtered=` above 0 is partial coverage (`skipped=` is the
-exec-bit-guard gate it never consults, `filtered=` what `--only` dropped). Measured: a bypassed memory-index check was re-run with a hand-built payload, and
-one timing survey took two hand-written scripts. Before hand-writing a mutation harness — which
-the RED→GREEN rule below sends you to do — use `~/.claude/scripts/lib/mutate.py`, supplying only
-the `(label, old, new)` list. Ten were hand-rolled and discarded before it existed, each
-re-derivation dropping a different safety property; worst was the unmutated BASELINE, absent from 7
-of 8 — without it an already-red suite scores every mutation CAUGHT and the sweep reads flawless.
-Before re-running a check by hand to learn whether it is flaky, use
-`~/.claude/scripts/flake-sweep.sh -n <N> -- <command>`: it reports each row's RATE over an
-unchanged tree and FAILs on any variance — its header lists what its tree stamp cannot see.
-Before hand-building a replay of transcript commands through two guard builds — a harness rebuilt
-and lost at least three times — use `~/.claude/scripts/guard-parity.py --old <rev> --new <rev>
---artifact-dir <a directory outside the repo>` through `run-long.sh`: it judges the four
-tokenizer-sharing guards over the real population, audits its own fast path against genuine
-processes on every run, and ends in one verdict line.
-Before hand-writing a script that applies OLD→NEW edits across files, use
-`~/.claude/scripts/lib/bulk_edit.py`, supplying only the `Edit` list: it judges every file in
-memory before writing any. Four such scripts were hand-written in one session
-before it existed, each re-typing the anchor refusal and running every other check by hand.
-Its already-applied check is the costliest to get wrong: an insertion's re-run finds its anchor
-once more and inserts the text twice, and a first draft judging all edits at once still did so on
-a file with one edit made and one not — both measured.
-And before backgrounding a check that outruns the tool timeout, use `~/.claude/scripts/run-long.sh`
-rather than a wrapper of your own — it is the shipped remedy for the killed-run and
-graded-the-launch-tree hazards below, and you read its verdict back with `--status`, never from the
-launch. **To WAIT for one, use its own `--wait`, never a loop of your own around `--status`** — that
-loop is a wrapper too, and the tool reports liveness in a different vocabulary from the verdict
-inside the artifact, so the condition you write is against the wrong one. Measured: two hand-rolled
-`until` loops in one session, the first exiting early because a still-RUNNING status matched its
-pattern, the second — narrowed to fix exactly that — never exiting at all, because the exclusion
-also removed the real terminal value; it spun for three hours against a job that had long finished.
-**And run that `--wait` through the Bash tool's `run_in_background`, never in the foreground** — a
-foreground waiter is killed at the tool timeout (rc 143), which reads exactly like the job dying,
-while a backgrounded one is a tracked task the operator can see and it notifies you when the job
-ends; measured four times in one session. Stopping it does not stop the job. Give that waiter
-`timeout: 7200000`, the maximum — the 30-minute default killed one before the `--tests` run it
-watched had finished, and that kill too reads like the job dying when only the waiter died.
-**`kill <pid>` of the job itself stops only its wrapper** — measured, the `audit.sh --tests` tree it had
-spawned reparented to init and went on grading a tree about to be edited, while `--status` reported
-DIED. Take the group from a surviving descendant (`ps -o pgid= -p <it>`), `kill -TERM -- -<pgid>`, then
-`pgrep` for survivors before touching the repo.
-**That notification reaches only the session that armed the waiter — a subagent is never
-re-invoked by it**, so a delegate that backgrounds its waiter ends its turn with no verdict: inside
-a delegate, wait in the foreground within the tool timeout, or leave the long job to the
-controller. Measured: six delegates ended their turns with a run in flight, two of them with a
-background waiter armed.
-Four wrappers were hand-written in one session before it existed, three byte-equivalent;
-the fourth still let a sweep that had run 4 checks of 15 read as a clean pass. Give it `--expect
-'<verdict regex>'` at LAUNCH too — the pattern is recorded INTO the artifact, so a run that
-finished having executed nothing reports INDETERMINATE instead of a truthful, useless `DONE rc=0`.
-Measured: exactly that happened, and only an absent verdict line caught it. **Match the verdict's
-SHAPE, never its passing VALUE** — the natural thing to write is the answer you want, and that
-converts a real failure into an INDETERMINATE. Measured: `--expect 'RESULT: PASS rc=0'` over a
-run that reached a genuine `RESULT: FAIL rc=1` reported INDETERMINATE, and the FAIL stayed
-invisible until the artifact was read by hand; `RESULT: (PASS|FAIL|ERROR|INCOMPLETE) rc=[0-9]+`
-is the form that reports it.
+**Non-skills earn a place here on the same test.** Each bullet names a job you would otherwise do
+by hand, then the tool to use instead.
+
+- **Before hand-building a stdin payload to re-run a hook an edit bypassed, or hand-writing a
+  script to time hooks against their registered timeouts:** use
+  `~/.claude/scripts/run-hooks.py <path>`. (A file written through the Bash tool trips no
+  PostToolUse hook.) It derives the matching registrations from `settings.json`, runs each with the
+  harness's measured matcher and payload, and ends in one `RESULT:` line, clean only at
+  `RESULT: PASS`. A PASS with `skipped=` or `filtered=` above 0 is partial coverage: `skipped=` is
+  the exec-bit-guard gate it never consults, `filtered=` what `--only` dropped. Measured: a
+  bypassed memory-index check was re-run with a hand-built payload, and one timing survey took two
+  hand-written scripts.
+- **Before hand-writing a mutation harness, which the RED→GREEN rule above sends you to do:** use
+  `~/.claude/scripts/lib/mutate.py`, supplying only the `(label, old, new)` list. Ten were
+  hand-rolled and discarded before it existed, each re-derivation dropping a different safety
+  property. The worst was the unmutated BASELINE, absent from 7 of 8: without it an already-red
+  suite scores every mutation CAUGHT and the sweep reads flawless.
+- **Before re-running a check by hand to learn whether it is flaky:** use
+  `~/.claude/scripts/flake-sweep.sh -n <N> -- <command>`. It reports each row's RATE over an
+  unchanged tree and FAILs on any variance; its header lists what its tree stamp cannot see.
+- **Before hand-building a replay of transcript commands through two guard builds:** use
+  `~/.claude/scripts/guard-parity.py --old <rev> --new <rev>
+  --artifact-dir <a directory outside the repo>` through `run-long.sh`. Such a harness was
+  rebuilt and lost at least three times. It judges the four tokenizer-sharing guards over the real
+  population, audits its own fast path against genuine processes on every run, and ends in one
+  verdict line.
+- **Before hand-writing a script that applies OLD→NEW edits across files:** use
+  `~/.claude/scripts/lib/bulk_edit.py`, supplying only the `Edit` list. It judges every file in
+  memory before writing any. Four such scripts were hand-written in one session before it existed,
+  each re-typing the anchor refusal and running every other check by hand. Its already-applied
+  check is the costliest to get wrong: an insertion's re-run finds its anchor once more and
+  inserts the text twice, and a first draft judging all edits at once still did so on a file with
+  one edit made and one not — both measured.
+- **Before backgrounding a check that outruns the tool timeout:** use
+  `~/.claude/scripts/run-long.sh` rather than a wrapper of your own. It is the shipped remedy for
+  the killed-run and graded-the-launch-tree hazards below, and you read its verdict back with
+  `--status`, never from the launch. Four wrappers were hand-written in one session before it
+  existed, three byte-equivalent; the fourth still let a sweep that had run 4 checks of 15 read as
+  a clean pass. Its rules, each measured:
+  - **To WAIT for one, use its own `--wait`, never a loop of your own around `--status`.** That
+    loop is a wrapper too, and the tool reports liveness in a different vocabulary from the verdict
+    inside the artifact, so the condition you write is against the wrong one. Measured: two
+    hand-rolled `until` loops in one session, the first exiting early because a still-RUNNING
+    status matched its pattern, the second — narrowed to fix exactly that — never exiting at all,
+    because the exclusion also removed the real terminal value; it spun for three hours against a
+    job that had long finished.
+  - **Run that `--wait` through the Bash tool's `run_in_background`, never in the foreground.** A
+    foreground waiter is killed at the tool timeout (rc 143), which reads exactly like the job
+    dying, while a backgrounded one is a tracked task the operator can see and it notifies you when
+    the job ends; measured four times in one session. Stopping it does not stop the job. Give that
+    waiter `timeout: 7200000`, the maximum — the 30-minute default killed one before the `--tests`
+    run it watched had finished, and that kill too reads like the job dying when only the waiter
+    died.
+  - **That notification reaches only the session that armed the waiter — a subagent is never
+    re-invoked by it**, so a delegate that backgrounds its waiter ends its turn with no verdict:
+    inside a delegate, wait in the foreground within the tool timeout, or leave the long job to the
+    controller. Measured: six delegates ended their turns with a run in flight, two of them with a
+    background waiter armed.
+  - **`kill <pid>` of the job itself stops only its wrapper.** Measured: the `audit.sh --tests`
+    tree it had spawned reparented to init and went on grading a tree about to be edited, while
+    `--status` reported DIED. Take the group from a surviving descendant (`ps -o pgid= -p <it>`),
+    `kill -TERM -- -<pgid>`, then `pgrep` for survivors before touching the repo.
+  - **Give it `--expect '<verdict regex>'` at LAUNCH too.** The pattern is recorded INTO the
+    artifact, so a run that finished having executed nothing reports INDETERMINATE instead of a
+    truthful, useless `DONE rc=0`. Measured: exactly that happened, and only an absent verdict line
+    caught it. **Match the verdict's SHAPE, never its passing VALUE** — the natural thing to write
+    is the answer you want, and that converts a real failure into an INDETERMINATE. Measured:
+    `--expect 'RESULT: PASS rc=0'` over a run that reached a genuine `RESULT: FAIL rc=1` reported
+    INDETERMINATE, and the FAIL stayed invisible until the artifact was read by hand;
+    `RESULT: (PASS|FAIL|ERROR|INCOMPLETE) rc=[0-9]+` is the form that reports it.
 
 > Hooks (indexed in README.md) fire per-edit: a multi-step change that passes through an invalid
 > intermediate state (e.g. resolving conflict markers with two Edits) trips transient PostToolUse
@@ -216,6 +225,37 @@ a SPLIT trigger, not a rejection**: an earned hazard arriving at a full group sp
 never welded onto an existing bullet as a clause. Measured — read as a rejection, the cap grew this
 section from 88 lines to 177 with every group count frozen, a clause being the only landing spot it
 left legal.
+
+The groups, in reading order — a hand-kept list, so when a group is added or split, regenerate it
+from `scripts/claude-md-structure.py`, which prints every group heading:
+
+1. Nothing ever ran — silence is not a pass
+2. You chose not to run it — the excuse is checkable
+3. You wrote it down and never ran it — prose review cannot tell
+4. It ran, but not on what you think
+5. The probe you built is not the thing that ships
+6. A second run proves less than it looks like
+7. It ran and could never have failed
+8. Every row got the same verdict, whatever it contained
+9. Right verdict, then the world moved under it
+10. The run used parameters you never chose
+11. Right verdict, wrong population
+12. Your matcher matched text you did not mean
+13. Your search missed what was there
+14. The exit status you read is not the verdict
+15. The signal you read belongs to something else
+16. The fix it prescribes is not the defect it found
+17. The repair you would reach for first makes it worse
+18. Making the check handle more input carries an unpriced cost
+19. It answered its own question, not the one you are relying on
+20. You verified what you had in mind — the gap is what you did not
+21. A RECORD or a SHAPE stood in for the thing itself
+22. It answered about the PARTS; your claim is about the WHOLE
+23. An edit's effect is wider than the part you checked
+24. The check itself writes — what it leaves behind is the hazard
+25. The teardown you are counting on — narrower than you think, or never reached
+26. When a check keeps failing, you are fixing the wrong layer
+27. Building a check that holds
 
 #### Nothing ever ran — silence is not a pass
 
