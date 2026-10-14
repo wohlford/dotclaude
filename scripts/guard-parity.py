@@ -107,10 +107,19 @@ is absent. The replay runs read-only git queries against every directory the ope
 once worked in, as the live hooks did on every call; nothing is written to any of them.
 `--artifact-dir` holds raw commands and is created 0700.
 
+**The shutdown-flush wording.** A guard whose output stream cannot be flushed at exit gets a
+header line from the interpreter, and its words differ by CPython version. A fork worker
+therefore reads that header once, before its first fork, from the `python3` that `/usr/bin/env`
+finds on the worker's PATH (the resolution a guard's shebang uses) and refuses to run if the
+reading is not exactly the model it relies on: status 120, the stream's repr line the probe
+reports, ONE header line, then the exception's own line. The parent runs the same probe once per
+FORK-MODE stage first, so a refusal is the tool's own `error:` line.
+
 **Resuming.** A shard's key covers everything that made it: its rows, the build's commit, the
 guards, mode, repeat, timeout, a digest of the environment NAMES, a digest of the
 environment VALUES (compared and never printed; `_`, `SHLVL` and `OLDPWD` are left out
 because a shell rewrites them on every invocation), the interpreter's path and version, the
+version text of the `python3` on PATH (`port select` moves it without changing PATH), the
 fixture salt and THIS FILE's own source. A shard must also end in its `done` line, and its
 key is written by its worker only after that. A shard index is reused only when EVERY
 build's shard at that index is: if one build's shard is stale or unfinished, the shard at
@@ -159,6 +168,13 @@ DEFAULT_WORKERS_CAP = (
 OUTPUT_TEXT_CAP = 4096
 DIGEST_LEN = 12
 BUILD_MARK = "<BUILD>"
+
+# The shutdown-flush header, read from the genuine interpreter by `probe_flush_wording` and kept for
+# the worker's life (a fork child inherits it). The tokens are NUL-led so no printable header can
+# collide with them: REPR stands for the failing stream's repr, NAME for its name (`stdout`).
+_REPR_TOKEN = "\x00repr\x00"
+_NAME_TOKEN = "\x00name\x00"
+_FLUSH_TEMPLATE: str | None = None
 
 # The guards this tool can judge, by script basename. Every one speaks the same contract — a JSON
 # payload on stdin, exit 2 to refuse — and ends in an `if __name__ == "__main__"` block, so the
@@ -967,18 +983,109 @@ def _status(code: object) -> int:
     return 1
 
 
-def _flushed(name: str) -> bool:
-    """Flush `sys.<name>` as interpreter shutdown does. On failure the interpreter prints
-    `Exception ignored on flushing sys.stdout: ...` and exits 120 — which a hook's caller reads as
-    an allow — so this prints the same and says so."""
+# What a guard whose stdout is closed under it prints at exit: the first line reports the default
+# stream's own repr on fd 2, because the older interpreters embed it in the header they print next.
+# It runs as `-c` text through `/usr/bin/env python3`, the resolution a guard's shebang uses: a
+# freshly written executable's first exec costs 0.3 to 0.8 s on macOS, and the wording is the
+# interpreter's (byte-identical stderr from a script and from `-c` on 3.9, 3.10, 3.12, 3.13, 3.14).
+_PROBE_SOURCE = (
+    "import os, sys\n"
+    'os.write(2, (repr(sys.stdout) + "\\n").encode("utf-8", "replace"))\n'
+    "sys.stdout.write('lost')\n"
+    "os.close(1)\n"
+)
+_PROBE_COMMAND = ["/usr/bin/env", "python3", "-c", _PROBE_SOURCE]
+
+
+def _flush_template(rc: int, stderr: bytes) -> str:
+    """The header of a probe's stderr as a template, or RuntimeError naming what was found.
+
+    The model is an allowlist: status 120, the reported repr line, ONE header line, then exactly
+    the exception line `traceback.format_exception_only` gives for an EBADF `OSError`. Anything
+    else (a new traceback, another status, a header naming neither the stream nor its repr) is
+    refused with the bytes found, so a future wording fails loudly instead of being guessed at."""
+    found = f"unrecognised flush-failure wording: rc={rc} stderr={stderr!r}"
+    detail = "".join(
+        traceback.format_exception_only(OSError, OSError(9, os.strerror(9)))
+    )
+    parts = stderr.decode("utf-8", "replace").split("\n", 2)
+    reported, header, rest = (parts + ["", "", ""])[:3]
+    template = header.replace(reported, _REPR_TOKEN) if reported else header
+    template = template.replace("stdout", _NAME_TOKEN)
+    recognised = (
+        rc == 120
+        and rest == detail
+        and bool(reported)
+        and "\x00" not in reported + header
+        and (_REPR_TOKEN in template or _NAME_TOKEN in template)
+    )
+    if not recognised:
+        raise RuntimeError(found)
+    return template
+
+
+def probe_flush_wording(neutral: Path, env: Mapping[str, str] | None = None) -> str:
+    """The shutdown-flush header as the `python3` a guard's shebang resolves prints it, as a
+    template for `render_flush_header`; RuntimeError when the reading is not the model's.
+
+    The probe runs through `/usr/bin/env python3` with the caller's environment, `neutral` as its
+    cwd and no stdin, the way `run_exec` runs a guard, so it reaches the interpreter a genuine
+    guard would. Nothing is written to disk: there is no probe file or directory to refuse. `env`
+    is the caller's environment with ONE name removed, `PYTHONUNBUFFERED`: buffering is not part
+    of the wording, and with the variable set nothing is left to fail at exit, so a probe that kept
+    it would refuse every run under an environment that sets it. The guards still run under it."""
+    base = os.environ if env is None else env
+    probe_env = {k: v for k, v in base.items() if k != "PYTHONUNBUFFERED"}
     try:
-        getattr(sys, name).flush()
+        done = subprocess.run(
+            _PROBE_COMMAND,
+            cwd=neutral,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=TIMEOUT_S,
+            env=probe_env,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            "unrecognised flush-failure wording: the probe `/usr/bin/env python3 -c` "
+            f"did not finish in {TIMEOUT_S:g} s"
+        ) from None
+    except OSError as exc:
+        raise RuntimeError(
+            "unrecognised flush-failure wording: the probe `/usr/bin/env python3 -c` "
+            f"could not be run: {exc}"
+        ) from exc
+    return _flush_template(done.returncode, done.stderr)
+
+
+def render_flush_header(template: str, name: str, stream_repr: str) -> str:
+    """The probed header for `sys.<name>`, with the failing stream's own repr where the
+    interpreter prints one. The repr is the LIVE stream's: a guard that replaced `sys.stdout`
+    gets the replacement's repr, as the genuine process prints it."""
+    return template.replace(_REPR_TOKEN, stream_repr).replace(_NAME_TOKEN, name)
+
+
+def _flushed(name: str) -> bool:
+    """Flush `sys.<name>` as interpreter shutdown does. A stream that is already closed is
+    skipped, as there. On failure the interpreter prints a header whose words depend on its
+    version (probed, see `probe_flush_wording`) and the exception's own line, then exits 120 —
+    which a hook's caller reads as an allow — so this writes the probed header and the live
+    exception's line, and the caller makes the status 120. A failed `stderr` flush writes
+    nothing: no stream is left to carry it, and the interpreter prints none."""
+    stream = getattr(sys, name)
+    if getattr(stream, "closed", False):
+        return True
+    try:
+        stream.flush()
     except BaseException as exc:  # noqa: BLE001
-        detail = "".join(traceback.format_exception_only(type(exc), exc))
-        try:
-            sys.stderr.write(f"Exception ignored on flushing sys.{name}:\n{detail}")
-        except BaseException:  # noqa: BLE001 - stderr may be the very stream that failed
-            pass
+        if name != "stderr":
+            detail = "".join(traceback.format_exception_only(type(exc), exc))
+            try:
+                header = render_flush_header(_FLUSH_TEMPLATE, name, repr(stream))
+                sys.stderr.write(f"{header}\n{detail}")
+            except BaseException:  # noqa: BLE001 - stderr may be the very stream that failed
+                pass
         return False
     return True
 
@@ -989,6 +1096,8 @@ def _child(compiled: Compiled, files: tuple, neutral: str) -> None:
     `os._exit`. Interpreter finalisation is skipped on purpose — it was 45 of the 56 ms."""
     status = 0
     try:
+        if _FLUSH_TEMPLATE is None:
+            raise RuntimeError("flush wording was never probed")
         os.chdir(neutral)
         for target, staged in enumerate(files):
             os.dup2(staged.fileno(), target)
@@ -1116,6 +1225,7 @@ def run_exec(
 def worker_main(argv: Sequence[str]) -> int:
     """`guard-parity.py --worker`: judge the rows in `--rows` against one build, writing one JSON
     line per unit and a final `done` line. A shard without that line is incomplete by definition."""
+    global _FLUSH_TEMPLATE
     parser = argparse.ArgumentParser(prog="guard-parity.py --worker")
     parser.add_argument("--build", required=True, type=Path)
     parser.add_argument("--guards", required=True)
@@ -1134,6 +1244,11 @@ def worker_main(argv: Sequence[str]) -> int:
     # Absolute before any use: the child changes directory before it runs a guard.
     args.build = Path(os.path.abspath(args.build))
     scripts = args.build / "scripts"
+    if args.mode == "fork":
+        # Before preload() and before `--out` is opened: a refusal then costs nothing, leaves no
+        # half-written output, and no guard-library import has run. Exec mode runs the genuine
+        # process itself and needs no wording.
+        _FLUSH_TEMPLATE = probe_flush_wording(args.neutral)
     markers = build_markers(args.build)
     preload(args.build)
     compiled = {name: compile_guard(scripts / name) for name in guards}
@@ -1398,6 +1513,17 @@ def _run_stage(
     it owed simply have no reading, which `classify` refuses to call the same.
     """
     workdir.mkdir(parents=True, exist_ok=True)
+    if mode == "fork":
+        # A preflight ONLY: a worker that aborts reaches the operator as "N worker shards never
+        # finished", so the same probe runs here first and its refusal is the tool's own. The
+        # worker's own probe stays the authority; nothing is gated on this one passing.
+        try:
+            probe_flush_wording(neutral, env)
+        except RuntimeError as exc:
+            raise ParityError(str(exc)) from exc
+    # `port select` retargets the binary behind PATH's `python3` and leaves PATH's value alone, so
+    # only the version it prints can retire a shard read under the old one.
+    genuine = _python_version(env)
     per_build = max(1, workers // max(1, len(builds)))
     shards = _split(rows, per_build)
     launched = []
@@ -1439,6 +1565,7 @@ def _run_stage(
                             env_values_digest(env),
                             sys.executable,
                             sys.version,
+                            genuine,
                             salt,
                             tool,
                         ]
@@ -1871,17 +1998,43 @@ def _inside_worktree(path: Path) -> bool:
 
 
 def _python_version(env: Mapping[str, str]) -> str:
+    """What `python3 --version` prints under `env`. Three unreadable values are stable on purpose:
+    `unknown` (it ran and printed nothing), `unavailable` (it could not start) and `timed out`
+    (it hung: this sits on every stage's path before any worker deadline exists)."""
     try:
         done = subprocess.run(
             ["python3", "--version"],
             capture_output=True,
             text=True,
             env=dict(env),
+            stdin=subprocess.DEVNULL,
+            timeout=TIMEOUT_S,
             check=False,
         )
         return (done.stdout or done.stderr).strip() or "unknown"
+    except subprocess.TimeoutExpired:
+        return "timed out"
     except OSError:
         return "unavailable"
+
+
+def interpreter_note(worker_version: str, genuine_text: str) -> str:
+    """A report-header note when the fork workers and the genuine process are not the same
+    major.minor, or when the genuine version could not be read; empty when they agree."""
+    worker = re.match(r"(\d+)\.(\d+)", worker_version)
+    genuine = re.match(r"Python (\d+)\.(\d+)", genuine_text)
+    if worker and genuine:
+        if worker.groups() == genuine.groups():
+            return ""
+        return (
+            f"interpreters differ: workers {'.'.join(worker.groups())}, genuine process "
+            f"{'.'.join(genuine.groups())}; fork readings of version-sensitive output "
+            "(tracebacks, sys.path) may differ from the genuine process; expect EXEC_MISMATCH"
+        )
+    return (
+        f"interpreters unverified: the genuine process's version was unreadable ({genuine_text}); "
+        "fork readings of version-sensitive output may differ from it"
+    )
 
 
 def _count_log_records(path: Path) -> int:
@@ -2083,6 +2236,8 @@ def run(args: argparse.Namespace) -> tuple[int, str]:
     )
     decision = decide(ev)
 
+    audited = _python_version(env)
+    interpreter_flag = interpreter_note(sys.version.split()[0], audited)
     header = [
         "guard-parity: replay of real commands through two pinned guard builds",
         *(
@@ -2109,7 +2264,8 @@ def run(args: argparse.Namespace) -> tuple[int, str]:
         f"environment: {len(env)} names (digest {env_names_digest(env)}), HOME mirrored at {fixture}, "
         f"PYTHONHASHSEED=0",
         f"interpreters: workers {sys.version.split()[0]}; genuine-process audit "
-        f"{_python_version(env)}",
+        f"{audited}",
+        *([interpreter_flag] if interpreter_flag else []),
         f"artifacts: {art}",
         f"units: {len(units)} ({len(chosen)} verified, {len(sampled)} sampled)",
         f"shards: {sum(s.reused for s in stages)} reused of {sum(s.total for s in stages)}",

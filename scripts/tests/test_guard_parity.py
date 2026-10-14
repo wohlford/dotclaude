@@ -9,6 +9,7 @@ import fcntl
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -587,7 +588,27 @@ def fake_build(tmp_path, sources, name="build", lib=None):
     return root
 
 
-def run_worker(
+def pinned_env(tmp_path, **extra):
+    """The environment the suite hands a worker or the whole tool.
+
+    PYTHONHASHSEED is pinned and PYTHONUNBUFFERED removed, so an operator shell that sets it cannot
+    change a reading. A private shim directory is first on PATH, and its `python3` is the
+    interpreter running the tests: the worker, the flush probe and every genuine process are then
+    ONE interpreter by construction, whichever `python3` the machine's own PATH finds first.
+    `extra` is merged last, so a row may override any name, PATH included."""
+    shim = tmp_path / "pinned-bin"
+    shim.mkdir(exist_ok=True)
+    link = shim / "python3"
+    if not link.is_symlink():
+        link.symlink_to(os.path.realpath(sys.executable))
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}
+    env["PYTHONHASHSEED"] = "0"
+    env["PATH"] = f"{shim}{os.pathsep}{env.get('PATH', '')}"
+    env.update(extra)
+    return env
+
+
+def worker_process(
     tmp_path,
     build,
     rows,
@@ -596,15 +617,16 @@ def run_worker(
     repeat=1,
     timeout=30,
     cwd=None,
+    extra_env=None,
 ):
-    """Drive the worker as a real process, the shape that ships; returns {(id, guard): [Reading]}
-    plus the raw lines."""
+    """Drive the worker as a real process, the shape that ships; returns the finished process and
+    the path of its output file, asserting nothing about either."""
     neutral = tmp_path / "neutral"
     neutral.mkdir(exist_ok=True)
     rows_file = tmp_path / f"rows-{mode}.jsonl"
     rows_file.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     out = tmp_path / f"out-{mode}.jsonl"
-    env = dict(os.environ, HOME=str(tmp_path), PYTHONHASHSEED="0")
+    env = pinned_env(tmp_path, HOME=str(tmp_path), **(extra_env or {}))
     done = subprocess.run(
         [
             sys.executable,
@@ -633,6 +655,25 @@ def run_worker(
         stdin=subprocess.DEVNULL,
         cwd=cwd,
         check=False,
+    )
+    return done, out
+
+
+def run_worker(
+    tmp_path,
+    build,
+    rows,
+    guards=(GUARD_FILE,),
+    mode="fork",
+    repeat=1,
+    timeout=30,
+    cwd=None,
+    env=None,
+):
+    """`worker_process`, which must finish; returns {(id, guard): [Reading]} plus the raw lines.
+    `env` is merged over the pinned base environment (see `pinned_env`)."""
+    done, out = worker_process(
+        tmp_path, build, rows, guards, mode, repeat, timeout, cwd, extra_env=env
     )
     assert done.returncode == 0, done.stderr
     lines = [json.loads(line) for line in out.read_text().splitlines()]
@@ -691,6 +732,7 @@ EXIT_SHAPES = {
     "non-ascii": "print('h\\u00e9llo \\u2713'); import sys; sys.stderr.write('\\u00e9\\n')",
     "big-output": "import sys; sys.stdout.write('x' * 300000); sys.stderr.write('y' * 300000)",
     "stdout-closed": "import os, sys; sys.stdout.write('lost'); os.close(1)",
+    "stdout-closed-by-the-guard": "import sys; sys.stdout.write('kept'); sys.stdout.close()",
     "reads-stdin": "import json, sys; d = json.load(sys.stdin); print(d['tool_name'], d['cwd'])",
     "sibling-path": "import sys; print(sys.path[0]); print(sys.argv[0]); print(__file__)",
     "shows-name": "print(__name__)",
@@ -806,6 +848,7 @@ def test_a_parents_buffered_output_never_reaches_a_childs_capture(tmp_path):
         gp = importlib.util.module_from_spec(spec)
         sys.modules["gp"] = gp
         spec.loader.exec_module(gp)
+        gp._FLUSH_TEMPLATE = "unused"  # run_fork is driven without a worker, so nothing probed
         build = Path({str(build)!r})
         compiled = gp.compile_guard(build / "scripts" / {GUARD_FILE!r})
         sys.stdout.write("NOISE")  # buffered: stdout here is a pipe, and there is no newline
@@ -1157,7 +1200,7 @@ def stage(tmp_path, builds, rows, **kw):
         workdir=tmp_path / "work",
         tag="t",
         workers=4,
-        env=dict(os.environ, PYTHONHASHSEED="0"),
+        env=pinned_env(tmp_path),
         neutral=neutral,
         timeout=30,
     )
@@ -1297,7 +1340,7 @@ def _worker_with_key(tmp_path, build, key, wait):
         [sys.executable, str(MODULE), "--worker", "--build", str(build)]
         + ["--guards", GUARD_FILE, "--rows", str(rows_file), "--out", str(out)]
         + ["--neutral", str(neutral), "--key", key, "--key-file", str(key_file)],
-        env=dict(os.environ, HOME=str(tmp_path), PYTHONHASHSEED="0"),
+        env=pinned_env(tmp_path, HOME=str(tmp_path)),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -1582,6 +1625,7 @@ def cli(
     art="art",
     commands=None,
     module=MODULE,
+    env=None,
 ):
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
@@ -1615,7 +1659,7 @@ def cli(
         args,
         capture_output=True,
         text=True,
-        env=dict(os.environ, HOME=str(home)),
+        env=pinned_env(tmp_path, HOME=str(home), **(env or {})),
         check=False,
     )
 
@@ -2216,7 +2260,7 @@ def test_the_stage_launches_workers_under_exactly_the_env_it_was_given(tmp_path)
     environment and the replay HOME, hash seed and log path never reach a guard."""
     root = fake_build(tmp_path, {GUARD_FILE: PROBE_GUARD}, name="probe")
     builds = [gp.Build("old", "old", "0" * 40, root, 1)]
-    env = dict(os.environ, PYTHONHASHSEED="0", GP_PROBE_VAR="distinct-7431")
+    env = pinned_env(tmp_path, GP_PROBE_VAR="distinct-7431")
     before = dict(os.environ)
     result = stage(tmp_path, builds, [spec("ls")], workers=1, env=env)
     assert result.incomplete == []
@@ -2321,8 +2365,11 @@ def test_a_guard_that_cannot_be_launched_is_not_a_hang_and_never_compares_as_sam
     assert "old=launch-failed" in gp._unit_line("INCOMPARABLE", ("i", "g"), detail)
 
 
-def test_a_fork_child_that_fails_inside_the_tool_says_so_in_its_capture(tmp_path):
+def test_a_fork_child_that_fails_inside_the_tool_says_so_in_its_capture(
+    tmp_path, monkeypatch
+):
     """Status 70 alone is a value a guard can exit with; the capture has to name the failure."""
+    monkeypatch.setattr(gp, "_FLUSH_TEMPLATE", "unused")  # not probed: no worker here
     build = fake_build(tmp_path, {GUARD_FILE: "pass\n"})
     compiled = gp.compile_guard(build / "scripts" / GUARD_FILE)
     reading = gp.run_fork(compiled, b"{}", tmp_path / "no-such-neutral-dir", [])
@@ -2370,7 +2417,7 @@ def keyed_stage(tmp_path, builds, **over):
         workdir=tmp_path / "work",
         tag="k",
         workers=1,
-        env=dict(os.environ, PYTHONHASHSEED="0", GP_KEYED_VALUE="value-one"),
+        env=pinned_env(tmp_path, GP_KEYED_VALUE="value-one"),
         neutral=neutral,
         timeout=30,
         salt="salt-one",
@@ -2381,8 +2428,8 @@ def keyed_stage(tmp_path, builds, **over):
     return gp.run_stage(builds, rows, guards, **args)
 
 
-def _with_env(**extra):
-    return {"env": dict(os.environ, PYTHONHASHSEED="0", **extra)}
+def _with_env(tmp_path, **extra):
+    return {"env": pinned_env(tmp_path, **extra)}
 
 
 def _executable_alias(tmp_path):
@@ -2396,14 +2443,19 @@ VARIANTS = {
     "mode": lambda mp, tp: {"mode": "exec"},
     "repeat": lambda mp, tp: {"repeat": 2},
     "rows": lambda mp, tp: {"rows": [spec("a different command")]},
-    "env-name": lambda mp, tp: _with_env(GP_KEYED_VALUE="value-one", GP_NEW_NAME="x"),
-    "env-value": lambda mp, tp: _with_env(GP_KEYED_VALUE="value-two"),
+    "env-name": lambda mp, tp: _with_env(
+        tp, GP_KEYED_VALUE="value-one", GP_NEW_NAME="x"
+    ),
+    "env-value": lambda mp, tp: _with_env(tp, GP_KEYED_VALUE="value-two"),
     "salt": lambda mp, tp: {"salt": "salt-two"},
     "interpreter-version": lambda mp, tp: (
         mp.setattr(sys, "version", "9.9.9 distinct") or {}
     ),
     "interpreter-path": lambda mp, tp: (
         mp.setattr(sys, "executable", str(_executable_alias(tp))) or {}
+    ),
+    "genuine-interpreter": lambda mp, tp: (
+        mp.setattr(gp, "_python_version", lambda env: "Python 9.9.9 distinct") or {}
     ),
 }
 
@@ -2444,3 +2496,391 @@ def test_an_unreadable_tool_source_forces_a_rerun_instead_of_a_crash(
     monkeypatch.setattr(gp, "__file__", str(tmp_path / "gone" / "guard-parity.py"))
     second = keyed_stage(tmp_path, builds)  # its worker cannot start either
     assert second.reused == 0
+
+
+# ---------------------------------------------------------------------------------------------
+# the shutdown-flush wording is read from the interpreter a guard's shebang resolves
+# ---------------------------------------------------------------------------------------------
+#
+# The wording rows below drive a fake `python3` (a /bin/sh script earlier on PATH that ignores its
+# arguments) so the wording differs from the real one on ANY machine; a row that leaned on the
+# installed interpreter would pass or fail depending on which Python the machine happens to have.
+# The other rows (pure functions, the pinned-environment row, part 1 of the unbuffered row, and the
+# retarget and header rows, whose wrapper shims run the real interpreter) use no fake wording.
+
+STREAM_REPR_LINE = "<made-up stream repr for name='<stdout>'>"
+MADE_UP_HEADER = "Exception ignored at made-up flush of sys.stdout:"
+DETAIL_LINE = "OSError: [Errno 9] Bad file descriptor"
+FLUSH_GUARD = """
+    import json, os, sys
+    if "FAIL" in json.load(sys.stdin)["tool_input"]["command"]:
+        sys.stdout.write("lost")
+        os.close(1)
+"""
+STDOUT_REPLACED = (
+    "import os, sys; f = open(os.devnull, 'w'); sys.stdout = f; "
+    "f.write('lost'); os.close(f.fileno())"
+)
+UNBUFFERED = {"PYTHONUNBUFFERED": "1"}
+
+
+def fake_python3(
+    tmp_path,
+    lines,
+    rc=120,
+    name="fake-bin",
+    counter=None,
+    quiet_when_unbuffered=False,
+    hang=False,
+):
+    """A directory whose `python3` is a /bin/sh script, for PATH. Per call it appends a line to
+    `counter`, prints `lines` on stderr (`%b`, so a line may carry `\\0` for a NUL) and exits `rc`. `quiet_when_unbuffered` makes it print
+    nothing and exit 0 when PYTHONUNBUFFERED is non-empty (the real interpreter's stdout then
+    leaves nothing to fail at exit); `hang` makes it sleep instead."""
+    directory = tmp_path / name
+    directory.mkdir(exist_ok=True)
+    script = ["#!/bin/sh"]
+    if counter is not None:
+        script.append(f"echo x >> {shlex.quote(str(counter))}")
+    if hang:
+        script.append("exec sleep 15")
+    if quiet_when_unbuffered:
+        script.append('[ -n "$PYTHONUNBUFFERED" ] && exit 0')
+    script += [f"printf '%b\\n' {shlex.quote(line)} >&2" for line in lines]
+    script.append(f"exit {rc}")
+    fake = directory / "python3"
+    fake.write_text("\n".join(script) + "\n", encoding="utf-8")
+    fake.chmod(0o755)
+    return directory
+
+
+def path_with(directory):
+    return f"{directory}{os.pathsep}{os.environ['PATH']}"
+
+
+def live_stdout_repr(tmp_path):
+    """`repr(sys.stdout)` as a worker's own interpreter prints it under the pinned environment."""
+    done = subprocess.run(
+        [sys.executable, "-c", "import sys; print(repr(sys.stdout))"],
+        capture_output=True,
+        text=True,
+        env=pinned_env(tmp_path, HOME=str(tmp_path)),
+        check=True,
+    )
+    return done.stdout.strip()
+
+
+def test_the_flush_failure_wording_is_taken_from_the_genuine_interpreter(tmp_path):
+    """Fixture-reach evidence: against the old hard-coded header this reads the 3.13 text, on every
+    interpreter. The second fake embeds the reported repr in its header, so it also pins that the
+    repr token is filled from the LIVE stream and not frozen from the probe."""
+    build = fake_build(tmp_path, {GUARD_FILE: EXIT_SHAPES["stdout-closed"] + "\n"})
+    live = live_stdout_repr(tmp_path)
+    cases = [
+        (
+            "name-only",
+            [STREAM_REPR_LINE, MADE_UP_HEADER, DETAIL_LINE],
+            f"{MADE_UP_HEADER}\n{DETAIL_LINE}\n",
+        ),
+        (
+            "repr-embedded",
+            [
+                STREAM_REPR_LINE,
+                f"Exception ignored in: {STREAM_REPR_LINE}",
+                DETAIL_LINE,
+            ],
+            f"Exception ignored in: {live}\n{DETAIL_LINE}\n",
+        ),
+    ]
+    for name, lines, want in cases:
+        fake = fake_python3(tmp_path, lines, name=f"fake-{name}")
+        units, _ = run_worker(
+            tmp_path, build, [spec("ls")], env={"PATH": path_with(fake)}
+        )
+        reading = units[("ls", GUARD_FILE)][0]
+        assert (reading.rc, reading.text) == (120, want), name
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "nothing",
+        "no-stream-in-header",
+        "extra-traceback",
+        "no-python3",
+        "wrong-status",
+        "nul-in-header",
+        "empty-repr-line",
+    ],
+)
+def test_a_flush_wording_the_probe_cannot_recognise_stops_the_worker_loudly(
+    tmp_path, kind
+):
+    """The absent reading (`nothing`: empty stderr, rc 0) must FAIL, never match 'empty equals
+    empty'. `wrong-status`, `nul-in-header` and `empty-repr-line` carry an otherwise valid reading, so
+    each pins its own clause of the model. `found` is matched in the REPR form of the bytes (`\\n`, `\\x00` as
+    text), which only the refusal message's own `stderr={...!r}` can supply: the worker's uncaught
+    error prints a traceback of its own, so a plain `Traceback` would match for free. The worker
+    aborts before it opens its output, so no `done` line can exist."""
+    shapes = {
+        "nothing": ([], 0, None),
+        "no-stream-in-header": (
+            [STREAM_REPR_LINE, "Exception ignored at made-up flush:", DETAIL_LINE],
+            120,
+            "Exception ignored at made-up flush:",
+        ),
+        "extra-traceback": (
+            [
+                STREAM_REPR_LINE,
+                MADE_UP_HEADER,
+                "Traceback (most recent call last):",
+                DETAIL_LINE,
+            ],
+            120,
+            "flush of sys.stdout:\\nTraceback (most recent call last):\\n",
+        ),
+        "no-python3": (None, None, "rc=127"),
+        "wrong-status": ([STREAM_REPR_LINE, MADE_UP_HEADER, DETAIL_LINE], 1, "rc=1"),
+        "empty-repr-line": (
+            ["", MADE_UP_HEADER, DETAIL_LINE],
+            120,
+            "stderr=b'\\nException ignored",
+        ),
+        "nul-in-header": (
+            [STREAM_REPR_LINE, MADE_UP_HEADER + "\\0", DETAIL_LINE],
+            120,
+            "sys.stdout:\\x00",
+        ),
+    }
+    lines, rc, found = shapes[kind]
+    if lines is None:
+        empty = tmp_path / "empty-bin"
+        empty.mkdir()
+        path = str(empty)
+    else:
+        path = path_with(fake_python3(tmp_path, lines, rc=rc))
+    build = fake_build(tmp_path, {GUARD_FILE: "pass\n"})
+    done, out = worker_process(tmp_path, build, [spec("ls")], extra_env={"PATH": path})
+    assert done.returncode != 0
+    assert "unrecognised flush-failure wording" in done.stderr, done.stderr
+    if found:
+        assert found in done.stderr, done.stderr
+    assert not out.exists()
+
+
+def test_the_probe_spawns_once_per_worker_not_once_per_row(tmp_path):
+    """Fork mode only: exec mode would run the guards through the fake. The counter also proves
+    the probe reached the fake, the PATH-resolved interpreter, and not `sys.executable`."""
+    counter = tmp_path / "spawns"
+    fake = fake_python3(
+        tmp_path, [STREAM_REPR_LINE, MADE_UP_HEADER, DETAIL_LINE], counter=counter
+    )
+    build = fake_build(tmp_path, {GUARD_FILE: FLUSH_GUARD})
+    rows = [spec("FAIL one"), spec("ok"), spec("FAIL two")]
+    units, _ = run_worker(
+        tmp_path, build, rows, mode="fork", env={"PATH": path_with(fake)}
+    )
+    assert counter.read_text().splitlines() == ["x"]
+    failing = [units[(f"FAIL {w}", GUARD_FILE)][0] for w in ("one", "two")]
+    assert [r.text for r in failing] == [f"{MADE_UP_HEADER}\n{DETAIL_LINE}\n"] * 2
+    assert units[("ok", GUARD_FILE)][0].text == ""
+
+
+def test_a_preflight_probe_failure_is_a_refusal_not_a_crash(tmp_path):
+    """A worker's own abort reaches the operator only as 'N worker shards never finished'; the
+    parent's preflight turns the same refusal into the tool's `error:` line."""
+    fake = fake_python3(
+        tmp_path,
+        [STREAM_REPR_LINE, "Exception ignored at made-up flush:", DETAIL_LINE],
+    )
+    repo, old, _new = scope_repo(tmp_path, GUARD_OLD, GUARD_OLD)
+    done = cli(tmp_path, repo, old, old, env={"PATH": path_with(fake)})
+    line = done.stdout.rstrip("\n").splitlines()[-1]
+    assert done.returncode == 2 and line.startswith("RESULT: ERROR rc=2 "), done.stdout
+    assert "unrecognised flush-failure wording" in line and "made-up flush:" in line
+    assert "unexpected" not in line
+
+
+def test_a_fork_child_never_runs_the_guard_when_the_wording_was_never_probed(
+    tmp_path, monkeypatch
+):
+    """The check sits at the top of the child, so it fires on EVERY fork-mode unit, before any
+    guard code, and reads as status 70 with its own message, never as a guard verdict."""
+    monkeypatch.setattr(gp, "_FLUSH_TEMPLATE", None)
+    sentinel = tmp_path / "ran"
+    build = fake_build(
+        tmp_path, {GUARD_FILE: f"open({str(sentinel)!r}, 'w').close()\n"}
+    )
+    compiled = gp.compile_guard(build / "scripts" / GUARD_FILE)
+    neutral = tmp_path / "neutral"
+    neutral.mkdir()
+    reading = gp.run_fork(compiled, b"{}", neutral, [])
+    assert reading.rc == 70
+    assert "internal error" in reading.text and "never probed" in reading.text
+    assert not sentinel.exists()
+
+
+def test_the_pinned_environment_resolves_python3_to_the_interpreter_under_test(
+    tmp_path, monkeypatch
+):
+    """Under `python3 -m pytest` the ambient `python3` already matches the test interpreter, so
+    this supplies a DIFFERENT one first on the ambient PATH and requires the shim to beat it."""
+    ambient = fake_python3(tmp_path, [], rc=0, name="ambient-bin")
+    monkeypatch.setenv("PATH", path_with(ambient))
+    assert shutil.which("python3") == str(ambient / "python3")  # the decoy is in force
+    env = pinned_env(tmp_path)
+    found = shutil.which("python3", path=env["PATH"])
+    assert found == str(tmp_path / "pinned-bin" / "python3")
+    assert os.path.realpath(found) == os.path.realpath(sys.executable)
+
+
+def test_the_worker_runs_under_an_unbuffered_environment(tmp_path):
+    """PYTHONUNBUFFERED leaves nothing for the shutdown flush to fail on, so a stream the guard
+    did not build reads rc 0 with no header in BOTH modes; a stream the guard built itself can
+    still hold bytes, and there the probed header reaches a reading."""
+    for shape in ("allow", "stdout-closed", "stdout-closed-by-the-guard"):
+        build = fake_build(
+            tmp_path,
+            {GUARD_FILE: EXIT_SHAPES[shape] + "\n"},
+            name=f"unbuffered-{shape}",
+        )
+        forked, _ = run_worker(
+            tmp_path, build, [spec("ls")], mode="fork", env=UNBUFFERED
+        )
+        genuine_, _ = run_worker(
+            tmp_path, build, [spec("ls")], mode="exec", env=UNBUFFERED
+        )
+        assert forked == genuine_, shape
+        reading = forked[("ls", GUARD_FILE)][0]
+        assert (reading.rc, reading.text) == (0, ""), shape
+    fake = fake_python3(
+        tmp_path,
+        [STREAM_REPR_LINE, MADE_UP_HEADER, DETAIL_LINE],
+        name="honouring-bin",
+        quiet_when_unbuffered=True,
+    )
+    # fixture-reach control: without it a fake that ignores the variable passes for free
+    quiet = subprocess.run(
+        [str(fake / "python3")],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, **UNBUFFERED),
+        check=False,
+    )
+    loud = subprocess.run(
+        [str(fake / "python3")],
+        capture_output=True,
+        text=True,
+        env=pinned_env(tmp_path),
+        check=False,
+    )
+    assert (quiet.returncode, quiet.stderr) == (0, "")
+    assert loud.returncode == 120 and MADE_UP_HEADER in loud.stderr
+    build = fake_build(
+        tmp_path,
+        {
+            GUARD_FILE: EXIT_SHAPES["stdout-closed"] + "\n",
+            "replaced-guard.py": STDOUT_REPLACED + "\n",
+        },
+        name="honouring",
+    )
+    units, _ = run_worker(
+        tmp_path,
+        build,
+        [spec("ls")],
+        guards=(GUARD_FILE, "replaced-guard.py"),
+        mode="fork",
+        env={**UNBUFFERED, "PATH": path_with(fake)},
+    )
+    closed = units[("ls", GUARD_FILE)][0]
+    replaced = units[("ls", "replaced-guard.py")][0]
+    assert (closed.rc, closed.text) == (0, "")
+    assert (replaced.rc, replaced.text) == (120, f"{MADE_UP_HEADER}\n{DETAIL_LINE}\n")
+
+
+def test_the_flush_template_takes_the_live_stream_repr():
+    template = f"Exception ignored in: {gp._REPR_TOKEN} (sys.{gp._NAME_TOKEN})"
+    made_up = "<made-up live stream repr>"
+    rendered = gp.render_flush_header(template, "stdout", made_up)
+    assert rendered == f"Exception ignored in: {made_up} (sys.stdout)"
+    assert gp._REPR_TOKEN not in rendered and gp._NAME_TOKEN not in rendered
+
+
+def test_a_version_probe_that_hangs_is_bounded_and_keyed_as_timed_out(
+    tmp_path, monkeypatch
+):
+    fake = fake_python3(tmp_path, [], hang=True)
+    monkeypatch.setattr(gp, "TIMEOUT_S", 0.5)
+    started = time.monotonic()
+    text = gp._python_version({"PATH": path_with(fake)})
+    assert text == "timed out"
+    assert time.monotonic() - started < 10
+    assert "timed out" in gp.interpreter_note("3.14.8", text)
+
+
+def test_a_header_note_says_when_the_two_interpreters_differ():
+    note = gp.interpreter_note("3.13.1", "Python 3.14.8")
+    assert "interpreters differ" in note and "EXEC_MISMATCH" in note
+    assert "workers 3.13" in note and "genuine process 3.14" in note
+
+
+def test_a_header_note_is_empty_when_the_interpreters_agree():
+    assert gp.interpreter_note("3.14.8", "Python 3.14.2") == ""
+
+
+@pytest.mark.parametrize("text", ["unknown", "unavailable", "timed out"])
+def test_a_header_note_says_when_the_genuine_version_is_unreadable(text):
+    note = gp.interpreter_note("3.14.8", text)
+    assert "interpreters unverified" in note and f"({text})" in note
+
+
+def test_a_shard_is_run_again_when_port_select_retargets_python3_under_an_unchanged_path(
+    tmp_path,
+):
+    """`port select` moves the binary behind PATH's `python3` and leaves PATH's value alone, so
+    the env digests cannot see it. The converse (nothing moved) runs first, so the final
+    assertion cannot pass for a key that never matches."""
+    shim = tmp_path / "select-bin"
+    shim.mkdir()
+    real = shlex.quote(os.path.realpath(sys.executable))
+    wrappers = {}
+    for tag, text in (("a", "Python 8.8.1 a"), ("b", "Python 8.8.2 b")):
+        wrapper = tmp_path / f"wrapper-{tag}"
+        wrapper.write_text(
+            f'#!/bin/sh\nif [ "$1" = "--version" ]; then echo {shlex.quote(text)}; exit 0; fi\n'
+            f'exec {real} "$@"\n',
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        wrappers[tag] = wrapper
+    link = shim / "python3"
+    link.symlink_to(wrappers["a"])
+    env = pinned_env(tmp_path, GP_KEYED_VALUE="value-one", PATH=path_with(shim))
+    builds = keyed_build(tmp_path)
+    first = keyed_stage(tmp_path, builds, env=env)
+    assert first.reused == 0 and first.incomplete == []
+    again = keyed_stage(tmp_path, builds, env=env)
+    assert again.reused == again.total == 1
+    link.unlink()
+    link.symlink_to(wrappers["b"])
+    third = keyed_stage(tmp_path, builds, env=env)
+    assert third.incomplete == [] and third.reused == 0
+
+
+def test_the_report_header_says_when_the_genuine_python3_is_another_version(tmp_path):
+    """`interpreter_note` is only a function until a run prints it: a shim `python3` that reports
+    another version, and runs the real interpreter otherwise, must put the note in the report."""
+    shim = tmp_path / "version-bin"
+    shim.mkdir()
+    wrapper = shim / "python3"
+    wrapper.write_text(
+        '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "Python 8.8.1"; exit 0; fi\n'
+        f'exec {shlex.quote(os.path.realpath(sys.executable))} "$@"\n',
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    repo, old, _new = scope_repo(tmp_path, GUARD_OLD, GUARD_OLD)
+    done = cli(tmp_path, repo, old, old, env={"PATH": path_with(shim)})
+    assert "genuine-process audit Python 8.8.1" in done.stdout, done.stdout[-600:]
+    assert "interpreters differ: workers " in done.stdout
+    assert "genuine process 8.8; fork readings" in done.stdout
