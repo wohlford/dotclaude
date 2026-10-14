@@ -12,7 +12,7 @@ configuration honest**. Four kinds of artifact:
 |---|---|---|
 | **Skills** | `skills/<name>/SKILL.md` (+ bundled scripts) | Slash commands (`/commit`, `/recast`, …) |
 | **Agents** | `agents/*.md` | Subagent definitions: the reviewers `/vet` dispatches, and `prose-writer`, the Opus-pinned author of standalone docs |
-| **Hooks** | `scripts/*.sh` + `settings.json` | PreToolUse deny-gates and PostToolUse checks on every edit |
+| **Hooks** | `scripts/*.sh`, `scripts/*.py` + `settings.json` | PreToolUse deny-gates, PostToolUse checks on every edit, and a SessionStart advisory that warns when the `~/.claude` symlink farm has drifted |
 | **Standards** | `STYLE.md`, `CONTRIBUTING.md`, `templates.md`, `workflows.md` | The universal rules |
 
 ## The enforcement mesh
@@ -32,9 +32,9 @@ caught whether you're editing, reviewing, or committing:
  write
 ```
 
-- **Hooks** (`scripts/style-check.sh`, `shellcheck-check.sh`, `ruff-check.sh`, …) run on every
-  `Edit`/`Write` and **block** a non-conforming change immediately (exit 2). See
-  [`scripts/HOOKS.md`](scripts/HOOKS.md) for how they're built.
+- **Hooks**, the PostToolUse ones (`scripts/style-check.sh`, `shellcheck-check.sh`,
+  `ruff-check.sh`, …), run on every `Edit`/`Write` and **block** a non-conforming change immediately
+  (exit 2). See [`scripts/HOOKS.md`](scripts/HOOKS.md) for how they're built.
 - **Reviewer agents** (`agents/style-reviewer.md`, `skill-reviewer.md`, …) are dispatched **on demand**
   by [`/vet`](skills/vet/SKILL.md) for a deeper read than a hook can do at edit time.
 - **`/sync-docs`** keeps the auto-generated index regions (`<!-- sync:* -->` tables in README/CLAUDE)

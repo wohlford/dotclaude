@@ -1,9 +1,9 @@
 # Authoring hooks
 
 The scripts in this directory are Claude Code hooks — most are **PostToolUse** (run after every
-`Edit`/`Write`, waving the change through or blocking it), plus several **PreToolUse** deny-gates (see
-below). They share one protocol; a new hook should follow it. The existing scripts are the worked
-examples.
+`Edit`/`Write`, waving the change through or blocking it), plus several **PreToolUse** deny-gates and
+one **SessionStart** advisory (see below). They share one protocol; a new hook should follow it. The
+existing scripts are the worked examples.
 
 ## The contract
 
@@ -159,6 +159,63 @@ alike, which is correct, since either way the file is not safe to edit; and a ca
 between this check and the write it allowed still clobbers that write (an unavoidable
 check-then-act window).
 
+## SessionStart: advisory hooks
+
+A **SessionStart** hook runs when a session starts and **cannot block** it, so the exit-code table
+above does not apply. A real invocation exits `0` on every path. Exit `2` is kept only for the refusal
+every hook here shares: arguments present, or stdin attached to a terminal (see
+[Running one by hand](#running-one-by-hand)).
+
+**The payload.** Stdin carries a JSON object with the keys `session_id`, `transcript_path`, `cwd`,
+`hook_event_name` (the value `SessionStart`) and `source`. `source` takes exactly five values:
+`startup`, `resume`, `clear`, `compact` and `fork`. The registration's `matcher` filters on `source`.
+Measured: a matcher of `startup` did not fire on a resumed session, and `startup|resume` fired on
+both. The farm hook registers `startup|resume` only: `clear` and `compact` are in-session events, and
+a fork should not pay for a check that took 2.7 s on the production clone.
+
+**How it speaks.** To warn the operator, print one line to stdout, a JSON object
+`{"systemMessage": "<text>"}`, and exit `0`. The interactive TUI renders it as
+`SessionStart:<source> says: <text>`, so the text must not repeat "SessionStart". The model is not
+meant to see it: in a headless run the model quoted a SessionStart hook's plain stdout but not its
+`systemMessage` text, and the harness's bundled documentation (read, not run) describes
+`systemMessage` as a warning shown to the user. Plain stdout goes into the model's context instead,
+which is why advisory text uses `systemMessage`. Measured: stderr on exit `0` does not appear in the
+TUI, and the same documentation says it is only debug-logged. A nonzero exit other than `2` shows the
+stderr line as a non-blocking hook error (measured for exit `1`: `SessionStart:startup hook error`,
+then `Failed with non-blocking status code: <the stderr line>`).
+
+**What it costs.** SessionStart hooks run in parallel with one another, so a slow one should add
+little to startup. Measured headless with `claude -p` (n=2, not measured interactively): with a hook
+that slept 6 s, startup took 15.0 s and 15.5 s against baselines of 14.3 s and 13.3 s that already
+carried slower sibling hooks, an overhead of 0.7 s and 2.2 s rather than the full 6 s.
+
+**Bound it below its timeout.** Give the registration an explicit `timeout`: an absent key means the
+harness default, which `scripts/lib/settings_hooks.py` records as 600 s
+(`HARNESS_DEFAULT_TIMEOUT_SECS`). Then bound the hook's own work strictly below that, because the
+harness kills a hook that outlives its timeout without telling Claude (see
+[Bounding a long test-runner hook](#bounding-a-long-test-runner-hook)). The farm hook registers
+15 s. It runs its child in the child's own process group with an 8 s deadline; on overrun it sends
+TERM to the group, waits 1 s, sends KILL and waits 1 s more. Its suite asserts that the deadline,
+both waits and a 2 s margin fit inside the registered timeout.
+
+**Never read as clean when you could not check.** A silent advisory looks exactly like a clean state,
+so "could not run", "did not finish" and "printed no verdict" are each reported, and only a verified
+clean state is silent. Write output with `os.write` inside `try`/`except OSError`, not with `print`:
+`print` leaves bytes for the interpreter's shutdown flush, and on a closed or broken pipe that flush
+fails and turns exit `0` into `120`.
+
+**Testing one.** `scripts/run-hooks.py` cannot drive a SessionStart hook: it builds tool-call payloads
+for an edited file. Run the hook as a real process with a SessionStart payload on stdin, against a
+fixture and a throwaway `HOME`, never the real one. `scripts/tests/test_farm_drift_check.py` does
+this: it builds a farm in a temporary tree, with `HOME/.claude` a symlink to a separate target
+directory. `scripts/tests/mutate_farm_drift_check.py` is its mutation campaign.
+
+Worked example: `scripts/farm-drift-check.py` finds the production clone from its own physical path,
+runs that clone's `install.sh --check`, and warns when the `~/.claude` symlink farm has drifted. It
+runs nothing, and stays silent, unless the payload is a SessionStart one, `HOME` is set, that clone
+has an `install.sh`, and `~/.claude/.installed-from` (the marker a successful install writes) is a
+regular file.
+
 ## Regression-guard pairing
 
 A hook with real logic worth protecting gets a **companion hook** that runs its test suite when that
@@ -202,10 +259,13 @@ copy it. `scripts/tests/test_hook_budget.py` pins the `HOOK_BUDGET_SECS` of ever
 
 ## Wiring
 
-Register the hook in the `hooks` → `PostToolUse` (or `PreToolUse`) array in
-[`../settings.json`](../settings.json) with the appropriate tool matcher (`Edit|Write` for the
-post-edit checks; `Read|Edit|Write|MultiEdit` for the secrets deny-gate) and the
-`~/.claude/scripts/<name>.sh` command path. After wiring, restart Claude to load it.
+Register the hook in the `hooks` → `PostToolUse`, `PreToolUse` or `SessionStart` array in
+[`../settings.json`](../settings.json), with the `~/.claude/scripts/<name>` command path and a
+matcher. For the tool events the matcher names tools (`Edit|Write` for the post-edit checks;
+`Read|Edit|Write|MultiEdit` for the secrets deny-gate); for `SessionStart` it filters on the
+payload's `source` (`startup|resume` for the farm hook; see
+[SessionStart: advisory hooks](#sessionstart-advisory-hooks)). After wiring, restart Claude to load
+it.
 
 **The exec bit is load-bearing.** settings.json invokes hooks by bare path, so a script
 committed without `chmod +x` fails with "permission denied" on every real event — and

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.130.2 — 2026-10-13
+- docs(hooks): document the SessionStart farm drift hook
+
 ## v0.130.1 — 2026-10-13
 - test(farm-drift): add the mutation campaign for the drift hook
 
