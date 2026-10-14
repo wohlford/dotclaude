@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.131.4 — 2026-10-14
+- fix(feature): carry a NOT RUN vet reviewer into the finish report
+
 ## v0.131.3 — 2026-10-14
 - fix(vet): report a failed reviewer dispatch as a NOT RUN verdict
 

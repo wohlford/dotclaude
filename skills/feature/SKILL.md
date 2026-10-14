@@ -697,8 +697,14 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
    finding against the artifact and `STYLE.md`'s documented carve-outs before applying it** — the
    reviewers are advisory and do produce false positives. A finding you verified as a false positive
    and said so does **not** block "clean" if a re-run restates it — record the dismissal and move on.
-   If `/vet` reports a reviewer as **failed or unavailable** instead of a verdict, say so and continue
-   — never loop waiting on a verdict that cannot arrive. If the diff touches neither, skip and say so.
+   If `/vet` reports a reviewer as **NOT RUN** (a failed or unavailable dispatch) instead of a
+   verdict, say so and continue, naming that reviewer, the file, and its NOT RUN line as `/vet`
+   reported it (whole and verbatim) to the operator — never loop waiting on a verdict that cannot
+   arrive. **NOT RUN is never "clean":** that review did not happen, "re-run until clean" does not
+   count it as clean, and the closing message at the finish must list it (the integration rule
+   below). A reviewer–file pair is cleared only by a later run in which that same reviewer returned
+   a verdict on that same file; a re-run over other files clears nothing. If the diff touches
+   neither, skip and say so.
 4. **Finish.** **Non-adopted repos** (today's behavior, unchanged): finish with
    `superpowers:finishing-a-development-branch`: verify the project's test suite
    passes (if the repo has none, say so and rely on the per-task reviews), then
@@ -902,10 +908,17 @@ step — e.g.
 - **A change that *touches* a `SKILL.md` or an `agents/*.md` gets `/vet` before the branch
   integrates** — editing an existing one counts, not just authoring a new one. The generic reviewers
   judge code as code; only `/vet`'s reviewers know the canonical skill/agent shape. Self-limiting — the
-  condition never fires in a repo that has neither.
+  condition never fires in a repo that has neither. **A reviewer `/vet` reported as NOT RUN is not a
+  clean vet, and does not block integration** (`/vet` is non-blocking): the end-of-run report (your
+  closing message at the finish) lists each reviewer–file pair whose latest verdict was NOT RUN, by
+  reviewer and file, with its NOT RUN line as `/vet` reported it (whole and verbatim), and never
+  calls that vet clean; a pair is no longer listed only when a later run returned a verdict from
+  that same reviewer on that same file.
 - **A security-flagged change routes to the full lane and is scrutinised THERE** — in its spec, its
   spike, and the diverse-model reviews of its spec and its plan. There is no separate security gate at the finish;
-  `/audit` and `/vet` are the only gates the branch clears before it integrates.
+  `/audit` and `/vet` are the only gates the branch clears before it integrates; a `/vet` reviewer
+  that was NOT RUN does not stop either gate from clearing, and is carried to the closing message
+  (the `/vet` bullet above).
 - Scope the spike to one assumption; bias borderline triage to the full lane.
 - Budget, per artifact version (a loop-back counts separately, and a run takes at most two): the diverse-model passes — on the full lane
   **two**, Opus on the spec and Opus on the plan, each with at most one fold check and one arbitration; on the fast
