@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.131.1 — 2026-10-14
+- docs(claude-md): record the Python 3.14 interpreter move
+
 ## v0.131.0 — 2026-10-14
 - feat(debrief): record model routing and route CLAUDE.md prose
 

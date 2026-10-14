@@ -1150,7 +1150,7 @@ left legal.
 
 #### Python (uv)
 
-- **Version**: Python 3.13 (MacPorts)
+- **Version**: Python 3.14 (MacPorts; `port select` moved `python3` from 3.13 in 2026-10, so re-check with `python3 --version` rather than assuming)
 - Create venv: `uv venv` — Activate: `source .venv/bin/activate`
 - Install: `uv pip install <package>` (NOT standard `pip`)
 - Sync: `uv pip sync requirements.txt`
