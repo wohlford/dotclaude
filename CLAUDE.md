@@ -577,6 +577,20 @@ left legal.
   hid tracked edits even with `--ignore-submodules=none` passed, since that flag does not reach a
   NESTED submodule. **Pass explicit flags for every setting the subject can hold** — and each fix
   exposed the next layer: a lossy `textconv` driver still hides edits after all of those.
+- **A check that resolves a tool from the AMBIENT PATH grades whatever the machine last selected,
+  and a package manager moves that between two runs of an UNCHANGED tree.** Not a flaky oracle or
+  a subject difference: the subject's bytes are identical, each run is reproducible, and the answer
+  changed on a date. Measured: a `port select` moved the PATH `python3` from 3.13 to 3.14, and a
+  guard-replay tool hard-coded to 3.13's shutdown-flush wording, `Exception ignored on flushing
+  sys.stdout:` (3.14 prints `while flushing`; 3.9, 3.10 and 3.12 print `Exception ignored in:
+  <repr>`), turned two suite rows red on a pristine `dev` tip; the full suite then refused the
+  finish of an unrelated branch. A green run before the move proved only the earlier interpreter.
+  **Probe the genuine producer at run time and validate its reading against an allowlist** (exit
+  status, line count, the exact detail line), and **pin the interpreter the suite itself runs
+  under** with a shim first on PATH, reporting which one answered. Its own failure mode: a probe
+  that accepts any wording is a rubber stamp, so each allowlist clause needs a row whose reading is
+  valid except for that one clause; and a pinned suite cannot see the PATH `python3` the guards
+  will really use unless the tool probes that one too.
 
 #### Right verdict, wrong population
 - **A check that ENUMERATES at a coarser unit than the property it asserts passes on the first

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.130.3 — 2026-10-14
+- docs(claude-md): name the ambient PATH tool as a moving parameter
+
 ## v0.130.2 — 2026-10-13
 - docs(hooks): document the SessionStart farm drift hook
 
