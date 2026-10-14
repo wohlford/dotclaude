@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.131.3 — 2026-10-14
+- fix(vet): report a failed reviewer dispatch as a NOT RUN verdict
+
 ## v0.131.2 — 2026-10-14
 - docs(claude-md): index the hazard groups and bullet the tool list
 

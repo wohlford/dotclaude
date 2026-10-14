@@ -59,11 +59,24 @@ to a whole-repo sweep.
 3. **Dispatch** the chosen reviewer(s) with the Agent tool, passing the absolute path(s). When a
    file draws more than one reviewer (a `SKILL.md`), or several files are given, launch them **in
    parallel** — one message, multiple Agent calls. If a reviewer dispatch fails or returns nothing,
-   report that reviewer as failed/unavailable for that file rather than silently dropping it.
-4. **Report** the findings grouped by file and reviewer, with each reviewer's verdict. Order
-   most-severe first — files with any reviewer FAIL before files where every reviewer passes; within
-   a file, most-severe first on each reviewer's own scale (error/major before warning/minor;
-   findings without a severity sort last). Do not edit anything; the caller decides what to act on.
+   report that reviewer as **NOT RUN** for that file (step 4 gives the verdict line) rather than
+   silently dropping it.
+4. **Report.** Open with one line,
+   `reviewers dispatched N, returned M` (N = the reviewers owed under the step 2 table, M = those
+   that returned a verdict). Then give the findings grouped by file and reviewer, with each
+   reviewer's verdict. **Every reviewer owed for a file gets a verdict line.** A reply that reviews
+   the file — a status on it, or findings about it — is a verdict even when its format drifts from
+   the agent file's (note the drift; never reclassify it). A reply that reviews nothing — a tool
+   error, a permission denial, a refusal or stated inability to read or review, an empty reply — gets
+   `NOT RUN (dispatch failed: <the whole returned text, verbatim>)`, or
+   `NOT RUN (dispatch failed: no output)` when the reply is empty. The text is the WHOLE returned
+   text, every character from its first to its last — a trailing parenthetical (error type, HTTP
+   status, request id, model name) included — never cut, summarised, reflowed or paraphrased, and
+   never a footnote; when that text itself ends in `)`, the line ends `))`, the second closing the
+   verdict line. A NOT RUN is not a pass. Order most-severe first — files with any reviewer FAIL
+   or any NOT RUN before files where every reviewer passes; within a file, most-severe first on each
+   reviewer's own scale (error/major before warning/minor; findings without a severity sort last).
+   Do not edit anything; the caller decides what to act on.
 
 ### Repo-wide mode (`--all`)
 
@@ -98,17 +111,27 @@ Vet every shipping artifact in the repo, batched by category, in one pass:
    category as a background workflow via the **Workflow tool**, which caps concurrency automatically —
    or, if the Workflow tool isn't available, fall back to batched direct parallel Agent-tool
    dispatches, a bounded number at a time. Invoking `/vet --all` is itself the opt-in for this
-   multi-agent fan-out.
+   multi-agent fan-out. **A workflow-orchestrated dispatch must hand each reviewer's result back to
+   you as its verdict or as `NOT RUN (dispatch failed: <the whole returned text, verbatim>)`**; a workflow that
+   returns only a count has dropped what Process step 4 requires.
 4. **Dispatch** the matching reviewer(s) per artifact (the mapping in Process step 2), passing the
    **absolute** paths this mode's step 1 normalized — this is the mode with the most dispatches by
    far, so a stray relative path here would do the most damage.
-5. **Close with a consolidated summary** across all categories — grouped by file, most-severe first,
-   non-blocking as always. (Per-category reports stream as they finish; this is the final roll-up.)
+5. **Close with a consolidated summary** across all categories — opening with an overall
+   `reviewers dispatched N, returned M`, then grouped by file, most-severe first, with files that
+   have any reviewer FAIL or any NOT RUN (carrying its whole returned text, as step 4 defines it) sorting with the FAILs;
+   non-blocking as always. (Per-category reports stream as they finish, each carrying its own
+   NOT RUN verdicts; this is the final roll-up.)
 
 ### Rules
 
 - **Read-only** — never modify the reviewed artifact; `/vet` only dispatches reviewers and reports.
 - **Non-blocking** — surface findings; do not gate, refuse, or auto-fix based on them.
+- **A failed reviewer is a verdict, never a gap** — a reply that reviews nothing (a tool error, a
+  denial, a refusal or stated inability to review, an empty reply) is reported as
+  `NOT RUN (dispatch failed: <the whole returned text, verbatim>)`, counts in the
+  `reviewers dispatched N, returned M` line, and is never read as a pass; a reply that reviews the
+  file is a verdict even when its format drifts.
 - Dispatch matching reviewers **in parallel** (a `SKILL.md` gets structure + content at once).
 - Choose reviewers by **path type**; on an ambiguous path, ask rather than guess.
 - Best run on **authored** content — a scaffold stub will mostly flag placeholders.
