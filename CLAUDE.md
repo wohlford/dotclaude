@@ -804,6 +804,19 @@ from `scripts/claude-md-structure.py`, which prints every group heading:
   different halves of the system: the defect was a READER's cost and the repair a WRITER's change,
   and altering the reader delivered the same benefit at none of the risk. **Ask which half the
   stated defect is in, and whether the prescribed repair is in that same half.**
+- **A queued DEFECT goes stale too when its measurement names a model ALIAS — the alias moves.**
+  Not the prescribed-fix case: the re-measure ran and refuted the premise itself. Measured: a HIGH
+  backlog entry said two reviewers pinned to the `haiku` alias die with HTTP 400 "Prompt is too
+  long" under a large inherited context, marked its exposure here inferred ("re-measure here
+  first"), and led its two remedies with pinning `sonnet`. A fixture holding that context
+  (about 300k tokens) ran both haiku reviewers to a verdict. Every recorded failure had named
+  `claude-haiku-4-5-20251001`, at about 229k tokens against a limit of 200000; the alias now
+  resolves to `claude-haiku-5-5`, which reports a 1M-token window, so that remedy would have
+  changed two pins to defend against a window nothing behind the alias has. **Read the id the API
+  actually received — the error carries it as `model sent to the API: <id>` — before building on
+  a recorded figure about an alias.** Its own failure mode: a refuted premise closes the remedy,
+  never the entry — the defect underneath, a failed reviewer dispatch dropped silently from the
+  report, survived the refutation and needed its own fix.
 
 #### The repair you would reach for first makes it worse
 
