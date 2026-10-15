@@ -663,6 +663,19 @@ from `scripts/claude-md-structure.py`, which prints every group heading:
   level DOWN, because a documented key *inside the file just resolved* relocates the per-domain
   configs elsewhere again. **Resolve the subject the way the tool resolves it — including keys the
   tool reads out of the file you resolved** — and make "found nothing" name WHERE it looked.
+- **A test whose input is a GITIGNORED directory returns a verdict that depends on whatever the
+  operator has lying around, so adding a working file of your own changes the suite's verdict.**
+  Not the committed-population hazard above: this checker reads the working tree, which holds files
+  no commit contains. Measured: `test_the_corpus_extraction_holds_its_declared_floor` sums the
+  unpaired checks over every `plans/*.md` on disk and asserts exactly 10. `plans/` is gitignored,
+  and a new plan with two `Expected:` rows that had no command before them took the count to 12,
+  so the one full-suite run gating the integration failed 1 test of 3,931 on a tree whose two
+  commits had not changed. The run's subject stamp read `unchanged since launch` throughout,
+  because a stamp over tracked files cannot see ignored ones. **Before any re-run, count the input
+  yourself with the instrument's own extractor, per file, and fix the input** — raising the
+  expected figure would have blessed the new rows and made every later plan's rows free. Its own
+  failure mode: the corpus is per-operator, so the same suite passes on a fresh clone, where the
+  directory is absent and the test skips.
 
 #### Your matcher matched text you did not mean
 
@@ -706,6 +719,16 @@ from `scripts/claude-md-structure.py`, which prints every group heading:
   against the source before trusting any search over it** — not by size or line count, which is what
   a genuinely sparse document also produces, but by confirming one specific passage you can see with
   your own eyes survived the conversion.
+- **A path that begins with `-` is read by the searching tool as options, so a loop over such
+  paths reports "none found" about files it never read.** Not wrapping, indirection or a
+  converter: the text was there, and the tool was never pointed at it. Measured: the per-project
+  directories under `~/.claude/projects/` are named `-Users-…`, and `grep -qi 'needle' "$f"` over
+  each exited 2 and printed nothing. A loop testing only the status counted that as no match, so
+  it reported 0 projects opted in where 2 are; the same files matched at once with a `./` prefix
+  and with `--` before the path. **Prefix such paths with `./` or put `--` before them, and run
+  any discovery that returns nothing once against a subject you know holds the needle.** Its own
+  failure mode: `grep` honours `--` but not every tool a pipeline reaches does, so the `./` form
+  is the portable one.
 
 #### The exit status you read is not the verdict
 
