@@ -149,8 +149,10 @@ delegate's closing pause** documents. Step 5 dispatches `/feature --plan-only` a
 
    Choose a disposition for each **without pausing** — default to **keep**, and depart from it only
    on positive evidence from *this* session (drop when something demonstrably overtook the entry,
-   promote when the session made it the clear next job). State each entry's disposition and why in
-   the step-7 hand-off. Each disposition writes something different back to `BACKLOG.md`:
+   promote when the session made it the clear next job). An entry headed `index full: pointer
+   pending for ...` is always **keep**, whatever the session did: only the drain's `close` in
+   **Editing MEMORY.md** retires it. State each entry's disposition and why in the step-7
+   hand-off. Each disposition writes something different back to `BACKLOG.md`:
    - **keep** — still wanted, just not now. Leave the entry untouched.
    - **drop** — overtaken by events. Tick it to `- [x]`, append what overtook it, and move it
      under `## Closed`.
@@ -247,10 +249,12 @@ delegate's closing pause** documents. Step 5 dispatches `/feature --plan-only` a
 3. **Memory / file save check.** Review the session for durable facts worth persisting —
    user traits, feedback on how to work, project context, or reference pointers — plus
    anything that belongs in a repo file. **Auto-write** the memory entries (each with its
-   one-line `MEMORY.md` pointer) and report what was saved; before creating a memory file,
+   one-line `MEMORY.md` pointer, written and checked per **Editing MEMORY.md**) and report what
+   was saved; before creating a memory file,
    check for an existing one that already covers the fact and update it instead. Memory lives
    in private storage outside the repo, so no carve-out applies; but for any write to a
-   *tracked repo file*, apply step 1's sensitivity carve-out.
+   *tracked repo file*, apply step 1's sensitivity carve-out. Whether or not anything was saved,
+   apply the index check in **Editing MEMORY.md** before leaving this step and quote its result.
 
 4. **Automation recommendations.** Invoke
    `claude-code-setup:claude-automation-recommender`. The recommender groups its output by
@@ -338,8 +342,9 @@ delegate's closing pause** documents. Step 5 dispatches `/feature --plan-only` a
         name its path as a convenience but never let the entry be a bare pointer to it.
       - **The index entry**, appended under `## Open` in `BACKLOG.md` in that same directory.
         Create the file if absent — same frontmatter shape as any memory file, plus its
-        `MEMORY.md` pointer — but note it is an *index*, one line per deferral, not a one-fact
-        memory. Each line is what step 0 reads back:
+        `MEMORY.md` pointer (item 1 of **Editing MEMORY.md**, then re-run its check and quote
+        the result in the step-5 report) — but note it is an *index*, one line per deferral,
+        not a one-fact memory. Each line is what step 0 reads back:
 
         ```text
         - [ ] <YYYY-MM-DD> — <one line: what it is, and why it's worth doing> — [[<memory-slug>]]
@@ -453,6 +458,92 @@ if the result would strand an entry on the wrong side of `## Closed`.
 
 Reach for the Python API (`from backlog import Backlog`) only when several edits must land as one
 transaction; `save()` is the sole writer either way, so the checks cannot be skipped.
+
+### Editing MEMORY.md
+
+**Write `MEMORY.md` with the Edit or Write tool, never from the shell, and check it on every debrief where
+it applies.** The `memory-index-check.py` cap hook fires only on Edit and Write tool calls, so a Python
+heredoc or `sed -i` run through Bash changes the index with no check at all (the 2026-10-14 debrief took it
+from 20,000 B to 20,464 B that way, past the hook's cap, and nobody saw it). The rules:
+
+1. **Add a pointer with one Edit**, as a single bullet at the top of the section it belongs to. A new pointer
+   is one line with an advisory target of 140 bytes, with at most one bold when-to-open trigger and no
+   stored-status label (`PUBLISHED`, `LANDED`, `PROMOTED`): status lives in the topic file and goes stale
+   there independently. Nothing enforces the 140 bytes.
+2. **Decide whether the index check applies.** This skill is global, and many projects have no index while
+   most that do never opted in to the cap. The check applies only when the index exists AND states the
+   opt-in sentence the hook keys on (`detail lives in the topic file`, matched case-insensitively):
+
+   ```bash
+   M=<the session memory directory>
+   [ -f "$M/MEMORY.md" ] && grep -qi 'detail lives in the topic file' "$M/MEMORY.md" && echo applies || echo not-applicable
+   ```
+
+   On `not-applicable`, report `index check not applicable (no index, or not opted in)` in the step-3 report.
+   That is a clean outcome, and items 3 to 6 are skipped.
+3. **When it applies, run the hook set over the index in step 3 of EVERY debrief,** whether or not this run
+   wrote memory, so a write that bypassed the hook is caught at the latest by the next debrief. A pointer
+   written after step 3 (step 5's deferral file) is written as item 1 says, and the same two commands are run
+   again right after that write, with their result quoted in the step-5 report; if that write puts the index
+   at 20,000 B or more, item 5 applies to it, because it is the pointer this run added:
+
+   ```bash
+   M=<the session memory directory>
+   ~/.claude/scripts/run-hooks.py "$M/MEMORY.md" | grep -E 'SKIPPED|RESULT:'
+   wc -c "$M/MEMORY.md"
+   ```
+
+   Quote both lines and the byte count in the step-3 report. The clean result is `RESULT: PASS` with
+   `filtered=0` and exactly one SKIPPED row, the exec-bit-guard suite (the tool never runs it). Anything else
+   is a failed check: a `FAIL` (a hook BLOCK, or a died, killed or noise hook), an `ERROR`, a `filtered` above
+   0, or any other SKIPPED row. A failed check does not stop the debrief (a plain `/debrief` never pauses):
+   name it in the hand-off, apply item 5 if the cap is the cause (the byte count is 20,000 or more),
+   record step 3 anyway, and carry the failure in the step-3 report.
+4. **List the held pointers with one command, used by items 5 and 6.** A held pointer is an open backlog
+   entry headed `index full: pointer pending for <topic file>` whose first body line is the pointer line.
+   Entries are newest first:
+
+   ```bash
+   M=<the session memory directory>
+   held=$([ -f "$M/BACKLOG.md" ] && awk '/^## Closed/{exit} /^- \[ \] .*index full: pointer pending/{print; getline; print}' "$M/BACKLOG.md")
+   if [ -n "$held" ]; then printf '%s\n' "$held"; else echo none; fi
+   ```
+
+   The output is each head line followed by its pointer line, or `none` (also when `BACKLOG.md` is missing).
+   Step 0 triages open backlog entries: a held-pointer entry is always `keep` there, and only item 6's
+   `close` retires it.
+5. **If the index is at 20,000 B or more, do not trim older lines unattended**: a trim made under pressure is
+   how a when-to-open clause gets lost. If this run added no pointer (an earlier writer pushed the index
+   over), there is nothing of yours to shorten or file: trim nothing, file nothing, report the over-cap size
+   in the hand-off and the step-3 report, and carry on. Otherwise first shorten your own new pointer. If
+   the index is still over, hold the pointer, in this order. Check the item 4 listing for a held entry for
+   the same topic file and do not file a second one (`add` refuses an identical head, and a differently
+   dated one would make the drain's `close` needle match two entries and refuse). File the held entry
+   FIRST with `backlog.py add` (see **Editing BACKLOG.md**), its first body line the pointer line itself,
+   verbatim, so it can be written later:
+
+   ```text
+   - [ ] <today's date> — **MEDIUM — index full: pointer pending for <topic file>**
+     <the pointer line, verbatim, starting with "- [">
+   ```
+
+   Only after `add` succeeded, remove that pointer from the index and keep its topic file. If `add` fails,
+   including when `BACKLOG.md` does not exist, keep the pointer in place and report the over-cap state as
+   unresolved in the hand-off. Say so in the hand-off.
+6. **Report, and drain held pointers.** In step 3 report the index size in bytes, the headroom (19,999 minus
+   that size) and EVERY held pointer still outstanding (the item 4 listing), not only the one this run
+   added. A held pointer is a topic file no session can find through the index, so it stays visible until
+   the index has room. The oldest held pointer is the last one listed. When the headroom covers it (its
+   length in bytes plus one), write it with one Edit as in item 1 (drop the two-space indent the backlog
+   entry gave the line), run item 3's check, and then close its entry:
+
+   ```bash
+   ~/.claude/skills/debrief/backlog.py --path "$M/BACKLOG.md" close 'index full: pointer pending for <topic file>' <<'EOF'
+     Written to MEMORY.md on <today's date>.
+   EOF
+   ```
+
+   Drain one pointer at a time, oldest first, and stop at the first that does not fit.
 
 ### The step ledger
 
@@ -595,6 +686,7 @@ step 0. See **The step ledger**. Nothing else can.
   hand-written script, never Edit/Write. The file is untracked, so a corrupting edit has no
   history to recover from; the helper's postconditions are what stand in for that.
 - In step 3, follow the memory protocol: one fact per file with frontmatter and a
-  `MEMORY.md` pointer line; update an existing memory file rather than duplicating it.
+  `MEMORY.md` pointer line (written and checked per **Editing MEMORY.md**); update an existing
+  memory file rather than duplicating it.
 - In step 5, `/feature` owns its own artifact convention (spec/plan under `specs/`/`plans/`) and
   its own commit discipline; the debrief does not restate them.
