@@ -25,7 +25,11 @@ is gone and this number owes a re-measure — that sentence is advisory; nothing
 
 Scope is a tail-anchored path match, not a basename test: this is a global always-on hook, and a bare
 basename match would scold unrelated repos whose MEMORY.md never adopted this convention. It
-therefore does NOT cover a memory index kept anywhere else; none exists today.
+therefore does NOT cover a memory index kept anywhere else; none exists today. Two file NAMES are
+covered, each only at `projects/*/memory/<name>`: `MEMORY.md` (the always-loaded index) and
+`MEMORY-SHIPPED.md` (the on-demand second tier a project may keep beside it). The cheap guard is a
+suffix test, so the RESOLVED basename must then be an exact key of `CAPS`: `X-MEMORY.md` and
+`OLD-MEMORY-SHIPPED.md` pass the suffix test and are declined with exit 0 and no output.
 
 Scope is also content-gated, not path-anchored alone: the path predicate above matches every
 project index at that tail, most of which never adopted the cap calibrated here. Requiring the
@@ -40,14 +44,14 @@ on propagation. State plainly what this stops matching: any index that has not d
 including one whose entries — or whose total size — are genuinely over-long. That is intended — an
 undeclared file has not opted in.
 
-Whole-file aggregate cap (`AGG_MAX_BYTES`): tracks the READING HARNESS's own limit, which it
-reports as "24.4KB" — a different number from the per-entry cap above, and a different failure
-mode. 25000 / 1024 = 24.41, which is ambiguous between 25,000 and 24,985 bytes as the harness's
-true byte cutoff, so this deliberately does NOT try to mirror that report exactly. Instead pick a
-round number with headroom and let the asymmetry decide which way to round: a cap set too LOW
-costs a false alarm on a file the operator can simply shorten; a cap set too HIGH costs SILENT,
-UNDETECTABLE loss — entries past the harness's own cut are dropped with no signal at all, which is
-the exact defect this check exists to catch. So err low.
+Whole-file aggregate cap (`AGG_MAX_BYTES`): sits below the READING HARNESS's own cut, a different
+number from the per-entry cap above and a different failure mode. The client cuts the index at 25,000
+UTF-16 units (or 200 lines), which was observed rather than inferred: a 24,001 B index loaded in full
+and a 26,029 B one was truncated with a visible warning. So this deliberately does NOT try to mirror
+that cut. Instead pick a round number with headroom and let the asymmetry decide which way to round: a
+cap set too LOW costs a false alarm on a file the operator can simply shorten; a cap set too HIGH costs
+SILENT, UNDETECTABLE loss — entries past the harness's own cut are dropped with no signal at all, which
+is the exact defect this check exists to catch. So err low.
 
 The aggregate check is measured over RAW FILE BYTES (`len(content)`), never the sum of
 `entry_blocks()` sizes — an implementation that sums entry blocks under-counts by whatever
@@ -60,6 +64,20 @@ strict `>` above. Two reasons: the err-low asymmetry favours catching the bounda
 than waiting one byte past it, and a `>` convention here would make an exactly-at-threshold file
 pass with no aggregate logic at all, which is not what "err low" means. Do not "fix" this to match
 the per-entry check's `>`; the mismatch between the two is intentional, not drift.
+
+Line check (`LINE_MAX`, `MEMORY.md` only): the reading harness cuts the file at 200 lines OR 25,000
+UTF-16 units, whichever comes first, and the byte cap above does not see lines. The check blocks at
+`content.count(b"\\n") >= LINE_MAX`, so a `wc -l` of LINE_MAX trips and one less passes, under the same
+err-low rule as the byte cap (`AGG_MAX_BYTES`). A file of short lines can reach the client's 200 lines
+far below that byte cap.
+
+Second tier (`SHIPPED_MAX_BYTES`, `MEMORY-SHIPPED.md` only): a project that keeps shipped-work
+records behind one pointer gets the per-entry cap and the opt-in gate on that file too, and its own
+aggregate cap. The tier is read in full each time it is opened rather than loaded every session, so
+its cost is per OPEN and its cap is higher; it has no line check. Holding a pointer does not apply
+to it, and its breach message says so. Until a `MEMORY-SHIPPED.md` exists beside an index none of
+this fires, and no message of the index (the line remedy included) names the second tier: its text
+is then exactly what it was before the second tier was supported.
 
 Known leniencies (false negatives, by choice): a MEMORY.md that is itself a symlink resolves away
 from the tail and is declined; CRLF files retain \\r, shifting the boundary 1 B per line; counts
@@ -77,16 +95,21 @@ from pathlib import Path
 
 MAX_ENTRY_BYTES = 1000
 REPORT_LIMIT = 5
-SCOPE_PATTERN = "projects/*/memory/MEMORY.md"
+SCOPE_DIRS = "projects/*/memory"
 RULE = "detail lives in the topic file — never here"
 OPT_IN_NEEDLE = b"detail lives in the topic file"
 
-# See the "Whole-file aggregate cap" docstring paragraph above for why 20000 (not a mirror of
-# the harness's reported "24.4KB"), why raw file bytes (not summed entry_blocks()), and why the
+# See the "Whole-file aggregate cap" docstring paragraph above for why this sits below the
+# harness's 25,000-unit cut rather than at it, why raw file bytes (not summed entry_blocks()), and why the
 # comparison below is >= rather than the per-entry check's >. Do not touch MAX_ENTRY_BYTES above
 # to "harmonise" it with this — it is a different check, calibrated against a different limit,
 # and belongs to a different backlog entry.
-AGG_MAX_BYTES = 20000
+AGG_MAX_BYTES = 24000
+# The second tier is read in full on each open, not loaded every session; see the docstring.
+SHIPPED_MAX_BYTES = 30000
+CAPS = {"MEMORY.md": AGG_MAX_BYTES, "MEMORY-SHIPPED.md": SHIPPED_MAX_BYTES}
+# The client cuts MEMORY.md at 200 lines or 25,000 UTF-16 units; see the docstring for why LINE_MAX sits lower.
+LINE_MAX = 190
 TOP_N_BY_SIZE = 3
 
 
@@ -139,12 +162,16 @@ def entry_blocks(raw: bytes) -> list[tuple[int, int, bytes]]:
 def main() -> int:
     """Hook entry point: 0 allows the edit; 2 reports offenders on stderr."""
     file_path = read_file_path()
-    if not file_path or not file_path.endswith("MEMORY.md"):
+    if not file_path or not file_path.endswith(tuple(CAPS)):
         return (
             0  # cheapest guard first: no filesystem call for the overwhelming majority
         )
     abs_file = Path(file_path).resolve()
-    if not abs_file.match(SCOPE_PATTERN) or not abs_file.is_file():
+    # Exact membership of the RESOLVED name, before any CAPS lookup: the suffix test above also
+    # admits X-MEMORY.md and OLD-MEMORY-SHIPPED.md, which are not covered.
+    if abs_file.name not in CAPS:
+        return 0
+    if not abs_file.match(f"{SCOPE_DIRS}/{abs_file.name}") or not abs_file.is_file():
         return 0
     content = abs_file.read_bytes()
     if OPT_IN_NEEDLE not in content.lower():
@@ -152,10 +179,17 @@ def main() -> int:
     blocks = entry_blocks(content)
     offenders = [b for b in blocks if b[1] > MAX_ENTRY_BYTES]
     total_bytes = len(content)
-    agg_breach = total_bytes >= AGG_MAX_BYTES
+    agg_max = CAPS[abs_file.name]
+    agg_breach = total_bytes >= agg_max
+    n_lines = content.count(b"\n")
+    line_breach = abs_file.name == "MEMORY.md" and n_lines >= LINE_MAX
 
-    if not offenders and not agg_breach:
+    if not offenders and not agg_breach and not line_breach:
         return 0
+
+    # A second tier named in any message only when it exists beside this file, so an index that
+    # keeps none reads exactly the text it would without the second-tier support.
+    sibling = (abs_file.parent / "MEMORY-SHIPPED.md").is_file()
 
     # Both checks can breach on the same file at once (a runaway entry inside a runaway file).
     # Decision: report BOTH sections rather than letting one suppress the other. An
@@ -179,13 +213,35 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    if agg_breach:
+    if line_breach:
         print(
-            f"memory-index-check: {abs_file} is {total_bytes}B, at or over the "
-            f"{AGG_MAX_BYTES}B aggregate threshold — entries past the reading harness's own "
-            f'cut are ALREADY invisible, not "will be" once it grows further.',
+            f"memory-index-check: {abs_file} has {n_lines} lines, at or over the "
+            f"{LINE_MAX}-line threshold (the client cuts this file at 200 lines or 25,000 UTF-16 units).",
             file=sys.stderr,
         )
+        if sibling:
+            remedy = (
+                "  Hold a pointer, or move a shipped-change entry behind MEMORY-SHIPPED.md, "
+                "or shorten the file."
+            )
+        else:
+            remedy = "  Hold a pointer, or shorten the file."
+        print(remedy, file=sys.stderr)
+
+    if agg_breach:
+        if abs_file.name == "MEMORY.md":
+            headline = (
+                f"memory-index-check: {abs_file} is {total_bytes}B, at or over the "
+                f"{agg_max}B cap. The cap sits below the client's own cut (25,000 UTF-16 "
+                "units, 200 lines) so entries are not silently dropped."
+            )
+        else:
+            headline = (
+                f"memory-index-check: {abs_file} is {total_bytes}B, at or over its "
+                f"{agg_max}B cap. It is read in full each time it is opened, not loaded "
+                "every session."
+            )
+        print(headline, file=sys.stderr)
         # Named by size, not by offender status: agg-small-entries proves a file can breach
         # the aggregate with every entry individually under MAX_ENTRY_BYTES, so the per-entry
         # offender list can be empty here. Without naming a target, a breach invites trimming
@@ -196,11 +252,24 @@ def main() -> int:
             for lineno, size, head in by_size:
                 excerpt = head.decode("utf-8", errors="replace")[:70]
                 print(f"    line {lineno}: {size}B — {excerpt}…", file=sys.stderr)
-        print(
-            "  Move detail out of the largest entries into their topic files, or archive "
-            "closed items; shortening the file is the only fix — do not narrow this check.",
-            file=sys.stderr,
-        )
+        if abs_file.name == "MEMORY-SHIPPED.md":
+            fix = (
+                "  This index is the on-demand tier: split the file or build hub files "
+                "(one line per family); holding a pointer does not apply here. "
+                "Do not narrow this check."
+            )
+        elif sibling:
+            fix = (
+                "  Move detail out of the largest entries into their topic files; move a "
+                "shipped-change entry behind MEMORY-SHIPPED.md, or hold the pointer. "
+                "Shortening the file is the only fix; do not narrow this check."
+            )
+        else:
+            fix = (
+                "  Move detail out of the largest entries into their topic files, or hold "
+                "the pointer. Shortening the file is the only fix; do not narrow this check."
+            )
+        print(fix, file=sys.stderr)
 
     return 2
 

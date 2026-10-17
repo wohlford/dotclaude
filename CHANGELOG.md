@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.132.0 — 2026-10-17
+- feat(memory-index): add a 190-line check and raise the cap to 24,000 B
+
 ## v0.131.13 — 2026-10-16
 - docs(audit): document the opt-in parallel pytest mode
 

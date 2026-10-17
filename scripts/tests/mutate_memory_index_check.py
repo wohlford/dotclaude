@@ -5,7 +5,7 @@ Deliberately NOT named `test_*`: it mutates a tracked file in place, so pytest m
 it. Run it on demand — `./scripts/tests/mutate_memory_index_check.py` — and never while editing
 the subject, since the restore would clobber your edits.
 
-Every row names ONE safety property the 24-row suite (`test_memory_index_check.sh`) is supposed
+Every row names ONE safety property the suite (`test_memory_index_check.sh`) is supposed
 to be defending, and mutates exactly what it names. A row that survives is not evidence the code
 is fine — it is evidence the suite is not testing what the row claims; the fix is to strengthen
 the SUITE ROW, never to reword this file's assertion.
@@ -13,57 +13,53 @@ the SUITE ROW, never to reword this file's assertion.
 ## The one row that looks wrong and is not
 
 `failopen` replaces the line-split in `entry_blocks` with an unconditional raise. `main()` returns
-*before* ever calling `entry_blocks` on any path that is out of scope, absent, or not opted in, so
-those rows are unreachable by this mutation and MUST stay green — that is not a coverage gap, it
-is the scope/opt-in guard working as designed. Naming the rows precisely, rather than rounding up
-to "the `scope-*` rows": the unreachable set is exactly the three out-of-scope rows
-(`scope-projects`, `scope-memory`, `scope-name`), plus `optin-absent` AND `agg-no-optin` (both
-declined by the content-opt-in gate, which sits ABOVE `entry_blocks`) and `absent-file` (declined
-by `is_file()`) — six rows, one per declining reason named above, and the count is six rather than
-five because the aggregate check's arrival added a second opt-in-declined row. `absent-file`'s own coverage comes from the `isfile` mutation below, not this
-one. `scope-symlink`'s fixture resolves the payload path THROUGH a
-symlink to a real, opted-in, in-scope `MEMORY.md`, so it DOES reach `entry_blocks` and joins the
-in-scope rows that flip — it is not a fourth row that stays green. What the mutation actually
-tests is the fail-open handler's own print statement: under the mutation the checker still exits 0
-(fail-open), so only a row that asserts **stderr empty** on top of **rc 0** can notice anything
-changed, for the three exit-0 in-scope rows (`healthy-corpus`, `boundary-under`, `prose-long`);
-every exit-2 in-scope row (`defect`, `boundary-over`, `multibyte`, `wrapped-entry`, `report-limit`,
-`scope-symlink`, `bare-dash-evasion`) is caught more simply, by its own rc mismatch. It is the only
-mutation in this campaign that exercises the outer `except Exception` print path at all — every
-other row resolves inside `read_file_path`'s own handler or via a clean scope/opt-in decision.
+*before* ever calling `entry_blocks` on any path that is out of scope, absent, not opted in or not a
+covered name, so every row that exercises one of those declines is unreachable by this mutation and
+MUST stay green: the out-of-scope and look-alike-name rows, the opt-in-absent rows for either file,
+and the absent-file row. That is not a coverage gap, it is the scope/opt-in guard working as
+designed; each of those rows gets its own coverage from the mutation that loosens the guard it
+names. What this mutation tests is the fail-open handler's own print statement: under the mutation
+the checker still exits 0 (fail-open), so only a row that asserts **stderr empty** on top of **rc 0**
+can notice anything changed, for the exit-0 rows that DO reach `entry_blocks`; every exit-2 row is
+caught more simply, by its own rc mismatch. It is the only mutation here that exercises the outer
+`except Exception` print path at all.
 
 The repo root is derived from __file__, which means invoking this through a symlinked
 `~/.claude/scripts/tests/` would resolve into PRODUCTION's tree and mutate that instead. Run it
 from the working copy you intend to grade.
 
-## A named gap: `scope-name` has no independent single-point mutation coverage
+## Kill sets
 
-The filename requirement (`…MEMORY.md`) is enforced TWICE, ~45 lines apart: the cheap
-`file_path.endswith("MEMORY.md")` guard at the top of `main()`, and again as the literal last
-component of `SCOPE_PATTERN` matched a few lines later. `mutate.py` applies one `(old, new)` pair
-per mutation, so no single-point edit can remove both at once — a mutation that kills only the
-`SCOPE_PATTERN` match still gets declined by the `endswith` guard before ever reaching it, and the
-`scope-name` suite row (filename `NOTES.md`) never turns red. Measured directly against isolated
-copies of the checker, invoked on the `scope-name` fixture (a `…/projects/<slug>/memory/NOTES.md`
-carrying the defect):
+`python3 scripts/tests/mutate_memory_index_check.py --killsets` applies each mutation to a COPY of the
+checker, runs the whole suite over that copy and prints the rows each mutant fails, ending in
+`KILLSETS mutations=N survivors=S duplicates=D`. It writes nothing into the repo. A duplicate mutant
+inflates the caught count and measures nothing, so both numbers must be zero.
 
-    baseline                              -> rc=0 (correctly declined)
-    kill SCOPE_PATTERN match only         -> rc=0 (still declined by the cheap endswith guard)
-    kill endswith("MEMORY.md") only       -> rc=0 (still declined by SCOPE_PATTERN's own literal)
-    kill BOTH                             -> rc=2
+## Named gaps: defence in depth that no single-point mutation can reach
 
-This is genuine defence in depth in the checker, not a bug — do not delete either guard to "fix"
-this. What the `scope-redundant` mutation below actually flips is `scope-projects` and
-`scope-memory` (already independently covered by their own dedicated mutations); it is kept and
-renamed rather than deleted because it is still a faithful test of the `SCOPE_PATTERN` match as a
-whole, it is simply not evidence about `scope-name` specifically. `scope-name`'s own suite row
-stands on the strength of its assertion (rc 0, stderr empty, distinct fixture) rather than on any
-mutation in this campaign — a `caught=N/N` verdict below does not imply otherwise.
+* `scope-name`: a file name outside the covered set is declined by THREE independent guards (the
+  suffix test in the cheap guard, exact membership of the resolved name, and the last component of
+  the tail pattern). `mutate.py` applies one `(old, new)` pair per mutation, so no single-point edit
+  removes all three; killing one still leaves the other two declining it. `scope-name`'s row stands
+  on the strength of its assertion (rc 0, stderr empty, distinct fixture), and a `caught=N/N` verdict
+  does not imply otherwise.
+* The suffix test and the tail pattern both decline `MEMORY-SHIPPED.md` when it sits outside
+  `projects/*/memory`; the `shipped-scope` row pins the pair, and the mutation that loosens the
+  tail pattern is what flips it.
+* The cheap suffix guard (`file_path.endswith(tuple(CAPS))`) is one of the three guards behind
+  `scope-name` and `shipped-x`/`shipped-old`: widening it (to admit any name) changes no outcome,
+  because exact membership of the resolved name declines the same files. Only NARROWING it is
+  observable, and the mutant that narrows it to `MEMORY-SHIPPED.md` kills the first tier's rows (narrowing it to
+  `MEMORY.md` would duplicate the tail-pattern mutant's kill set, so it is not used).
 """
 
 from __future__ import annotations
 
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
@@ -79,13 +75,13 @@ MUTATIONS = [
     # wrong mutants is the failure this block is written against.
     mutate.Mutation(
         "the aggregate boundary flips to strict >, so a file exactly at the threshold passes",
-        "total_bytes >= AGG_MAX_BYTES",
-        "total_bytes > AGG_MAX_BYTES",
+        "total_bytes >= agg_max",
+        "total_bytes > agg_max",
     ),
     mutate.Mutation(
-        "the threshold is raised past the harness's real limit, so the check never fires in time",
-        "AGG_MAX_BYTES = 20000",
-        "AGG_MAX_BYTES = 200000",
+        "the first tier's cap is raised past the harness's real limit, so the check never fires in time",
+        'CAPS = {"MEMORY.md": AGG_MAX_BYTES,',
+        'CAPS = {"MEMORY.md": 10**9,',
     ),
     mutate.Mutation(
         "the aggregate is summed from entry blocks, under-counting every non-entry byte",
@@ -94,7 +90,7 @@ MUTATIONS = [
     ),
     mutate.Mutation(
         "the aggregate branch is never reached, so only the per-entry cap survives",
-        "agg_breach = total_bytes >= AGG_MAX_BYTES",
+        "agg_breach = total_bytes >= agg_max",
         "agg_breach = False",
     ),
     mutate.Mutation(
@@ -115,33 +111,27 @@ MUTATIONS = [
     ),
     # ---- scope: each mutation loosens exactly one path component the scope-* rows pin down
     mutate.Mutation(
-        "the literal scope glob drops the 'projects' component, so any top-level dir qualifies",
-        '"projects/*/memory/MEMORY.md"',
-        '"*/*/memory/MEMORY.md"',
+        "the scope glob drops the 'projects' component, so any top-level dir qualifies",
+        'SCOPE_DIRS = "projects/*/memory"',
+        'SCOPE_DIRS = "*/*/memory"',
     ),
     mutate.Mutation(
         "the scope glob drops the 'memory' component, so any subdirectory qualifies",
-        'SCOPE_PATTERN = "projects/*/memory/MEMORY.md"',
-        'SCOPE_PATTERN = "projects/*/*/MEMORY.md"',
+        'SCOPE_DIRS = "projects/*/memory"',
+        'SCOPE_DIRS = "projects/*/*"',
     ),
     mutate.Mutation(
-        "scope-redundant: the SCOPE_PATTERN match is unconditionally satisfied — this flips "
+        "scope-redundant: the tail-pattern match is unconditionally satisfied — this flips "
         "scope-projects and scope-memory (already independently covered above), NOT scope-name: "
-        "that row stays declined by the endswith('MEMORY.md') guard earlier in main(), a second "
-        "independent enforcement of the same filename requirement (see the module docstring)",
-        "not abs_file.match(SCOPE_PATTERN)",
+        "that row stays declined by the suffix test and the membership test earlier in main(), "
+        "independent enforcements of the same filename requirement (see the module docstring)",
+        'not abs_file.match(f"{SCOPE_DIRS}/{abs_file.name}")',
         "False",
     ),
     mutate.Mutation(
         "the path is used as-given instead of resolved, so a symlinked tail never survives",
         "Path(file_path).resolve()",
         "Path(file_path)",
-    ),
-    mutate.Mutation(
-        "optin: the content opt-in gate is neutralised, so the checker fires on any in-scope "
-        "file whether it declares the rule or not — must turn optin-absent red",
-        "if OPT_IN_NEEDLE not in content.lower():",
-        "if False:",
     ),
     # ---- the block-grouping algorithm that makes wrapping not an evasion
     mutate.Mutation(
@@ -189,10 +179,191 @@ MUTATIONS = [
         "not abs_file.is_file()",
         "False",
     ),
+    # ---- the 190-line check
+    mutate.Mutation(
+        "the line threshold flips to strict >, so a file at exactly the threshold passes",
+        "n_lines >= LINE_MAX",
+        "n_lines > LINE_MAX",
+    ),
+    mutate.Mutation(
+        "the line check is never reached, so only the byte checks survive",
+        'line_breach = abs_file.name == "MEMORY.md" and n_lines >= LINE_MAX',
+        "line_breach = False",
+    ),
+    mutate.Mutation(
+        "the line check also covers the second tier, which the client does not cut by lines",
+        'line_breach = abs_file.name == "MEMORY.md" and n_lines >= LINE_MAX',
+        "line_breach = n_lines >= LINE_MAX",
+    ),
+    mutate.Mutation(
+        "the line threshold is raised to 250, past the client's own 200-line cut",
+        "LINE_MAX = 190",
+        "LINE_MAX = 250",
+    ),
+    mutate.Mutation(
+        "a line-only breach no longer ends the early return, so it passes unreported",
+        "if not offenders and not agg_breach and not line_breach:",
+        "if not offenders and not agg_breach:",
+    ),
+    mutate.Mutation(
+        "the line message reports the threshold where the file's own line count belongs",
+        "{abs_file} has {n_lines} lines",
+        "{abs_file} has {LINE_MAX} lines",
+    ),
+    mutate.Mutation(
+        "the line message calls the threshold something else, so the needle row loses it",
+        'f"{LINE_MAX}-line threshold (the client cuts this file at 200 lines or 25,000 UTF-16 units).",',
+        'f"{LINE_MAX}-line limit (the client cuts this file at 200 lines or 25,000 UTF-16 units).",',
+    ),
+    mutate.Mutation(
+        "the line remedy offers the tier whether or not it exists",
+        "        if sibling:\n            remedy = (",
+        "        if True:\n            remedy = (",
+    ),
+    mutate.Mutation(
+        "the line remedy never offers the tier, even when it exists",
+        "        if sibling:\n            remedy = (",
+        "        if False:\n            remedy = (",
+    ),
+    mutate.Mutation(
+        "the sibling is taken to exist everywhere, so every message names the tier",
+        'sibling = (abs_file.parent / "MEMORY-SHIPPED.md").is_file()',
+        "sibling = True",
+    ),
+    mutate.Mutation(
+        "the sibling is taken never to exist, so no message names the tier",
+        'sibling = (abs_file.parent / "MEMORY-SHIPPED.md").is_file()',
+        "sibling = False",
+    ),
+    # ---- the second tier: cheap guard, membership, per-name tail, cap
+    mutate.Mutation(
+        "the cheap suffix guard admits only MEMORY-SHIPPED.md, so the first tier is declined before any read",
+        "file_path.endswith(tuple(CAPS))",
+        'file_path.endswith("MEMORY-SHIPPED.md")',
+    ),
+    mutate.Mutation(
+        "exact membership is skipped, so X-MEMORY.md reaches the CAPS lookup",
+        "if abs_file.name not in CAPS:\n        return 0",
+        "if False:\n        return 0",
+    ),
+    mutate.Mutation(
+        "the tail pattern is fixed to MEMORY.md, so the second tier is declined as out of scope",
+        'abs_file.match(f"{SCOPE_DIRS}/{abs_file.name}")',
+        'abs_file.match(f"{SCOPE_DIRS}/MEMORY.md")',
+    ),
+    mutate.Mutation(
+        "the second tier is held to the first tier's cap",
+        '"MEMORY-SHIPPED.md": SHIPPED_MAX_BYTES}',
+        '"MEMORY-SHIPPED.md": AGG_MAX_BYTES}',
+    ),
+    # ---- the breach wording: the sibling test and each text
+    mutate.Mutation(
+        "the sibling test is always true, so an index with no tier is told to move entries to one",
+        "elif sibling:",
+        "elif True:",
+    ),
+    mutate.Mutation(
+        "the sibling test is always false, so an index WITH a tier is never offered it",
+        "elif sibling:",
+        "elif False:",
+    ),
+    mutate.Mutation(
+        "the second tier is given the first tier's remedy, which offers a hold that does not exist",
+        'if abs_file.name == "MEMORY-SHIPPED.md":\n            fix = (',
+        "if False:\n            fix = (",
+    ),
+    mutate.Mutation(
+        "the second tier is given the first tier's headline, which names the client's cut",
+        'if abs_file.name == "MEMORY.md":\n            headline = (',
+        "if True:\n            headline = (",
+    ),
+    mutate.Mutation(
+        "the first tier's headline reverts to the false claim that entries are already invisible",
+        '"units, 200 lines) so entries are not silently dropped."',
+        '"units, 200 lines) but entries past it are ALREADY invisible."',
+    ),
+    mutate.Mutation(
+        "the no-sibling remedy reinstates 'archive closed items'",
+        '"the pointer. Shortening the file is the only fix; do not narrow this check."',
+        '"the pointer, or archive closed items. Shortening the file is the only fix."',
+    ),
+    mutate.Mutation(
+        "the with-sibling remedy says 'beside' where it says 'behind', so the full offer is lost",
+        '"shipped-change entry behind MEMORY-SHIPPED.md, or hold the pointer. "',
+        '"shipped-change entry beside MEMORY-SHIPPED.md, or hold the pointer. "',
+    ),
+    mutate.Mutation(
+        "the second tier's remedy offers holding a pointer again",
+        '"(one line per family); holding a pointer does not apply here. "',
+        '"(one line per family); or hold the pointer. "',
+    ),
+    mutate.Mutation(
+        "the second tier's headline drops the sentence that it is read in full on each open",
+        'f"{agg_max}B cap. It is read in full each time it is opened, not loaded "',
+        'f"{agg_max}B cap. It is not loaded "',
+    ),
 ]
 
 
+def suite_over_copy(source: str) -> subprocess.CompletedProcess[str]:
+    """Run the whole suite over a COPY of the checker whose text is SOURCE."""
+    with tempfile.TemporaryDirectory() as tmp:
+        copy = Path(tmp) / "repo"
+        for rel in (
+            "scripts/memory-index-check.py",
+            "scripts/tests/test_memory_index_check.sh",
+        ):
+            (copy / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO / rel, copy / rel)
+        (copy / "scripts" / "memory-index-check.py").write_text(source)
+        return subprocess.run(
+            ["bash", str(copy / "scripts" / "tests" / "test_memory_index_check.sh")],
+            capture_output=True,
+            text=True,
+            cwd=copy,
+        )
+
+
+def killset(label: str, old: str, new: str) -> frozenset[str]:
+    """Return the suite rows one mutation fails, run over a COPY of the checker and its suite."""
+    source = SUBJECT.read_text()
+    assert source.count(old) == 1 and old != new, label
+    proc = suite_over_copy(source.replace(old, new))
+    return frozenset(re.findall(r"^FAIL  (.+)$", proc.stdout, re.M))
+
+
+def killsets() -> int:
+    """Print each mutation's kill set and the survivors and duplicates; return 0 if clean."""
+    # The unmutated BASELINE first: a suite already red kills every mutant, so survivors=0 would
+    # read flawless. Require the suite's own PASS summary on the untouched checker.
+    base = suite_over_copy(SUBJECT.read_text())
+    if base.returncode != 0 or not re.search(r"^PASS \d+/\d+$", base.stdout, re.M):
+        print(
+            "KILLSETS BASELINE FAIL: the unmutated suite is not green; no verdict reached"
+        )
+        print(base.stdout[-2000:])
+        return 1
+    seen: dict[frozenset[str], str] = {}
+    survivors = duplicates = 0
+    for m in MUTATIONS:
+        rows = killset(m.label, m.old, m.new)
+        print(f"{m.label[:60]:<60} kills {len(rows)} row(s)")
+        if not rows:
+            survivors += 1
+        elif rows in seen:
+            duplicates += 1
+            print(f"DUPLICATE KILL SET: {m.label[:60]} == {seen[rows][:60]}")
+        else:
+            seen[rows] = m.label
+    print(
+        f"KILLSETS mutations={len(MUTATIONS)} survivors={survivors} duplicates={duplicates}"
+    )
+    return 0 if not survivors and not duplicates else 1
+
+
 def main() -> int:
+    if sys.argv[1:] == ["--killsets"]:
+        return killsets()
     report_path = sys.argv[1] if len(sys.argv) > 1 else None
     report = mutate.run(SUBJECT, SUITE, MUTATIONS, cwd=REPO, report_path=report_path)
     print(report.text)

@@ -8,9 +8,15 @@ set -uo pipefail
 #          tail-survival), the content opt-in gate, the argv/TTY refusal, the fail-open
 #          paths (malformed JSON, absent file), and the whole-file aggregate-size check
 #          (over/under/boundary, the small-entries discriminator, the opt-in gate on the
-#          aggregate path, and non-entry content). NOTE: the aggregate rows are RED against
-#          today's checker — the aggregate check does not exist yet; see Task 2.
+#          aggregate path, and non-entry content), the 190-line check, the true breach
+#          wording (no "archive", no "ALREADY invisible"), exact basename membership, and the
+#          second tier `MEMORY-SHIPPED.md` (its own cap, per-entry cap, opt-in gate, scope and
+#          sibling-conditional remedy text).
 # Usage:   bash scripts/tests/test_memory_index_check.sh
+#
+# The byte caps and the line threshold are READ from the checker (`AGG_MAX_BYTES`,
+# `SHIPPED_MAX_BYTES`, `LINE_MAX`) and every fixture is built from them, so raising a cap changes
+# no row. One row bounds the byte cap below the client's own cut, which a raise must stay under.
 #
 # Every row asserts BOTH the exit code AND stderr: an exit-0 row requires stderr EMPTY (else a
 # crashed/fail-open checker would pass every row for free), and an exit-2 row requires stderr to
@@ -87,6 +93,7 @@ run_ok() {
 # run_block <label> <file_path> <must_contain...> — exit-2 row: rc must be 2 AND stderr must be
 # non-empty AND must contain every listed needle (a missing checker file also exits 2 with
 # stderr, so rc+nonempty alone is not enough; the needles pin it to THIS checker's own output).
+# A needle written with a leading "!" must be ABSENT instead.
 run_block() {
   local label="$1" file="$2" rc=0
   shift 2
@@ -104,7 +111,15 @@ run_block() {
   fi
   local needle
   for needle in "$@"; do
-    if ! contains "$needle" "$sandbox/_err"; then
+    if [[ "$needle" == '!'* ]]; then
+      # A leading "!" asserts ABSENCE: the true-wording rows must prove the old text is gone.
+      if contains "${needle#!}" "$sandbox/_err"; then
+        printf 'FAIL  %s (stderr still contains forbidden text: %s)\n' "$label" "${needle#!}"
+        sed 's/^/      stderr: /' "$sandbox/_err"
+        fail=$((fail + 1))
+        return
+      fi
+    elif ! contains "$needle" "$sandbox/_err"; then
       printf 'FAIL  %s (stderr missing required text: %s)\n' "$label" "$needle"
       sed 's/^/      stderr: /' "$sandbox/_err"
       fail=$((fail + 1))
@@ -126,11 +141,28 @@ run_block() {
 # length before the file is written, so an "approximately right" fixture can never silently
 # pass as the boundary it claims to be.
 # ============================================================================================
-python3 - "$sandbox" <<'PY'
+python3 - "$sandbox" "$script" <<'PY'
+import re
 import sys
 from pathlib import Path
 
 sandbox = Path(sys.argv[1])
+SRC = Path(sys.argv[2]).read_text(encoding="utf-8")
+
+
+def constant(name: str, default: int) -> int:
+    """An integer constant read from the checker's own source, so no row pins a cap's value.
+
+    DEFAULT stands in only when the checker does not declare the name; the
+    `cap-constants` row below fails in that case, so a rename cannot hide behind the default.
+    """
+    found = re.search(rf"^{name} = (\d+)", SRC, re.M)
+    return int(found.group(1)) if found else default
+
+
+AGG = constant("AGG_MAX_BYTES", 24000)
+SHIPPED = constant("SHIPPED_MAX_BYTES", 30000)
+LINES = constant("LINE_MAX", 190)
 
 
 def write(path: Path, content: str) -> None:
@@ -268,93 +300,134 @@ write(
     HEADER + bde_head + "\n" + bde_cont + "\n",
 )
 
-# ---- aggregate-size fixtures (memory-index-reader-limit spec, Task 1) ----------------------
-# The checker does not implement an aggregate/whole-file check yet — only the per-entry cap
-# above. Threshold pinned here for the check-to-be: 20000 raw file bytes (not entries). Rows
-# that expect a TRIP are RED against today's checker (it never emits this message); rows that
-# expect NO trip are unavoidably already true today too (there is no aggregate logic yet to
-# misfire) and serve as controls the new check must not regress.
-#
-# Every entry in every one of these fixtures stays at or under 960B, comfortably under
-# MAX_ENTRY_BYTES(1000), so today's checker finds zero per-entry offenders and returns rc 0 for
-# every one of them (except agg-boundary/agg-small-entries etc. — same reasoning). That makes
-# every "must trip" row fail today for a single, unambiguous reason: "want rc 2, got 0".
+# ---- aggregate-size fixtures ---------------------------------------------------------------
+# Every size below is derived from the cap READ above (AGG), never typed, so a raise of the cap
+# moves these fixtures with it and changes no row. Every entry stays at or under 960B, comfortably
+# under MAX_ENTRY_BYTES (1000), so each "must trip" row trips on the aggregate alone.
 
 
-def build_multi_entries(n: int, size: int, prefix_fmt: str = "- [E{i}](t{i}.md) - ") -> str:
-    return "\n\n".join(pad_line(prefix_fmt.format(i=i), size) for i in range(n))
+def entry_sizes(budget: int, entry_max: int, sep: int = 2) -> list[int]:
+    """Entry sizes (each <= entry_max) whose lines plus SEP-byte separators fill BUDGET bytes."""
+    n = -(-(budget + sep) // (entry_max + sep))
+    base, extra = divmod(budget - sep * (n - 1), n)
+    sizes = [base + 1] * extra + [base] * (n - extra)
+    assert max(sizes) <= entry_max and min(sizes) >= 30, (sizes[:3], sizes[-3:])
+    return sizes
 
 
-# agg-over: 21 entries @ 960B (each < MAX_ENTRY_BYTES) -> total 20268B, over the 20000B
-# threshold. Plain "over the aggregate, trips" case.
-agg_over_body = build_multi_entries(21, 960)
-agg_over_content = HEADER + agg_over_body + "\n"
-assert len(agg_over_content.encode("utf-8")) == 20268, len(agg_over_content.encode("utf-8"))
-write(sandbox / "agg-over" / "projects" / "proj1" / "memory" / "MEMORY.md", agg_over_content)
+def fill_index(header: str, total: int, entry_max: int) -> str:
+    """An index of exactly TOTAL bytes: HEADER, blank-separated entries, one final newline."""
+    budget = total - len(header.encode("utf-8")) - 1
+    lines = [pad_line(f"- [E{i}](t{i}.md) - ", sz) for i, sz in enumerate(entry_sizes(budget, entry_max))]
+    content = header + "\n\n".join(lines) + "\n"
+    assert len(content.encode("utf-8")) == total, (len(content.encode("utf-8")), total)
+    assert all(len(ln.encode("utf-8")) <= entry_max for ln in lines)
+    return content
 
-# agg-under: 13 entries @ 900B -> total 11792B, comfortably under 20000B.
-agg_under_body = build_multi_entries(13, 900)
-agg_under_content = HEADER + agg_under_body + "\n"
-assert len(agg_under_content.encode("utf-8")) == 11792, len(agg_under_content.encode("utf-8"))
-write(sandbox / "agg-under" / "projects" / "proj1" / "memory" / "MEMORY.md", agg_under_content)
 
-# agg-boundary: 21 entries @ 900B + 1 entry @ 990B -> total EXACTLY 20000B. Pins the
-# comparison's direction: this row asserts exactly-at-threshold TRIPS, i.e. the aggregate check
-# must use ">=", not ">" (unlike the per-entry check above, which deliberately uses ">"). Chosen
-# because "err low" (see spec) favours catching the boundary itself, and because the opposite
-# choice ("does not trip" at the boundary) can never be RED here — it is already true today with
-# no aggregate logic at all, so it would pin nothing.
-agg_boundary_lines = [pad_line(f"- [E{i}](t{i}.md) - ", 900) for i in range(21)] + [
-    pad_line("- [ELAST](tlast.md) - ", 990)
-]
-agg_boundary_body = "\n\n".join(agg_boundary_lines)
-agg_boundary_content = HEADER + agg_boundary_body + "\n"
-assert len(agg_boundary_content.encode("utf-8")) == 20000, len(
-    agg_boundary_content.encode("utf-8")
+def lines_index(header: str, n_lines: int, entry_bytes: int) -> str:
+    """An index whose `wc -l` is exactly N_LINES: HEADER, then one entry per line."""
+    entries = [
+        pad_line(f"- [L{i}](t{i}.md) - ", entry_bytes)
+        for i in range(n_lines - header.count("\n"))
+    ]
+    content = header + "\n".join(entries) + "\n"
+    assert content.count("\n") == n_lines, (content.count("\n"), n_lines)
+    return content
+
+
+def at(name: str, sub: str = "projects/proj1/memory") -> Path:
+    """Fixture path `<sandbox>/<name>/<sub>/MEMORY.md` (the file name is set by the caller)."""
+    return sandbox / name / sub
+
+
+# agg-over: 268B past the cap. Plain "over the aggregate, trips".
+write(at("agg-over") / "MEMORY.md", fill_index(HEADER, AGG + 268, 960))
+# agg-under: 60% of the cap, comfortably under.
+agg_under_total = AGG * 3 // 5
+write(at("agg-under") / "MEMORY.md", fill_index(HEADER, agg_under_total, 900))
+# agg-boundary: EXACTLY the cap. Pins the comparison's direction: the aggregate uses >=, not >
+# (unlike the per-entry check above, which deliberately uses >). The opposite choice ("does not trip
+# at the boundary") can never be RED, since it is true with no aggregate logic at all.
+write(at("agg-boundary") / "MEMORY.md", fill_index(HEADER, AGG, 960))
+# agg-small-entries: 1486B past the cap via ~100B entries (all far under the 1000B per-entry cap).
+# The discriminator: the aggregate check is not the per-entry check restated.
+write(at("agg-small-entries") / "MEMORY.md", fill_index(HEADER, AGG + 1486, 100))
+# agg-no-optin: over the cap under a header that does NOT declare the opt-in rule -> must NOT trip.
+# Measured justification: wohlford-court is 21555B, unopted-in, on this machine.
+write(at("agg-no-optin") / "MEMORY.md", fill_index(NO_OPTIN_HEADER, AGG + 217, 960))
+# agg-nonentry-content: 3 small entries plus one PROSE paragraph that does NOT start "- [" (so
+# entry_blocks() never sees it), over the cap by 500B. Pins that the aggregate is measured over RAW
+# FILE BYTES, not the sum of entry_blocks().
+ne_entries = [pad_line(f"- [E{i}](t{i}.md) - ", 300) for i in range(3)]
+ne_fixed = len(HEADER.encode("utf-8")) + sum(len(e.encode("utf-8")) for e in ne_entries) + 2 * 2 + 2 + 1
+ne_prose = pad_line("Prose paragraph, not a bullet - ", AGG + 500 - ne_fixed)
+assert not ne_prose.startswith("- [")
+ne_content = HEADER + "\n\n".join(ne_entries) + "\n\n" + ne_prose + "\n"
+assert len(ne_content.encode("utf-8")) == AGG + 500, len(ne_content.encode("utf-8"))
+write(at("agg-nonentry-content") / "MEMORY.md", ne_content)
+
+# ---- the cap sits below the client's own cut (a bound the value must stay inside) ----
+(sandbox / "caps.txt").write_text(f"{AGG} {SHIPPED} {LINES}\n")
+
+# ---- the 190-line check and the true breach wording --------------------------------------------
+# Line fixtures use 40B entries, so they stay far under every byte cap and trip on lines alone.
+# `lines` counts `wc -l`, i.e. the newline count the checker reads.
+for n in (LINES - 1, LINES, LINES + 25):
+    write(at(f"lines-{n}") / "MEMORY.md", lines_index(HEADER, n, 40))
+    write(at(f"lines-{n}-q", "projects/q/memory") / "MEMORY.md", lines_index(HEADER, n, 40))
+# A project with a sibling tier: each fixture below that wants one gets the same valid tier.
+T2_HEADER = (
+    "---\nname: MEMORY-SHIPPED\ndescription: x\n---\n\n"
+    "# Shipped-work index (tier 2)\n\n"
+    "One line per entry. Detail lives in the topic file, never here.\n\n"
 )
+VALID_T2 = T2_HEADER + pad_line("- [S](s.md) - ", 120) + "\n"
+
+
+def t2_total(total: int, header: str = T2_HEADER, entry_max: int = 900) -> str:
+    """A second-tier file of exactly TOTAL bytes under HEADER."""
+    return fill_index(header, total, entry_max)
+
+
+# tier-over: over the cap WITH a sibling tier (the remedy names it); tier-over-q: another opted-in
+# project, over the cap, NO sibling (the remedy does not). 900B entries keep the line count far
+# under the line threshold, so these rows reach the byte cap alone.
+write(at("tier-over") / "MEMORY.md", fill_index(HEADER, AGG + 9000, 900))
+write(at("tier-over") / "MEMORY-SHIPPED.md", VALID_T2)
+write(at("tier-over-nosib") / "MEMORY.md", fill_index(HEADER, AGG + 9000, 900))
+write(at("tier-over-q", "projects/q/memory") / "MEMORY.md", fill_index(HEADER, AGG + 9000, 900))
+# both-breach: over the byte cap AND over the line threshold at once (100B blank-separated entries
+# give two lines per entry). Both sections must be reported, not one suppressing the other.
+write(at("both-breach") / "MEMORY.md", fill_index(HEADER, AGG + 1500, 100))
+assert (at("both-breach") / "MEMORY.md").read_bytes().count(b"\n") >= LINES
+# tier-lines: 190 lines WITH a sibling tier.
+write(at("tier-lines") / "MEMORY.md", lines_index(HEADER, LINES, 40))
+write(at("tier-lines") / "MEMORY-SHIPPED.md", VALID_T2)
+# tier-ok: a normal index with its sibling, and the sibling alone.
+write(at("tier-ok") / "MEMORY.md", fill_index(HEADER, AGG // 2, 900))
+write(at("tier-ok") / "MEMORY-SHIPPED.md", VALID_T2)
+# mailhost-like: 106 lines, 15347B, opted in, no sibling. Must stay silent.
+mail = lines_index(HEADER, 106, 144)
+mail_pad = 15347 - len(mail.encode("utf-8"))
+write(at("mailhost", "projects/q/memory") / "MEMORY.md", mail[:-1] + "x" * mail_pad + "\n")
+assert (sandbox / "mailhost/projects/q/memory/MEMORY.md").read_bytes().count(b"\n") == 106
+# tier cap: over, exactly at, and one under the second tier's own cap.
+write(at("shipped-over") / "MEMORY-SHIPPED.md", t2_total(SHIPPED + 14721))
+write(at("shipped-at-cap") / "MEMORY-SHIPPED.md", t2_total(SHIPPED))
+write(at("shipped-under-cap") / "MEMORY-SHIPPED.md", t2_total(SHIPPED - 1))
+# tier per-entry cap: one 1001B entry in an otherwise small second tier.
+write(at("shipped-entry") / "MEMORY-SHIPPED.md", T2_HEADER + pad_line("- [Big](big.md) - ", 1001) + "\n")
+# tier has no line check: LINES + 25 short lines, far under its byte cap.
+write(at("shipped-lines") / "MEMORY-SHIPPED.md", lines_index(T2_HEADER, LINES + 25, 40))
+# tier scope: the same oversized file where the path is out of scope, and under look-alike names.
+write(at("shipped-scope", "notprojects/proj1/memory") / "MEMORY-SHIPPED.md", t2_total(SHIPPED + 5000))
+write(at("shipped-x") / "X-MEMORY.md", t2_total(SHIPPED + 5000, HEADER))
+write(at("shipped-old") / "OLD-MEMORY-SHIPPED.md", t2_total(SHIPPED + 5000))
+# tier opt-in: an oversized second tier whose opt-in sentence was reworded is declined.
 write(
-    sandbox / "agg-boundary" / "projects" / "proj1" / "memory" / "MEMORY.md",
-    agg_boundary_content,
-)
-
-# agg-small-entries: 210 entries @ 100B each (all far under the 1000B per-entry cap) -> total
-# 21486B, over threshold. The discriminator: proves the aggregate check is not the per-entry
-# check restated — nothing here is anywhere near MAX_ENTRY_BYTES, yet the file must still trip.
-agg_small_body = build_multi_entries(210, 100)
-agg_small_content = HEADER + agg_small_body + "\n"
-assert len(agg_small_content.encode("utf-8")) == 21486, len(agg_small_content.encode("utf-8"))
-write(
-    sandbox / "agg-small-entries" / "projects" / "proj1" / "memory" / "MEMORY.md",
-    agg_small_content,
-)
-
-# agg-no-optin: same 21x960B body as agg-over (total over threshold), but under a header that
-# does NOT declare the opt-in rule -> must NOT trip. Measured justification: wohlford-court is
-# 21555B, unopted-in, on this machine; nothing must enroll it by accident.
-agg_no_optin_body = build_multi_entries(21, 960)
-agg_no_optin_content = NO_OPTIN_HEADER + agg_no_optin_body + "\n"
-assert len(agg_no_optin_content.encode("utf-8")) == 20217, len(
-    agg_no_optin_content.encode("utf-8")
-)
-write(
-    sandbox / "agg-no-optin" / "projects" / "proj1" / "memory" / "MEMORY.md",
-    agg_no_optin_content,
-)
-
-# agg-nonentry-content: 3 small entries (300B each) plus one 19526B PROSE paragraph that does
-# NOT start "- [" (so entry_blocks() never sees it) -> total 20500B, over threshold, driven
-# entirely by non-entry content. Pins that the aggregate is measured over RAW FILE BYTES, not
-# the sum of entry_blocks() — an implementation that reuses entry_blocks and sums its sizes
-# under-counts by the scaffolding and would read plausible while missing this row.
-agg_ne_entries = [pad_line(f"- [E{i}](t{i}.md) - ", 300) for i in range(3)]
-agg_ne_prose = pad_line("Prose paragraph, not a bullet - ", 19526)
-assert not agg_ne_prose.startswith("- ["), agg_ne_prose[:5]
-agg_ne_body = "\n\n".join(agg_ne_entries) + "\n\n" + agg_ne_prose
-agg_ne_content = HEADER + agg_ne_body + "\n"
-assert len(agg_ne_content.encode("utf-8")) == 20500, len(agg_ne_content.encode("utf-8"))
-write(
-    sandbox / "agg-nonentry-content" / "projects" / "proj1" / "memory" / "MEMORY.md",
-    agg_ne_content,
+    at("shipped-noopt") / "MEMORY-SHIPPED.md",
+    fill_index("---\nname: x\n---\n\n# Tier 2\n\nOne line per entry.\n\n", SHIPPED + 5000, 900),
 )
 
 print("FIXTURES_OK")
@@ -363,12 +436,12 @@ fixtures_rc=$?
 
 if [[ "$fixtures_rc" -ne 0 ]]; then
   printf 'FAIL  fixture construction (python3 exited %d building the sandbox — see output above)\n' "$fixtures_rc"
-  printf '\nFAIL 0/24\n'
+  printf '\nFAIL 0/0 (no row ran)\n'
   exit 1
 fi
 
 # ============================================================================================
-# The 24 rows
+# The rows
 # ============================================================================================
 
 run_block 'defect: single 4052B entry over cap, names line and byte count' \
@@ -420,30 +493,156 @@ run_block 'bare-dash-evasion: bare "- " continuation folds into its block (no br
   "$sandbox/bare-dash-evasion/projects/proj1/memory/MEMORY.md" \
   'memory-index-check:' 'line 3: 5022B'
 
-# ---- aggregate-size rows (memory-index-reader-limit spec, Task 1 — RED against today's
-#      checker for every "must trip" row below; see the fixture-construction comment above) ----
+# ---- aggregate-size rows. AGG, SHIPPED and LINE_CAP are the checker's own constants, read by the
+#      fixture builder above; every size a row names is computed from them.
+read -r AGG SHIPPED LINE_CAP < "$sandbox/caps.txt"
+m="projects/proj1/memory"
 
-run_block 'agg-over: total 20268B > 20000B threshold, 21 entries all <=960B — trips, names size + threshold' \
-  "$sandbox/agg-over/projects/proj1/memory/MEMORY.md" \
-  'memory-index-check:' '20268' '20000'
+# The fixtures above read three constants from the checker. A name the checker does not declare
+# falls back to a default there, so this row is what makes a missing or renamed constant a FAIL.
+declared=0
+for const in AGG_MAX_BYTES SHIPPED_MAX_BYTES LINE_MAX; do
+  grep -q "^${const} = [0-9]" "$script" && declared=$((declared + 1))
+done
+if [[ "$declared" -eq 3 ]]; then
+  printf 'PASS  cap-constants: AGG_MAX_BYTES, SHIPPED_MAX_BYTES and LINE_MAX are declared\n'
+  pass=$((pass + 1))
+else
+  printf 'FAIL  cap-constants: only %d of AGG_MAX_BYTES, SHIPPED_MAX_BYTES, LINE_MAX are declared\n' "$declared"
+  fail=$((fail + 1))
+fi
 
-run_ok 'agg-under: total 11792B comfortably under the 20000B threshold — no trip' \
-  "$sandbox/agg-under/projects/proj1/memory/MEMORY.md"
+run_block "agg-over: ${AGG}B cap + 268B in 960B entries — trips, names size + threshold" \
+  "$sandbox/agg-over/$m/MEMORY.md" \
+  'memory-index-check:' "$((AGG + 268))" "${AGG}B"
 
-run_block 'agg-boundary: total exactly 20000B == threshold — trips (aggregate uses >=, not >)' \
-  "$sandbox/agg-boundary/projects/proj1/memory/MEMORY.md" \
-  'memory-index-check:' '20000'
+run_ok 'agg-under: 60% of the cap — no trip' \
+  "$sandbox/agg-under/$m/MEMORY.md"
 
-run_block 'agg-small-entries: total 21486B over threshold via 210 entries of 100B each (all far under the 1000B cap) — still trips, not the per-entry check restated' \
-  "$sandbox/agg-small-entries/projects/proj1/memory/MEMORY.md" \
-  'memory-index-check:' '21486' '20000'
+run_block 'agg-boundary: exactly the cap — trips (aggregate uses >=, not >)' \
+  "$sandbox/agg-boundary/$m/MEMORY.md" \
+  'memory-index-check:' "${AGG}B"
 
-run_ok 'agg-no-optin: total 20217B over threshold but header does NOT declare the opt-in rule — must NOT trip' \
-  "$sandbox/agg-no-optin/projects/proj1/memory/MEMORY.md"
+run_block 'agg-small-entries: over the cap via ~100B entries (all far under the 1000B cap) — still trips, not the per-entry check restated' \
+  "$sandbox/agg-small-entries/$m/MEMORY.md" \
+  'memory-index-check:' "$((AGG + 1486))" "${AGG}B"
 
-run_block 'agg-nonentry-content: total 20500B over threshold via a 19526B prose paragraph, all 3 entries small (300B) — trips on raw file bytes, not summed entry_blocks' \
-  "$sandbox/agg-nonentry-content/projects/proj1/memory/MEMORY.md" \
-  'memory-index-check:' '20500' '20000'
+run_ok 'agg-no-optin: over the cap but the header does NOT declare the opt-in rule — must NOT trip' \
+  "$sandbox/agg-no-optin/$m/MEMORY.md"
+
+run_block 'agg-nonentry-content: over the cap via a long prose paragraph, all 3 entries small — trips on raw file bytes, not summed entry_blocks' \
+  "$sandbox/agg-nonentry-content/$m/MEMORY.md" \
+  'memory-index-check:' "$((AGG + 500))" "${AGG}B"
+
+# The byte cap stays below the client's own cut (25,000 UTF-16 units) and the line threshold below
+# its 200-line cut, each above a sane floor, so a raise has a ceiling it cannot cross and a typo
+# (200000, or 2000) has a floor it cannot fall under.
+if [[ "$AGG" -ge 10000 && "$AGG" -lt 25000 && "$LINE_CAP" -ge 100 && "$LINE_CAP" -lt 200 ]]; then
+  printf 'PASS  cap-bounds: AGG_MAX_BYTES=%d in [10000, 25000) and LINE_MAX=%d in [100, 200)\n' "$AGG" "$LINE_CAP"
+  pass=$((pass + 1))
+else
+  printf 'FAIL  cap-bounds: AGG_MAX_BYTES=%d or LINE_MAX=%d is outside its bound — the client cuts at 25,000 units and 200 lines\n' "$AGG" "$LINE_CAP"
+  fail=$((fail + 1))
+fi
+
+# ---- the true breach wording (PART 1) and the sibling-conditional remedy (second tier) ----
+run_block 'wording: over cap names the real cap and the client cut, never "archive" or "ALREADY invisible"' \
+  "$sandbox/tier-over/$m/MEMORY.md" \
+  'memory-index-check:' "at or over the ${AGG}B cap" '25,000 UTF-16 units' \
+  'or hold the pointer' '!archive' '!ALREADY' '!hub files'
+
+run_block 'wording: with a sibling tier beside it, the remedy offers the tier' \
+  "$sandbox/tier-over/$m/MEMORY.md" \
+  'memory-index-check:' 'shipped-change entry'
+
+run_block 'wording: the offer reads in full — move a shipped-change entry behind the tier, or hold the pointer' \
+  "$sandbox/tier-over/$m/MEMORY.md" \
+  'memory-index-check:' 'move a shipped-change entry behind MEMORY-SHIPPED.md, or hold the pointer'
+
+run_block 'wording: over cap with NO sibling tier — "or hold the pointer", and no mention of a tier' \
+  "$sandbox/tier-over-nosib/$m/MEMORY.md" \
+  'memory-index-check:' 'or hold the pointer' '!shipped-change entry' '!archive' '!ALREADY'
+
+run_block 'wording: another opted-in project over cap, no sibling — the same text, no tier' \
+  "$sandbox/tier-over-q/projects/q/memory/MEMORY.md" \
+  'memory-index-check:' 'or hold the pointer' '!shipped-change entry' '!archive' '!ALREADY'
+
+# ---- the line check ----
+run_block 'both: over the byte cap AND the line threshold — both sections are reported' \
+  "$sandbox/both-breach/$m/MEMORY.md" \
+  'memory-index-check:' "${LINE_CAP}-line threshold" "${AGG}B cap"
+
+run_ok "lines: $((LINE_CAP - 1)) lines (wc -l) — under the threshold" \
+  "$sandbox/lines-$((LINE_CAP - 1))/$m/MEMORY.md"
+
+run_block "lines: exactly $LINE_CAP lines — trips (>=), names the threshold and the remedy, and no tier exists to name" \
+  "$sandbox/lines-$LINE_CAP/$m/MEMORY.md" \
+  'memory-index-check:' "${LINE_CAP}-line threshold" 'Hold a pointer, or shorten the file.' \
+  '!MEMORY-SHIPPED.md' '!shipped-change' '!when that file exists' '!archive'
+
+run_block "lines: $((LINE_CAP + 25)) lines — trips, and reports its own line count" \
+  "$sandbox/lines-$((LINE_CAP + 25))/$m/MEMORY.md" \
+  'memory-index-check:' "has $((LINE_CAP + 25)) lines" "${LINE_CAP}-line threshold"
+
+run_block 'lines: a sibling tier beside a long index changes nothing about the line verdict' \
+  "$sandbox/tier-lines/$m/MEMORY.md" \
+  'memory-index-check:' "${LINE_CAP}-line threshold" 'Hold a pointer'
+
+run_block 'lines: with a sibling tier beside it, the line remedy offers the tier' \
+  "$sandbox/tier-lines/$m/MEMORY.md" \
+  'memory-index-check:' 'Hold a pointer, or move a shipped-change entry behind MEMORY-SHIPPED.md, or shorten the file.'
+
+run_ok "lines: $((LINE_CAP - 1)) lines in another opted-in project (no sibling)" \
+  "$sandbox/lines-$((LINE_CAP - 1))-q/projects/q/memory/MEMORY.md"
+
+run_block "lines: exactly $LINE_CAP lines in another opted-in project (no second file): the file is NOT named" \
+  "$sandbox/lines-$LINE_CAP-q/projects/q/memory/MEMORY.md" \
+  'memory-index-check:' "${LINE_CAP}-line threshold" 'Hold a pointer, or shorten the file.' \
+  '!MEMORY-SHIPPED.md' '!shipped-change' '!when that file exists'
+
+run_ok 'lines: the mailhost-shaped index (106 lines, 15347B, opted in) stays silent' \
+  "$sandbox/mailhost/projects/q/memory/MEMORY.md"
+
+run_ok 'tier-ok: a normal index with its sibling tier is silent' \
+  "$sandbox/tier-ok/$m/MEMORY.md"
+
+# ---- the second tier, MEMORY-SHIPPED.md ----
+run_ok 'tier-ok: a valid second tier beside its index is silent' \
+  "$sandbox/tier-ok/$m/MEMORY-SHIPPED.md"
+
+run_block 'shipped-over: an oversized second tier trips its own cap and says it is read in full on each open' \
+  "$sandbox/shipped-over/$m/MEMORY-SHIPPED.md" \
+  'memory-index-check:' "${SHIPPED}B cap" 'read in full each time it is opened'
+
+run_block 'shipped-over: its remedy is to split the file or build hub files, never to hold a pointer, and none of the first tier text' \
+  "$sandbox/shipped-over/$m/MEMORY-SHIPPED.md" \
+  'memory-index-check:' 'split the file or build hub files' '!hold the pointer' '!archive' '!ALREADY' '!25,000'
+
+run_block 'shipped-at-cap: exactly the second tier cap trips (>=)' \
+  "$sandbox/shipped-at-cap/$m/MEMORY-SHIPPED.md" \
+  'memory-index-check:' "${SHIPPED}B cap"
+
+run_ok 'shipped-under-cap: one byte under the second tier cap is silent' \
+  "$sandbox/shipped-under-cap/$m/MEMORY-SHIPPED.md"
+
+run_block 'shipped-entry: the per-entry cap applies to the second tier too' \
+  "$sandbox/shipped-entry/$m/MEMORY-SHIPPED.md" \
+  'memory-index-check:' 'line 10: 1001B'
+
+run_ok 'shipped-lines: the second tier has no line check (long, short lines, far under its byte cap)' \
+  "$sandbox/shipped-lines/$m/MEMORY-SHIPPED.md"
+
+run_ok "shipped-scope: an oversized MEMORY-SHIPPED.md outside projects/*/memory is out of scope" \
+  "$sandbox/shipped-scope/notprojects/proj1/memory/MEMORY-SHIPPED.md"
+
+run_ok 'shipped-x: an oversized X-MEMORY.md is declined by exact basename membership' \
+  "$sandbox/shipped-x/$m/X-MEMORY.md"
+
+run_ok 'shipped-old: an oversized OLD-MEMORY-SHIPPED.md is declined by exact basename membership' \
+  "$sandbox/shipped-old/$m/OLD-MEMORY-SHIPPED.md"
+
+run_ok 'shipped-noopt: an oversized second tier that does not declare the opt-in rule is declined' \
+  "$sandbox/shipped-noopt/$m/MEMORY-SHIPPED.md"
 
 # ---- argv-refusal: invoked with an argv arg, stdin at EOF ----
 argv_rc=0
