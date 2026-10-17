@@ -37,11 +37,17 @@ set -uo pipefail
 #
 # Terminal verdict line: every run this script exits from itself prints, as its LAST
 # line of stdout, `RESULT: <STATUS> rc=<n> checks=<pass>/<fail>/<skip>` where STATUS is
-# PASS (completed, zero FAILs) | FAIL (completed, >=1 FAIL) | ERROR (usage error, no
+# PASS (completed, zero FAILs) | PARALLEL-PASS (completed, zero FAILs, opt-in parallel pytest
+# iteration run; see below) | FAIL (completed, >=1 FAIL) | ERROR (usage error, no
 # sweep ran) | INCOMPLETE (died mid-sweep on a catchable signal). Clean is EXACTLY
 # `RESULT: PASS` — an allowlist, so any value not anticipated here reads as not-clean.
 # The line CANNOT be emitted on SIGKILL, so its ABSENCE never means clean: it means
 # the run did not complete.
+#
+# One more status exists for an opt-in iteration run: when AUDIT_PYTEST_JOBS asked for pytest
+# under xdist (a count of 2 or more) and the run completed with zero FAILs, the last line is
+# `RESULT: PARALLEL-PASS rc=0 ...`. It is NOT a clean verdict for any gate, and its first word is
+# deliberately not PASS, so a reader matching on a PASS prefix does not accept it.
 #
 # NOTE: no `-e` — sweep-runner exemption (STYLE.md): one failing check or tool invocation
 # must not abort the whole sweep, so every check below guards its own commands explicitly
@@ -83,6 +89,26 @@ hermetic_marker=""
 # it, and a `local` copy would be invisible to the trap. It is read BARE (no default) in the
 # trap, so this top-level initialisation is load-bearing under `set -u`.
 shellcheck_tmp=""
+
+# The scratch directory the opt-in parallel pytest passes write their JUnit files into; empty
+# whenever none exists. Global for the same reason as shellcheck_tmp: audit_on_exit() must see it,
+# and it is read BARE (no default) in the trap, so this top-level initialisation is load-bearing
+# under `set -u`.
+audit_pytest_tmp=""
+
+# The worker count of the opt-in parallel pytest run. Assigned when pass one is LAUNCHED and at no
+# earlier point, so empty means the serial gate ran (or no python test ran at all). main() reads it
+# to choose the terminal status word.
+tests_parallel_jobs=""
+
+# Results of the pytest_collect / pytest_conserve helpers, read by their callers.
+pytest_err=""
+pytest_collect_n=""
+pytest_collect_rc=0
+
+# True once a pytest pass of the opt-in parallel mode was red (or its conservation check failed);
+# gates the note that points the operator at the parallel profile.
+pytest_red=false
 
 # The repo root every check runs against, set once in main() before any check runs. Every
 # check function already receives its own scope as $1, but print_offenders() does not — its
@@ -141,6 +167,7 @@ audit_on_exit() { # exit-status
   # handle when it removes the file itself, so this is a backstop and not a second owner.
   [[ -n "$hermetic_marker" ]] && rm -f "$hermetic_marker"
   shellcheck_remove_tmp   # exit-trap backstop
+  pytest_remove_tmp   # exit-trap backstop
   [[ "$audit_reported" == yes ]] && return
   if [[ "$audit_phase" == init && "$1" -eq 2 ]]; then
     audit_result_line ERROR "$1"
@@ -451,9 +478,209 @@ shellcheck_remove_tmp() {
   return 0
 }
 
+# Removes the opt-in parallel pytest passes' scratch directory and clears the handle. Called from
+# the check itself (every normal path) and from the exit trap (a backstop for interrupted runs).
+# The basename test keeps a corrupted handle from ever pointing `rm -rf` elsewhere.
+pytest_remove_tmp() {
+  if [[ -n "$audit_pytest_tmp" && -d "$audit_pytest_tmp" ]]; then
+    case "$audit_pytest_tmp" in
+      */audit-pytest.*) rm -rf "$audit_pytest_tmp" ;;
+    esac
+  fi
+  audit_pytest_tmp=""
+  return 0
+}
+
+# Appends one failed pass to the CALLER's `detail` and `wrote_any` (bash dynamic scope: check_tests
+# declares both as locals and calls through here). A separate spelling from the shell-suite and
+# serial-pytest writes in check_tests, on purpose: those lines are anchors of existing mutation
+# campaigns and must stay present exactly once.
+pytest_pass_report() { # scope label rc output
+  local scope="$1" label="$2" prc="$3" pout="$4" pnote
+  if audit_artifact_write "$scope" "$label" "$pout"; then pnote=""; wrote_any=true
+  else pnote=' (full output NOT preserved)'; fi
+  detail="${detail}${label} exited ${prc}:${pnote}"$'\n'"$(tests_excerpt "$pout")"$'\n'
+  pytest_red=true
+}
+
+# One no-xdist `--collect-only` of the scope, optionally narrowed by a marker expression; LABEL
+# (unfiltered, `not serial_only` or `serial_only`) names which of the three collects failed. Sets
+# pytest_collect_n (the count) and pytest_collect_rc (the runner's status); returns 1 and sets
+# pytest_err when the output cannot be read. The node ids are the lines containing `::` before the
+# first blank line, cross-checked against the summary line, so warning text printed after the
+# listing cannot inflate the count. Accepted summary forms, each followed by ` in <seconds>s`:
+# `N tests collected`, `1 test collected`, `N/M tests collected (K deselected)`, `no tests collected
+# (K deselected)` and bare `no tests collected`. Any other shape is unreadable, never a guess. Exit
+# 5 (nothing collected) is accepted only alongside a zero count.
+pytest_collect() { # scope label marker-expression-or-empty [file to receive the node ids]
+  local scope="$1" label="$2" expr="$3" out ids last re_some re_part re_none
+  re_some='^([0-9]+) tests? collected( \([0-9]+ deselected\))? in [0-9.]+s'
+  re_part='^([0-9]+)/[0-9]+ tests? collected \([0-9]+ deselected\) in [0-9.]+s'
+  re_none='^no tests collected( \([0-9]+ deselected\))? in [0-9.]+s'
+  pytest_collect_n=""
+  if [[ -n "$expr" ]]; then
+    out="$(cd "$scope" && pytest_run -q --collect-only -p no:cacheprovider -m "$expr" 2>&1)"; pytest_collect_rc=$?
+  else
+    out="$(cd "$scope" && pytest_run -q --collect-only -p no:cacheprovider 2>&1)"; pytest_collect_rc=$?
+  fi
+  ids="$(printf '%s\n' "$out" | awk 'NF == 0 { exit } /::/ { n++ } END { print n + 0 }')"
+  if [[ -n "${4:-}" ]]; then printf '%s\n' "$out" | awk 'NF == 0 { exit } /::/' > "$4"; fi
+  last="$(printf '%s\n' "$out" | awk 'NF { l = $0 } END { print l }')"
+  if [[ "$last" =~ $re_some ]]; then
+    pytest_collect_n="${BASH_REMATCH[1]}"
+  elif [[ "$last" =~ $re_part ]]; then
+    pytest_collect_n="${BASH_REMATCH[1]}"
+  elif [[ "$last" =~ $re_none ]]; then
+    pytest_collect_n=0
+  else
+    pytest_err="pytest [${label}] collect summary unreadable: ${last}"
+    return 1
+  fi
+  if [[ "$pytest_collect_n" -ne "$ids" ]]; then
+    pytest_err="pytest [${label}] collect summary unreadable: the listing holds ${ids} node ids but the summary says ${pytest_collect_n}"
+    return 1
+  fi
+  if [[ "$pytest_collect_rc" -ne 0 && "$pytest_collect_rc" -ne 5 ]] \
+    || [[ "$pytest_collect_rc" -eq 5 && "$pytest_collect_n" -ne 0 ]]; then
+    pytest_err="pytest [${label}] collect exited ${pytest_collect_rc} with ${pytest_collect_n} tests collected"
+    return 1
+  fi
+  return 0
+}
+
+# Writes the sorted DISTINCT "classname|name" pairs of a JUnit file, one per line. Counted by a
+# parse, never by `grep -c '<testcase'`: that counts lines, not elements, and JUnit is not one
+# element per test (a test that fails and also errors in teardown yields two elements with the
+# same classname and name). Sorted as the joined "classname|name" strings, in code-point order, which
+# is the byte order `comm` needs: sorting the (classname, name) tuples instead puts `a.b|z` before
+# `a.bc|a`, and `comm` then silently misses overlaps (measured on a real run). On failure it sets
+# pytest_err to the parser's own words.
+pytest_pairs() { # junit-file out-file
+  pytest_err="$(python3 -c 'import xml.etree.ElementTree as E, sys
+try:
+    root = E.parse(sys.argv[1]).getroot()
+except Exception as exc:
+    sys.stderr.write("%s\n" % exc)
+    sys.exit(1)
+lines = sorted({"%s|%s" % (c.get("classname", ""), c.get("name", "")) for c in root.iter("testcase")})
+sys.stdout.write("".join(line + "\n" for line in lines))' "$1" 2>&1 > "$2")" || return 1
+  pytest_err=""
+}
+
+# Maps a file of collected node ids (`path/test_x.py::Class::test_name[param]`) to the same sorted
+# "classname|name" form JUnit reports (`path.test_x.Class` and `test_name[param]`), so the set of
+# collected tests can be compared with the set that ran. The split is on the `::` BEFORE the first
+# `[`, so a parameter id containing `::` stays whole.
+pytest_ids_to_pairs() { # ids-file out-file
+  pytest_err="$(python3 -c 'import sys
+out = set()
+for raw in open(sys.argv[1], encoding="utf-8"):
+    nodeid = raw.rstrip("\n")
+    if not nodeid:
+        continue
+    cut = nodeid.find("[")
+    head, params = (nodeid, "") if cut < 0 else (nodeid[:cut], nodeid[cut:])
+    parts = head.split("::")
+    path = parts[0][:-3] if parts[0].endswith(".py") else parts[0]
+    classname = ".".join([path.replace("/", ".")] + parts[1:-1])
+    out.add("%s|%s" % (classname, parts[-1] + params))
+sys.stdout.write("".join(line + "\n" for line in sorted(out)))' "$1" 2>&1 > "$2")" || return 1
+  pytest_err=""
+}
+
+# Conservation over the two passes: each executed as many distinct tests as it selected, the two sets
+# of distinct tests are disjoint, and together they are EXACTLY the collected tests, compared as sets
+# (so one lost test cancelled by one that was never collected is still a violation). Returns 1 and sets pytest_err on the
+# first violation. The `ser` selection may legitimately be empty (a repo with no marked rows); its
+# exit status 5 is accepted only then.
+pytest_conserve() { # scope ser-exit-status
+  local scope="$1" rcs="$2" t="$audit_pytest_tmp" n_all n_par n_ser c_par c_ser c_all overlap missing extra
+  pytest_collect "$scope" unfiltered "" "$t/all.ids" || return 1
+  n_all="$pytest_collect_n"
+  pytest_collect "$scope" "not serial_only" "not serial_only" || return 1
+  n_par="$pytest_collect_n"
+  pytest_collect "$scope" serial_only serial_only || return 1
+  n_ser="$pytest_collect_n"
+  if [[ "$rcs" -eq 5 && "$n_ser" -ne 0 ]]; then
+    pytest_err="pytest ser exited 5 (no tests ran) while its collect counts ${n_ser}"
+    return 1
+  fi
+  if [[ "$n_par" -eq 0 ]]; then
+    pytest_err="pytest par collected 0 tests"
+    return 1
+  fi
+  pytest_pairs "$t/par.xml" "$t/par.pairs" || { pytest_err="pytest par junit unreadable: ${pytest_err}"; return 1; }
+  if [[ "$n_ser" -gt 0 ]]; then
+    pytest_pairs "$t/ser.xml" "$t/ser.pairs" || { pytest_err="pytest ser junit unreadable: ${pytest_err}"; return 1; }
+  else
+    : > "$t/ser.pairs"
+  fi
+  c_par="$(wc -l < "$t/par.pairs" | tr -d ' ')"
+  c_ser="$(wc -l < "$t/ser.pairs" | tr -d ' ')"
+  [[ "$c_par" -eq "$n_par" ]] || { pytest_err="pytest par executed ${c_par} of ${n_par} collected"; return 1; }
+  [[ "$c_ser" -eq "$n_ser" ]] || { pytest_err="pytest ser executed ${c_ser} of ${n_ser} collected"; return 1; }
+  overlap="$(LC_ALL=C comm -12 "$t/par.pairs" "$t/ser.pairs" | wc -l | tr -d ' ')"
+  [[ "$overlap" -eq 0 ]] || { pytest_err="pytest par and ser both ran ${overlap} test(s)"; return 1; }
+  pytest_ids_to_pairs "$t/all.ids" "$t/all.pairs" || { pytest_err="pytest collected node ids unreadable: ${pytest_err}"; return 1; }
+  # A floor on the DERIVED reading: a transform that drops or merges ids would shrink both sides of the
+  # set comparison below alike and read as agreement, so the derived count must equal the collected count.
+  c_all="$(wc -l < "$t/all.pairs" | tr -d ' ')"
+  [[ "$c_all" -eq "$n_all" ]] || { pytest_err="pytest collected ${n_all} node ids but their derived pairs number ${c_all}"; return 1; }
+  LC_ALL=C sort -u "$t/par.pairs" "$t/ser.pairs" > "$t/ran.pairs" || { pytest_err="pytest could not merge the two passes' pairs"; return 1; }
+  LC_ALL=C comm -23 "$t/all.pairs" "$t/ran.pairs" > "$t/missing.pairs" || { pytest_err="pytest could not compare the collected pairs with the ran pairs"; return 1; }
+  LC_ALL=C comm -13 "$t/all.pairs" "$t/ran.pairs" > "$t/extra.pairs" || { pytest_err="pytest could not compare the ran pairs with the collected pairs"; return 1; }
+  missing="$(wc -l < "$t/missing.pairs" | tr -d ' ')"
+  extra="$(wc -l < "$t/extra.pairs" | tr -d ' ')"
+  [[ "$missing" -eq 0 && "$extra" -eq 0 ]] || { pytest_err="pytest par and ser together ran a different set of tests than were collected: ${missing} collected test(s) never ran, ${extra} ran without being collected"; return 1; }
+  return 0
+}
+
+# The opt-in parallel passes: pass `par` runs everything NOT marked serial_only under xdist, pass
+# `ser` runs the marked rows alone, in one process, after the workers have exited. Failures are
+# appended to the caller's `detail`. tests_parallel_jobs is assigned here, at launch, and nowhere
+# earlier.
+pytest_parallel_passes() { # scope jobs
+  local scope="$1" jobs="$2" t="$audit_pytest_tmp" outp rcp outs rcs
+  tests_parallel_jobs="$jobs"
+  outp="$(cd "$scope" && pytest_run -q -n "$jobs" -m "not serial_only" --junitxml="$t/par.xml" 2>&1)"; rcp=$?
+  outs="$(cd "$scope" && pytest_run -q -m serial_only --junitxml="$t/ser.xml" 2>&1)"; rcs=$?
+  if [[ "$rcp" -ne 0 ]]; then pytest_pass_report "$scope" pytest-par "$rcp" "$outp"; fi
+  if [[ "$rcs" -ne 0 && "$rcs" -ne 5 ]]; then pytest_pass_report "$scope" pytest-ser "$rcs" "$outs"; fi
+  case "$rcp" in
+    0|1)
+      case "$rcs" in
+        0|1|5)
+          # A conservation failure has no pass output to preserve, so its message is the artifact:
+          # the "full output:" line then reports a write that really was attempted.
+          if ! pytest_conserve "$scope" "$rcs"; then
+            detail="${detail}${pytest_err}"$'\n'
+            pytest_red=true
+            if audit_artifact_write "$scope" pytest-conserve "$pytest_err"; then wrote_any=true; fi
+          fi
+          ;;
+      esac
+      ;;
+  esac
+}
+
+# Printed directly before the unchanged `FAIL tests` line of a parallel run, so a red parallel run
+# is not quoted as the gate's red.
+pytest_red_note() {
+  printf 'NOTE tests: this run used pytest under xdist (AUDIT_PYTEST_JOBS=%s), not the serial gate; a red here is a finding to sweep under the parallel profile, not load to dismiss\n' "$tests_parallel_jobs"
+}
+
+# The pytest runner, with the operator's PYTEST_ADDOPTS removed. pytest reads that variable on its
+# own, so an exported `-n 8`, `-k` or `--lf` would otherwise change what the gate runs while the
+# terminal line still read PASS. Every runner call of the parallel path goes through here; the
+# serial default spells the same scrub inline.
+pytest_run() { # pytest-args...
+  env -u PYTEST_ADDOPTS python3 -m pytest "$@"
+}
+
 # 0 when VALUE is NOT a usable worker count. Decided by pattern BEFORE any arithmetic: a leading
 # zero reads as octal (`08` is an arithmetic error, `010` is 8), a long value wraps, and an
 # operator-supplied string must never be evaluated arithmetically.
+# Also validates AUDIT_PYTEST_JOBS (check_tests), not only AUDIT_SHELLCHECK_JOBS.
 shellcheck_jobs_invalid() { # value
   case "$1" in
     ''|0*|*[!0-9]*) return 0 ;;
@@ -1742,6 +1969,53 @@ check_tests() {
   # fails, and printing the directory in that case would claim preservation this check itself
   # never achieved.
   local wrote_any=false
+  local pytest_jobs="${AUDIT_PYTEST_JOBS:-}" want_parallel=false runner_ok=false runner_out="" runner_rc=0
+  # AUDIT_PYTEST_JOBS is validated FIRST, before any suite runs, so a typo costs nothing and cannot
+  # be mistaken for a parallel run that did not happen. Unset or empty is the serial gate, and so
+  # is 1; only 2 or more selects the opt-in parallel mode.
+  if [[ -n "$pytest_jobs" ]] && shellcheck_jobs_invalid "$pytest_jobs"; then
+    verdict_fail tests "AUDIT_PYTEST_JOBS must be a positive integer (got '$pytest_jobs')"
+    return
+  fi
+  [[ -n "$pytest_jobs" && "$pytest_jobs" -gt 1 ]] && want_parallel=true
+  # `:(glob)` is load-bearing. A plain `*test_*.py` pathspec is wildmatch WITHOUT WM_PATHNAME,
+  # so `*` crosses `/` and `test_` matches anywhere in the PATH: `src/latest_run.py` matches
+  # (la-test_-run). While that only decided whether pytest was INVOKED it was harmless; now that
+  # it decides a FAIL, an over-match is a false block on every adopting repo. `:(glob)**/` still
+  # matches at any depth, top level included — verified against both.
+  py_list="$(git -C "$scope" ls-files -- ':(glob)**/test_*.py' 2>/dev/null)"
+  # The runner-start check runs ONCE, here, before any suite, so the opt-in's flag probe below can
+  # be skipped on a runner that cannot start. The existing unprovable arm further down reports
+  # the runner's own words from `runner_out`.
+  if [[ -n "$py_list" ]]; then
+    runner_out="$(pytest_run --version 2>&1)"; runner_rc=$?
+    [[ "$runner_rc" -eq 0 ]] && runner_ok=true
+  fi
+  # The opt-in's gates, in this order and all before any shell suite: the flag probe (does the
+  # runner accept -n, not merely does xdist import), then a scratch directory outside the scope,
+  # then the NOTE. A repo with no python tests, a count of 1, or a runner that cannot start never
+  # gets here, so none of them needs xdist.
+  if [[ "$want_parallel" == true && -n "$py_list" && "$runner_ok" == true ]]; then
+    local help_out pbase
+    help_out="$(pytest_run --help 2>&1)"
+    case "$help_out" in
+      *--numprocesses*) ;;
+      *)
+        verdict_fail tests "AUDIT_PYTEST_JOBS=${pytest_jobs} requested but the pytest runner does not accept -n (pytest-xdist not loaded): $(printf '%s\n' "$help_out" | tail -1)"
+        return
+        ;;
+    esac
+    pbase="${TMPDIR:-/tmp}"
+    audit_pytest_tmp=""
+    if audit_scratch_outside_scope "$scope" "$pbase"; then
+      audit_pytest_tmp="$(mktemp -d "$pbase/audit-pytest.XXXXXX" 2>/dev/null)" || audit_pytest_tmp=""
+    fi
+    if [[ -z "$audit_pytest_tmp" ]]; then
+      verdict_fail tests "AUDIT_PYTEST_JOBS=${pytest_jobs}: the scratch directory ${pbase} lies inside the scope (or could not be created); set TMPDIR to a directory outside the scope"
+      return
+    fi
+    printf 'NOTE tests: pytest runs under pytest-xdist with %s workers in two passes (AUDIT_PYTEST_JOBS); this is an iteration run, not the serial gate; shell suites run serially\n' "$pytest_jobs"
+  fi
   sh_list="$(git -C "$scope" ls-files -- 'scripts/tests/test_*.sh' 2>/dev/null)"
   while IFS= read -r t; do
     [[ -z "$t" ]] && continue
@@ -1756,23 +2030,21 @@ check_tests() {
     fi
   done <<< "$sh_list"
 
-  # `:(glob)` is load-bearing. A plain `*test_*.py` pathspec is wildmatch WITHOUT WM_PATHNAME,
-  # so `*` crosses `/` and `test_` matches anywhere in the PATH: `src/latest_run.py` matches
-  # (la-test_-run). While that only decided whether pytest was INVOKED it was harmless; now that
-  # it decides a FAIL, an over-match is a false block on every adopting repo. `:(glob)**/` still
-  # matches at any depth, top level included — verified against both.
-  py_list="$(git -C "$scope" ls-files -- ':(glob)**/test_*.py' 2>/dev/null)"
   # APPLICABILITY and EXECUTION are separate questions, and must not share one flag. With a
   # single `ran`, a passing shell suite above laundered this family's silence into `PASS tests`
   # — the sweep reporting a clean result for suites it never ran. Measured; that was the defect.
   if [[ -n "$py_list" ]]; then
-    if python3 -m pytest --version >/dev/null 2>&1; then
+    if [[ "$runner_ok" == true ]]; then
       ran=true
-      out="$(cd "$scope" && python3 -m pytest -q 2>&1)"; rc=$?
-      if [[ "$rc" -ne 0 ]]; then
-        if audit_artifact_write "$scope" pytest "$out"; then note=""; wrote_any=true
-        else note=' (full output NOT preserved)'; fi
-        detail="${detail}pytest exited ${rc}:${note}"$'\n'"$(tests_excerpt "$out")"$'\n'
+      if [[ "$want_parallel" == true ]]; then
+        pytest_parallel_passes "$scope" "$pytest_jobs"
+      else
+        out="$(cd "$scope" && env -u PYTEST_ADDOPTS python3 -m pytest -q 2>&1)"; rc=$?
+        if [[ "$rc" -ne 0 ]]; then
+          if audit_artifact_write "$scope" pytest "$out"; then note=""; wrote_any=true
+          else note=' (full output NOT preserved)'; fi
+          detail="${detail}pytest exited ${rc}:${note}"$'\n'"$(tests_excerpt "$out")"$'\n'
+        fi
       fi
     else
       # The files existing is what establishes applicability, so a missing runner here is
@@ -1783,11 +2055,13 @@ check_tests() {
       # absent, and by a plugin failing to import — so a fixed "pytest is not installed" names
       # the wrong remedy in two of the three, on a fail-closed gate whose message is the only
       # thing the operator acts on. Report the measurement; do not infer between hypotheses.
-      py_why="$(python3 -m pytest --version 2>&1 | tail -1)"
+      py_why="$(printf '%s\n' "$runner_out" | tail -1)"
       [[ -n "$py_why" ]] || py_why='python3 -m pytest is not runnable'
       unprovable="${py_count} test_*.py file(s) present but the runner could not start: ${py_why}"
     fi
   fi
+
+  pytest_remove_tmp   # normal path
 
   # Checked BEFORE `ran`, which speaks only for the families that did execute — consulting it
   # first is exactly what let one family hide behind another. Emitted through `verdict_fail` and
@@ -1808,6 +2082,7 @@ check_tests() {
     return
   fi
   if [[ -n "$detail" ]]; then
+    [[ -n "$tests_parallel_jobs" && "$pytest_red" == true ]] && pytest_red_note
     verdict_fail tests 'test suite failure(s)'
     # Printed BEFORE the detail: it is the one line whose loss would make the rest pointless.
     # Gated on `wrote_any`, not on `$audit_artifact_root` — the shared global can be non-empty
@@ -2162,7 +2437,11 @@ EOF
   # and a process killed before this point can only ever be reported INCOMPLETE, because
   # PASS and FAIL are unreachable from audit_on_exit().
   if [[ "$fail_count" -eq 0 ]]; then
-    audit_result_line PASS 0
+    if [[ -n "$tests_parallel_jobs" ]]; then
+      audit_result_line PARALLEL-PASS 0
+    else
+      audit_result_line PASS 0
+    fi
   else
     audit_result_line FAIL 1
   fi

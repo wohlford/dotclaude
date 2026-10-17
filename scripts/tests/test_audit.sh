@@ -23,6 +23,10 @@ trap 'rm -rf "$tmp"' EXIT
 export TMPDIR="$tmp/enginetmp"
 mkdir -p "$TMPDIR"
 
+# An exported AUDIT_PYTEST_JOBS would reach every row that runs the engine with --tests and turn the
+# terminal status word of a passing run into PARALLEL-PASS. The rPT rows set it explicitly.
+unset AUDIT_PYTEST_JOBS
+
 pass=0
 fail=0
 
@@ -147,6 +151,576 @@ mk_clean_repo() { # dir -> a fully clean, multi-filetype fixture, all committed
   commit_all "$1" seed
 }
 
+# rPT-BEGIN
+# ============================================================================
+# rPT. The opt-in parallel pytest mode of check_tests (AUDIT_PYTEST_JOBS)
+#
+# This section sits BEFORE case 1 so that `AUDIT_TEST_ONLY=rPT bash scripts/tests/test_audit.sh`
+# can run it alone (the guard after rPT-END exits) in about 80 s instead of the suite's six minutes.
+# The AUDIT_TEST_ONLY=rPT switch exists so this section can be run and graded on its own.
+#
+# Every row has its own TMPDIR, sets AUDIT_PYTEST_JOBS explicitly or runs with it removed, and
+# forces nothing with sleeps. A python3 shim stands in for pytest: it records each `-m pytest`
+# call (probe, collect or run) to a per-row directory and answers from canned data, and forwards
+# every other python3 call to the real interpreter, unrecorded.
+# ============================================================================
+rpt_t0="$SECONDS"
+rpt_root="$(cd "$tmp" && pwd -P)/rPT"
+mkdir -p "$rpt_root"
+rpt_real_py3="$(command -v python3)"
+
+{
+  printf '#!/bin/sh\nreal="%s"\n' "$rpt_real_py3"
+  cat << 'RPT_SHIM'
+rec="${SHIM_REC:-}"
+if [ "$1" = "-m" ] && [ "$2" = "pytest" ] && [ -n "$rec" ]; then
+  shift 2
+  all="$*"
+  ao=absent
+  [ "${PYTEST_ADDOPTS+set}" = set ] && ao=present
+  aj=absent
+  [ "${AUDIT_PYTEST_JOBS+set}" = set ] && aj=present
+  tag="addopts=$ao jobs=$aj"
+  expr=""
+  prev=""
+  jx=""
+  for a in "$@"; do
+    [ "$prev" = "-m" ] && expr="$a"
+    case "$a" in --junitxml=*) jx="${a#--junitxml=}" ;; esac
+    prev="$a"
+  done
+  case " $all " in
+    *" --version "*)
+      printf '%s\n' "$all $tag" >> "$rec/probe"
+      if [ "${SHIM_VERSION_FAIL:-}" = 1 ]; then
+        echo "No module named pytest" >&2
+        exit 1
+      fi
+      echo "pytest 9.0.0"
+      exit 0
+      ;;
+    *" --help "*)
+      printf '%s\n' "$all $tag" >> "$rec/probe"
+      echo "usage: pytest [options]"
+      if [ "${SHIM_HELP_NO_N:-}" != 1 ]; then echo "  -n, --numprocesses numprocesses"; fi
+      exit 0
+      ;;
+    *" --collect-only "*)
+      printf '%s\n' "$all $tag" >> "$rec/collect"
+      A="${SHIM_ALL:-3}"
+      P="${SHIM_PAR:-$A}"
+      S="${SHIM_SER:-0}"
+      case "$expr" in
+        "not serial_only")
+          n=$P
+          off=0
+          ;;
+        serial_only)
+          n=$S
+          off=$P
+          ;;
+        *)
+          n=$A
+          off=0
+          ;;
+      esac
+      i=1
+      while [ "$i" -le "$n" ]; do
+        echo "test_thing.py::test_$((off + i))"
+        i=$((i + 1))
+      done
+      if [ -z "$expr" ] && [ -n "${SHIM_DUP_ID:-}" ]; then
+        echo "test_thing.py::test_1"
+        n=$((n + 1))
+      fi
+      echo
+      if [ -n "${SHIM_COLLECT_SUMMARY:-}" ] && { [ -z "${SHIM_COLLECT_FOR:-}" ] || [ "$expr" = "$SHIM_COLLECT_FOR" ]; }; then
+        echo "$SHIM_COLLECT_SUMMARY"
+        exit "${SHIM_COLLECT_RC:-0}"
+      fi
+      if [ "$n" -eq 0 ]; then
+        if [ -z "$expr" ]; then echo "no tests collected in 0.01s"; else echo "no tests collected ($A deselected) in 0.01s"; fi
+        exit 5
+      fi
+      if [ -z "$expr" ]; then
+        if [ "$n" -eq 1 ]; then echo "1 test collected in 0.01s"; else echo "$n tests collected in 0.01s"; fi
+      else
+        echo "$n/$A tests collected ($((A - n)) deselected) in 0.01s"
+      fi
+      exit 0
+      ;;
+  esac
+  case " $all " in
+    *" -n "*) kind=par ;;
+    *) if [ "$expr" = serial_only ]; then kind=ser; else kind=serial; fi ;;
+  esac
+  printf '%s\n' "$all $tag" >> "$rec/run"
+  : > "$rec/started.$kind"
+  if [ "$kind" = par ] && [ -n "${SHIM_BLOCK:-}" ]; then
+    i=0
+    while [ ! -e "$rec/go" ] && [ "$i" -lt 600 ]; do
+      sleep 0.1
+      i=$((i + 1))
+    done
+  fi
+  if [ "$kind" = ser ] && [ -n "${SHIM_DROP_FILE:-}" ]; then : > "$SHIM_DROP_FILE"; fi
+  if [ -n "$jx" ]; then
+    cnt=0
+    off=0
+    case "$kind" in
+      par) cnt="${SHIM_RAN_PAR:-${SHIM_PAR:-${SHIM_ALL:-3}}}" ;;
+      ser)
+        cnt="${SHIM_RAN_SER:-${SHIM_SER:-0}}"
+        off="${SHIM_PAR:-${SHIM_ALL:-3}}"
+        [ -n "${SHIM_OVERLAP:-}" ] && off=0
+        ;;
+    esac
+    {
+      echo '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest">'
+      i=1
+      while [ "$i" -le "$cnt" ]; do
+        nm="test_$((off + i))"
+        if [ "$kind" = par ] && [ -n "${SHIM_SWAP_PAR:-}" ] && [ "$i" -eq "$cnt" ]; then nm="test_x"; fi
+        echo "<testcase classname=\"test_thing\" name=\"$nm\" time=\"0.01\"/>"
+        i=$((i + 1))
+      done
+      if [ "$kind" = par ] && [ -n "${SHIM_DUP_PAR:-}" ]; then echo '<testcase classname="test_thing" name="test_1" time="0.01"/>'; fi
+      echo '</testsuite></testsuites>'
+    } > "$jx"
+    if [ "$kind" = par ] && [ -n "${SHIM_BAD_JUNIT:-}" ]; then echo "this is not xml" > "$jx"; fi
+  fi
+  rcv=0
+  case "$kind" in
+    par) rcv="${SHIM_RC_PAR:-0}" ;;
+    ser)
+      if [ -n "${SHIM_RC_SER:-}" ]; then
+        rcv="$SHIM_RC_SER"
+      elif [ "${SHIM_SER:-0}" -eq 0 ]; then
+        rcv=5
+      fi
+      ;;
+    serial) rcv="${SHIM_RC_SERIAL:-0}" ;;
+  esac
+  if [ "$rcv" -eq 0 ]; then
+    echo "3 passed in 0.01s"
+  elif [ "$rcv" -eq 5 ]; then
+    echo "no tests ran in 0.01s"
+  else
+    echo "FAILED test_thing.py::test_1 - assert False"
+    echo "1 failed in 0.01s"
+  fi
+  exit "$rcv"
+fi
+if [ "$1" = "-c" ] && [ -n "$rec" ]; then
+  case "$2" in
+    "import xml"*) echo count >> "$rec/count" ;;
+    "import xdist"*)
+      echo xdist >> "$rec/xdist"
+      exit 0
+      ;;
+  esac
+fi
+exec "$real" "$@"
+RPT_SHIM
+} > "$rpt_root/shim-python3"
+chmod +x "$rpt_root/shim-python3"
+
+rpt_row() { # name -> creates the row directory (bin with the shim, rec, tmp) and prints its path
+  local d="$rpt_root/$1"
+  rm -rf "$d"
+  mkdir -p "$d/bin" "$d/rec" "$d/tmp"
+  ln -s "$rpt_root/shim-python3" "$d/bin/python3"
+  printf '%s' "$d"
+}
+
+rpt_stub() { # repo -> a tracked shell suite stub that records that it ran, via RPT_SENTINEL
+  mkdir -p "$1/scripts/tests"
+  printf '#!/usr/bin/env bash\nset -uo pipefail\n\n# Script: test_ok.sh\n# Purpose: fixture suite\n# Usage: ./test_ok.sh\n[[ -n "${RPT_SENTINEL:-}" ]] && : > "$RPT_SENTINEL"\nexit 0\n' > "$1/scripts/tests/test_ok.sh"
+  chmod +x "$1/scripts/tests/test_ok.sh"
+}
+
+rpt_repo() { # repo -> a clean fixture with one python test file and one shell suite stub
+  mk_clean_repo "$1"
+  rpt_stub "$1"
+  printf 'def test_thing() -> None:\n    assert True\n' > "$1/test_thing.py"
+  commit_all "$1" tests
+}
+
+rpt_repo_nopy() { # repo -> the same without any test_*.py
+  mk_clean_repo "$1"
+  rpt_stub "$1"
+  commit_all "$1" tests
+}
+
+rpt_reset() { # row-dir -> clears what a previous sub-case recorded
+  rm -f "$1/rec/"* "$1/sentinel"
+  rm -rf "$1/tmp" "$1/repo/tmpin"
+  mkdir -p "$1/tmp"
+}
+
+rpt_n() { # dir file -> the number of lines in dir/file, 0 when absent
+  if [[ -f "$1/$2" ]]; then wc -l < "$1/$2" | tr -d ' '; else printf '0'; fi
+}
+
+rpt_assert() { # label command... -> pass when the command succeeds
+  local label="$1"
+  shift
+  if "$@" > /dev/null 2>&1; then pass_line "$label"; else fail_line "$label"; fi
+}
+
+rpt_has_line() { # whole-line -> succeeds when $OUT holds exactly that line
+  printf '%s\n' "$OUT" | grep -qxF -- "$1"
+}
+
+rpt_line_has() { # file n fixed-text -> succeeds when line n of the file contains the text
+  sed -n "${2}p" "$1" | grep -qF -- "$3"
+}
+
+rpt_match() { # extended-regex text -> succeeds when the text matches
+  printf '%s\n' "$2" | grep -Eq -- "$1"
+}
+
+rpt_order() { # first second -> succeeds when both lines are in $OUT and the first comes first
+  local a b
+  a="$(printf '%s\n' "$OUT" | grep -nF -- "$1" | head -1 | cut -d: -f1)"
+  b="$(printf '%s\n' "$OUT" | grep -nF -- "$2" | head -1 | cut -d: -f1)"
+  [[ -n "$a" && -n "$b" && "$a" -lt "$b" ]]
+}
+
+# A real engine run with --tests: OUT = stdout only, RC. Extra arguments are NAME=value settings
+# for this run alone; AUDIT_PYTEST_JOBS and PYTEST_ADDOPTS are removed first so a row never
+# inherits either from the operator's shell.
+rpt_engine() { # row-dir repo [NAME=value...]
+  local d="$1" repo="$2"
+  shift 2
+  OUT="$(env -u AUDIT_PYTEST_JOBS -u PYTEST_ADDOPTS PATH="$d/bin:$PATH" SHIM_REC="$d/rec" \
+    TMPDIR="$d/tmp" RPT_SENTINEL="$d/sentinel" "$@" "$engine" --scope "$repo" --tests 2>/dev/null)"
+  RC=$?
+}
+
+# In-process: source the engine in a child shell and call check_tests alone, printing the verdict
+# lines and three trailer lines (the parallel marker, the scratch handle, the counts).
+rpt_inproc() { # row-dir repo [NAME=value...]
+  local d="$1" repo="$2"
+  shift 2
+  env -u AUDIT_PYTEST_JOBS -u PYTEST_ADDOPTS PATH="$d/bin:$PATH" SHIM_REC="$d/rec" \
+    TMPDIR="$d/tmp" RPT_SENTINEL="$d/sentinel" "$@" "$BASH" -c '
+    source "$1"
+    audit_scope="$2"
+    check_tests "$2"
+    printf "PARALLEL=%s\n" "${tests_parallel_jobs:-}"
+    printf "TMPLEFT=%s\n" "${audit_pytest_tmp:-}"
+    printf "COUNTS=%s/%s/%s\n" "$pass_count" "$fail_count" "$skip_count"
+  ' _ "$engine" "$repo" 2>&1
+}
+# ---- PT0: the fixture itself is clean, so a later RESULT line is about tests alone --------------
+rPT0="$(rpt_row PT0)"
+rpt_repo "$rPT0/repo"
+run_engine_stdout "$rPT0/repo"
+assert_last_line_prefix 'RESULT: PASS rc=0' 'PT0: the fixture repo passes a plain sweep (no --tests)'
+
+# ---- PT1: the default is the serial gate, byte for byte ------------------------------------------
+rPT1="$(rpt_row PT1)"
+rpt_repo "$rPT1/repo"
+rpt_engine "$rPT1" "$rPT1/repo"
+assert_last_line_prefix 'RESULT: PASS rc=0' 'PT1: the default run ends RESULT: PASS rc=0'
+check_eq "$(rpt_n "$rPT1/rec" run)" 1 'PT1: exactly one runner call'
+check_eq "$(rpt_n "$rPT1/rec" collect)" 0 'PT1: no collect-only call'
+check_eq "$(rpt_n "$rPT1/rec" probe)" 1 'PT1: the runner-start check ran once and is not a counted call'
+rpt_assert 'PT1: the one call is -q, with the scrub in effect and no jobs variable' \
+  grep -qxF -- '-q addopts=absent jobs=absent' "$rPT1/rec/run"
+assert_not_has 'NOTE tests' 'PT1: no NOTE line in the default run'
+check_eq "$(test -e "$rPT1/sentinel" && echo yes || echo no)" yes 'PT1: the shell suite still ran'
+
+# ---- PT2: a count of 1 is the serial gate too ----------------------------------------------------
+rPT2="$(rpt_row PT2)"
+rpt_repo "$rPT2/repo"
+OUT="$(rpt_inproc "$rPT2" "$rPT2/repo" AUDIT_PYTEST_JOBS=1)"
+assert_has 'PASS tests' 'PT2: AUDIT_PYTEST_JOBS=1 -> PASS tests'
+check_eq "$(rpt_n "$rPT2/rec" run)" 1 'PT2: exactly one runner call'
+check_eq "$(rpt_n "$rPT2/rec" collect)" 0 'PT2: no collect-only call'
+rpt_assert 'PT2: the call is the serial -q (the variable is present in its environment, no -n)' \
+  grep -qxF -- '-q addopts=absent jobs=present' "$rPT2/rec/run"
+rpt_assert 'PT2: the parallel marker stayed empty' rpt_has_line 'PARALLEL='
+
+# ---- PT4: an invalid value fails closed, naming the variable, before anything runs ---------------
+rPT4="$(rpt_row PT4)"
+rpt_repo "$rPT4/repo"
+for rpt4_v in 0 08 abc -1 1.5 12345 '4 '; do
+  rpt_reset "$rPT4"
+  OUT="$(rpt_inproc "$rPT4" "$rPT4/repo" AUDIT_PYTEST_JOBS="$rpt4_v")"
+  rpt_assert "PT4: '$rpt4_v' is refused with the named cause" \
+    rpt_has_line "FAIL tests — AUDIT_PYTEST_JOBS must be a positive integer (got '$rpt4_v')"
+  check_eq "$(rpt_n "$rPT4/rec" run)$(rpt_n "$rPT4/rec" collect)$(rpt_n "$rPT4/rec" probe)$(rpt_n "$rPT4/rec" count)" 0000 \
+    "PT4: '$rpt4_v' ran nothing (no run, collect, probe or count call)"
+  check_eq "$(test -e "$rPT4/sentinel" && echo yes || echo no)" no "PT4: '$rpt4_v' ran no shell suite"
+done
+
+# ---- PT15: the variable does not leak into the suite ---------------------------------------------
+rPT15="$(rpt_row PT15)"
+rpt_repo "$rPT15/repo"
+rpt_assert 'PT15: the suite preamble cleared AUDIT_PYTEST_JOBS' test -z "${AUDIT_PYTEST_JOBS+set}"
+check_eq "$(grep -c '^unset AUDIT_PYTEST_JOBS$' "$here/test_audit.sh")" 1 \
+  'PT15: test_audit.sh carries exactly one preamble line that unsets AUDIT_PYTEST_JOBS'
+OUT="$(PATH="$rPT15/bin:$PATH" SHIM_REC="$rPT15/rec" TMPDIR="$rPT15/tmp" "$engine" --scope "$rPT15/repo" --tests 2>/dev/null)"
+rpt_assert 'PT15: an engine child run from this suite sees no AUDIT_PYTEST_JOBS' \
+  grep -qxF -- '-q addopts=absent jobs=absent' "$rPT15/rec/run"
+
+# ---- PT16: PYTEST_ADDOPTS is scrubbed from the serial default ------------------------------------
+rPT16="$(rpt_row PT16)"
+rpt_repo "$rPT16/repo"
+rpt_engine "$rPT16" "$rPT16/repo" PYTEST_ADDOPTS='-n 8 -k nothing'
+assert_last_line_prefix 'RESULT: PASS rc=0' 'PT16: with PYTEST_ADDOPTS exported the serial default still ends RESULT: PASS rc=0'
+assert_has 'PASS tests' 'PT16: and its tests check passes'
+rpt_assert 'PT16: the serial call ran with PYTEST_ADDOPTS removed' \
+  grep -qxF -- '-q addopts=absent jobs=absent' "$rPT16/rec/run"
+rpt_assert 'PT16: the runner-start check ran with PYTEST_ADDOPTS removed' \
+  grep -qxF -- '--version addopts=absent jobs=absent' "$rPT16/rec/probe"
+# ---- PT3: a count of 4 is two passes, announced three ways ---------------------------------------
+rPT3="$(rpt_row PT3)"
+rpt_repo "$rPT3/repo"
+rpt_engine "$rPT3" "$rPT3/repo" AUDIT_PYTEST_JOBS=4
+assert_rc 0 'PT3: a parallel pass exits 0'
+rpt3_last="$(printf '%s\n' "$OUT" | tail -1)"
+assert_last_line_prefix 'RESULT: PARALLEL-PASS rc=0' 'PT3: the terminal line is RESULT: PARALLEL-PASS rc=0'
+assert_has 'NOTE tests: pytest runs under pytest-xdist with 4 workers' 'PT3: the NOTE line names the count'
+assert_has 'this is an iteration run, not the serial gate' 'PT3: the NOTE line says it is not the serial gate'
+check_eq "$(rpt_n "$rPT3/rec" run)" 2 'PT3: two runner calls (par, then ser)'
+rpt_assert 'PT3: pass one is -n 4 over the unmarked rows' rpt_line_has "$rPT3/rec/run" 1 '-q -n 4 -m not serial_only --junitxml='
+rpt_assert 'PT3: pass two selects the marked rows' rpt_line_has "$rPT3/rec/run" 2 '-q -m serial_only --junitxml='
+rpt_assert 'PT3: pass two has no pool' test "$(sed -n 2p "$rPT3/rec/run" | grep -c ' -n ')" = 0
+check_eq "$(rpt_n "$rPT3/rec" collect)" 3 'PT3: three conservation collects (all, par, ser)'
+check_eq "$(rpt_n "$rPT3/rec" count)" 1 'PT3: one JUnit parse (the empty ser selection is not parsed)'
+check_eq "$(test -e "$rPT3/sentinel" && echo yes || echo no)" yes 'PT3: the shell suite still ran'
+rpt_assert 'PT3: the scratch directory is gone' test -z "$(find "$rPT3/tmp" -maxdepth 1 -name 'audit-pytest.*' -print)"
+
+# ---- PT5: the flag is probed, not the import ----------------------------------------------------
+rPT5="$(rpt_row PT5)"
+rpt_repo "$rPT5/repo"
+OUT="$(rpt_inproc "$rPT5" "$rPT5/repo" AUDIT_PYTEST_JOBS=4 SHIM_HELP_NO_N=1)"
+assert_has 'FAIL tests — AUDIT_PYTEST_JOBS=4 requested but the pytest runner does not accept -n' 'PT5: a runner that does not list the option fails closed, naming the variable'
+check_eq "$(rpt_n "$rPT5/rec" run)" 0 'PT5: no serial fallback (no runner call)'
+check_eq "$(test -e "$rPT5/sentinel" && echo yes || echo no)" no 'PT5: nothing ran, not even the shell suite'
+rpt_assert 'PT5: the --help probe was made' grep -qF -- '--help' "$rPT5/rec/probe"
+rpt_assert 'PT5: under this shim an import-only probe would have PASSED (the shim answers import xdist with success)' \
+  env PATH="$rPT5/bin:$PATH" SHIM_REC="$rPT5/rec" python3 -c 'import xdist'
+check_eq "$(rpt_n "$rPT5/rec" xdist)" 1 'PT5: that import probe is recorded by the shim'
+
+# ---- PT6: conservation counts distinct tests, per pass and across passes -------------------------
+rPT6="$(rpt_row PT6)"
+rpt_repo "$rPT6/repo"
+rpt_reset "$rPT6"
+OUT="$(rpt_inproc "$rPT6" "$rPT6/repo" AUDIT_PYTEST_JOBS=4 SHIM_ALL=12 SHIM_RAN_PAR=10)"
+assert_has 'pytest par executed 10 of 12 collected' 'PT6a: a pass that ran fewer distinct tests than it collected fails, naming the counts'
+assert_has 'FAIL tests' 'PT6a: it is a FAIL tests'
+rpt_reset "$rPT6"
+OUT="$(rpt_inproc "$rPT6" "$rPT6/repo" AUDIT_PYTEST_JOBS=4 SHIM_RC_PAR=1 SHIM_DUP_PAR=1)"
+assert_has 'pytest-par exited 1' 'PT6b: a red pass is reported as the red pass'
+assert_not_has 'executed' 'PT6b: a duplicated (classname, name) from a teardown error is NOT a count mismatch'
+rpt_reset "$rPT6"
+OUT="$(rpt_inproc "$rPT6" "$rPT6/repo" AUDIT_PYTEST_JOBS=4 SHIM_ALL=4 SHIM_PAR=3 SHIM_SER=1 SHIM_OVERLAP=1)"
+assert_has 'pytest par and ser both ran 1 test(s)' 'PT6c: a test run in both passes fails'
+rpt_reset "$rPT6"
+OUT="$(rpt_inproc "$rPT6" "$rPT6/repo" AUDIT_PYTEST_JOBS=4 SHIM_ALL=4 SHIM_PAR=3 SHIM_SER=1 SHIM_SWAP_PAR=1)"
+assert_has '1 collected test(s) never ran, 1 ran without being collected' 'PT6d: one lost test cancelled by one never collected (every count equal) still fails, as a set difference'
+assert_not_has 'executed' 'PT6d: no per-pass count caught it: the set comparison did'
+rpt_reset "$rPT6"
+OUT="$(rpt_inproc "$rPT6" "$rPT6/repo" AUDIT_PYTEST_JOBS=4 SHIM_ALL=5 SHIM_PAR=3 SHIM_SER=1)"
+assert_has '1 collected test(s) never ran, 0 ran without being collected' 'PT6d2: a collected test that neither pass ran fails'
+rpt_reset "$rPT6"
+OUT="$(rpt_inproc "$rPT6" "$rPT6/repo" AUDIT_PYTEST_JOBS=4 SHIM_BAD_JUNIT=1)"
+assert_has 'pytest par junit unreadable: syntax error' 'PT6g: an unreadable JUnit file names the parser'"'"'s own words'
+rpt_reset "$rPT6"
+OUT="$(rpt_inproc "$rPT6" "$rPT6/repo" AUDIT_PYTEST_JOBS=4 SHIM_DUP_ID=1)"
+assert_has 'pytest collected 4 node ids but their derived pairs number 3' 'PT6h: a derived reading that lost an id fails closed even though every set then agrees'
+rpt_reset "$rPT6"
+OUT="$(rpt_inproc "$rPT6" "$rPT6/repo" AUDIT_PYTEST_JOBS=3 SHIM_ALL=10 SHIM_RAN_PAR=9)"
+assert_has 'pytest par executed 9 of 10 collected' 'PT6i: a conservation-only failure is still reported'
+assert_has 'NOTE tests: this run used pytest under xdist' 'PT6i: a conservation-only failure also prints the parallel-profile note (the red flag is set on that path)'
+assert_not_has 'could not create an artifact directory' 'PT6i: no artifact write was attempted, so no artifact-directory claim is made'
+rpt_assert 'PT6i: the conservation message was preserved as an artifact' compgen -G "$rPT6/tmp/audit-artifact-*/pytest-conserve.log"
+rpt_reset "$rPT6"
+OUT="$(rpt_inproc "$rPT6" "$rPT6/repo" AUDIT_PYTEST_JOBS=4 SHIM_ALL=4 SHIM_PAR=3 SHIM_SER=1)"
+assert_has 'PASS tests' 'PT6e: control: a clean 3 + 1 partition of 4 passes'
+rpt_assert 'PT6e: the parallel marker is set' rpt_has_line 'PARALLEL=4'
+
+rpt_reset "$rPT6"
+printf '<testsuites><testsuite><testcase classname="a.b" name="z"/><testcase classname="a.bc" name="a"/><testcase classname="a.b" name="y"/></testsuite></testsuites>\n' > "$rPT6/f.xml"
+"$BASH" -c 'source "$1"; pytest_pairs "$2" "$3"' _ "$engine" "$rPT6/f.xml" "$rPT6/f.pairs"
+rpt_assert 'PT6f: the distinct pairs are written in the byte order comm requires' env LC_ALL=C sort -c "$rPT6/f.pairs"
+check_eq "$(wc -l < "$rPT6/f.pairs" | tr -d ' ')" 3 'PT6f: all three distinct pairs are written'
+
+# ---- PT7: exit 5 is accepted only for an empty selection -----------------------------------------
+rPT7="$(rpt_row PT7)"
+rpt_repo "$rPT7/repo"
+OUT="$(rpt_inproc "$rPT7" "$rPT7/repo" AUDIT_PYTEST_JOBS=4)"
+assert_has 'PASS tests' 'PT7a: the ser pass exiting 5 over a zero-count selection passes'
+rpt_reset "$rPT7"
+OUT="$(rpt_inproc "$rPT7" "$rPT7/repo" AUDIT_PYTEST_JOBS=4 SHIM_ALL=6 SHIM_PAR=3 SHIM_SER=3 SHIM_RC_SER=5)"
+assert_has 'pytest ser exited 5 (no tests ran) while its collect counts 3' 'PT7b: exit 5 over a nonzero selection fails'
+
+rpt_reset "$rPT7"
+OUT="$(rpt_inproc "$rPT7" "$rPT7/repo" AUDIT_PYTEST_JOBS=4 SHIM_COLLECT_SUMMARY='collected some tests, maybe')"
+assert_has 'FAIL tests' 'PT7c: an unreadable collect summary fails the check'
+assert_has 'pytest [unfiltered] collect summary unreadable: collected some tests, maybe' 'PT7c: the failing collect is labelled and the cause quotes the summary line'
+rpt_reset "$rPT7"
+OUT="$(rpt_inproc "$rPT7" "$rPT7/repo" AUDIT_PYTEST_JOBS=4 SHIM_ALL=0 SHIM_COLLECT_SUMMARY='no tests collected in 0.01s' SHIM_COLLECT_RC=5)"
+assert_has 'pytest par collected 0 tests' 'PT7d: the bare no-tests summary with exit 5 and a zero count is read as a count of 0 (the empty par pass is then rejected downstream)'
+assert_not_has 'collect exited' 'PT7d: and the collect exit 5 over a zero count is not itself refused'
+assert_not_has 'unreadable' 'PT7d: and the summary is not called unreadable'
+rpt_reset "$rPT7"
+OUT="$(rpt_inproc "$rPT7" "$rPT7/repo" AUDIT_PYTEST_JOBS=4 SHIM_ALL=1 SHIM_PAR=1)"
+assert_has 'PASS tests' 'PT7e: the singular `1 test collected` summary is accepted'
+rpt_reset "$rPT7"
+OUT="$(rpt_inproc "$rPT7" "$rPT7/repo" AUDIT_PYTEST_JOBS=4 SHIM_COLLECT_SUMMARY='3 tests collected in 0.01s' SHIM_COLLECT_RC=5)"
+assert_has 'pytest [unfiltered] collect exited 5 with 3 tests collected' 'PT7f: collect exit 5 over a nonzero count fails, naming the collect'
+rpt_reset "$rPT7"
+OUT="$(rpt_inproc "$rPT7" "$rPT7/repo" AUDIT_PYTEST_JOBS=4 SHIM_COLLECT_SUMMARY='collected some tests, maybe' SHIM_COLLECT_FOR=serial_only)"
+assert_has 'pytest [serial_only] collect summary unreadable: collected some tests, maybe' 'PT7g: a later collect that fails is named as that collect, not as the unfiltered one'
+assert_not_has 'pytest [unfiltered] collect' 'PT7g: and the unfiltered collect, which read fine, is not blamed'
+
+# ---- PT8 / PT9: a red pass is red, and the mode is named before the unchanged FAIL line ----------
+rPT8="$(rpt_row PT8)"
+rpt_repo "$rPT8/repo"
+rpt_engine "$rPT8" "$rPT8/repo" AUDIT_PYTEST_JOBS=4 SHIM_RC_PAR=1
+assert_last_line_prefix 'RESULT: FAIL rc=1' 'PT8: a red parallel pass ends RESULT: FAIL rc=1, never PARALLEL-PASS'
+rpt_assert 'PT8: the mode note comes directly before the unchanged FAIL tests line' \
+  rpt_order 'NOTE tests: this run used pytest under xdist' 'FAIL tests — test suite failure(s)'
+rpt_assert 'PT8: the failing pass left its full output' compgen -G "$rPT8/tmp/audit-artifact-*/pytest-par.log"
+check_eq "$(test -e "$rPT8/sentinel" && echo yes || echo no)" yes 'PT8: the shell suite still ran'
+rPT9="$(rpt_row PT9)"
+rpt_repo "$rPT9/repo"
+OUT="$(rpt_inproc "$rPT9" "$rPT9/repo" AUDIT_PYTEST_JOBS=4 SHIM_ALL=4 SHIM_PAR=3 SHIM_SER=1 SHIM_RC_SER=1)"
+assert_has 'FAIL tests' 'PT9: a red serial pass fails the check'
+assert_has 'pytest-ser exited 1' 'PT9: the serial pass is named'
+rpt_assert 'PT9: its full output was preserved' compgen -G "$rPT9/tmp/audit-artifact-*/pytest-ser.log"
+
+# ---- PT9b: only a shell suite is red, so the note does not point at the pytest profile ----------
+rPT9b="$(rpt_row PT9b)"
+rpt_repo "$rPT9b/repo"
+printf '#!/usr/bin/env bash\nset -uo pipefail\n\n# Script: test_ok.sh\n# Purpose: fixture suite\n# Usage: ./test_ok.sh\necho shell-suite-red\nexit 1\n' > "$rPT9b/repo/scripts/tests/test_ok.sh"
+commit_all "$rPT9b/repo" red-shell-suite
+rpt_engine "$rPT9b" "$rPT9b/repo" AUDIT_PYTEST_JOBS=4
+assert_last_line_prefix 'RESULT: FAIL rc=1' 'PT9b: a red shell suite in a parallel run ends RESULT: FAIL rc=1'
+assert_has 'FAIL tests — test suite failure(s)' 'PT9b: the unchanged FAIL tests line is printed'
+check_eq "$(rpt_n "$rPT9b/rec" run)" 2 'PT9b: both pytest passes ran and were green'
+assert_not_has 'NOTE tests: this run used pytest under xdist' 'PT9b: no note sends the operator to sweep the parallel profile when no pytest pass was red'
+
+# ---- PT10: the pollution bracket spans both passes (the shell-suite pollution check must still attribute a file written by either pass) --------
+rPT10="$(rpt_row PT10)"
+rpt_repo "$rPT10/repo"
+rpt_engine "$rPT10" "$rPT10/repo" AUDIT_PYTEST_JOBS=4 SHIM_ALL=4 SHIM_PAR=3 SHIM_SER=1 SHIM_DROP_FILE="$rPT10/repo/dropped.txt"
+assert_has 'FAIL hermetic' 'PT10: a file written during the serial pass is attributed to the suite'
+assert_has 'dropped.txt' 'PT10: and named'
+
+# ---- PT11: the parallel marker is set at pass launch, and the start check gates the probe --------
+rPT11="$(rpt_row PT11)"
+rpt_repo_nopy "$rPT11/repo"
+OUT="$(rpt_inproc "$rPT11" "$rPT11/repo" AUDIT_PYTEST_JOBS=4 SHIM_HELP_NO_N=1)"
+assert_has 'PASS tests' 'PT11a: no python tests -> PASS tests even where xdist is absent'
+assert_not_has 'NOTE tests' 'PT11a: no NOTE'
+check_eq "$(rpt_n "$rPT11/rec" probe)" 0 'PT11a: neither the start check nor the flag probe ran'
+rpt_assert 'PT11a: the parallel marker stayed empty' rpt_has_line 'PARALLEL='
+rPT11b="$(rpt_row PT11b)"
+rpt_repo "$rPT11b/repo"
+rpt_engine "$rPT11b" "$rPT11b/repo" AUDIT_PYTEST_JOBS=4 SHIM_VERSION_FAIL=1
+check_eq "$(test -e "$rPT11b/sentinel" && echo yes || echo no)" yes 'PT11b: a runner that cannot start does not stop the shell suites'
+rpt_assert 'PT11b: the flag probe never ran' test "$(grep -c -- '--help' "$rPT11b/rec/probe")" = 0
+assert_has 'No module named pytest' 'PT11b: the unprovable FAIL quotes the runner'"'"'s own words'
+assert_not_has 'NOTE tests' 'PT11b: no NOTE'
+assert_last_line_prefix 'RESULT: FAIL rc=1' 'PT11b: the terminal line is RESULT: FAIL'
+
+# ---- PT13: the scratch directory is removed on the pass path and on the fail path ----------------
+rPT13="$(rpt_row PT13)"
+rpt_repo "$rPT13/repo"
+OUT="$(rpt_inproc "$rPT13" "$rPT13/repo" AUDIT_PYTEST_JOBS=4)"
+rpt_assert 'PT13: after a passing parallel run no audit-pytest scratch directory remains' \
+  test -z "$(find "$rPT13/tmp" -maxdepth 1 -name 'audit-pytest.*' -print)"
+rpt_assert 'PT13: and the handle was cleared' rpt_has_line 'TMPLEFT='
+rpt_reset "$rPT13"
+OUT="$(rpt_inproc "$rPT13" "$rPT13/repo" AUDIT_PYTEST_JOBS=4 SHIM_RC_PAR=1)"
+rpt_assert 'PT13: after a failing parallel run none remains either (artifact directories do, legitimately)' \
+  test -z "$(find "$rPT13/tmp" -maxdepth 1 -name 'audit-pytest.*' -print)"
+
+# ---- PT16 (parallel half): PYTEST_ADDOPTS is scrubbed from every call of the parallel path -------
+rPT16b="$(rpt_row PT16b)"
+rpt_repo "$rPT16b/repo"
+OUT="$(rpt_inproc "$rPT16b" "$rPT16b/repo" AUDIT_PYTEST_JOBS=4 PYTEST_ADDOPTS='-k nothing')"
+assert_has 'PASS tests' 'PT16b: the parallel path passes with PYTEST_ADDOPTS exported'
+check_eq "$(cat "$rPT16b/rec/run" "$rPT16b/rec/collect" "$rPT16b/rec/probe" 2>/dev/null | grep -c 'addopts=present')" 0 \
+  'PT16b: no recorded call (probe, collect, run) saw PYTEST_ADDOPTS'
+
+# ---- PT17: a scratch location inside the scope fails closed, with a named cause ------------------
+rPT17="$(rpt_row PT17)"
+rpt_repo "$rPT17/repo"
+printf 'tmpin/\n' > "$rPT17/repo/.gitignore"
+commit_all "$rPT17/repo" ignore-tmpin
+mkdir -p "$rPT17/repo/tmpin"
+rpt_engine "$rPT17" "$rPT17/repo" AUDIT_PYTEST_JOBS=4 TMPDIR="$rPT17/repo/tmpin"
+assert_has 'lies inside the scope' 'PT17: a TMPDIR inside the scope fails closed, naming the cause'
+assert_has 'FAIL tests' 'PT17: it is a FAIL tests'
+assert_has "the scratch directory $rPT17/repo/tmpin lies inside the scope" 'PT17: the message names the scratch path'
+check_eq "$(rpt_n "$rPT17/rec" run)" 0 'PT17: no serial fallback (no runner call)'
+assert_not_has 'FAIL hermetic' 'PT17: the ignored TMPDIR keeps the pollution check about the row'"'"'s own subject'
+
+# ---- PT12: the readers of a --tests last line refuse the new word --------------------------------
+# A control: it asserts text this change does not edit, so it is green before and after, which is
+# the claim. It takes the word from PT3's real run, so a respelling to a PASS-prefixed word is caught.
+rpt12_re="$(sed -n "s/.*--expect '\\(RESULT: [^']*\\)'.*/\\1/p" "$here/../../skills/feature/SKILL.md" | head -1)"
+rpt_assert 'PT12: the feature SKILL --expect pattern was found' test -n "$rpt12_re"
+rpt_assert 'PT12: control: that pattern accepts RESULT: PASS rc=0' rpt_match "$rpt12_re" 'RESULT: PASS rc=0 checks=1/0/0'
+if rpt_match "$rpt12_re" "$rpt3_last"; then
+  fail_line "PT12: the feature SKILL pattern must NOT accept the parallel terminal line ($rpt3_last)"
+else
+  pass_line 'PT12: the feature SKILL pattern does not accept the parallel terminal line'
+fi
+if [[ "$rpt3_last" == 'RESULT: PASS'* ]]; then
+  fail_line "PT12: the parallel terminal line must not begin with RESULT: PASS, which a prefix match would accept ($rpt3_last)"
+else
+  pass_line 'PT12: the parallel terminal line does not begin with RESULT: PASS'
+fi
+rpt_assert 'PT12: control: the rejected spelling PASS-PARALLEL WOULD begin with RESULT: PASS' \
+  test "$([[ 'RESULT: PASS-PARALLEL rc=0' == 'RESULT: PASS'* ]] && echo yes || echo no)" = yes
+rpt_assert 'PT12: the propagate SKILL still holds the tip-suite sentence this design relies on' \
+  grep -qF 'counts as held only on `RESULT: PASS rc=0`' "$here/../../skills/propagate/SKILL.md"
+
+# ---- PT14: a TERM to the process group mid-pool leaves no scratch directory ----------------------
+rPT14="$(rpt_row PT14)"
+rpt_repo "$rPT14/repo"
+rpt14_out="$rPT14/out.txt"
+set -m
+env -u PYTEST_ADDOPTS PATH="$rPT14/bin:$PATH" SHIM_REC="$rPT14/rec" SHIM_BLOCK=1 TMPDIR="$rPT14/tmp" \
+  RPT_SENTINEL="$rPT14/sentinel" AUDIT_PYTEST_JOBS=4 "$engine" --scope "$rPT14/repo" --tests > "$rpt14_out" 2>&1 &
+rpt14_pid=$!
+rpt14_t=0
+while [[ ! -e "$rPT14/rec/started.par" && "$rpt14_t" -lt 600 ]]; do
+  sleep 0.1
+  rpt14_t=$((rpt14_t + 1))
+done
+check_eq "$(test -e "$rPT14/rec/started.par" && echo yes || echo no)" yes 'PT14: the shim announced it was inside pass one (so the TERM lands mid-pool)'
+kill -TERM -"$rpt14_pid" 2>/dev/null
+wait "$rpt14_pid" 2>/dev/null
+rpt14_rc=$?
+set +m
+check_eq "$rpt14_rc" 143 'PT14: a process-group TERM mid-pool ends the run with 143'
+rpt_assert 'PT14: the run ends RESULT: INCOMPLETE rc=143, never either PASS spelling' \
+  grep -q '^RESULT: INCOMPLETE rc=143' "$rpt14_out"
+rpt_assert 'PT14: the scratch directory was removed by the exit trap' \
+  test -z "$(find "$rPT14/tmp" -maxdepth 1 -name 'audit-pytest.*' -print)"
+rpt14_t=0
+while pgrep -f -- "$rPT14/bin/python3" > /dev/null && [[ "$rpt14_t" -lt 50 ]]; do
+  sleep 0.1
+  rpt14_t=$((rpt14_t + 1))
+done
+rpt_assert 'PT14: no shim process survived the group kill' test "$rpt14_t" -lt 50
+
+printf 'info  the rPT section took %d s\n' "$((SECONDS - rpt_t0))"
+# rPT-END
+if [[ "${AUDIT_TEST_ONLY:-}" == rPT ]]; then
+  printf '\n%d passed, %d failed\n' "$pass" "$fail"
+  [[ "$fail" -eq 0 ]]
+  exit
+fi
 # ============================================================================
 # 1. Clean repo -> exit 0, PASS format-trailing-ws + PASS exec-bit, no FAIL lines
 # ============================================================================
