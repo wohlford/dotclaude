@@ -977,6 +977,17 @@ from `scripts/claude-md-structure.py`, which prints every group heading:
   BLOCKERs. **Apply each new mutant and compare KILL SETS** — the duplicate killed 2 rows, a genuine
   relocation exactly 1. Its own failure mode: a mutant that kills EVERY row killed collection rather
   than a check, and scores CAUGHT for free.
+- **Raising one of TWO limits hands the binding to the other, and every sentence built on the old
+  one goes stale.** Measured: a memory-index hook cut at 190 lines and at 20,000 B, the byte cap
+  then raised to 24,000 B. At the real index's 163 lines and 19,991 B, about 122.6 B per line, the
+  190-line check binds first, at roughly 23,300 B. The governing skill counted bytes alone, so
+  draining a held pointer could cross 190 lines while the report claimed about 700 B of room. Every
+  byte-oriented check passed — hook suite 52 of 52, mutation campaign 42 caught of 42, two reviewers
+  of the figure edits; only a whole-branch review asking WHICH limit binds, computed on the real
+  file, found it. The fact was on record earlier that session as a runway correction (the smaller
+  of bytes and lines) and never reached the edit it governed. **After changing one of several
+  limits, recompute which binds on the real artifact and grep the text quoting the old one.** Its
+  own failure mode: the answer flips back at another bytes-per-line growth rate; state the one used.
 
 #### A RECORD or a SHAPE stood in for the thing itself
 
