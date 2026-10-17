@@ -806,6 +806,7 @@ def test_a_long_relative_cd_chain_makes_the_cwd_unresolvable_rather_than_slow():
     )
 
 
+@pytest.mark.serial_only
 def test_a_long_relative_cd_chain_does_not_make_the_walk_superlinear():
     """TIMING-SENSITIVE: read a failure here as possibly the MACHINE before the code.
 
@@ -1781,6 +1782,7 @@ _N = git_command.MAX_COMMAND_LENGTH
         "dollar-name-run",
     ],
 )
+@pytest.mark.serial_only
 def test_is_git_is_linear_on_a_pathological_word(word):
     # A guard that outruns its hook timeout lets the command RUN, so `is_git` must stay linear on
     # a maximum-length word. Three drafts were not: `\{[^}]*\}` in the parameter regex rescanned

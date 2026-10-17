@@ -56,6 +56,8 @@ import time
 from collections import Counter, namedtuple
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import git_command  # noqa: E402, I001
 
@@ -1155,6 +1157,7 @@ def _adversarial_reading_ladder():
 ADVERSARIAL_LADDER_BUDGET_SECONDS = 30.0
 
 
+@pytest.mark.serial_only
 def test_the_adversarial_reading_ladder_stays_inside_its_wall_clock_budget():
     """TIMING-SENSITIVE: read a failure here as possibly the MACHINE before the code.
 
@@ -1236,6 +1239,7 @@ def test_the_reading_enumeration_is_lazy():
     )
 
 
+@pytest.mark.serial_only
 def test_a_small_command_with_many_ambiguous_heredocs_stays_cheap():
     """TIMING-SENSITIVE: wall clock is the half a loaded machine can move. A failure here may be
     the machine -- re-run idle before blaming the code -- but the companion row above is

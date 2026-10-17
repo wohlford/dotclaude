@@ -805,6 +805,7 @@ def test_a_build_reached_through_a_symlink_normalises_to_the_same_reading(tmp_pa
     )  # two different directories, one reading, whichever way each is spelled
 
 
+@pytest.mark.serial_only
 def test_a_hang_reads_as_timed_out_never_as_a_verdict(tmp_path):
     build = fake_build(tmp_path, {GUARD_FILE: "import time; time.sleep(60)\n"})
     for mode in ("fork", "exec"):
@@ -1233,6 +1234,7 @@ def test_a_dead_worker_is_reported_and_its_units_have_no_reading(tmp_path):
     assert ("owed", "not-a-judged-guard.py") not in result.readings["old"]
 
 
+@pytest.mark.serial_only
 def test_a_worker_hung_in_preload_is_killed_at_its_deadline_and_reported(tmp_path):
     """The wait on a worker used to be unbounded: a build whose lib module never finishes
     importing hung the tool with no verdict. The module records its own pid so the test can
@@ -1924,6 +1926,7 @@ def test_a_nondeterministic_build_is_unstable_whichever_side_it_is_on(
     assert int(got["noise"].split("/")[0]) > 0
 
 
+@pytest.mark.serial_only
 def test_a_hang_is_incomparable_and_the_tolerance_knob_is_honest_about_it(tmp_path):
     slow = (
         textwrap.dedent(GUARD_OLD)
@@ -2806,6 +2809,7 @@ def test_the_flush_template_takes_the_live_stream_repr():
     assert gp._REPR_TOKEN not in rendered and gp._NAME_TOKEN not in rendered
 
 
+@pytest.mark.serial_only
 def test_a_version_probe_that_hangs_is_bounded_and_keyed_as_timed_out(
     tmp_path, monkeypatch
 ):

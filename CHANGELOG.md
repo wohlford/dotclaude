@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.131.11 — 2026-10-16
+- test(pytest): add the serial_only marker and gate the hang row
+
 ## v0.131.10 — 2026-10-15
 - docs(audit): clarify the shellcheck notes and update the budget line
 

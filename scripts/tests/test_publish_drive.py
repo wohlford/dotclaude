@@ -13,9 +13,13 @@ hang. Those are precisely the shapes a real run produces rarely and at the worst
 from __future__ import annotations
 
 import importlib.util
+import io
+import os
 import shlex
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -72,7 +76,10 @@ case "$mode" in
     printf '    git -C %s reset --hard HEAD~1\\n' "$here"
     printf 'RESULT: FAIL rc=1 brick=%s\\n' "$version"
     exit 1 ;;
-  noisyhang)   printf 'zz-sentinel-noisyhang-started\\n'; sleep 30 ;;
+  # Prints one line on EACH stream, then announces it has done so by creating `ready` beside the
+  # engine, then hangs. The announcement is created strictly after both writes returned, so the
+  # sentinels are already in the pipes when `ready` exists.
+  noisyhang)   printf 'zz-sentinel-noisyhang-started\\n'; printf 'zz-sentinel-noisyhang-stderr\\n' >&2; : > "$here/ready"; sleep 30 ;;
   *)           printf 'RESULT: ERROR rc=2 brick=%s\\n' "$version"; exit 2 ;;
 esac
 """
@@ -201,6 +208,7 @@ def test_every_brick_runs_when_all_are_proven(bed):
     assert len(invocations(engine)) == 2
 
 
+@pytest.mark.serial_only
 def test_a_hang_is_INDETERMINATE_not_a_failure_verdict(bed):
     """A bound that is too tight must cost attention, not manufacture a verdict nobody measured."""
     _, scope, engine, art, plan, behaviour = bed
@@ -317,6 +325,7 @@ def test_a_failure_after_landing_relays_the_ALREADY_LANDED_recovery(bed):
     assert "ALREADY LANDED" in proc.stdout, proc.stdout
 
 
+@pytest.mark.serial_only
 def test_an_INDETERMINATE_halt_states_the_engine_was_killed_and_suppresses_the_relay(
     bed,
 ):
@@ -657,27 +666,216 @@ def test_the_relayed_block_shows_HALT_TAIL_LINES_worth_of_engine_lines_not_one_f
 # ---------- a timeout must not discard what the engine already printed ----------
 
 
-def test_a_timeout_still_logs_the_engines_partial_output(bed):
-    """The timeout shape is the one whose tree state is unknown BY CONSTRUCTION — the driver
-    deliberately refuses to say whether the brick was proven. That makes it the shape where the
-    operator most needs to see how far the engine got, and today it is the one shape whose log
-    holds nothing at all: the `except subprocess.TimeoutExpired` handler writes only the fixed
-    string 'TIMEOUT after {timeout}s — no verdict was reached', discarding `exc.stdout` /
-    `exc.stderr` entirely.
+READY_WAIT_SECONDS = 60.0
 
-    Uses `noisyhang`, which prints one distinctive line and then hangs (unlike plain `hang`,
-    which must keep emitting nothing — see the note above `FAKE_ENGINE`). The RED failure this
-    row must produce is the sentinel's ABSENCE from the log, not a fixture error, an import
-    error, or an exception raised before the assertion.
+
+def _drain(stream):
+    """Whatever is already in the pipe, without blocking: an orphaned `sleep` may hold the write end."""
+    fd = stream.fileno()
+    os.set_blocking(fd, False)
+    chunks = []
+    while True:
+        try:
+            data = os.read(fd, 65536)
+        except BlockingIOError:
+            break
+        if not data:
+            break
+        chunks.append(data)
+    return b"".join(chunks)
+
+
+class _EventExpiry:
+    """Stands in for the driver module's `subprocess`; the engine call expires on an EVENT, not a clock.
+
+    A call whose first argument is the fake engine starts it in its own process group, waits for the
+    engine's `ready` file (it exists only after the engine has printed on both streams), kills the
+    group, drains both pipes and raises `TimeoutExpired` carrying `bytes`, the shape the driver's own
+    comment records as measured. Every other call, and every other attribute, is the real
+    `subprocess`, so only the driver module sees the replacement.
+    """
+
+    def __init__(self, engine, wait_seconds):
+        self.engine = str(engine)
+        self.ready = Path(engine).parent / "ready"
+        self.wait_seconds = wait_seconds
+        self.last_proc = None
+
+    def __getattr__(self, name):
+        return getattr(subprocess, name)
+
+    def run(self, cmd, **kwargs):
+        if str(cmd[0]) != self.engine:
+            return subprocess.run(cmd, **kwargs)
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
+        )
+        self.last_proc = proc
+        try:
+            deadline = time.monotonic() + self.wait_seconds
+            while not self.ready.exists():
+                if time.monotonic() > deadline:
+                    pytest.fail(
+                        f"the fake engine never announced readiness within {self.wait_seconds} s; "
+                        "the engine did not start, which is a fixture failure and says nothing "
+                        "about the driver"
+                    )
+                time.sleep(0.01)
+        finally:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+        out, err = _drain(proc.stdout), _drain(proc.stderr)
+        proc.stdout.close()
+        proc.stderr.close()
+        raise subprocess.TimeoutExpired(
+            cmd, kwargs.get("timeout"), output=out, stderr=err
+        )
+
+
+def _event_gated_driver(engine, monkeypatch, wait_seconds=READY_WAIT_SECONDS):
+    """The real driver module with its engine call replaced by the event-gated stand-in."""
+    spec = importlib.util.spec_from_file_location("publish_drive_event_gated", TOOL)
+    assert spec is not None and spec.loader is not None, f"cannot load {TOOL}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    shim = _EventExpiry(engine, wait_seconds)
+    monkeypatch.setattr(module, "subprocess", shim)
+    brick = {
+        "version": "v0.1.0",
+        "endpoint": "aaa",
+        "subject": "first",
+        "constituents": [],
+    }
+    return module, shim, brick, io.StringIO()
+
+
+def test_a_timeout_still_logs_the_engines_partial_output(bed, monkeypatch):
+    """The engine's partial output is logged when the driver gives up on it, on BOTH streams.
+
+    The timeout shape is the one whose tree state is unknown BY CONSTRUCTION: the driver
+    deliberately refuses to say whether the brick was proven, which makes it the shape where the
+    operator most needs to see how far the engine got. The `except subprocess.TimeoutExpired`
+    handler therefore logs `exc.stdout` and `exc.stderr` before the fixed 'TIMEOUT after
+    {timeout}s' line, and this row pins that.
+
+    The row drives the real `drive_one` in-process with the driver module's `subprocess` replaced
+    by the event-gated stand-in `_EventExpiry`: `noisyhang` prints one distinctive line on each
+    stream, creates `ready` beside the engine and hangs, and the stand-in expires the call only
+    once `ready` exists, so no clock decides whether the engine got to print. The RED failure this
+    row must produce is a sentinel's ABSENCE from the log, not a fixture error, an import error,
+    or an exception raised before the assertion.
     """
     _, scope, engine, art, plan, behaviour = bed
     behaviour(**{"v0.1.0": "noisyhang"})
-    p = plan(("v0.1.0", "aaa", "first"))
-    proc = run(p, scope, engine, art, "--timeout", "1")
+    module, _, brick, log = _event_gated_driver(engine, monkeypatch)
+    outcome, detail, _, _ = module.drive_one(engine, scope, art, brick, 600, log)
 
-    assert "INDETERMINATE" in proc.stdout, proc.stdout
-    log_text = (art / "drive.log").read_text()
-    assert "zz-sentinel-noisyhang-started" in log_text, log_text
+    assert outcome == "INDETERMINATE", (outcome, detail)
+    log_text = log.getvalue()
+    # Whole lines, not substrings: a handler that wrote `str(chunk)` puts `b'zz-sentinel-...\\n'`
+    # (a literal backslash-n) in the log, which a substring check would accept.
+    assert "\nzz-sentinel-noisyhang-started\n" in log_text, log_text
+    assert "\nzz-sentinel-noisyhang-stderr\n" in log_text, log_text
+    assert "TIMEOUT after 600s" in log_text, log_text
+
+
+def test_the_event_gated_stand_in_never_reads_the_clock(bed, monkeypatch):
+    """A control on the harness: the verdict must not depend on the timeout it is handed."""
+    _, scope, engine, art, _, behaviour = bed
+    behaviour(**{"v0.1.0": "noisyhang"})
+    module, _, brick, log = _event_gated_driver(engine, monkeypatch)
+    outcome, _, _, _ = module.drive_one(engine, scope, art, brick, 0.001, log)
+
+    assert outcome == "INDETERMINATE", outcome
+    assert "\nzz-sentinel-noisyhang-started\n" in log.getvalue(), log.getvalue()
+
+
+def test_the_stand_ins_hang_guard_fails_by_name_and_kills_the_engine(bed, monkeypatch):
+    """A fake engine that never announces readiness must fail the row by name, not hang or pass.
+
+    The kill is verified as EVENTS. The leader's death is deterministic (`returncode` is -SIGKILL).
+    The group's emptiness is eventual: an instantaneous probe after the kill is not reliable
+    (measured: it succeeded in 16 of 300 runs and raised PermissionError in 2 to 3 of 300, because
+    the orphaned `sleep` is a zombie in the group or is being reaped), so the poll ends on
+    ProcessLookupError, treats PermissionError as "still settling", and is bounded by a hang guard
+    far above the measured 61 ms worst case and far below the engine's own 30 s `sleep`.
+    """
+    _, scope, engine, art, _, behaviour = bed
+    behaviour(**{"v0.1.0": "hang"})
+    module, shim, brick, log = _event_gated_driver(
+        engine, monkeypatch, wait_seconds=0.2
+    )
+    with pytest.raises(pytest.fail.Exception) as info:
+        module.drive_one(engine, scope, art, brick, 600, log)
+
+    assert "never announced readiness" in str(info.value), str(info.value)
+    proc = shim.last_proc
+    assert proc.returncode == -signal.SIGKILL, proc.returncode
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            os.killpg(proc.pid, 0)
+        except ProcessLookupError:
+            break
+        except PermissionError:
+            pass
+        if time.monotonic() > deadline:
+            pytest.fail(
+                "the engine's process group did not empty within 5 s of the kill"
+            )
+        time.sleep(0.01)
+
+
+def test_a_real_timeout_exposes_partial_output_as_bytes():
+    """Pins the CPython fact the stand-in above relies on, with a REAL expiry and no long clock.
+
+    `Popen.communicate(timeout=...)` raises TimeoutExpired whose `stdout` is `bytes` even under
+    `text=True`, and carries the partial output read so far. `subprocess.run()` on POSIX calls
+    `communicate`, kills the child, waits and re-raises the same exception, so this is the attribute
+    shape the driver's handler reads. It does NOT pin that `run()` performs that kill, wait and
+    re-raise, nor that every byte already written is in `exc.stdout` at the instant of a kill.
+    The loop ends on an EVENT (the sentinel appearing), under a 60 s hang guard.
+    """
+    sentinel = "zz-sentinel-realtimeout"
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            f"print({sentinel!r}); import time; time.sleep(60)",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    seen = None
+    try:
+        deadline = time.monotonic() + 60
+        while seen is None:
+            if time.monotonic() > deadline:
+                pytest.fail("the child's sentinel never appeared within 60 s")
+            try:
+                proc.communicate(timeout=0.1)
+            except subprocess.TimeoutExpired as exc:
+                if exc.stdout:
+                    assert isinstance(exc.stdout, bytes), type(exc.stdout)
+                    if sentinel.encode() in exc.stdout:
+                        seen = exc
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+        proc.stdout.close()
+        proc.stderr.close()
+
+    assert isinstance(seen.stdout, bytes), type(seen.stdout)
+    assert sentinel in seen.stdout.decode(), seen.stdout
 
 
 # ---------- preconditions: refuse rather than half-run ----------

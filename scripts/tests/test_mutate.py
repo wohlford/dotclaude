@@ -965,6 +965,7 @@ sleep 30
 """
 
 
+@pytest.mark.serial_only
 def test_a_hanging_mutant_is_INDETERMINATE_rather_than_caught(bed):
     """A hang is not evidence the suite noticed — scoring it CAUGHT would inflate the sweep.
 
@@ -983,6 +984,7 @@ def test_a_hanging_mutant_is_INDETERMINATE_rather_than_caught(bed):
     assert report.rc == 2
 
 
+@pytest.mark.serial_only
 def test_a_hanging_mutant_still_restores_the_subject(bed):
     """The whole point: a hung campaign used to strand the mutant on disk indefinitely."""
     _, subject, suite = bed
@@ -993,6 +995,7 @@ def test_a_hanging_mutant_still_restores_the_subject(bed):
     assert not mutate.backup_path(subject).exists()
 
 
+@pytest.mark.serial_only
 def test_a_hanging_BASELINE_errors_rather_than_hanging(bed):
     """The baseline is a suite run too, and it is the first thing that can hang."""
     _, subject, suite = bed
@@ -1005,6 +1008,7 @@ def test_a_hanging_BASELINE_errors_rather_than_hanging(bed):
     assert "timed out" in report.text.lower()
 
 
+@pytest.mark.serial_only
 def test_a_timed_out_suite_does_not_leak_its_CHILDREN(bed):
     """Killing only the direct child orphans its grandchildren, which then outlive the campaign.
 
@@ -1193,6 +1197,7 @@ def test_the_BASELINE_cap_is_reported_too(bed):
     assert "baseline=" in overridden and "/30s" in overridden, overridden
 
 
+@pytest.mark.serial_only
 def test_a_timed_out_row_makes_the_line_LEAD_with_exhausted(bed):
     """The case the whole design turns on: a timed-out row has NO elapsed.
 
@@ -1223,6 +1228,7 @@ def test_a_timed_out_row_makes_the_line_LEAD_with_exhausted(bed):
     assert line.index("secondary") > line.index(repr(DROP_GUARD.label)), line
 
 
+@pytest.mark.serial_only
 def test_every_row_timing_out_still_leads_with_exhausted_and_never_divides(bed):
     """No completed row at all — so there is nothing to be secondary, and still nothing to divide.
 

@@ -114,6 +114,17 @@ MUTATIONS = [
         "            if text:",
         "            if False:",
     ),
+    mutate.Mutation(
+        "the timeout handler logs the engine's stdout but loses its stderr",
+        '        for label, chunk in (("stdout", exc.stdout), ("stderr", exc.stderr)):',
+        '        for label, chunk in (("stdout", exc.stdout),):',
+    ),
+    mutate.Mutation(
+        "the timeout handler logs the repr of the engine's bytes instead of decoding them, "
+        "which a substring check accepts and a whole-line check rejects",
+        '                chunk.decode("utf-8", errors="replace")',
+        "                str(chunk)",
+    ),
 ]
 
 

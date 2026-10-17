@@ -288,6 +288,7 @@ def test_block_outranks_an_incomplete_sibling(tmp_path):
     assert (status, f["block"], f["noise"]) == ("FAIL", "1", "1")
 
 
+@pytest.mark.serial_only
 def test_overrun_is_killed_and_not_a_pass(tmp_path):
     h = stub(tmp_path, "h.sh", "sleep 30")
     t0 = time.monotonic()
@@ -620,6 +621,7 @@ def test_other_stdout_does_not_change_an_allow(tmp_path, out):
     assert result(edit(tmp_path, [{"command": str(h)}]))[0] == "PASS"
 
 
+@pytest.mark.serial_only
 def test_a_late_exit_is_killed_and_an_in_time_exit_stays_allowed_under_load(tmp_path):
     # `a` ignores TERM, so the loop spends ~6 s killing it; `b` exits after its deadline and `c`
     # exits in time but is only noticed during that window. `c` has a 3 s margin on purpose: this row
@@ -815,6 +817,7 @@ def test_a_closed_stdout_never_exits_zero(tmp_path):
     assert cp.returncode == 2
 
 
+@pytest.mark.serial_only
 def test_a_hook_that_never_reads_a_large_payload_is_still_stopped_on_time(tmp_path):
     # the payload outgrows the pipe buffer, so a blocking write would stall the tool past the deadline
     h = tmp_path / "deaf.sh"

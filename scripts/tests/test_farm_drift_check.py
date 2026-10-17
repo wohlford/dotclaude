@@ -316,6 +316,7 @@ def _alive(pid):
     return True
 
 
+@pytest.mark.serial_only
 def test_deadline_is_honoured_and_reaches_grandchildren(farm):
     pidfile = farm.scratch / "pid"
     farm.stub("sleep 30 &\necho $! > '%s'\nwait\n" % pidfile)
@@ -331,6 +332,7 @@ def test_deadline_is_honoured_and_reaches_grandchildren(farm):
     assert not _alive(pid), "the grandchild survived: only the direct child was killed"
 
 
+@pytest.mark.serial_only
 def test_sigkill_ends_a_child_that_ignores_term(farm):
     # An ignored signal is inherited by the background child, so only KILL ends both processes.
     shell_pid = farm.scratch / "shell-pid"
