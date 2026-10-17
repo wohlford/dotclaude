@@ -464,7 +464,7 @@ transaction; `save()` is the sole writer either way, so the checks cannot be ski
 **Write `MEMORY.md` with the Edit or Write tool, never from the shell, and check it on every debrief where
 it applies.** The `memory-index-check.py` cap hook fires only on Edit and Write tool calls, so a Python
 heredoc or `sed -i` run through Bash changes the index with no check at all (the 2026-10-14 debrief took it
-from 20,000 B to 20,464 B that way, past the hook's cap, and nobody saw it). The rules:
+from 20,000 B to 20,464 B that way, past the hook's cap of the time (20,000 B), and nobody saw it). The rules:
 
 1. **Add a pointer with one Edit**, as a single bullet at the top of the section it belongs to. A new pointer
    is one line with an advisory target of 140 bytes, with at most one bold when-to-open trigger and no
@@ -485,19 +485,19 @@ from 20,000 B to 20,464 B that way, past the hook's cap, and nobody saw it). The
    wrote memory, so a write that bypassed the hook is caught at the latest by the next debrief. A pointer
    written after step 3 (step 5's deferral file) is written as item 1 says, and the same two commands are run
    again right after that write, with their result quoted in the step-5 report; if that write puts the index
-   at 20,000 B or more, item 5 applies to it, because it is the pointer this run added:
+   at 24,000 B or more, or at 190 lines or more, item 5 applies to it, because it is the pointer this run added:
 
    ```bash
    M=<the session memory directory>
    ~/.claude/scripts/run-hooks.py "$M/MEMORY.md" | grep -E 'SKIPPED|RESULT:'
-   wc -c "$M/MEMORY.md"
+   wc -lc "$M/MEMORY.md"
    ```
 
-   Quote both lines and the byte count in the step-3 report. The clean result is `RESULT: PASS` with
+   Quote both output lines and the line and byte counts in the step-3 report. The clean result is `RESULT: PASS` with
    `filtered=0` and exactly one SKIPPED row, the exec-bit-guard suite (the tool never runs it). Anything else
    is a failed check: a `FAIL` (a hook BLOCK, or a died, killed or noise hook), an `ERROR`, a `filtered` above
    0, or any other SKIPPED row. A failed check does not stop the debrief (a plain `/debrief` never pauses):
-   name it in the hand-off, apply item 5 if the cap is the cause (the byte count is 20,000 or more),
+   name it in the hand-off, apply item 5 if the cap is the cause (the byte count is 24,000 or more, or the line count is 190 or more),
    record step 3 anyway, and carry the failure in the step-3 report.
 4. **List the held pointers with one command, used by items 5 and 6.** A held pointer is an open backlog
    entry headed `index full: pointer pending for <topic file>` whose first body line is the pointer line.
@@ -512,11 +512,12 @@ from 20,000 B to 20,464 B that way, past the hook's cap, and nobody saw it). The
    The output is each head line followed by its pointer line, or `none` (also when `BACKLOG.md` is missing).
    Step 0 triages open backlog entries: a held-pointer entry is always `keep` there, and only item 6's
    `close` retires it.
-5. **If the index is at 20,000 B or more, do not trim older lines unattended**: a trim made under pressure is
+5. **If the index is at 24,000 B or more, or at 190 lines or more, do not trim older lines unattended**: a trim made under pressure is
    how a when-to-open clause gets lost. If this run added no pointer (an earlier writer pushed the index
-   over), there is nothing of yours to shorten or file: trim nothing, file nothing, report the over-cap size
-   in the hand-off and the step-3 report, and carry on. Otherwise first shorten your own new pointer. If
-   the index is still over, hold the pointer, in this order. Check the item 4 listing for a held entry for
+   over), there is nothing of yours to shorten or file: trim nothing, file nothing, report the over-cap byte
+   and line counts in the hand-off and the step-3 report, and carry on. Otherwise first shorten your own
+   new pointer (this helps only the byte cap: if the line count is the cause, go straight to holding the
+   pointer). If the index is still over, hold the pointer, in this order. Check the item 4 listing for a held entry for
    the same topic file and do not file a second one (`add` refuses an identical head, and a differently
    dated one would make the drain's `close` needle match two entries and refuse). File the held entry
    FIRST with `backlog.py add` (see **Editing BACKLOG.md**), its first body line the pointer line itself,
@@ -530,11 +531,11 @@ from 20,000 B to 20,464 B that way, past the hook's cap, and nobody saw it). The
    Only after `add` succeeded, remove that pointer from the index and keep its topic file. If `add` fails,
    including when `BACKLOG.md` does not exist, keep the pointer in place and report the over-cap state as
    unresolved in the hand-off. Say so in the hand-off.
-6. **Report, and drain held pointers.** In step 3 report the index size in bytes, the headroom (19,999 minus
-   that size) and EVERY held pointer still outstanding (the item 4 listing), not only the one this run
+6. **Report, and drain held pointers.** In step 3 report the index size in bytes and in lines, the headroom
+   (23,999 minus the byte size, and 189 minus the line count; whichever is used up first binds) and EVERY held pointer still outstanding (the item 4 listing), not only the one this run
    added. A held pointer is a topic file no session can find through the index, so it stays visible until
    the index has room. The oldest held pointer is the last one listed. When the headroom covers it (its
-   length in bytes plus one), write it with one Edit as in item 1 (drop the two-space indent the backlog
+   length in bytes plus one, and one line), write it with one Edit as in item 1 (drop the two-space indent the backlog
    entry gave the line), run item 3's check, and then close its entry:
 
    ```bash

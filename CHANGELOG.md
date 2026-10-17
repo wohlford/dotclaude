@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.132.1 — 2026-10-17
+- docs(debrief): count lines as well as bytes against the index cap
+
 ## v0.132.0 — 2026-10-17
 - feat(memory-index): add a 190-line check and raise the cap to 24,000 B
 
