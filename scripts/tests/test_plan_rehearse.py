@@ -1,11 +1,15 @@
 """Tests for scripts/plan-rehearse.py.
 
 Each row names the measured property it pins. The corpus rows at the bottom assert the extractor
-against every plan in `plans/`, with a declared floor, so a silently dropped shape shows up as a
-rising unpaired count rather than as quieter output.
+against every known plan in the committed manifest `fixtures/plan_corpus_floor.json`, with a
+declared floor; plans added later are exempt. A silently dropped shape shows up as a changed
+unpaired count rather than as quieter output.
 """
 
 import importlib.util
+import json
+import math
+import re
 import subprocess
 import textwrap
 from pathlib import Path
@@ -488,22 +492,129 @@ def test_a_clone_that_is_not_a_git_repo_is_an_error(tmp_path):
 CORPUS = REPO / "plans"
 
 
+FLOOR_MANIFEST = Path(__file__).parent / "fixtures" / "plan_corpus_floor.json"
+# The known plans present must carry at least this fraction of the manifest's total checks. Counted
+# in CHECKS, not files: most plans extract to zero checks, so a file count can stay high while
+# nearly every check-bearing plan is gone. The operator may tune the fraction.
+CHECK_FLOOR_FRACTION = 0.5
+
+# The plans that carry the unpaired rows, with their unpaired counts, declared BY HAND on purpose:
+# these are the only counts a human reviewed (the 10 unpaired were read on 2026-09-17), so they pin
+# the manifest independently of whatever the extractor emits when the manifest is regenerated.
+ANCHORS = {
+    "2026-07-24-propagate-production-branch-guard.md": 1,
+    "2026-08-04-audit-tests-offender-cap.md": 1,
+    "2026-08-05-close-publication-boundary-bypasses.md": 1,
+    "2026-08-06-propagate-hook-reinstall.md": 1,
+    "2026-08-07-fixture-signing-hang.md": 1,
+    "2026-08-09-run-long-expect.md": 1,
+    "2026-09-09-env-boundary-relocation.md": 2,
+    "2026-09-14-reserved-word-argument-position.md": 1,
+    "2026-09-14-tokenizer-dependent-suites.md": 1,
+}
+
+REGEN_HINT = (
+    "a known plan's counts changed, either because the extractor changed or because "
+    "that plan was edited: if the new counts are intended, read the diff and "
+    "regenerate with gen_plan_corpus_floor.py --plans plans --through 2026-10-15 "
+    "--out scripts/tests/fixtures/plan_corpus_floor.json, then review the hand-declared "
+    "ANCHORS and update them by hand; "
+    "if they are not intended, fix the extractor or revert the plan"
+)
+
+# The result-row keyword, built at runtime: plans that transcribe this file's code live in
+# `plans/`, which the extractor reads, and a literal result keyword at the start of a line in such
+# a plan would be read as a result row.
+EXP = "Expec" + "ted:"
+
+
+def load_floor_manifest(path=FLOOR_MANIFEST):
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return {name: (int(t), int(u)) for name, (t, u) in raw["files"].items()}
+
+
+def min_checks_for(manifest):
+    return math.ceil(CHECK_FLOOR_FRACTION * sum(t for t, _ in manifest.values()))
+
+
+def corpus_floor_problems(corpus_dir, manifest, extract, anchors, min_checks):
+    """Compare each KNOWN plan against its recorded (total, unpaired); unknown files are exempt.
+
+    Returns (present, problems). A dropped shape raises a file's unpaired count and a falsely
+    widened matcher lowers it, so a mismatch in either direction names the file. Discovery by
+    name cannot see a file go missing, so every anchor plan must exist and the known plans that
+    are present must carry at least `min_checks` of the manifest's checks.
+    """
+    problems, missing, present, checks_present = [], [], 0, 0
+    for name, (total, unpaired) in sorted(manifest.items()):
+        path = corpus_dir / name
+        if not path.is_file():
+            missing.append(name)
+            continue
+        checks = extract(path.read_text(encoding="utf-8"))[0]
+        found = (len(checks), sum(c.command is None for c in checks))
+        present += 1
+        checks_present += total
+        if found != (total, unpaired):
+            problems.append(
+                f"{name}: expected total={total} unpaired={unpaired}, "
+                f"found total={found[0]} unpaired={found[1]}"
+            )
+    mismatched = bool(problems)
+    for name in sorted(anchors):
+        if not (corpus_dir / name).is_file():
+            problems.append(f"anchor plan missing: {name}")
+    if checks_present < min_checks:
+        problems.append(
+            f"known plans present carry only {checks_present} checks "
+            f"(floor {min_checks}); {len(missing)} of {len(manifest)} known plans "
+            f"missing: {', '.join(missing) or 'none'}"
+        )
+    if mismatched:
+        problems.append(REGEN_HINT)
+    return present, problems
+
+
+def assert_corpus_floor(corpus_dir, manifest, anchors, min_checks):
+    present, problems = corpus_floor_problems(
+        corpus_dir, manifest, pr.extract, anchors, min_checks
+    )
+    if present == 0:
+        found = len(list(corpus_dir.glob("*.md")))
+        pytest.skip(
+            f"{corpus_dir} holds {found} markdown files and none of the "
+            f"{len(manifest)} manifest plans is present, so this is not the historical corpus"
+        )
+    assert not problems, "; ".join(problems)
+    return present
+
+
+def write_plan(directory, name, paired=0, unpaired=0):
+    """A plan with exactly `paired` command-paired rows and `unpaired` bare rows."""
+    directory.mkdir(parents=True, exist_ok=True)
+    text = f"{EXP} x\n\nProse between rows.\n\n" * unpaired + (
+        f"Run: `echo hi`\n\n{EXP} `hi`.\n\n" * paired
+    )
+    (directory / name).write_text(text, encoding="utf-8")
+
+
 @pytest.mark.skipif(
     not CORPUS.is_dir(), reason="plans/ is gitignored and absent in a fresh clone"
 )
 def test_the_corpus_extraction_holds_its_declared_floor():
-    """Measured 2026-09-17 over every plan in `plans/`: 223 checks, 213 paired, 10 unpaired.
+    """Each KNOWN historical plan still extracts to its recorded (total, unpaired).
 
-    A silently dropped shape raises the unpaired count; a falsely widened matcher lowers it.
-    Both directions are red, which is why this asserts the number rather than a minimum.
+    The manifest (`fixtures/plan_corpus_floor.json`, generated by `gen_plan_corpus_floor.py`)
+    names the plans that existed through 2026-10-15. A silently dropped shape raises one file's
+    unpaired count; a falsely widened matcher lowers it; both fail naming the file. Plans NOT in
+    the manifest are exempt: `plans/` is gitignored and written by the pipeline that runs this
+    test, so a new plan's own unpaired rows must never redden it. The 9 anchor plans must all be
+    present and the known plans present must carry half the manifest's checks, since discovery
+    cannot detect a file going missing. A `plans/` holding none of the known plans (a worktree
+    run, another operator's clone) skips.
     """
-    total = paired = 0
-    for p in sorted(CORPUS.glob("*.md")):
-        for c in pr.extract(p.read_text(encoding="utf-8"))[0]:
-            total += 1
-            paired += c.command is not None
-    assert total >= 223, f"found {total} checks; the corpus only grows"
-    assert total - paired == 10, f"{total - paired} unpaired, expected exactly 10"
+    manifest = load_floor_manifest()
+    assert_corpus_floor(CORPUS, manifest, ANCHORS, min_checks_for(manifest))
 
 
 @pytest.mark.skipif(
@@ -512,6 +623,239 @@ def test_the_corpus_extraction_holds_its_declared_floor():
 def test_every_corpus_plan_extracts_without_raising():
     for p in sorted(CORPUS.glob("*.md")):
         pr.extract(p.read_text(encoding="utf-8"))
+
+
+KNOWN = "2026-01-01-known.md"
+OTHER = "2026-01-02-other.md"
+BIG = "2026-01-03-big.md"
+
+
+def test_corpus_floor_a_new_unknown_plan_with_unpaired_rows_cannot_redden_it(tmp_path):
+    write_plan(tmp_path, KNOWN, paired=2, unpaired=1)
+    write_plan(tmp_path, "2026-12-31-brand-new.md", paired=1, unpaired=7)
+    result = corpus_floor_problems(tmp_path, {KNOWN: (3, 1)}, pr.extract, {}, 1)
+    assert result == (1, [])
+
+
+def test_corpus_floor_an_unchanged_known_corpus_passes(tmp_path):
+    write_plan(tmp_path, KNOWN, paired=2, unpaired=1)
+    write_plan(tmp_path, OTHER, paired=4)
+    manifest = {KNOWN: (3, 1), OTHER: (4, 0)}
+    result = corpus_floor_problems(tmp_path, manifest, pr.extract, {KNOWN: 1}, 7)
+    assert result == (2, [])
+
+
+@pytest.mark.parametrize(
+    ("paired", "unpaired", "found"),
+    [
+        (1, 2, "total=3 unpaired=2"),  # same total, more unpaired: a dropped shape
+        (3, 0, "total=3 unpaired=0"),  # same total, fewer unpaired: a widened matcher
+        (3, 1, "total=4 unpaired=1"),  # more checks found, same unpaired
+        (0, 0, "total=0 unpaired=0"),  # the file now yields nothing
+    ],
+)
+def test_corpus_floor_a_known_plan_whose_counts_changed_fails_naming_it(
+    tmp_path, paired, unpaired, found
+):
+    write_plan(tmp_path, KNOWN, paired=paired, unpaired=unpaired)
+    write_plan(tmp_path, OTHER, paired=4)
+    manifest = {KNOWN: (3, 1), OTHER: (4, 0)}
+    _, problems = corpus_floor_problems(tmp_path, manifest, pr.extract, {}, 1)
+    assert len(problems) == 2, problems
+    assert problems[0].startswith(f"{KNOWN}: "), problems
+    assert "expected total=3 unpaired=1" in problems[0], problems
+    assert f"found {found}" in problems[0], problems
+    assert problems[-1] == REGEN_HINT, problems
+
+
+def test_corpus_floor_the_regeneration_hint_is_conditional_on_the_change_being_intended():
+    assert (
+        "either because the extractor changed or because that plan was edited"
+        in REGEN_HINT
+    )
+    assert "if the new counts are intended" in REGEN_HINT
+    assert (
+        "if they are not intended, fix the extractor or revert the plan" in REGEN_HINT
+    )
+    through = json.loads(FLOOR_MANIFEST.read_text(encoding="utf-8"))["through"]
+    assert f"--through {through}" in REGEN_HINT
+    assert "ANCHORS" in REGEN_HINT
+    assert "\n" not in REGEN_HINT
+
+
+def test_corpus_floor_a_partial_corpus_below_the_check_floor_fails_naming_the_missing(
+    tmp_path,
+):
+    write_plan(tmp_path, KNOWN, paired=2, unpaired=1)
+    manifest = {KNOWN: (3, 1), OTHER: (4, 0)}
+    present, problems = corpus_floor_problems(tmp_path, manifest, pr.extract, {}, 5)
+    assert present == 1
+    assert len(problems) == 1, problems
+    assert "carry only 3 checks (floor 5)" in problems[0], problems
+    assert OTHER in problems[0], problems
+
+
+def test_corpus_floor_missing_known_plans_are_tolerated_while_the_check_floor_holds(
+    tmp_path,
+):
+    write_plan(tmp_path, KNOWN, paired=2, unpaired=1)
+    manifest = {KNOWN: (3, 1), OTHER: (4, 0)}
+    result = corpus_floor_problems(tmp_path, manifest, pr.extract, {}, 3)
+    assert result == (1, [])
+
+
+def test_corpus_floor_the_anchor_plans_present_but_too_few_checks_fails(tmp_path):
+    write_plan(tmp_path, KNOWN, paired=2, unpaired=1)
+    manifest = {KNOWN: (3, 1), BIG: (20, 0)}
+    floor = min_checks_for(manifest)
+    _, problems = corpus_floor_problems(
+        tmp_path, manifest, pr.extract, {KNOWN: 1}, floor
+    )
+    assert len(problems) == 1, problems
+    assert f"carry only 3 checks (floor {floor})" in problems[0], problems
+
+
+def test_corpus_floor_a_missing_anchor_plan_fails_naming_it(tmp_path):
+    write_plan(tmp_path, OTHER, paired=4)
+    manifest = {KNOWN: (3, 1), OTHER: (4, 0)}
+    present, problems = corpus_floor_problems(
+        tmp_path, manifest, pr.extract, {KNOWN: 1}, 1
+    )
+    assert present == 1
+    assert problems == [f"anchor plan missing: {KNOWN}"]
+
+
+def test_corpus_floor_a_directory_holding_no_known_plan_skips_naming_what_it_found(
+    tmp_path,
+):
+    write_plan(tmp_path, "2026-12-31-brand-new.md", paired=1)
+    with pytest.raises(pytest.skip.Exception) as info:
+        assert_corpus_floor(tmp_path, {KNOWN: (3, 1)}, {KNOWN: 1}, 1)
+    message = str(info.value)
+    assert str(tmp_path) in message, message
+    assert "holds 1 markdown files" in message, message
+    assert "none of the 1 manifest plans is present" in message, message
+    assert "not the historical corpus" in message, message
+
+
+def test_corpus_floor_an_empty_directory_skips_rather_than_passing_or_failing(tmp_path):
+    with pytest.raises(pytest.skip.Exception) as info:
+        assert_corpus_floor(tmp_path, {KNOWN: (3, 1)}, {}, 1)
+    assert "holds 0 markdown files" in str(info.value)
+
+
+def test_corpus_floor_one_known_plan_present_below_the_check_floor_fails_not_skips(
+    tmp_path,
+):
+    write_plan(tmp_path, KNOWN, paired=2, unpaired=1)
+    manifest = {KNOWN: (3, 1), OTHER: (4, 0)}
+    # A skip raised inside `pytest.raises(AssertionError)` would end this row as SKIPPED, which no
+    # failure-counting harness reads as a catch, so name each outcome explicitly.
+    try:
+        assert_corpus_floor(tmp_path, manifest, {}, 5)
+    except pytest.skip.Exception:
+        pytest.fail("a partial corpus below the check floor skipped instead of failing")
+    except AssertionError as exc:
+        assert "carry only 3 checks" in str(exc), exc
+    else:
+        pytest.fail("a partial corpus below the check floor passed")
+
+
+def test_corpus_floor_the_asserting_wrapper_raises_with_the_file_name(tmp_path):
+    write_plan(tmp_path, KNOWN, paired=1, unpaired=2)
+    with pytest.raises(AssertionError, match=KNOWN):
+        assert_corpus_floor(tmp_path, {KNOWN: (3, 1)}, {}, 1)
+
+
+def test_corpus_floor_the_minimum_is_derived_from_the_manifest_total():
+    assert min_checks_for({"a": (10, 0), "b": (5, 1)}) == 8
+
+
+GENERATOR = importlib.util.spec_from_file_location(
+    "gen_plan_corpus_floor", Path(__file__).parent / "gen_plan_corpus_floor.py"
+)
+gen_plan_corpus_floor = importlib.util.module_from_spec(GENERATOR)
+GENERATOR.loader.exec_module(gen_plan_corpus_floor)
+
+
+def test_corpus_floor_manifest_unpaired_rows_are_exactly_the_declared_anchors():
+    manifest = load_floor_manifest()
+    derived = {n: u for n, (_, u) in manifest.items() if u}
+    review = (
+        "manifest unpaired files differ from the hand-reviewed ANCHORS; if the "
+        "regeneration is intended, review each changed plan by hand and update ANCHORS"
+    )
+    assert derived == ANCHORS, f"{review}: manifest has {derived}"
+    assert len(ANCHORS) == 9, f"{review}: ANCHORS names {len(ANCHORS)} files, not 9"
+    assert sum(ANCHORS.values()) == 10, (
+        f"{review}: ANCHORS sums to {sum(ANCHORS.values())} unpaired rows, not 10"
+    )
+
+
+def test_corpus_floor_manifest_is_well_formed_and_carries_checks():
+    manifest = load_floor_manifest()
+    assert all(0 <= u <= t for t, u in manifest.values())
+    assert all(re.fullmatch(r"\d{4}-\d{2}-\d{2}-.+\.md", n) for n in manifest)
+    assert min_checks_for(manifest) > 0
+
+
+def test_corpus_floor_generator_selects_by_filename_date_and_counts(tmp_path):
+    write_plan(tmp_path, "2026-10-15-in.md", paired=2, unpaired=1)
+    write_plan(tmp_path, "2026-10-16-after.md", paired=1, unpaired=5)
+    write_plan(tmp_path, "undated.md", paired=1)
+    built = gen_plan_corpus_floor.build(tmp_path, "2026-10-15", pr.extract)
+    assert built == {"2026-10-15-in.md": [3, 1]}
+
+
+def _gen_args(tmp_path, through, out=None):
+    plans = tmp_path / "plans"
+    plans.mkdir(exist_ok=True)
+    out = out or tmp_path / "out" / "manifest.json"
+    out.parent.mkdir(exist_ok=True)
+    return plans, out, ["--plans", str(plans), "--through", through, "--out", str(out)]
+
+
+def test_corpus_floor_generator_rejects_an_impossible_date_and_writes_nothing(tmp_path):
+    plans, out, args = _gen_args(tmp_path, "2026-13-99")
+    write_plan(plans, "2026-10-15-in.md", paired=1)
+    assert gen_plan_corpus_floor.main(args) == 2
+    assert not out.exists()
+
+
+def test_corpus_floor_generator_refuses_an_output_inside_the_plans_directory(tmp_path):
+    plans, _, _ = _gen_args(tmp_path, "2026-10-15")
+    write_plan(plans, "2026-10-15-in.md", paired=1)
+    out = plans / "manifest.json"
+    args = ["--plans", str(plans), "--through", "2026-10-15", "--out", str(out)]
+    assert gen_plan_corpus_floor.main(args) == 2
+    assert not out.exists()
+
+
+def test_corpus_floor_generator_refuses_a_cut_earlier_than_every_plan(tmp_path):
+    plans, out, args = _gen_args(tmp_path, "2026-01-01")
+    write_plan(plans, "2026-10-15-in.md", paired=1)
+    assert gen_plan_corpus_floor.main(args) == 2
+    assert not out.exists()
+
+
+def test_corpus_floor_generator_a_good_run_writes_a_loadable_manifest(tmp_path):
+    plans, out, args = _gen_args(tmp_path, "2026-10-15")
+    write_plan(plans, "2026-10-15-in.md", paired=2, unpaired=1)
+    write_plan(plans, "2026-10-16-after.md", paired=1)
+    assert gen_plan_corpus_floor.main(args) == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["through"] == "2026-10-15"
+    assert data["files"] == {"2026-10-15-in.md": [3, 1]}
+
+
+def test_corpus_floor_generator_writes_one_line_per_file_and_valid_json():
+    files = {"a.md": [3, 1], "b.md": [0, 0]}
+    text = gen_plan_corpus_floor.render(files, "2026-10-15")
+    assert json.loads(text)["files"] == files
+    lines = text.splitlines()
+    assert '  "a.md": [3, 1],' in lines
+    assert '  "b.md": [0, 0]' in lines
+    assert text == gen_plan_corpus_floor.render(files, "2026-10-15")
 
 
 # ------------------------------------------------- the committed corpus (always runs)
