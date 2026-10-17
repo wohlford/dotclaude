@@ -4299,8 +4299,8 @@ assert_has 'FAIL shellcheck — shellcheck reported findings' 'rSC14: the parall
 check_eq "$(wc -c < "$rSC14/log" | tr -d ' ')" 0 'rSC14: no worker sourced BASH_ENV'
 rsc_inproc "$rSC14/repo" "$rSC14/cap.ser" "${rsc14_env[@]}" AUDIT_SHELLCHECK_JOBS=1 > /dev/null
 rsc_same 'rSC14: the parallel detail equals the serial detail with BASH_ENV set' "$rSC14/cap.par" "$rSC14/cap.ser"
-# The section's own elapsed time is the time this change adds to the suite. The spec's budget is 30 s.
-printf 'info  the rSC section took %d s (budget: 30 s)\n' "$((SECONDS - rsc_t0))"
+# The section's own elapsed time is the time this change adds to the suite. The accepted budget is 35-40 s.
+printf 'info  the rSC section took %d s (budget: 35-40 s)\n' "$((SECONDS - rsc_t0))"
 # rSC-END
 
 

@@ -205,9 +205,9 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   path.
   **`mutation-anchors` has `ruff`'s exact shape but has not crossed yet**: it prints a
   `campaign: <file>` line for EVERY campaign, passing or failing, so its padding grows with the
-  campaign COUNT rather than with the findings. Measured today: 18 campaigns, so 18 padding lines
-  precede any finding and 32 of the cap remain — it does not yet hide anything. It starts to at
-  ~50 campaigns, and nothing signals the crossing — though the artifact above now removes that
+  campaign COUNT rather than with the findings. Measured when this sentence was last updated: 45
+  campaigns, so 45 padding lines precede any finding and 5 of the cap remain — it does not yet
+  hide anything. It starts to at ~50 campaigns, and nothing signals the crossing — though the artifact above now removes that
   crossing's cost, since the full list is preserved whether or not anyone notices it. This list is
   deliberately explicit: three earlier drafts stated a rule quantified over "every other check"
   and were wrong each time.
@@ -391,17 +391,22 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   the run continues to completion and emits a normal verdict.
 - **A TERM delivered to the script alone waits out the whole parallel shellcheck phase.** The exit
   trap runs only once the foreground child returns, and that child is now the whole pool, so the
-  wait is up to a few seconds rather than one file's lint time; a TERM to the process group
-  stops the workers at once.
-- **`checks=<pass>/<fail>/<skip>` counts emitted verdict lines, not the 20 named checks.**
-  Two things make the totals differ from 20: an invalid `.auditignore` pattern adds a
+  wait lasts until the pool drains (about half a minute on this repo's script set, measured at a
+  load near 4) rather than one file's lint time; a TERM to the process group stops the workers at
+  once.
+- **`checks=<pass>/<fail>/<skip>` counts emitted verdict lines, not the 20 named checks.** A
+  `SKIP` is a verdict line and counts in the third number, so a sweep with skips still totals the
+  same. Two things make the totals differ from 20: an invalid `.auditignore` pattern adds a
   `FAIL auditignore` that is not one of the 20, and without `--tests` none of `tests`,
   `hermetic`, or `hermetic-outside` emits a line at all — so a static sweep totals 17 and a
   full one 20. Compare counts only across runs invoked with the same flags.
 - **shellcheck runs in parallel.** The shell-script lint check starts its per-file invocations in
-  parallel, at most the smaller of 8 and the core count at once. Setting the environment variable
-  AUDIT_SHELLCHECK_JOBS to a positive integer of at most four digits, with no leading zero,
-  overrides that count, the value 1 restores the serial loop, an empty value is ignored, and any
-  other value fails the check. A valid count never changes the report, which
-  is byte-identical to the serial loop's. On a host whose xargs cannot run the pool the check
-  fails closed, and the value 1 is the remedy.
+  parallel, at most the smaller of 8 and the core count at once. The core count comes from the
+  POSIX online-processor query, then the BSD hardware count, and falls back to 1 (the serial loop)
+  when neither answers. Setting the environment variable AUDIT_SHELLCHECK_JOBS to a positive
+  integer of at most four digits, with no leading zero, overrides that count and the value 1
+  restores the serial loop; an empty value is ignored, and any other value fails the check with a
+  FAIL line naming the variable. A valid count never changes the report, which is byte-identical
+  to the serial loop's. On a host whose xargs cannot run the pool the check fails closed: the FAIL
+  line says either that shellcheck did not run for some files, with the xargs exit status, or that
+  xargs exited non-zero, and the value 1 is the remedy.

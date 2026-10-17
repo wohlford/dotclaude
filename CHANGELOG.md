@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.131.10 — 2026-10-15
+- docs(audit): clarify the shellcheck notes and update the budget line
+
 ## v0.131.9 — 2026-10-15
 - test(audit): add the parallel shellcheck mutation campaign
 
