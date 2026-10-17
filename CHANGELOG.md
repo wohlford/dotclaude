@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.131.8 — 2026-10-15
+- perf(audit): run the shellcheck check with bounded parallelism
+
 ## v0.131.7 — 2026-10-14
 - docs(claude-md): add the gitignored-input and dash-path hazards
 

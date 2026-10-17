@@ -1397,8 +1397,10 @@ set +m
 check_eq "$rM8_rc" 143 'rM8: process-group TERM -> the run dies with 143'
 # Counts are whatever the sweep reached in one second, so pin the shape, not the numbers.
 # The `rc=143` in this line is the load-bearing part: it can only appear if the TERM trap
-# ran and converted the signal into a real exit status. Timing margin is ~35x — this scope
-# takes about 35 seconds to sweep and the kill lands at 1 second.
+# ran and converted the signal into a real exit status. Timing margin is about 30x — this scope
+# took about 54 seconds to sweep before the shellcheck pool and about 30 seconds after it (figures
+# from the machine the pool was drafted on, at load about 3), and the kill lands at 1 second, in
+# the format checks, before the shellcheck phase.
 rM8_last="$(grep '^RESULT:' "$rM8_out" | tail -1)"
 case "$rM8_last" in
   'RESULT: INCOMPLETE rc=143 checks='*)
@@ -3672,6 +3674,634 @@ assert_not_has 'packaging fact' \
   'rTGC+T: an unenterable install is not a never-installed packaging fact'
 # chmod back so the suite'"'"'s own cleanup can remove it
 chmod 755 "$rTGCT_home/.claude/scripts" 2>/dev/null || true
+
+
+# rSC-BEGIN
+# ============================================================================
+# rSC. The bounded-parallel pool inside check_shellcheck
+#
+# Every row has its own TMPDIR (a directory leaked by one row cannot redden another), sets
+# AUDIT_SHELLCHECK_JOBS explicitly (or clears it with `env -u`), and forces ordering and
+# concurrency with bounded handshakes between stub shellchecks, never with sleeps. A handshake that
+# times out leaves an INDETERMINATE marker and fails the row by name; it never yields a verdict.
+# ============================================================================
+rsc_t0="$SECONDS"
+rsc_root="$tmp/rSC"
+mkdir -p "$rsc_root"
+rsc_xargs="$(command -v xargs)"
+rsc_shell="$BASH"
+
+# One stub shellcheck for every row, driven by STUB_MODE. It is invoked as `shellcheck -S warning FILE`.
+# Its shebang names the bash running this suite, not `env bash`: the handshakes use `read -t` with a
+# fractional timeout, which a bash older than 4 rejects, and on a PATH whose first bash is 3.2 every
+# handshake would return at once and read as INDETERMINATE. (rSC13 still runs the ENGINE under 3.2.)
+{
+  printf '#!%s\n' "$BASH"
+  cat << 'RSC_STUB'
+set -uo pipefail
+f="${3:-}"
+base="${f##*/}"
+[[ -n "${STUB_ARGV_LOG:-}" ]] && printf '%s\n' "$f" >> "$STUB_ARGV_LOG"
+if [[ -n "${STUB_DIR:-}" ]]; then
+  seen=no
+  for x in "${TMPDIR:-/tmp}"/audit-shellcheck.*; do [[ -e "$x" ]] && seen=yes; done
+  echo "$seen" >> "$STUB_DIR/scratch.seen"
+fi
+case "${STUB_MODE:?STUB_MODE unset}" in
+  slow)
+    printf '%s\n' "$$" >> "${STUB_DIR:?}/started.log"
+    sleep 0.5
+    exit 0 ;;
+  gate)
+    # Holds every started stub on a release file nobody creates (bounded at about 60 s), so a
+    # group kill finds exactly the workers that started and no stub finishes by itself first.
+    printf '%s\n' "$$" >> "${STUB_DIR:?}/started.log"
+    d="${STUB_DIR:?}"
+    mkfifo "$d/idle.$$" 2> /dev/null
+    exec 9<> "$d/idle.$$"
+    t=0
+    until [[ -e "$d/release" ]]; do
+      read -r -t 0.05 -u 9 _
+      t=$((t + 1))
+      [[ "$t" -gt 1200 ]] && break
+    done
+    exit 0 ;;
+  peak)
+    d="${STUB_DIR:?}"
+    expect="${STUB_EXPECT:?STUB_EXPECT unset}"
+    : > "$d/run.$$"
+    cnt=0
+    for x in "$d"/run.*; do [[ -e "$x" ]] && cnt=$((cnt + 1)); done
+    printf '%s\n' "$cnt" >> "$d/peaks"
+    if [[ "$expect" -gt 1 ]]; then
+      # The stub that sees `expect` stubs running at once opens the barrier; the rest only look for it.
+      [[ "$cnt" -ge "$expect" ]] && : > "$d/barrier.done"
+      # Waits with the `read -t` builtin on an idle FIFO, not with `sleep`: a sleep forks, and 64
+      # stubs polling by fork made the cap row cost 14 s; this form costs under 3 s.
+      mkfifo "$d/idle" 2> /dev/null
+      exec 9<> "$d/idle"
+      t=0
+      until [[ -e "$d/barrier.done" || -e "$d/INDETERMINATE" ]]; do
+        read -r -t 0.1 -u 9 _
+        t=$((t + 1))
+        if [[ "$t" -gt 600 ]]; then : > "$d/INDETERMINATE"; break; fi
+      done
+      read -r -t 0.1 -u 9 _
+    fi
+    rm -f "$d/run.$$"
+    exit 0 ;;
+  keyed)
+    if [[ " ${STUB_BAD:-} " == *" $base "* ]]; then
+      printf '%s:1:1: warning: stub finding in %s [SC9999]\n' "$f" "$base"
+      exit 1
+    fi
+    case "$base" in
+      clean*|n[0-9][0-9].sh|s0.sh) exit 0 ;;
+      find*) printf '%s:3:1: warning: stub finding one [SC9001]\n%s:4:2: warning: stub finding two [SC9002]\n' "$f" "$f"; exit 1 ;;
+      err*) printf '%s: stub stderr-only finding\n' "$f" >&2; exit 1 ;;
+      multi*) printf 'line one of %s\n\nline three of %s\n' "$base" "$base"; exit 1 ;;
+      gone*) printf '%s: openBinaryFile: does not exist (No such file or directory)\n' "$f" >&2; exit 2 ;;
+      "has space.sh") printf '%s: stub finding in a name with a space\n' "$f"; exit 1 ;;
+      big*) cat "${STUB_BLOB_DIR:?}/$base"; exit 1 ;;
+      s1.sh) printf '%s: stub s1 text\n' "$f"; exit 1 ;;
+      s2.sh) printf '%s: stub s2 stderr text\n' "$f" >&2; exit 2 ;;
+      s2q.sh) exit 2 ;;
+      s3.sh) printf '%s: stub s3 text\n' "$f"; exit 3 ;;
+      s4.sh) exit 4 ;;
+      s137.sh) kill -9 $$ ;;
+      f[0-9][0-9].sh)
+        d="${STUB_DIR:?}"
+        if [[ "${STUB_HANDSHAKE:-0}" == 1 && "$base" == f01.sh ]]; then
+          mkfifo "$d/idle" 2> /dev/null
+          exec 9<> "$d/idle"
+          t=0
+          until [[ -e "$d/done.f06.sh" ]]; do
+            read -r -t 0.05 -u 9 _
+            t=$((t + 1))
+            if [[ "$t" -gt 1200 ]]; then : > "$d/INDETERMINATE"; break; fi
+          done
+        fi
+        printf 'OUT %s\n' "$base"
+        printf '%s\n' "$base" >> "$d/done.log"
+        [[ "$base" == f06.sh ]] && : > "$d/done.f06.sh"
+        exit 1 ;;
+      *) exit 0 ;;
+    esac ;;
+esac
+RSC_STUB
+} > "$rsc_root/stub-shellcheck"
+chmod +x "$rsc_root/stub-shellcheck"
+
+rsc_row() { # name -> creates the row directory (bin with the stub, tmp) and prints its path
+  local d="$rsc_root/$1"
+  mkdir -p "$d/bin" "$d/tmp"
+  ln -s "$rsc_root/stub-shellcheck" "$d/bin/shellcheck"
+  printf '%s' "$d"
+}
+
+rsc_fresh() { # dir -> an empty directory
+  rm -rf "$1"
+  mkdir -p "$1"
+}
+
+rsc_repo() { # dir file... -> a committed repo tracking README.md plus the given (empty) files
+  local d="$1" f
+  shift
+  git init -q "$d"
+  printf '[user]\n\temail = test@test.invalid\n\tname = test\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n[core]\n\tautocrlf = false\n\tsafecrlf = false\n' >> "$d/.git/config"
+  : > "$d/README.md"
+  for f in "$@"; do : > "$d/$f"; done
+  commit_all "$d" seed
+}
+
+rsc_engine() { # scope env-args... -> OUT, RC from a real engine run
+  local scope="$1"
+  shift
+  OUT="$(env "$@" "$engine" --scope "$scope" 2>&1)"
+  RC=$?
+}
+
+# In-process: source the engine in a child shell (so a crash there cannot take the suite down),
+# replace print_offenders with a capture of exactly what it is handed, call the check, and print
+# the verdict lines. No EXIT trap exists in this child, so only the check's own cleanup can
+# remove its scratch directory. A TMPLEFT= line reports the handle at the moment of return.
+rsc_inproc() { # scope capfile env-args...
+  local scope="$1" cap="$2"
+  shift 2
+  rm -f "$cap"
+  env "$@" "${rsc_shell:-$BASH}" -c '
+    source "$1"
+    cap="$2"
+    print_offenders() { printf "%s|%s" "$1" "${2:-}" > "$cap"; }
+    check_shellcheck "$3"
+    printf "TMPLEFT=%s\n" "${shellcheck_tmp:-}"
+  ' _ "$engine" "$cap" "$scope" 2>&1
+}
+
+# The frozen pre-change loop, the oracle for byte identity. It must stay a verbatim copy.
+ref_serial_detail() { # scope capfile -> prints the verdict line; writes detail|label on FAIL
+  local scope="$1" cap="$2" f detail="" out rc=0 files
+  rm -f "$cap"
+  files="$(git -C "$scope" ls-files -- '*.sh' 2>/dev/null)"
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    out="$(shellcheck -S warning "$scope/$f" 2>&1)" || rc=$?
+    if [[ -n "$out" ]]; then
+      detail="${detail}${out}"$'\n'
+    fi
+  done <<< "$files"
+  if [[ "$rc" -ne 0 ]]; then
+    printf 'FAIL shellcheck — shellcheck reported findings\n'
+    printf '%s|%s' "$detail" shellcheck > "$cap"
+  else
+    printf 'PASS shellcheck\n'
+  fi
+}
+
+rsc_same() { # label fileA fileB -> both non-empty and byte-identical
+  if [[ -s "$2" && -s "$3" ]] && cmp -s "$2" "$3"; then
+    pass_line "$1"
+  else
+    fail_line "$1"
+    printf '  --- A (%s) ---\n' "$2"
+    head -c 500 "$2" 2> /dev/null
+    printf '\n  --- B (%s) ---\n' "$3"
+    head -c 500 "$3" 2> /dev/null
+    printf '\n'
+  fi
+}
+
+rsc_assert() { # label command... -> pass when the command succeeds
+  local label="$1"
+  shift
+  if "$@"; then pass_line "$label"; else fail_line "$label"; fi
+}
+
+rsc_peak() { # stubdir -> the largest concurrency any stub observed (0 when none ran)
+  if [[ -s "$1/peaks" ]]; then sort -n "$1/peaks" | tail -1; else printf '0'; fi
+}
+
+rsc_no_scratch() { # tmpdir -> succeeds when no audit-shellcheck.* directory exists in it
+  [[ "$(find "$1" -maxdepth 1 -name 'audit-shellcheck.*' | wc -l | tr -d ' ')" == 0 ]]
+}
+
+rsc_block() { # -> the shellcheck verdict block (the FAIL line and its indented detail) from stdin
+  awk '/^FAIL shellcheck/ { p = 1; print; next } p && /^(PASS|FAIL|SKIP|[0-9]+ passed)/ { exit } p { print }'
+}
+
+# ---- rSC1: the SKIP exits are decided first, whatever the worker setting (A4) -----------------
+rSC1="$(rsc_row rSC1)"
+rsc_repo "$rSC1/none"
+rsc_repo "$rSC1/some" n01.sh n02.sh n03.sh
+OUT="$(rsc_inproc "$rSC1/none" "$rSC1/cap" PATH="$rSC1/bin:$PATH" TMPDIR="$rSC1/tmp" STUB_MODE=keyed AUDIT_SHELLCHECK_JOBS=3)"
+assert_has 'SKIP shellcheck — no shell scripts' 'rSC1a: no .sh files + JOBS=3 -> SKIP no shell scripts'
+OUT="$(rsc_inproc "$rSC1/none" "$rSC1/cap" PATH="$rSC1/bin:$PATH" TMPDIR="$rSC1/tmp" STUB_MODE=keyed AUDIT_SHELLCHECK_JOBS=garbage)"
+assert_has 'SKIP shellcheck — no shell scripts' 'rSC1a: no .sh files + an invalid JOBS -> still SKIP, never a FAIL'
+OUT="$(rsc_inproc "$rSC1/some" "$rSC1/cap" PATH=/usr/bin:/bin TMPDIR="$rSC1/tmp" AUDIT_SHELLCHECK_JOBS=garbage)"
+assert_has 'SKIP shellcheck — shellcheck not found' 'rSC1c: shellcheck absent + an invalid JOBS -> SKIP not found, never a FAIL'
+rsc_assert 'rSC1: the SKIP paths created no scratch directory' rsc_no_scratch "$rSC1/tmp"
+
+# ---- rSC2: an injected real finding still fails at every worker count (A2) --------------------
+if command -v shellcheck > /dev/null 2>&1; then
+  rSC2="$(rsc_row rSC2)"
+  rsc_repo "$rSC2/repo" good.sh bad.sh
+  printf '#!/usr/bin/env bash\nset -uo pipefail\nprintf "hi\\n"\n' > "$rSC2/repo/good.sh"
+  printf '#!/usr/bin/env bash\nset -uo pipefail\nfoo() {\n  local unused=1\n  echo hi\n}\nfoo\n' > "$rSC2/repo/bad.sh"
+  commit_all "$rSC2/repo" findings
+  for j in 1 3; do
+    OUT="$(rsc_inproc "$rSC2/repo" "$rSC2/cap.$j" TMPDIR="$rSC2/tmp" AUDIT_SHELLCHECK_JOBS="$j")"
+    assert_has 'FAIL shellcheck — shellcheck reported findings' "rSC2: SC2034 injected, JOBS=$j -> FAIL shellcheck"
+    rsc_assert "rSC2: JOBS=$j -> the offender text carries the finding" grep -q 'SC2034' "$rSC2/cap.$j"
+    rsc_assert "rSC2: JOBS=$j -> the offender text names the absolute path" grep -qF "$rSC2/repo/bad.sh" "$rSC2/cap.$j"
+  done
+else
+  printf 'skip - shellcheck not installed in this test environment\n'
+fi
+
+# ---- rSC3: byte identity and order against the frozen serial loop (A1) ------------------------
+rSC3="$(rsc_row rSC3)"
+rsc_repo "$rSC3/repo" clean01.sh find02.sh clean03.sh err04.sh find07.sh \
+  'has space.sh' multi09.sh gone10.sh
+rm -f "$rSC3/repo/gone10.sh"
+rsc3_env=(PATH="$rSC3/bin:$PATH" TMPDIR="$rSC3/tmp" STUB_MODE=keyed)
+for j in 1 3 8; do
+  rsc_inproc "$rSC3/repo" "$rSC3/cap.$j" "${rsc3_env[@]}" AUDIT_SHELLCHECK_JOBS="$j" | grep -v '^TMPLEFT=' > "$rSC3/verdict.$j"
+done
+(export PATH="$rSC3/bin:$PATH" STUB_MODE=keyed; ref_serial_detail "$rSC3/repo" "$rSC3/cap.ref" > "$rSC3/verdict.ref")
+rsc_same 'rSC3: JOBS=3 detail is byte-identical to the frozen serial loop' "$rSC3/cap.3" "$rSC3/cap.ref"
+rsc_same 'rSC3: JOBS=8 detail is byte-identical to the frozen serial loop' "$rSC3/cap.8" "$rSC3/cap.ref"
+rsc_same 'rSC3: JOBS=1 (the serial path) detail is byte-identical to the frozen loop' "$rSC3/cap.1" "$rSC3/cap.ref"
+rsc_same 'rSC3: the verdict lines are identical at JOBS=3 and the frozen loop' "$rSC3/verdict.3" "$rSC3/verdict.ref"
+rsc_same 'rSC3: the verdict lines are identical at JOBS=8 and the frozen loop' "$rSC3/verdict.8" "$rSC3/verdict.ref"
+rsc3_has_all() { # file -> succeeds only when ALL three strings are present
+  grep -q 'stub stderr-only finding' "$1" && grep -q 'openBinaryFile' "$1" && grep -q 'a name with a space' "$1"
+}
+rsc_assert 'rSC3: the stderr-only finding, the rc-2 file and the spaced name are all in the detail' \
+  rsc3_has_all "$rSC3/cap.3"
+
+# ---- rSC4: outputs far above any pipe's atomic size survive intact and in order (A1, hazard 1) -
+rSC4="$(rsc_row rSC4)"
+rsc_repo "$rSC4/repo" big1.sh big2.sh big3.sh clean1.sh clean2.sh
+mkdir -p "$rSC4/blobs"
+rsc4_total=0
+for b in big1.sh big2.sh big3.sh; do
+  awk -v n="$b" 'BEGIN { for (i = 0; i < 20000; i++) printf "%s line %d padding padding padding padding\n", n, i }' > "$rSC4/blobs/$b"
+  rsc4_total=$((rsc4_total + $(wc -c < "$rSC4/blobs/$b")))
+done
+rsc4_env=(PATH="$rSC4/bin:$PATH" TMPDIR="$rSC4/tmp" STUB_MODE=keyed STUB_BLOB_DIR="$rSC4/blobs")
+rsc_inproc "$rSC4/repo" "$rSC4/cap.4" "${rsc4_env[@]}" AUDIT_SHELLCHECK_JOBS=4 > /dev/null
+rsc_inproc "$rSC4/repo" "$rSC4/cap.1" "${rsc4_env[@]}" AUDIT_SHELLCHECK_JOBS=1 > /dev/null
+rsc_same 'rSC4: three 1 MB+ outputs at JOBS=4 equal the serial capture byte for byte' "$rSC4/cap.4" "$rSC4/cap.1"
+rsc_assert 'rSC4: the capture holds all three blobs (never truncated)' \
+  test "$(wc -c < "$rSC4/cap.4")" -ge "$rsc4_total"
+rsc_assert 'rSC4: each blob is far above a 64 KB pipe and both PIPE_BUF values' \
+  test "$((rsc4_total / 3))" -ge 1000000
+
+# ---- rSC5: report order is index order even when completion order is inverted (A1) ------------
+rSC5="$(rsc_row rSC5)"
+rsc5_files=()
+for i in 01 02 03 04 05 06; do rsc5_files+=("f$i.sh"); done
+rsc_repo "$rSC5/repo" "${rsc5_files[@]}"
+rsc_fresh "$rSC5/h.par"
+rsc_fresh "$rSC5/h.ser"
+rsc_fresh "$rSC5/h.ref"
+rsc_inproc "$rSC5/repo" "$rSC5/cap.par" PATH="$rSC5/bin:$PATH" TMPDIR="$rSC5/tmp" STUB_MODE=keyed \
+  STUB_DIR="$rSC5/h.par" STUB_HANDSHAKE=1 AUDIT_SHELLCHECK_JOBS=3 > /dev/null
+rsc_inproc "$rSC5/repo" "$rSC5/cap.ser" PATH="$rSC5/bin:$PATH" TMPDIR="$rSC5/tmp" STUB_MODE=keyed \
+  STUB_DIR="$rSC5/h.ser" STUB_HANDSHAKE=0 AUDIT_SHELLCHECK_JOBS=1 > /dev/null
+(export PATH="$rSC5/bin:$PATH" STUB_MODE=keyed STUB_DIR="$rSC5/h.ref" STUB_HANDSHAKE=0
+  ref_serial_detail "$rSC5/repo" "$rSC5/cap.ref" > /dev/null)
+rsc_assert 'rSC5: the handshake did not time out (otherwise the row is INDETERMINATE)' \
+  test ! -e "$rSC5/h.par/INDETERMINATE"
+rsc_assert 'rSC5: completion order really was inverted (f06 finished before f01)' \
+  test "$(grep -n '^f06.sh$' "$rSC5/h.par/done.log" | cut -d: -f1)" -lt "$(grep -n '^f01.sh$' "$rSC5/h.par/done.log" | cut -d: -f1)"
+rsc_assert 'rSC5: the parallel detail lists f01 first' \
+  test "$(head -n 1 "$rSC5/cap.par")" = 'OUT f01.sh'
+rsc_same 'rSC5: the inverted-completion capture equals the JOBS=1 capture' "$rSC5/cap.par" "$rSC5/cap.ser"
+rsc_same 'rSC5: the inverted-completion capture equals the frozen reference' "$rSC5/cap.par" "$rSC5/cap.ref"
+
+# ---- rSC6: worker count is bounded, read from the option, and capped (A5) ---------------------
+rSC6="$(rsc_row rSC6)"
+rsc6_names=()
+for i in 01 02 03 04 05 06 07 08 09 10; do rsc6_names+=("n$i.sh"); done
+rsc_small=()
+for i in 01 02 03 04 05 06; do rsc_small+=("n$i.sh"); done
+rsc_repo "$rSC6/r12" "${rsc6_names[@]}"
+rsc_repo "$rSC6/r6" "${rsc_small[@]}"
+rsc6_n=0
+rsc_peak_run() { # label repo expect jobs-or-unset -> sets rsc_pk to the observed peak, leaves $rSC6/h as the stub dir
+  local label="$1" repo="$2" expect="$3" jobs="$4" tdir
+  rsc6_n=$((rsc6_n + 1))
+  tdir="$rSC6/tmp.$rsc6_n"   # one TMPDIR per sub-row, so a leak in one cannot redden another
+  mkdir -p "$tdir"
+  rsc_fresh "$rSC6/h"
+  if [[ "$jobs" == unset ]]; then
+    rsc_inproc "$repo" "$rSC6/cap" -u AUDIT_SHELLCHECK_JOBS PATH="$rSC6/bin:$PATH" TMPDIR="$tdir" \
+      STUB_MODE=peak STUB_DIR="$rSC6/h" STUB_EXPECT="$expect" > "$rSC6/out"
+  else
+    rsc_inproc "$repo" "$rSC6/cap" PATH="$rSC6/bin:$PATH" TMPDIR="$tdir" \
+      STUB_MODE=peak STUB_DIR="$rSC6/h" STUB_EXPECT="$expect" AUDIT_SHELLCHECK_JOBS="$jobs" > "$rSC6/out"
+  fi
+  rsc_pk="$(rsc_peak "$rSC6/h")"
+  rsc_assert "$label: the handshake did not time out" test ! -e "$rSC6/h/INDETERMINATE"
+  rsc_assert "$label: the check passed" grep -q '^PASS shellcheck$' "$rSC6/out"
+}
+rsc_peak_run 'rSC6a JOBS=1' "$rSC6/r6" 1 1
+check_eq "$rsc_pk" 1 'rSC6a: JOBS=1 -> peak concurrency exactly 1'
+rsc_peak_run 'rSC6b JOBS=3' "$rSC6/r6" 3 3
+check_eq "$rsc_pk" 3 'rSC6b: JOBS=3 -> peak concurrency exactly 3'
+rsc6_cores="$(getconf _NPROCESSORS_ONLN 2> /dev/null || printf 1)"
+rsc6_want="$rsc6_cores"
+[[ "$rsc6_want" -gt 8 ]] && rsc6_want=8
+[[ "$rsc6_want" -gt 10 ]] && rsc6_want=10
+rsc_peak_run 'rSC6d unset' "$rSC6/r12" "$rsc6_want" unset
+check_eq "$rsc_pk" "$rsc6_want" "rSC6d: JOBS unset -> peak exactly min(8, cores=$rsc6_cores, 10 files)"
+rsc6_names70=()
+for i in $(seq 1 70); do rsc6_names70+=("$(printf 'n%02d.sh' "$i")"); done
+rsc_repo "$rSC6/r70" "${rsc6_names70[@]}"
+rsc_peak_run 'rSC6e JOBS=100 over 70 files' "$rSC6/r70" 64 100
+check_eq "$rsc_pk" 64 'rSC6e: JOBS=100 with 70 files -> peak exactly 64 (the cap), not 70'
+# (f) invalid values fail closed, name the variable and the value, and start nothing. One child shell
+# sources the engine once and calls the check once per value.
+rsc_fresh "$rSC6/h"
+mkdir -p "$rSC6/tmp.f"
+env PATH="$rSC6/bin:$PATH" TMPDIR="$rSC6/tmp.f" STUB_MODE=peak STUB_DIR="$rSC6/h" STUB_EXPECT=1 \
+  STUB_ARGV_LOG="$rSC6/h/argv" "$BASH" -c '
+    source "$1"
+    print_offenders() { :; }
+    scope="$2"
+    shift 2
+    for v in "$@"; do AUDIT_SHELLCHECK_JOBS="$v" check_shellcheck "$scope"; done
+  ' _ "$engine" "$rSC6/r12" 0 abc -3 2.5 08 010 99999 '8 ' > "$rSC6/out.bad" 2>&1
+for v in 0 abc -3 2.5 08 010 99999 '8 '; do
+  rsc_assert "rSC6f: JOBS='$v' -> FAIL naming the variable and the value" \
+    grep -qxF "FAIL shellcheck — AUDIT_SHELLCHECK_JOBS must be a positive integer (got '$v')" "$rSC6/out.bad"
+done
+rsc_assert 'rSC6f: eight invalid values produced eight FAIL lines and no other verdict' \
+  test "$(grep -c '^FAIL shellcheck' "$rSC6/out.bad")" = 8 -a "$(grep -c '^PASS shellcheck' "$rSC6/out.bad")" = 0
+rsc_assert 'rSC6f: no shellcheck was started for any invalid value' test ! -e "$rSC6/h/argv"
+rsc_assert 'rSC6f: no scratch directory was left' rsc_no_scratch "$rSC6/tmp.f"
+rsc_fresh "$rSC6/h"
+rsc_inproc "$rSC6/r12" "$rSC6/cap" PATH="$rSC6/bin:$PATH" TMPDIR="$rSC6/tmp.f" STUB_MODE=peak \
+  STUB_DIR="$rSC6/h" STUB_EXPECT=1 AUDIT_SHELLCHECK_JOBS= > "$rSC6/out"
+rsc_assert 'rSC6f: an EMPTY JOBS behaves as unset (PASS)' grep -q '^PASS shellcheck$' "$rSC6/out"
+# (g) one file never makes a scratch directory; two files with JOBS=2 do (the positive control)
+rsc_repo "$rSC6/r1" n01.sh
+rsc_peak_run 'rSC6g one file, JOBS=4' "$rSC6/r1" 1 4
+rsc_assert 'rSC6g: one file with JOBS=4 -> the stub saw NO scratch directory (serial path)' \
+  test "$(grep -c '^yes$' "$rSC6/h/scratch.seen")" = 0 -a -s "$rSC6/h/scratch.seen"
+rsc_repo "$rSC6/r2" n01.sh n02.sh
+rsc_peak_run 'rSC6g two files, JOBS=2' "$rSC6/r2" 2 2
+rsc_assert 'rSC6g: two files with JOBS=2 -> the stub saw a scratch directory (positive control)' \
+  grep -q '^yes$' "$rSC6/h/scratch.seen"
+
+# ---- rSC7: the denominator floor and the single-FAIL rule, against misbehaving xargs (A6) -----
+# Each shim stands in for xargs on PATH. 6 clean files would PASS, so every FAIL below is the shim's.
+# In-process: the check is the unit under test, and an engine run costs about 1.3 s here.
+rSC7="$(rsc_row rSC7)"
+rsc_repo "$rSC7/clean" "${rsc_small[@]}"
+rsc_repo "$rSC7/bad" "${rsc_small[@]}"
+rsc7_shim() { # name body -> installs shim dir $rSC7/shim.<name> holding an xargs with that body
+  mkdir -p "$rSC7/shim.$1"
+  printf '#!/usr/bin/env bash\nREAL_XARGS=%q\n%s\n' "$rsc_xargs" "$2" > "$rSC7/shim.$1/xargs"
+  chmod +x "$rSC7/shim.$1/xargs"
+}
+rsc7_first='IFS= read -r -d "" a; IFS= read -r -d "" b; printf "%s\0%s\0" "$a" "$b" | "$REAL_XARGS" "$@"'
+rsc7_shim first "$rsc7_first; exit 0"
+rsc7_shim none 'cat > /dev/null; exit 0'
+rsc7_shim x125 '"$REAL_XARGS" "$@"; exit 125'
+rsc7_shim first125 "$rsc7_first; exit 125"
+rsc7_shim emptyrc 'prev=""; dir=""; for a in "$@"; do [[ "$prev" == _ ]] && dir="$a"; prev="$a"; done
+"$REAL_XARGS" "$@"; for r in "$dir"/*.rc; do : > "$r"; done; exit 0'
+rsc7_shim rc08 'prev=""; dir=""; for a in "$@"; do [[ "$prev" == _ ]] && dir="$a"; prev="$a"; done
+"$REAL_XARGS" "$@"; for r in "$dir"/*.rc; do printf "08\n" > "$r"; done; exit 0'
+rsc7_shim rcbig 'prev=""; dir=""; for a in "$@"; do [[ "$prev" == _ ]] && dir="$a"; prev="$a"; done
+"$REAL_XARGS" "$@"; for r in "$dir"/*.rc; do printf "18446744073709551616\n" > "$r"; done; exit 0'
+rsc7_shim x127 'exit 127'
+rsc7_run() { # shim label exact-line -> in-process run at JOBS=4 with that shim first on PATH
+  OUT="$(rsc_inproc "$rSC7/clean" "$rSC7/cap.$2" PATH="$rSC7/shim.$1:$rSC7/bin:$PATH" TMPDIR="$rSC7/tmp" \
+    STUB_MODE=keyed AUDIT_SHELLCHECK_JOBS=4)"
+  rsc_assert "rSC7$2: exactly one FAIL shellcheck line, and it is: $3" \
+    test "$(printf '%s\n' "$OUT" | grep -c '^FAIL shellcheck')" = 1 \
+    -a "$(printf '%s\n' "$OUT" | grep -cxF "FAIL shellcheck — $3")" = 1
+  rsc_assert "rSC7$2: no PASS shellcheck line alongside it" test "$(printf '%s\n' "$OUT" | grep -c '^PASS shellcheck')" = 0
+  rsc_assert "rSC7$2: print_offenders was called (one detail block was captured)" test -f "$rSC7/cap.$2"
+}
+rsc7_run first a 'shellcheck did not run for 5 of 6 file(s)'
+rsc7_run none b 'shellcheck did not run for 6 of 6 file(s)'
+rsc7_run x125 c 'xargs exited with status 125'
+rsc7_run first125 d 'shellcheck did not run for 5 of 6 file(s) (xargs exit status 125)'
+rsc_assert "rSC7d: the not-run files are named in the detail" grep -qF "not run: $rSC7/clean/n02.sh" "$rSC7/cap.d"
+rsc7_run emptyrc e 'shellcheck did not run for 6 of 6 file(s)'
+rsc7_run x127 g 'shellcheck did not run for 6 of 6 file(s) (xargs exit status 127)'
+# h and i: a status file that is all digits but not a status. `08` passes a bare digit test and then
+# makes `[[ 08 -ne 0 ]]` ERROR (read as false, so as clean); 2^64 wraps to 0 in arithmetic (also clean).
+rsc7_run rc08 h 'shellcheck did not run for 6 of 6 file(s)'
+rsc7_run rcbig i 'shellcheck did not run for 6 of 6 file(s)'
+# (f) the stock BSD xargs, when present, gives the same verdict and detail as the serial path
+if [[ -x /usr/bin/xargs ]]; then
+  mkdir -p "$rSC7/shim.bsd"
+  ln -sf /usr/bin/xargs "$rSC7/shim.bsd/xargs"
+  rsc7_env=(TMPDIR="$rSC7/tmp" STUB_MODE=keyed STUB_BAD="n02.sh n05.sh")
+  rsc_inproc "$rSC7/bad" "$rSC7/cap.bsd" PATH="$rSC7/shim.bsd:$rSC7/bin:$PATH" "${rsc7_env[@]}" AUDIT_SHELLCHECK_JOBS=4 > /dev/null
+  rsc_inproc "$rSC7/bad" "$rSC7/cap.ser" PATH="$rSC7/bin:$PATH" "${rsc7_env[@]}" AUDIT_SHELLCHECK_JOBS=1 > /dev/null
+  rsc_same 'rSC7f: BSD /usr/bin/xargs at JOBS=4 reports exactly what the serial path reports' "$rSC7/cap.bsd" "$rSC7/cap.ser"
+else
+  printf 'skip - /usr/bin/xargs not present for rSC7f\n'
+fi
+
+# ---- rSC8: every shellcheck status keeps its verdict and its text on the parallel path (A3) ---
+rSC8="$(rsc_row rSC8)"
+rsc8_env=(PATH="$rSC8/bin:$PATH" TMPDIR="$rSC8/tmp" STUB_MODE=keyed)
+for st in s0 s1 s2 s2q s3 s4 s137; do
+  rsc_repo "$rSC8/$st" clean1.sh clean2.sh "$st.sh"
+  rsc_inproc "$rSC8/$st" "$rSC8/cap.$st.3" "${rsc8_env[@]}" AUDIT_SHELLCHECK_JOBS=3 > "$rSC8/out.$st.3"
+  if [[ "$st" == s0 ]]; then
+    rsc_assert "rSC8: $st alone at JOBS=3 -> PASS" grep -q '^PASS shellcheck$' "$rSC8/out.$st.3"
+  else
+    rsc_assert "rSC8: $st at JOBS=3 -> FAIL shellcheck reported findings" \
+      grep -qxF 'FAIL shellcheck — shellcheck reported findings' "$rSC8/out.$st.3"
+  fi
+done
+rsc_assert 'rSC8: s1 (stdout text) is in the detail on the parallel path' grep -q 'stub s1 text' "$rSC8/cap.s1.3"
+rsc_assert 'rSC8: s2 (stderr-only text, status 2) is in the detail on the parallel path' grep -q 'stub s2 stderr text' "$rSC8/cap.s2.3"
+rsc_assert 'rSC8: s3 (status 3) is in the detail on the parallel path' grep -q 'stub s3 text' "$rSC8/cap.s3.3"
+for st in s2q s4 s137; do
+  check_eq "$(cat "$rSC8/cap.$st.3")" '|shellcheck' "rSC8: silent $st (a nonzero status, no output) is a FAIL with NO offender lines"
+done
+rsc_repo "$rSC8/all" clean1.sh clean2.sh s0.sh s1.sh s2.sh s2q.sh s3.sh s4.sh s137.sh
+for j in 1 3; do
+  rsc_inproc "$rSC8/all" "$rSC8/cap.all.$j" "${rsc8_env[@]}" AUDIT_SHELLCHECK_JOBS="$j" > /dev/null
+done
+(export PATH="$rSC8/bin:$PATH" STUB_MODE=keyed; ref_serial_detail "$rSC8/all" "$rSC8/cap.all.ref" > /dev/null)
+rsc_same 'rSC8: all seven statuses together at JOBS=3 equal the frozen loop' "$rSC8/cap.all.3" "$rSC8/cap.all.ref"
+rsc_same 'rSC8: all seven statuses together at JOBS=1 equal the frozen loop' "$rSC8/cap.all.1" "$rSC8/cap.all.ref"
+
+# ---- rSC9: a kill DURING the shellcheck phase leaves no worker and no scratch dir (A7) --------
+rSC9="$(rsc_row rSC9)"
+rsc9_names=()
+for i in 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16; do rsc9_names+=("n$i.sh"); done
+rsc_repo "$rSC9/repo" "${rsc9_names[@]}"
+rsc9_launch() { # label [stub mode, default slow] -> starts the engine in its own process group; sets rsc9_pid, or fails the row
+  rsc_fresh "$rSC9/h"
+  : > "$rSC9/h/started.log"
+  set -m
+  env PATH="$rSC9/bin:$PATH" TMPDIR="$rSC9/tmp" STUB_MODE="${2:-slow}" STUB_DIR="$rSC9/h" AUDIT_SHELLCHECK_JOBS=4 \
+    "$engine" --scope "$rSC9/repo" > "$rSC9/out" 2>&1 &
+  rsc9_pid=$!
+  set +m
+  local t=0
+  while [[ "$(wc -l < "$rSC9/h/started.log" | tr -d ' ')" -lt 4 ]]; do
+    sleep 0.05
+    t=$((t + 1))
+    if [[ "$t" -gt 1200 ]]; then
+      kill -TERM -"$rsc9_pid" 2> /dev/null
+      wait "$rsc9_pid" 2> /dev/null
+      fail_line "$1: INDETERMINATE: fewer than 4 workers started within 60 s"
+      return 1
+    fi
+  done
+  return 0
+}
+rsc9_live() { # -> the number of live processes whose argv names this row's stub
+  pgrep -f -- "$rSC9/bin/shellcheck" | wc -l | tr -d ' '
+}
+rsc9_started() { wc -l < "$rSC9/h/started.log" | tr -d ' '; }
+if rsc9_launch rSC9i gate; then
+  kill -TERM -"$rsc9_pid" 2> /dev/null
+  wait "$rsc9_pid" 2> /dev/null
+  rsc9_rc=$?
+  check_eq "$rsc9_rc" 143 'rSC9i: a group TERM during the shellcheck phase -> exit 143'
+  rsc_assert 'rSC9i: the last RESULT line is INCOMPLETE rc=143' \
+    test "$(grep '^RESULT:' "$rSC9/out" | tail -1 | cut -d" " -f1-3)" = "RESULT: INCOMPLETE rc=143"
+  rsc_assert 'rSC9i: no shellcheck verdict was printed' test "$(grep -c -e '^PASS shellcheck' -e '^FAIL shellcheck' "$rSC9/out")" = 0
+  rsc_assert 'rSC9i: the run was cut short (fewer than 16 workers started)' test "$(rsc9_started)" -lt 16
+  rsc9_t=0
+  while [[ "$(rsc9_live)" != 0 && "$rsc9_t" -lt 60 ]]; do sleep 0.05; rsc9_t=$((rsc9_t + 1)); done
+  check_eq "$(rsc9_live)" 0 'rSC9i: no worker survives the group kill'
+  rsc_assert 'rSC9i: the scratch directory is gone' rsc_no_scratch "$rSC9/tmp"
+fi
+if rsc9_launch rSC9ii; then
+  kill -TERM "$rsc9_pid" 2> /dev/null
+  wait "$rsc9_pid" 2> /dev/null
+  rsc9_rc=$?
+  rsc9_live_now="$(rsc9_live)"
+  check_eq "$rsc9_rc" 143 'rSC9ii: a TERM to the script ALONE during the phase -> exit 143'
+  rsc_assert 'rSC9ii: the last RESULT line is INCOMPLETE rc=143' \
+    test "$(grep '^RESULT:' "$rSC9/out" | tail -1 | cut -d" " -f1-3)" = "RESULT: INCOMPLETE rc=143"
+  check_eq "$(rsc9_started)" 16 'rSC9ii: every worker ran to completion before the trap fired (the documented deferral)'
+  check_eq "$rsc9_live_now" 0 'rSC9ii: ONE sample, no grace, taken as the run returned: no live worker (an orphaned pool shows here)'
+  rsc_assert 'rSC9ii: the scratch directory is gone' rsc_no_scratch "$rSC9/tmp"
+fi
+
+# ---- rSC10: the scratch directory never outlives the check (A8) ------------------------------
+rSC10="$(rsc_row rSC10)"
+rsc_repo "$rSC10/pass" "${rsc_small[@]}"
+rsc_repo "$rSC10/fail" "${rsc_small[@]}"
+# In-process: no EXIT trap exists, so only check_shellcheck's own removal can clear the directory. (The
+# engine-level teardown, trap included, is exercised by rSC9.)
+for kind in pass fail; do
+  rsc_fresh "$rSC10/h.$kind"
+  bad=''
+  [[ "$kind" == fail ]] && bad='n02.sh'
+  rsc_inproc "$rSC10/$kind" "$rSC10/cap.$kind" PATH="$rSC10/bin:$PATH" TMPDIR="$rSC10/tmp" STUB_MODE=keyed \
+    STUB_BAD="$bad" STUB_DIR="$rSC10/h.$kind" AUDIT_SHELLCHECK_JOBS=3 > "$rSC10/out.$kind"
+  rsc_assert "rSC10 in-process ($kind): the stubs saw the scratch directory DURING the call (positive control)" \
+    grep -q '^yes$' "$rSC10/h.$kind/scratch.seen"
+  rsc_assert "rSC10 in-process ($kind): no scratch directory exists when the function returns" rsc_no_scratch "$rSC10/tmp"
+  rsc_assert "rSC10 in-process ($kind): the handle is empty when the function returns" grep -qx 'TMPLEFT=' "$rSC10/out.$kind"
+done
+
+# ---- rSC11: every fallback to the serial path gives the same verdict, without a pool (A5) -----
+rSC11="$(rsc_row rSC11)"
+rsc_repo "$rSC11/repo" "${rsc_small[@]}"
+rsc11_run() { # label expect-value tmpdir shimdir-or-empty jobs-or-unset -> in-process run with the peak-counting stub
+  local label="$1" expect="$2" tdir="$3" shim="$4" jobs="$5" pathv
+  rsc_fresh "$rSC11/h"
+  pathv="$rSC11/bin:$PATH"
+  [[ -n "$shim" ]] && pathv="$shim:$pathv"
+  if [[ "$jobs" == unset ]]; then
+    OUT="$(rsc_inproc "$rSC11/repo" "$rSC11/cap" -u AUDIT_SHELLCHECK_JOBS PATH="$pathv" TMPDIR="$tdir" STUB_MODE=peak \
+      STUB_DIR="$rSC11/h" STUB_EXPECT="$expect")"
+  else
+    OUT="$(rsc_inproc "$rSC11/repo" "$rSC11/cap" PATH="$pathv" TMPDIR="$tdir" STUB_MODE=peak \
+      STUB_DIR="$rSC11/h" STUB_EXPECT="$expect" AUDIT_SHELLCHECK_JOBS="$jobs")"
+  fi
+  assert_has 'PASS shellcheck' "$label: the verdict is the correct PASS shellcheck"
+  rsc_assert "$label: the handshake did not time out" test ! -e "$rSC11/h/INDETERMINATE"
+}
+rsc11_serial() { # label -> the stubs never saw a scratch directory, and the run never overlapped
+  rsc_assert "$1: no stub ever saw a scratch directory (the serial path ran)" \
+    test "$(grep -c '^yes$' "$rSC11/h/scratch.seen")" = 0 -a -s "$rSC11/h/scratch.seen"
+  check_eq "$(rsc_peak "$rSC11/h")" 1 "$1: peak concurrency exactly 1"
+}
+mkdir -p "$rSC11/nocores"
+printf '#!/bin/sh\nexit 1\n' > "$rSC11/nocores/getconf"
+cp "$rSC11/nocores/getconf" "$rSC11/nocores/sysctl"
+chmod +x "$rSC11/nocores/getconf" "$rSC11/nocores/sysctl"
+rsc11_run 'rSC11a unknown core count' 1 "$rSC11/tmp" "$rSC11/nocores" unset
+rsc11_serial 'rSC11a unknown core count'
+rsc11_run 'rSC11b mktemp failure' 1 "$rSC11/does-not-exist" '' 4
+rsc11_serial 'rSC11b mktemp failure'
+mkdir -p "$rSC11/repo/scratch-in-scope"
+rsc11_run 'rSC11c scratch base inside the scope' 1 "$rSC11/repo/scratch-in-scope" '' 4
+rsc11_serial 'rSC11c scratch base inside the scope'
+rsc_assert 'rSC11c: nothing named audit-shellcheck.* appeared under the scope' \
+  test "$(find "$rSC11/repo" -name 'audit-shellcheck.*' | wc -l | tr -d ' ')" = 0
+# control: the same run with the fallback conditions removed DOES overlap, so "serial" above means the fallback
+rsc11_run 'rSC11 control (working getconf and TMPDIR, JOBS=4)' 2 "$rSC11/tmp" '' 4
+rsc_assert 'rSC11 control: peak concurrency is at least 2' test "$(rsc_peak "$rSC11/h")" -ge 2
+rsc_assert 'rSC11 control: the stubs saw a scratch directory' grep -q '^yes$' "$rSC11/h/scratch.seen"
+
+# ---- rSC12: the population is the committed one, names with spaces are one argument (hazard 4) -
+rSC12="$(rsc_row rSC12)"
+rsc_repo "$rSC12/repo" 'a b.sh' plain.sh
+: > "$rSC12/repo/ghost.sh"
+rsc_fresh "$rSC12/h"
+rsc_inproc "$rSC12/repo" "$rSC12/cap" PATH="$rSC12/bin:$PATH" TMPDIR="$rSC12/tmp" STUB_MODE=keyed \
+  STUB_ARGV_LOG="$rSC12/h/argv" AUDIT_SHELLCHECK_JOBS=2 > "$rSC12/out"
+LC_ALL=C sort "$rSC12/h/argv" > "$rSC12/h/argv.sorted"
+printf '%s\n%s\n' "$rSC12/repo/a b.sh" "$rSC12/repo/plain.sh" > "$rSC12/h/argv.want"
+rsc_same 'rSC12: the stub received exactly the two tracked paths, each as ONE argument (a space did not split a name)' \
+  "$rSC12/h/argv.sorted" "$rSC12/h/argv.want"
+check_eq "$(wc -l < "$rSC12/h/argv" | tr -d ' ')" "$(git -C "$rSC12/repo" ls-files -- '*.sh' | wc -l | tr -d ' ')" \
+  'rSC12: one invocation per tracked .sh file, the denominator taken from git'
+rsc_assert 'rSC12: the untracked ghost.sh was never checked' test "$(grep -c ghost "$rSC12/h/argv")" = 0
+
+# ---- rSC13: the code under the stock bash 3.2 (bash-4-only syntax in the new code fails here) --
+if [[ "$(/bin/bash -c 'printf %s "${BASH_VERSINFO[0]}"' 2> /dev/null)" == 3 ]]; then
+  rSC13="$(rsc_row rSC13)"
+  rsc_repo "$rSC13/repo" "${rsc_small[@]}"
+  rsc_fresh "$rSC13/h"
+  rsc_shell=/bin/bash
+  OUT="$(rsc_inproc "$rSC13/repo" "$rSC13/cap" PATH="$rSC13/bin:$PATH" TMPDIR="$rSC13/tmp" STUB_MODE=peak \
+    STUB_DIR="$rSC13/h" STUB_EXPECT=2 AUDIT_SHELLCHECK_JOBS=4)"
+  rsc_shell="$BASH"
+  assert_has 'PASS shellcheck' 'rSC13: sourcing the engine under bash 3.2 and running the parallel path -> PASS shellcheck'
+  rsc_assert 'rSC13: bash 3.2 really overlapped workers (peak at least 2, at most 4)' \
+    test "$(rsc_peak "$rSC13/h")" -ge 2 -a "$(rsc_peak "$rSC13/h")" -le 4
+else
+  printf 'skip - /bin/bash is not a 3.x bash in this test environment\n'
+fi
+
+# ---- rSC14: an operator's BASH_ENV does not reach the pool's workers (A11) --------------------
+rSC14="$(rsc_row rSC14)"
+rsc_repo "$rSC14/repo" "${rsc_small[@]}"
+printf '[[ "${BASH_EXECUTION_STRING:-}" == *%s* ]] && echo worker >> "%s"\n:\n' "'d=\$1; sc=\$2'" "$rSC14/log" > "$rSC14/benv.sh"
+: > "$rSC14/log"
+BASH_ENV="$rSC14/benv.sh" "$BASH" -c 'd=$1; sc=$2; :' _
+rsc_assert 'rSC14 control: the BASH_ENV logger fires for a worker-shaped bash -c (so an empty log below means something)' \
+  test -s "$rSC14/log"
+: > "$rSC14/log"
+rsc14_env=(BASH_ENV="$rSC14/benv.sh" PATH="$rSC14/bin:$PATH" TMPDIR="$rSC14/tmp" STUB_MODE=keyed STUB_BAD="n02.sh n05.sh")
+OUT="$(rsc_inproc "$rSC14/repo" "$rSC14/cap.par" "${rsc14_env[@]}" AUDIT_SHELLCHECK_JOBS=3)"
+assert_has 'FAIL shellcheck — shellcheck reported findings' 'rSC14: the parallel run reaches its verdict with BASH_ENV set'
+check_eq "$(wc -c < "$rSC14/log" | tr -d ' ')" 0 'rSC14: no worker sourced BASH_ENV'
+rsc_inproc "$rSC14/repo" "$rSC14/cap.ser" "${rsc14_env[@]}" AUDIT_SHELLCHECK_JOBS=1 > /dev/null
+rsc_same 'rSC14: the parallel detail equals the serial detail with BASH_ENV set' "$rSC14/cap.par" "$rSC14/cap.ser"
+# The section's own elapsed time is the time this change adds to the suite. The spec's budget is 30 s.
+printf 'info  the rSC section took %d s (budget: 30 s)\n' "$((SECONDS - rsc_t0))"
+# rSC-END
 
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

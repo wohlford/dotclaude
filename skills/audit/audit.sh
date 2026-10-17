@@ -78,6 +78,12 @@ audit_reported=no
 # breaks a mutation target two files away. Measured — it did.
 hermetic_marker=""
 
+# The scratch directory the parallel shellcheck pool writes its per-file results into; empty
+# whenever none exists. Global for the same reason as the handle above: audit_on_exit() must see
+# it, and a `local` copy would be invisible to the trap. It is read BARE (no default) in the
+# trap, so this top-level initialisation is load-bearing under `set -u`.
+shellcheck_tmp=""
+
 # The repo root every check runs against, set once in main() before any check runs. Every
 # check function already receives its own scope as $1, but print_offenders() does not — its
 # only parameters are the detail block and (optionally) a filename label — so this is how it
@@ -134,6 +140,7 @@ audit_on_exit() { # exit-status
   # already cleaned up, and never on the interrupted ones it exists for. main() disowns the
   # handle when it removes the file itself, so this is a backstop and not a second owner.
   [[ -n "$hermetic_marker" ]] && rm -f "$hermetic_marker"
+  shellcheck_remove_tmp   # exit-trap backstop
   [[ "$audit_reported" == yes ]] && return
   if [[ "$audit_phase" == init && "$1" -eq 2 ]]; then
     audit_result_line ERROR "$1"
@@ -431,6 +438,47 @@ check_format_tabs() {
   fi
 }
 
+# Removes the parallel pool's scratch directory and clears the handle. The ONLY place that deletes
+# it, called from the exit trap (a backstop for interrupted runs) and from the check itself (every
+# normal path). The basename test keeps a corrupted handle from ever pointing `rm -rf` elsewhere.
+shellcheck_remove_tmp() {
+  if [[ -n "$shellcheck_tmp" && -d "$shellcheck_tmp" ]]; then
+    case "$shellcheck_tmp" in
+      */audit-shellcheck.*) rm -rf "$shellcheck_tmp" ;;
+    esac
+  fi
+  shellcheck_tmp=""
+  return 0
+}
+
+# 0 when VALUE is NOT a usable worker count. Decided by pattern BEFORE any arithmetic: a leading
+# zero reads as octal (`08` is an arithmetic error, `010` is 8), a long value wraps, and an
+# operator-supplied string must never be evaluated arithmetically.
+shellcheck_jobs_invalid() { # value
+  case "$1" in
+    ''|0*|*[!0-9]*) return 0 ;;
+  esac
+  [[ "${#1}" -gt 4 ]] && return 0
+  return 1
+}
+
+# The online core count, or 1 when it cannot be learned (which selects the serial path).
+# `getconf` is POSIX and present on macOS and Linux; `nproc` is deliberately not used.
+shellcheck_cores() {
+  local c
+  c="$(getconf _NPROCESSORS_ONLN 2>/dev/null)"
+  shellcheck_jobs_invalid "$c" && c="$(sysctl -n hw.ncpu 2>/dev/null)"
+  shellcheck_jobs_invalid "$c" && c=1
+  printf '%s\n' "$c"
+}
+
+# Runs shellcheck over every tracked *.sh file. Per-file invocations run in parallel, at most
+# min(8, cores) at once; AUDIT_SHELLCHECK_JOBS=<n> overrides the count and 1 selects the serial
+# loop below, which is also the fallback when no scratch directory can be made outside the scope.
+# Each parallel child writes only its own result files, and the parent reads them back in
+# `git ls-files` order, so the report is byte-identical to the serial loop's whatever the
+# completion order. The verdict is FAIL when any file's status was nonzero, when fewer files
+# reported a status than were listed, or when the pool itself exited nonzero.
 check_shellcheck() {
   local scope="$1" files
   files="$(git -C "$scope" ls-files -- '*.sh' 2>/dev/null)"
@@ -442,17 +490,78 @@ check_shellcheck() {
     verdict_skip shellcheck 'shellcheck not found'
     return
   fi
-  local f detail="" out rc=0
+  local f detail="" out rc=0 req cores default_jobs jobs n v
+  local dir="" base sc worker xrc=0 xsuf="" fail_msg="" not_run=""
+  local ran total
+  ran=0; total=0
+  req="${AUDIT_SHELLCHECK_JOBS:-}"
+  [[ -n "$req" ]] && shellcheck_jobs_invalid "$req" && { verdict_fail shellcheck "AUDIT_SHELLCHECK_JOBS must be a positive integer (got '$req')"; return; }
+  cores="$(shellcheck_cores)"
+  [[ "$cores" -gt 8 ]] && cores=8
+  default_jobs="$cores"
+  jobs="$default_jobs"
+  [[ -n "$req" ]] && jobs="$req"
+  [[ "$jobs" -gt 64 ]] && jobs=64
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    out="$(shellcheck -S warning "$scope/$f" 2>&1)" || rc=$?
-    if [[ -n "$out" ]]; then
-      detail="${detail}${out}"$'\n'
-    fi
+    total=$((total + 1))
   done <<< "$files"
-  if [[ "$rc" -ne 0 ]]; then
-    verdict_fail shellcheck 'shellcheck reported findings'
-    print_offenders "$detail" shellcheck
+  [[ "$jobs" -gt "$total" ]] && jobs="$total"
+  if [[ "$jobs" -gt 1 ]]; then
+    base="${TMPDIR:-/tmp}"
+    audit_scratch_outside_scope "$scope" "$base" || jobs=1
+  fi
+  if [[ "$jobs" -gt 1 ]]; then
+    shellcheck_tmp="$(mktemp -d "$base/audit-shellcheck.XXXXXX" 2>/dev/null)" || shellcheck_tmp=""
+    [[ -n "$shellcheck_tmp" ]] || jobs=1
+  fi
+  if [[ "$jobs" -le 1 ]]; then
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      out="$(shellcheck -S warning "$scope/$f" 2>&1)" || rc=$?
+      if [[ -n "$out" ]]; then
+        detail="${detail}${out}"$'\n'
+      fi
+    done <<< "$files"
+    ran="$total"
+  else
+    dir="$shellcheck_tmp"
+    sc="$(command -v shellcheck)"
+    worker='d=$1; sc=$2; i=$3; p=$4
+"$sc" -S warning "$p" >"$d/$i.out" 2>&1
+printf "%d\n" "$?" >"$d/$i.rc"
+exit 0'
+    n=0
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      n=$((n + 1))
+      printf '%s\0%s\0' "$n" "$scope/$f"
+    done <<< "$files" > "$dir/list"
+    BASH_ENV="" xargs -0 -n 2 -P "$jobs" "${BASH:-bash}" -c "$worker" _ "$dir" "$sc" < "$dir/list"; xrc=$?
+    [[ "$xrc" -ne 0 ]] && xsuf=" (xargs exit status $xrc)"
+    n=0
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      n=$((n + 1))
+      v=""; [[ -r "$dir/$n.rc" ]] && IFS= read -r v < "$dir/$n.rc"
+      [[ "$v" =~ ^(0|[1-9][0-9]{0,2})$ ]] || { not_run="${not_run}not run: ${scope}/${f}"$'\n'; continue; }
+      ran=$((ran + 1))
+      [[ "$v" -ne 0 ]] && rc="$v"
+      out="$(<"$dir/$n.out")"
+      [[ -n "$out" ]] && detail="${detail}${out}"$'\n'
+    done <<< "$files"
+  fi
+  shellcheck_remove_tmp   # normal path
+  if [[ "$ran" -ne "$total" ]]; then
+    fail_msg="shellcheck did not run for $((total - ran)) of $total file(s)$xsuf"
+  elif [[ -n "$xsuf" ]]; then
+    fail_msg="xargs exited with status $xrc"
+  elif [[ "$rc" -ne 0 ]]; then
+    fail_msg='shellcheck reported findings'
+  fi
+  if [[ -n "$fail_msg" ]]; then
+    verdict_fail shellcheck "$fail_msg"
+    print_offenders "${not_run}${detail}" shellcheck
   else
     verdict_pass shellcheck
   fi
@@ -931,6 +1040,20 @@ TESTS_EXCERPT_MAX=20
 # true positives get dropped silently, and here it cannot happen.
 TESTS_FAILURE_RE='FAIL|ERROR|Traceback|AssertionError|^E[[:space:]]|fatal:|[0-9]+ (failed|error)'
 
+# The ONE containment test for every scratch directory this file creates: 0 when BASE lies outside
+# SCOPE, nonzero when it equals the scope or lies under it. Both sides are resolved physically
+# (the measured trap documented at hermetic_config_root, near the top of this file), and both
+# callers use this one predicate so two spellings of the same intent cannot drift apart.
+audit_scratch_outside_scope() { # scope base
+  local scope_phys base_phys
+  scope_phys="$(cd -P "$1" 2>/dev/null && pwd)" || scope_phys="$1"
+  base_phys="$(cd -P "$2" 2>/dev/null && pwd)" || base_phys="$2"
+  if [[ "$base_phys" == "$scope_phys" || "$base_phys" == "$scope_phys"/* ]]; then
+    return 1
+  fi
+  return 0
+}
+
 # Lazily create the directory holding every check's preserved full output. Created only on the
 # first write, so a clean sweep — the overwhelming majority — writes nothing at all: a default
 # output path would otherwise make every run of this tool a writer of real state.
@@ -942,7 +1065,7 @@ TESTS_FAILURE_RE='FAIL|ERROR|Traceback|AssertionError|^E[[:space:]]|fatal:|[0-9]
 # files sat on disk. The `while … done <<< "$list"` loop below is a here-string, not a pipe, so the
 # loop body does run in the current shell and these assignments survive it.
 audit_artifact_dir() { # scope -> sets audit_artifact_root; nonzero when unavailable
-  local scope="$1" base base_phys scope_phys
+  local scope="$1" base
   if [[ "$audit_artifact_tried" == true ]]; then
     [[ -n "$audit_artifact_root" ]] || return 1
     return 0
@@ -959,11 +1082,7 @@ audit_artifact_dir() { # scope -> sets audit_artifact_root; nonzero when unavail
   # for the hermetic root. If the temp root lies inside the scope, writing there would trip
   # `hermetic` with a message blaming the SUITE for a write the engine itself made, sending the
   # reader to debug the wrong component; skip the artifact instead.
-  scope_phys="$(cd -P "$scope" 2>/dev/null && pwd)" || scope_phys="$scope"
-  base_phys="$(cd -P "$base" 2>/dev/null && pwd)" || base_phys="$base"
-  if [[ "$base_phys" == "$scope_phys" || "$base_phys" == "$scope_phys"/* ]]; then
-    return 1
-  fi
+  audit_scratch_outside_scope "$scope" "$base" || return 1
   audit_artifact_root="$(mktemp -d "$base/audit-artifact-XXXXXX" 2>/dev/null)" || audit_artifact_root=""
   [[ -n "$audit_artifact_root" ]] || return 1
   return 0
