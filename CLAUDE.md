@@ -666,16 +666,20 @@ from `scripts/claude-md-structure.py`, which prints every group heading:
 - **A test whose input is a GITIGNORED directory returns a verdict that depends on whatever the
   operator has lying around, so adding a working file of your own changes the suite's verdict.**
   Not the committed-population hazard above: this checker reads the working tree, which holds files
-  no commit contains. Measured: `test_the_corpus_extraction_holds_its_declared_floor` sums the
-  unpaired checks over every `plans/*.md` on disk and asserts exactly 10. `plans/` is gitignored,
+  no commit contains. Measured: `test_the_corpus_extraction_holds_its_declared_floor` summed the
+  unpaired checks over every `plans/*.md` on disk and asserted exactly 10. `plans/` is gitignored,
   and a new plan with two `Expected:` rows that had no command before them took the count to 12,
   so the one full-suite run gating the integration failed 1 test of 3,931 on a tree whose two
   commits had not changed. The run's subject stamp read `unchanged since launch` throughout,
-  because a stamp over tracked files cannot see ignored ones. **Before any re-run, count the input
-  yourself with the instrument's own extractor, per file, and fix the input** — raising the
-  expected figure would have blessed the new rows and made every later plan's rows free. Its own
-  failure mode: the corpus is per-operator, so the same suite passes on a fresh clone, where the
-  directory is absent and the test skips.
+  because a stamp over tracked files cannot see ignored ones. The repair keyed the test to a
+  committed manifest naming the plans it checks, so a new plan is exempt by construction and a
+  changed known plan fails by name. Its floor counts checks rather than files: 62 of the 113
+  manifest plans yield no checks at all, so a file-count floor would pass with most of the content
+  gone. **Before any re-run, count the input yourself with the instrument's own extractor, per
+  file, and fix the input** — raising the expected figure would have blessed the new rows and made
+  every later plan's rows free. Its own failure mode: the corpus is per-operator, so the same suite
+  passes on a fresh clone, where the directory is absent, or holds none of the plans the manifest
+  names, and the test skips.
 
 #### Your matcher matched text you did not mean
 
@@ -1251,7 +1255,10 @@ from `scripts/claude-md-structure.py`, which prints every group heading:
 - Install: `npm install <package>`
 - npm-global CLIs live per-version in `~/.nvm/versions/node/<ver>/bin` and need that dir ON
   PATH (their `env node` shebang; an absolute launcher path alone fails). `markdownlint-cli2`
-  is installed there — the markdownlint hook uses it; repos opt in via `.markdownlint-cli2.jsonc`
+  is installed in only some of those directories — the markdownlint hook uses it. Find the one
+  holding it with `ls ~/.nvm/versions/node/*/bin/markdownlint-cli2`, since the newest need not:
+  measured 2026-10-17, v26.12.0 lacked it, so an audit run with that directory on PATH still
+  reported `SKIP markdownlint`, while v26.3.0 held it. Repos opt in via `.markdownlint-cli2.jsonc`
   (for a repo-wide run pass the glob explicitly — `markdownlint-cli2 "**/*.md"` — a bare invocation
   lints 0 files when the config contains only ignores, which false-reads as a clean pass)
 
