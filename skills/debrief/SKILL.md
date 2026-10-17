@@ -249,9 +249,11 @@ delegate's closing pause** documents. Step 5 dispatches `/feature --plan-only` a
 3. **Memory / file save check.** Review the session for durable facts worth persisting —
    user traits, feedback on how to work, project context, or reference pointers — plus
    anything that belongs in a repo file. **Auto-write** the memory entries (each with its
-   one-line `MEMORY.md` pointer, written and checked per **Editing MEMORY.md**) and report what
-   was saved; before creating a memory file,
-   check for an existing one that already covers the fact and update it instead. Memory lives
+   one-line `MEMORY.md` pointer, written and checked per **Editing MEMORY.md**; a
+   restore-source record gets none) and report what was saved; before creating a memory file,
+   check for an existing one that already covers the fact and update it instead (new
+   restore-source records are not indexed and older ones may still carry a line; search for
+   marked ones with the lookup in item 1 of **Editing MEMORY.md**). Memory lives
    in private storage outside the repo, so no carve-out applies; but for any write to a
    *tracked repo file*, apply step 1's sensitivity carve-out. Whether or not anything was saved,
    apply the index check in **Editing MEMORY.md** before leaving this step and quote its result.
@@ -386,6 +388,8 @@ delegate's closing pause** documents. Step 5 dispatches `/feature --plan-only` a
      pick), tiered — naming these here is a courtesy summary, not the record; step 4 already filed
      each one in `BACKLOG.md`, which is what survives the `/compact` that follows this hand-off
    - any content the sensitivity carve-out **routed to private memory** instead of a public file
+   - each restore-source record written this session, with its lesson status
+     (item 1 of **Editing MEMORY.md**)
    - a plan **deferred** in step 5, and where its backlog entry lives
    - a feature branch left in place, if step 5.4 kept one
 
@@ -470,6 +474,27 @@ from 20,000 B to 20,464 B that way, past the hook's cap of the time (20,000 B), 
    is one line with an advisory target of 140 bytes, with at most one bold when-to-open trigger and no
    stored-status label (`PUBLISHED`, `LANDED`, `PROMOTED`): status lives in the topic file and goes stale
    there independently. Nothing enforces the 140 bytes.
+   **Exemption: a restore-source record gets no index line.** A restore-source record is a memory
+   file whose only job is to preserve a gitignored design spec or plan so it can be restored. Its
+   writer begins the frontmatter `description:` with `Restore source for` exactly when that holds,
+   on one line, unquoted or double-quoted, and that prefix is the marker. A file without the marker
+   is indexed as before, step 5.3's design file among them. Write nothing for a restore-source
+   record. `$M` is the session memory directory (`M` in item 4's snippet); find existing records
+   with `grep -liE '^description: *"?restore source for' "$M"/*.md` (the match is case-insensitive).
+   The lookup finds marked records only; an older unmarked record is found by step 3's existing-file
+   check. For a record `/feature` wrote under worktree isolation, use the primary checkout's project
+   memory directory as `$M`.
+   Report each restore-source record written this session, by `/feature` or here, as
+   `no index line: restore-source record <slug> (lesson: none | moved to <slug or location>)`, in
+   step 3's report, including a record `/feature` wrote earlier this session, and in the step-7
+   hand-off, so the omission never reads as a forgotten step. A record that carries a "before
+   touching X" lesson that lives nowhere else is not yet a restore-source record: put the lesson
+   beside X (a code comment, the test, a CLAUDE.md line) or into its own memory file, whose
+   description does not begin `Restore source for`, which gets an ordinary pointer. Review findings
+   transcribed as design history stay in the record; only a standing forward instruction ("before
+   touching X, do Y") must also live elsewhere. The exemption is forward-only:
+   index lines and held-pointer entries already filed for a record stay as they are, and item 6
+   still drains the held entries.
 2. **Decide whether the index check applies.** This skill is global, and many projects have no index while
    most that do never opted in to the cap. The check applies only when the index exists AND states the
    opt-in sentence the hook keys on (`detail lives in the topic file`, matched case-insensitively):
@@ -687,7 +712,8 @@ step 0. See **The step ledger**. Nothing else can.
   hand-written script, never Edit/Write. The file is untracked, so a corrupting edit has no
   history to recover from; the helper's postconditions are what stand in for that.
 - In step 3, follow the memory protocol: one fact per file with frontmatter and a
-  `MEMORY.md` pointer line (written and checked per **Editing MEMORY.md**); update an existing
+  `MEMORY.md` pointer line (written and checked per **Editing MEMORY.md**; a
+  restore-source record gets none, per its item 1); update an existing
   memory file rather than duplicating it.
 - In step 5, `/feature` owns its own artifact convention (spec/plan under `specs/`/`plans/`) and
   its own commit discipline; the debrief does not restate them.

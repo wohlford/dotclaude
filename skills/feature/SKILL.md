@@ -148,6 +148,15 @@ integrate** apply this rule; they do not re-decide it.
   lives at `specs/`/`plans/` for the pipeline and SDD to read; restore it from the memory record if
   it vanishes mid-run. **Then prove the memory record just as concretely** — it exists, is non-empty,
   and its content reflects the fold you just made. Same standard as bullet 1, not a weaker one.
+  **Begin the record's frontmatter `description:` with `Restore source for`**, on one line, unquoted
+  or double-quoted, and put no 'before touching' trigger in it. **Do not add a `MEMORY.md` line
+  for this record**; `/debrief` writes none either, because its exemption keys on that prefix. A
+  lesson the run produced goes to its own memory file with an ordinary pointer (item 1 of
+  `/debrief`'s **Editing MEMORY.md**, in `skills/debrief/SKILL.md`). A later session finds the
+  record by its slug or by `grep -liE '^description: *"?restore source for' "$M"/*.md`, where `$M`
+  is the primary checkout's project memory directory. Report the record in the presentation or the
+  closing message as `no index line: restore-source record <slug> (lesson: none | moved to <slug or location>)`,
+  the format of `/debrief`'s item 1.
 - **Never `git add -f` a design artifact past an ignore rule.** Force-tracking publishes it: the
   publish path's convergence gate diffs the whole tree bar `CHANGELOG.md`, so anything tracked at
   `dev`'s tip is forced onto public `main` — and a design record routinely carries unfixed defects

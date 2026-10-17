@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.133.0 — 2026-10-17
+- feat(debrief): give restore-source records no MEMORY.md line
+
 ## v0.132.4 — 2026-10-17
 - docs(claude-md): fix the floor hazard and markdownlint dir notes
 
