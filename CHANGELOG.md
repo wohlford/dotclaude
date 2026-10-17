@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.131.13 — 2026-10-16
+- docs(audit): document the opt-in parallel pytest mode
+
 ## v0.131.12 — 2026-10-16
 - perf(audit): add opt-in parallel pytest to the tests check
 

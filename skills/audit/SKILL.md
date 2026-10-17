@@ -28,7 +28,10 @@ The user may optionally provide:
 
 - `--scope <path>` — target repo (default: git toplevel of cwd)
 - `--tests` — also run the repo's shell suites (`scripts/tests/test_*.sh`) and pytest (off by
-  default; the sweep is otherwise static)
+  default; the sweep is otherwise static). Setting the environment variable AUDIT_PYTEST_JOBS to a
+  count of 2 or more runs the pytest part in parallel as an iteration aid, never as the gate; an
+  invalid value FAILs the tests check. It is read from the environment the audit inherits, not
+  passed as a flag. See the pytest bullet under Rules at the end of this file.
 
 ### Process
 
@@ -39,12 +42,13 @@ The user may optionally provide:
 3. **Read the verdict from the `RESULT:` line, not from the absence of `FAIL`.** Every run
    `audit.sh` exits from itself ends with
    `RESULT: <STATUS> rc=<n> checks=<pass>/<fail>/<skip>` as its last line of stdout. Clear
-   the sweep **only** on `RESULT: PASS rc=0` — an allowlist, so any value not listed here
-   reads as not-clean:
+   the sweep **only** on `RESULT: PASS rc=0` — an allowlist, so any other value, listed
+   here or not, reads as not-clean:
 
    | Line | Meaning |
    | :--- | :--- |
    | `RESULT: PASS rc=0 …` | Completed, zero FAILs. **The only clean verdict.** |
+   | `RESULT: PARALLEL-PASS rc=0 …` | Completed, zero FAILs, but pytest ran under the opt-in parallel mode (AUDIT_PYTEST_JOBS). An iteration result, **not a clean verdict for any gate**; the caller re-runs with the variable unset or set to 1 (step 5). |
    | `RESULT: FAIL rc=1 …` | Completed, at least one FAIL. |
    | `RESULT: ERROR rc=2 …` | Usage error — no sweep ran. Relay stderr; on exit 2 say which flags were actually passed, since the stderr synopsis alone does not identify the cause. |
    | `RESULT: INCOMPLETE rc=<n> …` | The run began but did not finish — a catchable signal, or any other abnormal exit once the sweep had started. The counts are a prefix, not a result. |
@@ -64,7 +68,9 @@ The user may optionally provide:
    relay it verbatim, since it may read `(unavailable — …)` rather than a path, and a path that
    does resolve is temp-rooted and may be aged out by the time anyone opens it), the
    stderr synopsis and the flags actually passed for `ERROR`, and the fact that the counts
-   are only a prefix for `INCOMPLETE` or an absent line. **Do not retry automatically**,
+   are only a prefix for `INCOMPLETE` or an absent line, and for `PARALLEL-PASS` that pytest
+   ran in the opt-in parallel mode, so it recommends a re-run with `AUDIT_PYTEST_JOBS` unset or
+   set to 1 and leaves that re-run to the caller. **Do not retry automatically**,
    and do not attempt a fix unless asked. An `INCOMPLETE` or missing verdict is a reason
    to re-run deliberately, not to assume the sweep would have passed.
 
@@ -410,3 +416,29 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   to the serial loop's. On a host whose xargs cannot run the pool the check fails closed: the FAIL
   line says either that shellcheck did not run for some files, with the xargs exit status, or that
   xargs exited non-zero, and the value 1 is the remedy.
+- **pytest can run in parallel, as an opt-in iteration mode and never as the gate.** The default is
+  serial and is what the finish of a feature and a promote require. Setting the environment variable
+  AUDIT_PYTEST_JOBS to a positive integer of at most four digits, with no leading zero, selects it:
+  the value 1 and an empty value stay serial, and any other value fails the tests check with a FAIL
+  line naming the variable before any suite runs. There is no cap and no automatic value, so a
+  mistyped 80 for 8 starts 80 workers; 8 is the only count measured so far (329 s against 843 s
+  serial for the python tests on a 16-core machine), so no other count is recommended. The mode needs the xdist plugin loaded in the runner: the check asks
+  the runner whether it accepts the worker option and fails closed, naming the variable, when it
+  does not, and it never falls back to serial. The python tests then run as two passes, the rows not
+  marked serial-only under the pool and the marked rows alone afterwards, and each pass must have
+  executed exactly the distinct tests it collected, the two together being every collected test; a
+  mismatch FAILs the tests check with the cause in its detail, and the NOTE line is printed on a
+  failed parallel run as well.
+  The shell suites stay serial. A run that used the mode prints a NOTE line and, when it completes
+  with zero FAILs, ends RESULT: PARALLEL-PASS rc=0 instead of RESULT: PASS rc=0; the first word is
+  deliberately not PASS, so a reader matching a PASS prefix does not accept it. A tool that waits for
+  an audit run through a closed pattern needs one that lists the new word:
+  RESULT: (PASS|PARALLEL-PASS|FAIL|ERROR|INCOMPLETE) rc=[0-9]+. What this documentation claims
+  is narrow: the mode has been run over the whole suite under the pool in only four runs, and a
+  per-row sweep covers only the rows it names, so every other row is unswept, not safe. A red
+  parallel run is therefore a finding, never load: whoever hits it sweeps that row's rate with
+  `~/.claude/scripts/flake-sweep.sh`, running the row as a member of a `-n 8` run of its module,
+  and either fixes the row or marks it `@pytest.mark.serial_only`, recording that sweep as its
+  evidence in `SERIAL_BY_MEASUREMENT` in `scripts/tests/test_serial_only_list.py`; one green
+  serial run does not clear it. Independently of the mode, every pytest call the check makes removes the operator's PYTEST_ADDOPTS from its environment, so an exported
+  worker option or selection cannot change what the serial gate runs while it still reads PASS.
