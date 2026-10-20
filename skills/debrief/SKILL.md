@@ -158,7 +158,13 @@ delegate's closing pause** documents. Step 5 dispatches `/feature --plan-only` a
      under `## Closed`.
    - **promote** — worth doing next session. Leave it open, but stamp the line
      (`promoted <YYYY-MM-DD>`) so a later debrief can see it was already called up and flag the
-     stall in its hand-off, rather than re-reading it as freshly deferred.
+     stall in its hand-off, rather than re-reading it as freshly deferred. A stamp left by an
+     earlier pass that the entry's own body, or this session's evidence, shows is no longer wanted
+     is not left standing: withdraw it with `unpromote` (see **Editing BACKLOG.md**), because the
+     hand-off reads a surviving stamp as the next session's first job. `unpromote` is a
+     correction to an earlier pass's `promote`, not a fourth disposition. It applies when the
+     *promotion* is no longer wanted; an entry that is itself no longer wanted is a drop
+     (`close`).
 
    **Make every one of those write-backs with `backlog.py`, never a hand-written script** — see
    **Editing BACKLOG.md** below. Five sessions in a row hand-rolled one, and one of them corrupted
@@ -170,7 +176,13 @@ delegate's closing pause** documents. Step 5 dispatches `/feature --plan-only` a
    fresh signal. The one that is *not* visible as a state is an evidence note — `append` lands the
    same note twice on the same day with `rc=0` (measured 2026-08-24), so check the entry's body for
    the note before appending it. Nothing here is destructive; the residual is duplicated notes and
-   a promotion date reset to today, never an erasure.
+   a promotion date reset to today. A withdrawn promotion (`unpromote`) removes a stamp but
+   records it verbatim in the entry's body, so `unpromote` never removes a stamp without a trace.
+   An `unpromote` made by an earlier, interrupted run of this routine shows as a head with no
+   stamp plus a `withdrew …` line in the body. A stamp still on the head means it did not land:
+   the helper makes one atomic save, so a killed `unpromote` leaves the stamp in place.
+   A repeated `unpromote` refuses, because the head no longer carries a stamp, so a resume checks
+   the head first and does not repeat it.
 
    Never implement a promoted item here; name it in the step-7 hand-off as the next session's
    first job.
@@ -384,6 +396,7 @@ delegate's closing pause** documents. Step 5 dispatches `/feature --plan-only` a
    pauses, the hand-off is where the user learns every decision it made unattended — report all of it:
    - the step-0 disposition of **each** open deferral (keep / drop / promote), so an autonomous
      drop or promote is visible and reversible; a **promoted** item is the next session's first job
+   - each stamp withdrawn with `unpromote`, and why
    - every automation recommendation **deferred** in step 4 (each surviving high- or medium-tier
      pick), tiered — naming these here is a courtesy summary, not the record; step 4 already filed
      each one in `BACKLOG.md`, which is what survives the `/compact` that follows this hand-off
@@ -439,7 +452,7 @@ unattended**; until one has, treat a stall here as expected rather than fixed.
 
 **Every write to `BACKLOG.md` goes through `~/.claude/skills/debrief/backlog.py`.** Do not hand-roll
 a script for it, and do not edit the file with Edit/Write — the helper is the only writer that
-checks its own work, and the four commands cover every place this routine mutates the file:
+checks its own work, and the commands below cover every place this routine mutates the file:
 
 ```bash
 B=<the session memory directory>/BACKLOG.md
@@ -450,6 +463,9 @@ B=<the session memory directory>/BACKLOG.md
 # step 0 — promote (stamp in place; re-stamping replaces rather than accumulates)
 ~/.claude/skills/debrief/backlog.py --path "$B" promote 'a substring of one head' \
   --date 2026-01-31 --reason 'WHY IT WAS CALLED UP'
+# step 0 — withdraw an earlier pass's promote (strips the stamp and records it in the body); the
+# stdin note is REQUIRED: say why the promotion is no longer wanted
+~/.claude/skills/debrief/backlog.py --path "$B" unpromote 'a substring of one head' < note.md
 # step 0 — drop (tick, append the note, move under `## Closed`)
 ~/.claude/skills/debrief/backlog.py --path "$B" close 'a substring of one head' < note.md
 ```
@@ -634,7 +650,12 @@ cost. Measured 2026-08-24 against `backlog.py` on a scratch copy:
 
 - **step 0** — `append` returns `rc=0` twice on the *same day* and lands the evidence note
   **twice**; `promote` re-stamps with today's date, resetting the age clock the stall report in
-  step 0 reads; `close` on an already-closed entry refuses, byte-unchanged. Nothing is erased.
+  step 0 reads; `close` on an already-closed entry refuses, byte-unchanged. The `unpromote` cases
+  postdate that measurement, so the suite backs them rather than the 2026-08-24 run: a second
+  `unpromote` refuses, byte-unchanged, because the stamp is already gone
+  (`test_unpromote_second_run_refuses_and_appends_nothing`), and `promote`, `unpromote`, `promote`,
+  `unpromote` in one session lands two withdrawal records
+  (`test_unpromote_after_a_repromotion_lands_a_second_record`). Nothing is erased.
 - **steps 4 and 5** — `add` accepts a **regenerated** entry with `rc=0` and duplicates it silently,
   because its guard compares byte-identical heads. These are the two steps that need the
   `BACKLOG.md` cross-check — on a resume *and* on a fresh start alike, since a fresh start
