@@ -32,12 +32,16 @@ Usage:
   backlog.py --path PATH promote  NEEDLE --date YYYY-MM-DD [--reason TEXT]
   backlog.py --path PATH amend-head NEEDLE [--date YYYY-MM-DD] [--tier HIGH|MEDIUM|LOW]
   backlog.py --path PATH retier NEEDLE --from TIER --to TIER --reason TEXT [--date YYYY-MM-DD]
+  backlog.py --path PATH unpromote NEEDLE [--date YYYY-MM-DD]  < note.md
 
-The first four cover every place `/debrief` mutates the file: the new entries steps 4 and 5 file
-(`add`) and step 0's three dispositions — keep leaves the entry alone, `promote` stamps it, `close` ticks and moves
-it, and `append` records evidence on any of them. `amend-head` is a repair tool, not a `/debrief`
-step: it inserts a date and/or tier a head is missing, deriving the new head from the old one
-rather than accepting caller-supplied head text — the caller passes only the values to insert.
+The first four, plus `unpromote`, cover every place `/debrief` mutates the file: the new
+entries steps 4 and 5 file (`add`) and step 0's three dispositions — keep leaves the entry
+alone, `promote` stamps it, `close` ticks and moves it, and `append` records evidence on any of
+them. `amend-head` is a repair tool, not a `/debrief` step: it inserts a date and/or tier a
+head is missing, deriving the new head from the old one rather than accepting caller-supplied
+head text — the caller passes only the values to insert. `unpromote` is step 0's correction to
+an earlier pass's `promote` (a stamp left by an earlier session that the entry's body, or this
+session, shows is no longer wanted), not a fourth disposition.
 
 `retier` is the other half of that split, and the reason the two are separate operations:
 `amend-head` INSERTS a tier that is missing and refuses to overwrite one that is there, which is
@@ -218,6 +222,15 @@ def _splice(text: str, start: int, end: int, replacement: str) -> str:
     return text[:start] + replacement + text[end:]
 
 
+def _strip_stamp(match: re.Match[str]) -> str:
+    """Return the head with its promotion stamp removed: the date prefix joined to `rest`.
+
+    Named, like `_splice`, so a test can monkeypatch the construction. Without that, the
+    postconditions in `unpromote` could never be reached by a defective construction.
+    """
+    return match["prefix"] + match["rest"]
+
+
 class Backlog:
     """A staged batch of edits to one BACKLOG.md, verified as a whole before it reaches disk.
 
@@ -381,6 +394,59 @@ class Backlog:
         staged = list(self.lines)
         staged[start] = new
         self._stage(staged, collections.Counter([old]), collections.Counter([new]))
+
+    def unpromote(self, needle: str, note: str, date: str) -> str:
+        """Withdraw the promotion of the open entry `needle` identifies; return the stamp removed.
+
+        Removes the `*promoted …* — ` stamp from the head, then appends one composed line
+        recording the removed stamp verbatim, followed by `note`. The note is required: the
+        stamp's date and reason are destroyed by removal (and by re-promotion), so the entry
+        body is the only record of what was withdrawn and why.
+
+        Raises:
+            InvalidNote: `note` is blank or would restructure the document.
+            EntryNotFound: No open entry matches `needle`.
+            AmbiguousEntry: More than one open entry matches `needle`.
+            BacklogError: The head is not a dated entry head, carries no stamp, carries more
+                than one, or the stripped result fails a postcondition.
+        """
+        # Validated first and alone, for its refusals (blank note, a line that would parse as
+        # an entry head or heading), exactly as `close_entry` does. The return value is not
+        # needed: `append_note` re-splits the text it is given.
+        self._note_lines(note)
+        start, _ = self._find_open(needle)
+        old = self.lines[start]
+        match = STAMPED_HEAD_RE.match(old)
+        if not match:
+            raise BacklogError(
+                f"cannot unpromote, head is not a dated entry head: {old[:90]!r}"
+            )
+        removed = old[len(match["prefix"]) : match.start("rest")]
+        if not removed:
+            raise BacklogError(
+                f"entry carries no promoted stamp, nothing to withdraw: {old[:90]!r}"
+            )
+        new = _strip_stamp(match)
+        check = STAMPED_HEAD_RE.match(new)
+        if check is None:
+            raise BacklogError(
+                f"unpromote left a head that is not a dated entry head: {new[:90]!r}"
+            )
+        if check.start("rest") != len(check["prefix"]):
+            raise BacklogError(
+                "head carries more than one promoted stamp, refusing to withdraw one "
+                f"of them: {old[:90]!r}"
+            )
+        if old != check["prefix"] + removed + check["rest"]:
+            raise BacklogError(
+                f"unpromote changed head text outside the stamp: {old[:90]!r}"
+            )
+        composed = f"  - {date} — withdrew {removed.removesuffix(' — ')}"
+        staged = list(self.lines)
+        staged[start] = new
+        self._stage(staged, collections.Counter([old]), collections.Counter([new]))
+        self.append_note(new, composed + "\n" + note)
+        return removed
 
     def amend_head(
         self, needle: str, date: str | None = None, tier: str | None = None
@@ -799,10 +865,11 @@ class Backlog:
 
 
 def _today() -> str:
-    """Return today's date as `YYYY-MM-DD`, the CLI default for a `retier` reason line.
+    """Return today's date as `YYYY-MM-DD`, the CLI default for `retier` and `unpromote` dates.
 
-    The library never calls this: `retier` takes its date as an argument, so a caller can
-    always pin one and every test is deterministic. Defaulting is a CLI convenience only.
+    The library never calls this: `retier` and `unpromote` take their date as an argument, so a
+    caller can always pin one and every test is deterministic. Defaulting is a CLI convenience
+    only.
     """
     return datetime.date.today().isoformat()
 
@@ -838,6 +905,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("needle", help="substring matching exactly one open entry's head")
     p.add_argument("--date", required=True, help="promotion date, YYYY-MM-DD")
     p.add_argument("--reason", default=None, help="short reason shown inside the stamp")
+
+    p = sub.add_parser(
+        "unpromote",
+        help="withdraw a promotion: strip the stamp, record it, append a note (from stdin)",
+    )
+    p.add_argument("needle", help="substring matching exactly one open entry's head")
+    p.add_argument(
+        "--date",
+        default=_today(),
+        help="date for the withdrawal record, YYYY-MM-DD (default: today)",
+    )
 
     p = sub.add_parser(
         "amend-head",
@@ -892,6 +970,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "amend-head" and args.date is None and args.tier is None:
         parser.error("amend-head requires --date and/or --tier")
+    removed_stamp = ""
     try:
         backlog = Backlog(args.path)
         if args.command == "add":
@@ -910,6 +989,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.reason,
                 args.date,
             )
+        elif args.command == "unpromote":
+            removed_stamp = backlog.unpromote(args.needle, _read_note(), args.date)
         else:
             backlog.amend_head(args.needle, date=args.date, tier=args.tier)
         report = backlog.save()
@@ -923,6 +1004,8 @@ def main(argv: list[str] | None = None) -> int:
         f"{report.path}: {report.open_count} open, {report.closed_count} closed "
         f"(+{report.lines_gained}/-{report.lines_lost} lines)"
     )
+    if args.command == "unpromote":
+        print(f"removed stamp: {removed_stamp.removesuffix(' — ')}")
     return 0
 
 

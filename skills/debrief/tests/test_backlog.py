@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import collections
 import datetime
+import io
 import os
 import random
 import stat
+import sys
 from pathlib import Path
 
 import backlog
@@ -48,6 +50,20 @@ def undated_entry(token, body=()):
 def tiered_entry(token, tier, date="2026-07-01", body=()):
     # A head that already carries a tier, for the "refuse rather than overwrite" tests.
     return [f"- [ ] {date} — **{tier} — {token} — headline for {token}.**", *body]
+
+
+def stamped_entry(token, stamp, date="2026-07-01", closed=False, body=()):
+    # `stamp` includes its trailing " — ", e.g. "*promoted 2026-07-28* — ".
+    box = "- [x]" if closed else "- [ ]"
+    return [f"{box} {date} — {stamp}**{token} — headline for {token}.**", *body]
+
+
+def head_of(path, token):
+    return next(
+        ln
+        for ln in path.read_text().split("\n")
+        if f"{token} —" in ln and ln.startswith("- [")
+    )
 
 
 def make_doc(open_entries, closed_entries=()):
@@ -778,8 +794,15 @@ def test_every_operation_holds_its_shape_on_generated_documents(seed, tmp_path):
     doc, tokens = random_doc(rng)
     path = write_doc(tmp_path, doc, name=f"B{seed}.md")
     target = f"{rng.choice(tokens)} —"
-    op = rng.choice(["append", "stamp", "close", "amend"])
+    op = rng.choice(["append", "stamp", "close", "amend", "unpromote"])
     note = f"  **NOTE {seed}** — generated."
+    if op == "unpromote":
+        # Stamp the chosen head with its own instance first, so the edit under test starts from
+        # a document that really carries a stamp on disk.
+        pre = Backlog(path)
+        pre.stamp_promoted(target, "2026-07-28")
+        pre.save()
+        doc = path.read_text()
     before = nonblank(doc)
     head = next(ln for ln in doc.split("\n") if target in ln and ln.startswith("- [ ]"))
     others = {h: b for h, b in blocks_of(doc).items() if target not in h}
@@ -798,6 +821,16 @@ def test_every_operation_holds_its_shape_on_generated_documents(seed, tmp_path):
         bl.close_entry(target, note)
         expect_lost = collections.Counter([head])
         expect_gained = collections.Counter([head.replace("- [ ]", "- [x]", 1), note])
+    elif op == "unpromote":
+        bl.unpromote(target, note, "2026-10-19")
+        expect_lost = collections.Counter([head])
+        expect_gained = collections.Counter(
+            [
+                head.replace("*promoted 2026-07-28* — ", "", 1),
+                "  - 2026-10-19 — withdrew *promoted 2026-07-28*",
+                note,
+            ]
+        )
     else:
         # Every generated head is already dated (see `entry()`), so only a tier insertion can
         # land here without a guaranteed refusal — `--date` is exercised by its own unit tests.
@@ -1417,3 +1450,500 @@ def test_retier_cli_requires_from_to_and_reason(tmp_path, omit):
         backlog.main(argv)
     assert e.value.code == 2
     assert path.read_text() == doc
+
+
+# ---------- unpromote ----------
+
+
+def _stdin(monkeypatch, text):
+    monkeypatch.setattr(sys, "stdin", io.StringIO(text))
+
+
+def test_unpromote_restores_the_pre_promotion_head_with_a_reason(tmp_path):
+    path = write_doc(tmp_path, make_doc([entry("A"), entry("B")]))
+    original = head_of(path, "A")
+    bl = Backlog(path)
+    bl.stamp_promoted("A —", "2026-07-28", "WHY CALLED UP")
+    bl.save()
+    bl = Backlog(path)  # re-open: one instance sums its expected counts with +=
+    removed = bl.unpromote("A —", "  Withdrawn: the body shows it.", "2026-10-19")
+    bl.save()
+    assert head_of(path, "A") == original
+    assert removed == "*promoted 2026-07-28 — WHY CALLED UP* — "
+
+
+def test_unpromote_restores_the_head_after_a_bare_stamp(tmp_path):
+    path = write_doc(tmp_path, make_doc([entry("A"), entry("B")]))
+    original = head_of(path, "A")
+    bl = Backlog(path)
+    bl.stamp_promoted("A —", "2026-07-28", None)
+    bl.save()
+    bl = Backlog(path)
+    removed = bl.unpromote("A —", "  Withdrawn.", "2026-10-19")
+    bl.save()
+    assert head_of(path, "A") == original
+    assert removed == "*promoted 2026-07-28* — "
+
+
+def test_unpromote_strips_the_hand_written_semicolon_stamp(tmp_path):
+    stamp = "*promoted 2026-07-28; FIXED 2026-07-28* — "
+    path = write_doc(tmp_path, make_doc([stamped_entry("A", stamp), entry("B")]))
+    bl = Backlog(path)
+    removed = bl.unpromote("A —", "  Withdrawn.", "2026-10-19")
+    bl.save()
+    assert removed == stamp
+    assert head_of(path, "A") == "- [ ] 2026-07-01 — **A — headline for A.**"
+
+
+def test_unpromote_after_a_double_promotion_leaves_no_residue(tmp_path):
+    path = write_doc(tmp_path, make_doc([entry("A"), entry("B")]))
+    original = head_of(path, "A")
+    bl = Backlog(path)
+    bl.stamp_promoted("A —", "2026-07-20", "FIRST REASON")
+    bl.save()
+    bl = Backlog(path)
+    bl.stamp_promoted("A —", "2026-07-28", "SECOND REASON")
+    bl.save()
+    bl = Backlog(path)
+    removed = bl.unpromote("A —", "  Withdrawn.", "2026-10-19")
+    bl.save()
+    assert removed == "*promoted 2026-07-28 — SECOND REASON* — "
+    assert head_of(path, "A") == original
+    for ln in path.read_text().split("\n"):
+        m = backlog.STAMPED_HEAD_RE.match(ln)
+        if m:
+            assert m.start("rest") == len(m["prefix"]), f"stamp survives: {ln!r}"
+
+
+def test_unpromote_edit_is_exactly_the_head_the_composed_line_and_the_note(tmp_path):
+    sibling = stamped_entry("B", "*promoted 2026-07-27* — ", body=["  b body"])
+    doc = make_doc(
+        [
+            stamped_entry(
+                "A", "*promoted 2026-07-28* — ", body=["  a body", "  a body two"]
+            ),
+            sibling,
+            entry("C", body=["  c body"]),
+        ]
+    )
+    path = write_doc(tmp_path, doc)
+    before = nonblank(doc)
+    old_head = head_of(path, "A")
+    others = {h: b for h, b in blocks_of(doc).items() if h != old_head}
+    note = ["  Withdrawn: reason line one.", "  Reason line two."]
+
+    bl = Backlog(path)
+    bl.unpromote("A —", "\n".join(note), "2026-10-19")
+    bl.save()
+
+    after = nonblank(path.read_text())
+    new_head = "- [ ] 2026-07-01 — **A — headline for A.**"
+    composed = "  - 2026-10-19 — withdrew *promoted 2026-07-28*"
+    assert before - after == collections.Counter({old_head: 1})
+    assert after - before == collections.Counter([new_head, composed, *note])
+    after_blocks = blocks_of(path.read_text())
+    for head, block in others.items():
+        assert after_blocks.get(head) == block, f"unrelated entry changed: {head}"
+    assert after_blocks[sibling[0]] == [*sibling, ""]
+
+
+def test_unpromote_drops_the_anchored_stamp_count_by_exactly_one(tmp_path):
+    # Counted by the stamp position in STAMPED_HEAD_RE, never by substring: the third head also
+    # carries `*promoted work*` inside its headline, which a substring count would double-count.
+    doc = make_doc(
+        [
+            stamped_entry("A", "*promoted 2026-07-28* — "),
+            stamped_entry("B", "*promoted 2026-07-27 — R* — "),
+            [
+                "- [ ] 2026-07-01 — *promoted 2026-07-26* — **C — see *promoted work* — x**",
+            ],
+        ]
+    )
+    path = write_doc(tmp_path, doc)
+
+    def anchored(text):
+        n = 0
+        for ln in text.split("\n"):
+            m = backlog.STAMPED_HEAD_RE.match(ln)
+            if m and m.start("rest") != len(m["prefix"]):
+                n += 1
+        return n
+
+    assert anchored(doc) == 3
+    bl = Backlog(path)
+    bl.unpromote("A —", "  Withdrawn.", "2026-10-19")
+    bl.save()
+    assert anchored(path.read_text()) == 2
+
+
+def test_unpromote_refuses_prose_mentioning_promoted(tmp_path):
+    head = "- [ ] 2026-07-01 — **X — was LOW; promoted by its own rule 2026-07-28.**"
+    path = write_doc(tmp_path, make_doc([[head]]))
+    before = path.read_bytes()
+    with pytest.raises(BacklogError, match="carries no promoted stamp"):
+        Backlog(path).unpromote("X —", "evidence", "2026-10-19")
+    assert path.read_bytes() == before
+
+
+def test_unpromote_refuses_a_headline_carrying_its_own_italics(tmp_path):
+    head = "- [ ] 2026-07-01 — **X** — see *promoted work* — details"
+    path = write_doc(tmp_path, make_doc([[head]]))
+    before = path.read_bytes()
+    with pytest.raises(BacklogError, match="carries no promoted stamp"):
+        Backlog(path).unpromote("X**", "evidence", "2026-10-19")
+    assert path.read_bytes() == before
+
+
+def test_unpromote_refuses_an_unstamped_entry(tmp_path, capsys, monkeypatch):
+    path = write_doc(tmp_path, make_doc([entry("A"), entry("B")]))
+    before = path.read_bytes()
+    with pytest.raises(BacklogError, match="carries no promoted stamp"):
+        Backlog(path).unpromote("A —", "evidence", "2026-10-19")
+    assert path.read_bytes() == before
+
+    _stdin(monkeypatch, "evidence")
+    rc = backlog.main(["--path", str(path), "unpromote", "A —"])
+    assert rc == 1
+    assert "carries no promoted stamp" in capsys.readouterr().err
+    assert path.read_bytes() == before
+    assert not (tmp_path / "backlog-snapshots").exists()
+
+
+def test_unpromote_refuses_a_needle_matching_nothing(tmp_path):
+    path = write_doc(
+        tmp_path, make_doc([stamped_entry("A", "*promoted 2026-07-28* — ")])
+    )
+    before = path.read_bytes()
+    with pytest.raises(EntryNotFound, match="no open entry matches"):
+        Backlog(path).unpromote("ZZZ", "evidence", "2026-10-19")
+    assert path.read_bytes() == before
+
+
+def test_unpromote_refuses_an_ambiguous_needle(tmp_path):
+    path = write_doc(
+        tmp_path,
+        make_doc(
+            [
+                stamped_entry("A1", "*promoted 2026-07-28* — "),
+                stamped_entry("A2", "*promoted 2026-07-28* — "),
+            ]
+        ),
+    )
+    before = path.read_bytes()
+    with pytest.raises(AmbiguousEntry, match="open entries match"):
+        Backlog(path).unpromote("headline for A", "evidence", "2026-10-19")
+    assert path.read_bytes() == before
+
+
+def test_unpromote_construction_clause_catches_an_over_wide_strip(
+    tmp_path, monkeypatch
+):
+    path = write_doc(
+        tmp_path, make_doc([stamped_entry("A", "*promoted 2026-07-28* — ")])
+    )
+    before = path.read_bytes()
+    monkeypatch.setattr(backlog, "_strip_stamp", lambda m: m["prefix"] + m["rest"][2:])
+    with pytest.raises(BacklogError, match="changed head text outside the stamp"):
+        Backlog(path).unpromote("A —", "evidence", "2026-10-19")
+    assert path.read_bytes() == before
+
+
+def test_unpromote_refuses_a_doubly_stamped_head(tmp_path):
+    path = write_doc(
+        tmp_path,
+        make_doc([stamped_entry("A", "*promoted A* — *promoted B* — ")]),
+    )
+    before = path.read_bytes()
+    with pytest.raises(BacklogError, match="more than one promoted stamp"):
+        Backlog(path).unpromote("A —", "evidence", "2026-10-19")
+    assert path.read_bytes() == before
+
+
+def test_unpromote_refuses_when_the_strip_removes_nothing(tmp_path, monkeypatch):
+    path = write_doc(
+        tmp_path, make_doc([stamped_entry("A", "*promoted 2026-07-28* — ")])
+    )
+    before = path.read_bytes()
+    # Unreachable in production: the patched strip returns its input, so the stamp survives.
+    # The "more than one promoted stamp" message is borrowed for that case, not its real meaning.
+    monkeypatch.setattr(backlog, "_strip_stamp", lambda m: m.string)
+    with pytest.raises(BacklogError, match="more than one promoted stamp"):
+        Backlog(path).unpromote("A —", "evidence", "2026-10-19")
+    assert path.read_bytes() == before
+
+
+def test_unpromote_refuses_when_the_strip_leaves_no_dated_head(tmp_path, monkeypatch):
+    path = write_doc(
+        tmp_path, make_doc([stamped_entry("A", "*promoted 2026-07-28* — ")])
+    )
+    before = path.read_bytes()
+    monkeypatch.setattr(backlog, "_strip_stamp", lambda m: "garbage")
+    with pytest.raises(
+        BacklogError, match="left a head that is not a dated entry head"
+    ):
+        Backlog(path).unpromote("A —", "evidence", "2026-10-19")
+    assert path.read_bytes() == before
+
+
+def test_unpromote_ignores_a_closed_stamped_entry(tmp_path):
+    path = write_doc(
+        tmp_path,
+        make_doc(
+            [entry("A")],
+            [stamped_entry("Z", "*promoted 2026-07-28* — ", closed=True)],
+        ),
+    )
+    before = path.read_bytes()
+    with pytest.raises(EntryNotFound, match="no open entry matches"):
+        Backlog(path).unpromote("Z —", "evidence", "2026-10-19")
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("note", ["", "  \n\n"])
+def test_unpromote_refuses_a_blank_note_and_keeps_the_stamp(tmp_path, note):
+    path = write_doc(
+        tmp_path, make_doc([stamped_entry("A", "*promoted 2026-07-28* — ")])
+    )
+    before = path.read_bytes()
+    with pytest.raises(InvalidNote, match="note is blank"):
+        Backlog(path).unpromote("A —", note, "2026-10-19")
+    assert path.read_bytes() == before
+    assert "*promoted 2026-07-28* — " in head_of(path, "A")
+
+
+def test_unpromote_cli_refuses_a_blank_note_and_keeps_the_stamp(
+    tmp_path, capsys, monkeypatch
+):
+    path = write_doc(
+        tmp_path, make_doc([stamped_entry("A", "*promoted 2026-07-28* — ")])
+    )
+    before = path.read_bytes()
+    _stdin(monkeypatch, "  \n\n")
+    rc = backlog.main(["--path", str(path), "unpromote", "A —"])
+    assert rc == 1
+    assert "note is blank" in capsys.readouterr().err
+    assert path.read_bytes() == before
+    assert "*promoted 2026-07-28* — " in head_of(path, "A")
+
+
+@pytest.mark.parametrize(
+    "note,expected",
+    [
+        ("- [ ] 2026-01-01 — fake", "entry head"),
+        ("## Closed", "heading"),
+    ],
+)
+def test_unpromote_refuses_a_note_line_that_would_restructure(tmp_path, note, expected):
+    path = write_doc(
+        tmp_path, make_doc([stamped_entry("A", "*promoted 2026-07-28* — ")])
+    )
+    before = path.read_bytes()
+    with pytest.raises(InvalidNote, match=expected):
+        Backlog(path).unpromote("A —", note, "2026-10-19")
+    assert path.read_bytes() == before
+
+
+def test_unpromote_keys_the_appended_text_on_the_new_head(tmp_path):
+    # The needle exists only inside the stamp, so it stops matching once the head is rewritten:
+    # an append keyed on the needle would raise. Keyed on the new head, it lands.
+    path = write_doc(
+        tmp_path,
+        make_doc([stamped_entry("A", "*promoted 2026-07-28* — "), entry("B")]),
+    )
+    bl = Backlog(path)
+    bl.unpromote("promoted 2026-07-28", "  Withdrawn.", "2026-10-19")
+    bl.save()
+    text = path.read_text()
+    assert "*promoted" not in head_of(path, "A")
+    assert "  - 2026-10-19 — withdrew *promoted 2026-07-28*" in text
+    assert "  Withdrawn." in text
+
+
+def test_unpromote_text_lands_inside_the_target_entry(tmp_path):
+    path = write_doc(
+        tmp_path,
+        make_doc(
+            [
+                stamped_entry("A", "*promoted 2026-07-28* — ", body=["  a body"]),
+                entry("B", body=["  b body"]),
+            ]
+        ),
+    )
+    bl = Backlog(path)
+    bl.unpromote("A —", "  Withdrawn.", "2026-10-19")
+    bl.save()
+    lines = path.read_text().split("\n")
+    spans = {lines[s]: (s, e) for s, e in entry_blocks(lines)}
+    s, e = next(v for h, v in spans.items() if "**A —" in h)
+    inside = lines[s:e]
+    assert "  - 2026-10-19 — withdrew *promoted 2026-07-28*" in inside
+    assert "  Withdrawn." in inside
+
+
+def test_unpromote_second_run_refuses_and_appends_nothing(
+    tmp_path, capsys, monkeypatch
+):
+    path = write_doc(
+        tmp_path,
+        make_doc([stamped_entry("A", "*promoted 2026-07-28* — "), entry("B")]),
+    )
+    argv = ["--path", str(path), "unpromote", "A —", "--date", "2026-10-19"]
+    _stdin(monkeypatch, "  Withdrawn once.")
+    assert backlog.main(argv) == 0
+    capsys.readouterr()
+    once = path.read_bytes()
+
+    _stdin(monkeypatch, "  Withdrawn once.")
+    assert backlog.main(argv) == 1
+    assert "carries no promoted stamp" in capsys.readouterr().err
+    assert path.read_bytes() == once
+    lines = path.read_text().split("\n")
+    assert lines.count("  - 2026-10-19 — withdrew *promoted 2026-07-28*") == 1
+    assert lines.count("  Withdrawn once.") == 1
+
+
+def test_unpromote_after_a_repromotion_lands_a_second_record(tmp_path):
+    path = write_doc(tmp_path, make_doc([entry("A"), entry("B")]))
+    for promote_date, withdraw_date in (
+        ("2026-07-28", "2026-08-01"),
+        ("2026-09-01", "2026-09-05"),
+    ):
+        bl = Backlog(path)
+        bl.stamp_promoted("A —", promote_date)
+        bl.save()
+        bl = Backlog(path)
+        bl.unpromote("A —", "  Withdrawn.", withdraw_date)
+        bl.save()
+    lines = path.read_text().split("\n")
+    assert "  - 2026-08-01 — withdrew *promoted 2026-07-28*" in lines
+    assert "  - 2026-09-05 — withdrew *promoted 2026-09-01*" in lines
+    assert sum(1 for ln in lines if "withdrew" in ln) == 2
+    assert head_of(path, "A") == "- [ ] 2026-07-01 — **A — headline for A.**"
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "a — b",
+        "x; y",
+        "# h",
+        "[ ] z",
+        "naïve café",
+        "two  spaces",
+        "trailing ",
+    ],
+)
+def test_unpromote_composed_line_is_exact_and_sufficient_to_undo(tmp_path, reason):
+    stamp = f"*promoted 2026-07-28 — {reason}* — "
+    path = write_doc(tmp_path, make_doc([stamped_entry("A", stamp), entry("B")]))
+    original = head_of(path, "A")
+    bl = Backlog(path)
+    removed = bl.unpromote("headline for A", "  Withdrawn.", "2026-10-19")
+    bl.save()
+
+    assert removed == stamp
+    composed = f"  - 2026-10-19 — withdrew {stamp.removesuffix(' — ')}"
+    lines = path.read_text().split("\n")
+    assert lines.count(composed) == 1
+    assert lines.index(composed) < lines.index("  Withdrawn.")
+    # Sufficient to undo: rebuild the original head from the new head and the composed line.
+    new_head = head_of(path, "A")
+    m = backlog.STAMPED_HEAD_RE.match(new_head)
+    recorded = composed.split(" — withdrew ", 1)[1] + " — "
+    assert m["prefix"] + recorded + m["rest"] == original
+
+
+def test_unpromote_refuses_an_undated_head(tmp_path):
+    path = write_doc(tmp_path, make_doc([undated_entry("U")]))
+    before = path.read_bytes()
+    with pytest.raises(
+        BacklogError, match="cannot unpromote, head is not a dated entry head"
+    ):
+        Backlog(path).unpromote("U —", "evidence", "2026-10-19")
+    assert path.read_bytes() == before
+
+
+def test_unpromote_cli_applies_the_change(tmp_path, monkeypatch):
+    path = write_doc(
+        tmp_path,
+        make_doc([stamped_entry("A", "*promoted 2026-07-28* — "), entry("B")]),
+    )
+    _stdin(monkeypatch, "  Withdrawn from the CLI.")
+    rc = backlog.main(["--path", str(path), "unpromote", "A —", "--date", "2026-10-19"])
+    assert rc == 0
+    text = path.read_text()
+    assert head_of(path, "A") == "- [ ] 2026-07-01 — **A — headline for A.**"
+    assert "  - 2026-10-19 — withdrew *promoted 2026-07-28*" in text
+    assert "  Withdrawn from the CLI." in text
+
+
+def test_unpromote_cli_requires_a_needle(tmp_path, capsys):
+    path = write_doc(
+        tmp_path, make_doc([stamped_entry("A", "*promoted 2026-07-28* — ")])
+    )
+    before = path.read_bytes()
+    with pytest.raises(SystemExit) as e:
+        backlog.main(["--path", str(path), "unpromote"])
+    assert e.value.code == 2
+    assert "needle" in capsys.readouterr().err
+    assert path.read_bytes() == before
+
+
+def test_unpromote_cli_prints_the_removed_stamp_and_honours_date(
+    tmp_path, capsys, monkeypatch
+):
+    path = write_doc(
+        tmp_path,
+        make_doc([stamped_entry("A", "*promoted 2026-07-28 — WHY CALLED UP* — ")]),
+    )
+    _stdin(monkeypatch, "  Withdrawn.")
+    rc = backlog.main(["--path", str(path), "unpromote", "A —", "--date", "2026-01-31"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "removed stamp: *promoted 2026-07-28 — WHY CALLED UP*" in out
+    assert "  - 2026-01-31 — withdrew *promoted 2026-07-28 — WHY CALLED UP*" in (
+        path.read_text()
+    )
+
+
+def test_unpromote_cli_dates_the_composed_line_today_by_default(tmp_path, monkeypatch):
+    path = write_doc(
+        tmp_path, make_doc([stamped_entry("A", "*promoted 2026-07-28* — ")])
+    )
+    monkeypatch.setattr(backlog, "_today", lambda: "2031-02-03")
+    _stdin(monkeypatch, "  Withdrawn.")
+    rc = backlog.main(["--path", str(path), "unpromote", "A —"])
+    assert rc == 0
+    assert "  - 2031-02-03 — withdrew *promoted 2026-07-28*" in path.read_text()
+
+
+def test_unpromote_write_leaves_a_snapshot(tmp_path):
+    path = write_doc(
+        tmp_path, make_doc([stamped_entry("A", "*promoted 2026-07-28* — ")])
+    )
+    pre_bytes = path.read_bytes()
+    bl = Backlog(path)
+    bl.unpromote("A —", "  Withdrawn.", "2026-10-19")
+    report = bl.save()
+    assert report.snapshot is not None
+    assert report.snapshot == tmp_path / "backlog-snapshots" / "BACKLOG.prev"
+    assert report.snapshot.read_bytes() == pre_bytes
+
+
+SPELLINGS = [
+    "*promoted 2026-07-28* — ",
+    "*promoted 2026-07-28 — SOME REASON* — ",
+    "*promoted 2026-07-28; FIXED 2026-07-28* — ",
+]
+
+
+@pytest.mark.parametrize("stamp", SPELLINGS)
+def test_unpromote_handles_each_synthesized_stamp_spelling(tmp_path, stamp):
+    assert len(SPELLINGS) == 3  # floor: bare, reason, semicolon
+    path = write_doc(tmp_path, make_doc([stamped_entry("A", stamp), entry("B")]))
+    bl = Backlog(path)
+    removed = bl.unpromote("A —", "  Withdrawn.", "2026-10-19")
+    bl.save()
+    assert removed == stamp
+    assert head_of(path, "A") == "- [ ] 2026-07-01 — **A — headline for A.**"
+    assert f"  - 2026-10-19 — withdrew {stamp.removesuffix(' — ')}" in path.read_text()

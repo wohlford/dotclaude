@@ -264,6 +264,59 @@ MUTATIONS = [
         '        if rechecked is None or rechecked["tier"] != to_tier:',
         "        if False:",
     ),
+    # `unpromote`. Its postcondition clauses are catchable for the same reason as `retier`'s: the
+    # suite monkeypatches `_strip_stamp` to emit a deliberately wrong head. There is no
+    # "stamp-count check off" row on purpose: the anchored-stamp count is a suite-level assertion
+    # only, so it has no subject line to mutate.
+    mutate.Mutation(
+        "unpromote-no-stamp-check-off: `unpromote` stops refusing a head that carries no promoted "
+        "stamp. With the guard gone an unstamped head strips to itself and the later clauses all "
+        "hold, so the tool would append a withdrawal record for a promotion that never existed",
+        "        if not removed:",
+        "        if False:",
+    ),
+    mutate.Mutation(
+        "unpromote-undated-result-check-off: the refusal for a stripped result that is no longer "
+        "a dated entry head stops firing. A message-precision row: without it the next line "
+        "dereferences None and raises AttributeError instead of a BacklogError",
+        "        if check is None:",
+        "        if False:",
+    ),
+    mutate.Mutation(
+        "unpromote-multi-stamp-check-off: message-precision row; without the refusal for a head "
+        "still carrying a second promoted stamp after the strip, a doubly stamped head is "
+        "refused with a different message",
+        '        if check.start("rest") != len(check["prefix"]):',
+        "        if False:",
+    ),
+    mutate.Mutation(
+        "unpromote-construction-check-off: the clause requiring the old head to equal prefix, "
+        "removed stamp and rest stops raising, so an over-wide strip could eat head text outside "
+        "the stamp and still be written",
+        '        if old != check["prefix"] + removed + check["rest"]:',
+        "        if False:",
+    ),
+    mutate.Mutation(
+        "unpromote-strip-too-wide: the strip also eats the head's last character. Every "
+        "successful unpromote then trips the construction clause, so the whole success path goes "
+        "red; the mutated line still contains its anchor, so only a by-content restore sees it",
+        "        new = _strip_stamp(match)",
+        "        new = _strip_stamp(match)[:-1]",
+    ),
+    mutate.Mutation(
+        "unpromote-append-keyed-on-needle: the withdrawal record is keyed on the CALLER'S "
+        "NEEDLE instead of the rewritten head. A needle that matched only inside the stamp no "
+        "longer matches once the stamp is gone, so a CORRECT unpromote fails",
+        '        self.append_note(new, composed + "\\n" + note)',
+        '        self.append_note(needle, composed + "\\n" + note)',
+    ),
+    mutate.Mutation(
+        "unpromote-cli-branch-dropped: the `unpromote` command stops being dispatched in "
+        "`main()` and falls through to the `amend_head` branch, which dies on the missing "
+        "`tier` attribute",
+        '        elif args.command == "unpromote":',
+        '        elif args.command == "unpromote-disabled":',
+    ),
 ]
 
 

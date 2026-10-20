@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.134.0 — 2026-10-19
+- feat(backlog): add unpromote to withdraw a promoted stamp
+
 ## v0.133.4 — 2026-10-19
 - refactor(memory-index-check): drop the unused MEMORY-SHIPPED tier
 
