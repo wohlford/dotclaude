@@ -60,11 +60,18 @@ esac
 # ---------- Availability guard: no markdownlint-cli2 → can't lint, never falsely block ----------
 # The launcher's shebang is `#!/usr/bin/env node`, so node's bin dir must be ON PATH —
 # invoking the launcher by absolute path alone fails in non-interactive shells (NVM
-# gotcha). Fall back to the newest NVM node bin dir and prepend it.
+# gotcha). Fall back to the newest NVM node bin dir that HOLDS the launcher (the tool is
+# installed in only some version dirs, so the newest dir alone may lack it) and prepend it.
 if ! command -v markdownlint-cli2 >/dev/null 2>&1; then
-  # shellcheck disable=SC2012  # ls|sort -V picks the newest version dir; paths are ours, no exotic names
-  nvm_bin=$(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V | tail -1 || true)
-  if [[ -z "$nvm_bin" || ! -x "$nvm_bin/markdownlint-cli2" ]]; then
+  nvm_bin=""
+  # shellcheck disable=SC2012  # ls|sort -V orders the version dirs newest-first; paths are ours, no exotic names
+  while IFS= read -r cand; do
+    if [[ -f "$cand/markdownlint-cli2" && -x "$cand/markdownlint-cli2" ]]; then
+      nvm_bin="$cand"
+      break
+    fi
+  done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V -r)
+  if [[ -z "$nvm_bin" ]]; then
     exit 0
   fi
   PATH="$nvm_bin:$PATH"

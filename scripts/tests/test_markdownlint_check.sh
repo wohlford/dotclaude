@@ -59,8 +59,12 @@ have_tool=0
 if command -v markdownlint-cli2 >/dev/null 2>&1; then
   have_tool=1
 else
-  nvm_bin=$(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V | tail -1 || true)
-  [[ -n "$nvm_bin" && -x "$nvm_bin/markdownlint-cli2" ]] && have_tool=1
+  while IFS= read -r cand; do
+    if [[ -f "$cand/markdownlint-cli2" && -x "$cand/markdownlint-cli2" ]]; then
+      have_tool=1
+      break
+    fi
+  done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V -r)
 fi
 
 # ---------- Gate: no config anywhere near the file → silent pass ----------
@@ -141,6 +145,85 @@ if [[ "$got" -eq 0 ]]; then
   printf 'PASS  tool absent -> 0 (fail open)\n'; pass=$((pass + 1))
 else
   printf 'FAIL  tool absent (want 0, got %d)\n' "$got"; fail=$((fail + 1))
+fi
+
+# ---------- Tool in an OLDER nvm dir -> still found ----------
+# The newest nvm node dir need not hold markdownlint-cli2 (measured: v26.12.0 lacked it
+# while v26.3.0 had it). Fixture values deliberately differ from a newest-only probe: the
+# newest dir is empty and TWO older ones hold a stub, so the choice among holders is
+# asserted too (v10.2.1 beats v9.1.0 only under numeric, not lexicographic, ordering).
+# Stubs log their id to STUB_LOG and exit 1 (a finding), so exit 2 proves the lint ran.
+
+# rml_cleanpath: $PATH minus every directory that holds an executable markdownlint-cli2,
+# so a real install on PATH cannot mask the rows.
+rml_cleanpath() {
+  local IFS=: d out=""
+  for d in $PATH; do
+    [[ -n "$d" && -x "$d/markdownlint-cli2" ]] && continue
+    out="${out:+$out:}$d"
+  done
+  printf '%s' "$out"
+}
+
+# rml_stub DIR ID RC: a tiny launcher that appends ID to $STUB_LOG and exits RC.
+rml_stub() {
+  mkdir -p "$1"
+  # shellcheck disable=SC2016  # $STUB_LOG must reach the stub unexpanded
+  printf '#!/bin/sh\nprintf "%%s\\n" "%s" >> "$STUB_LOG"\nexit %s\n' "$2" "$3" \
+    > "$1/markdownlint-cli2"
+  chmod +x "$1/markdownlint-cli2"
+}
+
+# check_eq GOT WANT LABEL
+check_eq() {
+  if [[ "$1" == "$2" ]]; then
+    printf 'PASS  %s\n' "$3"; pass=$((pass + 1))
+  else
+    printf 'FAIL  %s (want [%s] got [%s])\n' "$3" "$2" "$1"; fail=$((fail + 1))
+  fi
+}
+
+stublog="$sandbox/stub.log"
+HK_RC=0
+# hk_run HOME PATHVAL FILE: run the hook as a real process; sets HK_RC.
+hk_run() {
+  local home="$1" pathval="$2" file="$3"
+  HK_RC=0
+  printf '{"tool_input":{"file_path":"%s"}}' "$file" \
+    | HOME="$home" PATH="$pathval" STUB_LOG="$stublog" bash "$script" >/dev/null 2>&1 \
+    || HK_RC=$?
+}
+
+cp="$(rml_cleanpath)"
+if ! PATH="$cp" command -v jq >/dev/null 2>&1; then
+  printf 'SKIP  older-nvm-dir cases (jq lives beside a real markdownlint-cli2 on PATH)\n'
+else
+  mkdir -p "$sandbox/hkhome"
+  hkhome="$(cd "$sandbox/hkhome" && pwd -P)"
+  rml_stub "$hkhome/.nvm/versions/node/v9.1.0/bin" v9.1.0 1
+  rml_stub "$hkhome/.nvm/versions/node/v10.2.1/bin" v10.2.1 1
+  mkdir -p "$hkhome/.nvm/versions/node/v26.12.0/bin"
+
+  : > "$stublog"
+  hk_run "$hkhome" "$cp" "$opted/sub/dirty.md"
+  check_eq "$HK_RC" 2 "hook: tool only in OLDER nvm dirs -> reaches the lint (exit 2)"
+  check_eq "$(cat "$stublog" 2>/dev/null)" v10.2.1 \
+    "hook: the newest HOLDER is used, numerically (v10.2.1 over v9.1.0)"
+
+  mkdir -p "$sandbox/hknone"
+  hknone="$(cd "$sandbox/hknone" && pwd -P)"
+  mkdir -p "$hknone/.nvm/versions/node/v9.1.0/bin" "$hknone/.nvm/versions/node/v26.12.0/bin"
+  : > "$stublog"
+  hk_run "$hknone" "$cp" "$opted/sub/dirty.md"
+  check_eq "$HK_RC" 0 "hook: no nvm dir holds the tool -> exit 0 (fail open)"
+  check_eq "$(cat "$stublog" 2>/dev/null)" "" "hook: no nvm dir holds the tool -> the lint never ran"
+
+  hkpathbin="$sandbox/hkpathbin"
+  rml_stub "$hkpathbin" pathstub 1
+  : > "$stublog"
+  hk_run "$hkhome" "$hkpathbin:$cp" "$opted/sub/dirty.md"
+  check_eq "$(cat "$stublog" 2>/dev/null)" pathstub \
+    "hook: a markdownlint-cli2 already on PATH wins over the nvm dirs"
 fi
 
 # ---------- Non-md and fail-safe stdin ----------

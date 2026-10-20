@@ -50,8 +50,14 @@ fi
 
 # Locate markdownlint-cli2 the same way the hook does.
 if ! command -v markdownlint-cli2 > /dev/null 2>&1; then
-  nvm_bin=$(ls -d "$HOME"/.nvm/versions/node/*/bin 2> /dev/null | sort -V | tail -1 || true)
-  if [[ -n "$nvm_bin" && -x "$nvm_bin/markdownlint-cli2" ]]; then
+  nvm_bin=""
+  while IFS= read -r cand; do
+    if [[ -f "$cand/markdownlint-cli2" && -x "$cand/markdownlint-cli2" ]]; then
+      nvm_bin="$cand"
+      break
+    fi
+  done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2> /dev/null | sort -V -r)
+  if [[ -n "$nvm_bin" ]]; then
     PATH="$nvm_bin:$PATH"
     export PATH
   else

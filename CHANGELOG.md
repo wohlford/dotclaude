@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.133.2 — 2026-10-19
+- fix(markdownlint-check): find markdownlint-cli2 in any nvm dir
+
 ## v0.133.1 — 2026-10-19
 - fix(audit): find markdownlint-cli2 in any nvm node version dir
 
