@@ -382,13 +382,18 @@ EOF
 }
 
 # ---------- BSD-safe newest-nvm-version picker ----------
-# Reads newline-separated `vX.Y.Z` strings on stdin, echoes the newest. Strips the leading
-# `v` (bracket/GNU \t-style escapes aren't portable in ERE, and there is no `sort -V` on
-# BSD sort), numeric-sorts each dotted field, then reattaches `v` to the winner.
+# sort_versions_newest_first: reads newline-separated `vX.Y.Z` strings on stdin, prints them
+# newest first. Strips the leading `v` (bracket/GNU \t-style escapes aren't portable in ERE,
+# and there is no `sort -V` on BSD sort), numeric-sorts each dotted field descending, then
+# reattaches `v`.
+sort_versions_newest_first() {
+  sed 's/^v//' | sort -t. -k1,1nr -k2,2nr -k3,3nr | sed 's/^/v/'
+}
+
+# pick_newest_version: echoes the newest of the `vX.Y.Z` strings on stdin. Consumes all of
+# its input (sed -n 1p, not head), so no SIGPIPE reaches the producer under pipefail.
 pick_newest_version() {
-  local stripped
-  stripped="$(sed 's/^v//')"
-  printf '%s\n' "$stripped" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 | sed 's/^/v/'
+  sort_versions_newest_first | sed -n 1p
 }
 
 # Reads stdin, prints a hex sha256 digest. macOS ships no `sha256sum` by default; `shasum`
@@ -930,14 +935,18 @@ check_markdownlint() {
     return
   fi
 
-  local path_prefix="" versions newest nodebin
+  local path_prefix="" versions ver nodebin
   if ! command -v markdownlint-cli2 >/dev/null 2>&1; then
     nodebin=""
     versions="$(ls "$HOME/.nvm/versions/node" 2>/dev/null)"
     if [[ -n "$versions" ]]; then
-      newest="$(printf '%s\n' "$versions" | pick_newest_version)"
-      [[ -x "$HOME/.nvm/versions/node/$newest/bin/markdownlint-cli2" ]] \
-        && nodebin="$HOME/.nvm/versions/node/$newest/bin"
+      # Only some per-version dirs hold the tool: take the newest one that does.
+      while IFS= read -r ver; do
+        if [[ -f "$HOME/.nvm/versions/node/$ver/bin/markdownlint-cli2" && -x "$HOME/.nvm/versions/node/$ver/bin/markdownlint-cli2" ]]; then
+          nodebin="$HOME/.nvm/versions/node/$ver/bin"
+          break
+        fi
+      done < <(printf '%s\n' "$versions" | sort_versions_newest_first)
     fi
     if [[ -z "$nodebin" ]]; then
       verdict_skip markdownlint 'markdownlint-cli2 not found'
@@ -2450,7 +2459,7 @@ EOF
 }
 
 # Guarded (not a bare `main "$@"`) so the test suite can `source` this file to unit-test
-# pick_newest_version() without also running a full sweep. The traps live INSIDE the
+# pick_newest_version() and sort_versions_newest_first() without also running a full sweep. The traps live INSIDE the
 # guard for the same reason: a top-level EXIT trap would install itself into any shell
 # that sources this file and append a RESULT line to that shell's stdout.
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

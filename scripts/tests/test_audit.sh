@@ -151,6 +151,73 @@ mk_clean_repo() { # dir -> a fully clean, multi-filetype fixture, all committed
   commit_all "$1" seed
 }
 
+# rML-BEGIN
+# ============================================================================
+# rML. check_markdownlint finds markdownlint-cli2 in ANY nvm node version directory
+#
+# Only some per-version dirs under ~/.nvm/versions/node hold the tool, so the check walks them
+# newest-first and takes the first HOLDER. This section sits before rPT so that
+# `AUDIT_TEST_ONLY=rML bash scripts/tests/test_audit.sh` can run it alone in seconds.
+# ============================================================================
+
+rml_cleanpath() { # print $PATH minus every directory holding an executable markdownlint-cli2
+  local IFS=: d out=""
+  for d in $PATH; do
+    [[ -n "$d" && -x "$d/markdownlint-cli2" ]] && continue
+    out="${out:+$out:}$d"
+  done
+  printf '%s' "$out"
+}
+
+rml_stub() { # dir id rc -> a tiny markdownlint-cli2 stub logging its id to $STUB_LOG
+  mkdir -p "$1"
+  # shellcheck disable=SC2016  # $STUB_LOG must reach the stub unexpanded
+  printf '#!/bin/sh\nprintf "%%s\\n" "%s" >> "$STUB_LOG"\nexit %s\n' "$2" "$3" > "$1/markdownlint-cli2"
+  chmod +x "$1/markdownlint-cli2"
+}
+
+rml="$(cd "$tmp" && pwd -P)/rML"
+mkdir -p "$rml"
+fh="$rml/home"
+rml_stub "$fh/.nvm/versions/node/v9.1.0/bin" v9.1.0 0
+rml_stub "$fh/.nvm/versions/node/v10.2.1/bin" v10.2.1 0
+mkdir -p "$fh/.nvm/versions/node/v26.12.0/bin"
+
+r="$rml/repo"
+mkrepo "$r"
+printf '{ "config": { "line-length": false } }\n' > "$r/.markdownlint-cli2.jsonc"
+printf '# Doc\n\nText.\n' > "$r/good.md"
+commit_all "$r" seed
+
+: > "$rml/log"
+OUT="$(HOME="$fh" PATH="$(rml_cleanpath)" STUB_LOG="$rml/log" "$engine" --scope "$r" 2>&1)"
+RC=$?
+assert_has 'PASS markdownlint' 'rML1: a stub in an older version dir is found -> PASS markdownlint'
+assert_not_has 'SKIP markdownlint' 'rML2: the verdict is not SKIP markdownlint'
+check_eq "$(cat "$rml/log" 2>/dev/null)" 'v10.2.1' \
+  'rML3: the newest HOLDER ran, numerically (v10.2.1 over v9.1.0, and not the empty v26.12.0)'
+
+fe="$rml/emptyhome"
+mkdir -p "$fe/.nvm/versions/node/v9.1.0/bin" "$fe/.nvm/versions/node/v26.12.0/bin"
+: > "$rml/log"
+OUT="$(HOME="$fe" PATH="$(rml_cleanpath)" STUB_LOG="$rml/log" "$engine" --scope "$r" 2>&1)"
+RC=$?
+assert_has 'SKIP markdownlint' 'rML4: no dir holds the tool -> SKIP markdownlint'
+assert_has 'markdownlint-cli2 not found' 'rML5: the SKIP names the old reason'
+
+pb="$rml/pathbin"
+rml_stub "$pb" pathstub 0
+: > "$rml/log"
+OUT="$(HOME="$fh" PATH="$pb:$(rml_cleanpath)" STUB_LOG="$rml/log" "$engine" --scope "$r" 2>&1)"
+RC=$?
+check_eq "$(cat "$rml/log" 2>/dev/null)" pathstub \
+  'rML6: a markdownlint-cli2 already on PATH wins over every nvm dir'
+
+got="$(bash -c 'source "$1"; printf "v9.1.0\nv26.3.0\nv10.2.1\n" | sort_versions_newest_first | tr "\n" " "' _ "$engine" 2>/dev/null)"
+check_eq "$got" 'v26.3.0 v10.2.1 v9.1.0 ' 'rML7: sort_versions_newest_first orders numerically, newest first'
+# rML-END
+if [[ "${AUDIT_TEST_ONLY:-}" == rML ]]; then printf '\n%d passed, %d failed\n' "$pass" "$fail"; [[ "$fail" -eq 0 ]]; exit; fi
+
 # rPT-BEGIN
 # ============================================================================
 # rPT. The opt-in parallel pytest mode of check_tests (AUDIT_PYTEST_JOBS)
@@ -1688,7 +1755,7 @@ assert_not_has 'unprovable:' \
 assert_has 'PASS tests' '15r: the shell family still runs and reports on its own'
 
 # ============================================================================
-# 16. BSD-safe newest-version picker (used by the markdownlint node-bin fallback)
+# 16. BSD-safe newest-version picker (kept as a tested helper; the markdownlint fallback walks sort_versions_newest_first)
 # ============================================================================
 picked="$(bash -c 'source "$1"; printf "v9.1.0\nv26.3.0\nv10.2.1\n" | pick_newest_version' _ "$engine")"
 check_eq "$picked" 'v26.3.0' '16: pick_newest_version selects highest semver (no sort -V)'
