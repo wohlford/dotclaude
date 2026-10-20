@@ -1255,10 +1255,13 @@ from `scripts/claude-md-structure.py`, which prints every group heading:
 - Install: `npm install <package>`
 - npm-global CLIs live per-version in `~/.nvm/versions/node/<ver>/bin` and need that dir ON
   PATH (their `env node` shebang; an absolute launcher path alone fails). `markdownlint-cli2`
-  is installed in only some of those directories — the markdownlint hook uses it. Find the one
-  holding it with `ls ~/.nvm/versions/node/*/bin/markdownlint-cli2`, since the newest need not:
-  measured 2026-10-17, v26.12.0 lacked it, so an audit run with that directory on PATH still
-  reported `SKIP markdownlint`, while v26.3.0 held it. Repos opt in via `.markdownlint-cli2.jsonc`
+  is installed in only some of those directories — the markdownlint hook uses it. List the ones
+  holding it with `ls ~/.nvm/versions/node/*/bin/markdownlint-cli2`; the newest need not be one.
+  Measured 2026-10-17: v26.12.0 lacked it while v26.3.0 held it, and an audit then reported
+  `SKIP markdownlint`. `/audit`, the markdownlint hook and their tests now take the newest
+  directory that HOLDS the launcher, so a `SKIP` means no directory has it. Any other opted-in repo
+  whose markdown carries findings the skipped check had hidden fails its first `/audit` after
+  that change: that is the check returning, not a regression. Repos opt in via `.markdownlint-cli2.jsonc`
   (for a repo-wide run pass the glob explicitly — `markdownlint-cli2 "**/*.md"` — a bare invocation
   lints 0 files when the config contains only ignores, which false-reads as a clean pass)
 
