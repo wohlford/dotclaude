@@ -15,7 +15,7 @@ the SUITE ROW, never to reword this file's assertion.
 `failopen` replaces the line-split in `entry_blocks` with an unconditional raise. `main()` returns
 *before* ever calling `entry_blocks` on any path that is out of scope, absent, not opted in or not a
 covered name, so every row that exercises one of those declines is unreachable by this mutation and
-MUST stay green: the out-of-scope and look-alike-name rows, the opt-in-absent rows for either file,
+MUST stay green: the out-of-scope and look-alike-name rows, the opt-in-absent row,
 and the absent-file row. That is not a coverage gap, it is the scope/opt-in guard working as
 designed; each of those rows gets its own coverage from the mutation that loosens the guard it
 names. What this mutation tests is the fail-open handler's own print statement: under the mutation
@@ -43,14 +43,12 @@ inflates the caught count and measures nothing, so both numbers must be zero.
   removes all three; killing one still leaves the other two declining it. `scope-name`'s row stands
   on the strength of its assertion (rc 0, stderr empty, distinct fixture), and a `caught=N/N` verdict
   does not imply otherwise.
-* The suffix test and the tail pattern both decline `MEMORY-SHIPPED.md` when it sits outside
-  `projects/*/memory`; the `shipped-scope` row pins the pair, and the mutation that loosens the
-  tail pattern is what flips it.
 * The cheap suffix guard (`file_path.endswith(tuple(CAPS))`) is one of the three guards behind
-  `scope-name` and `shipped-x`/`shipped-old`: widening it (to admit any name) changes no outcome,
+  `scope-name` and `x-memory`: widening it (to admit any name) changes no outcome,
   because exact membership of the resolved name declines the same files. Only NARROWING it is
-  observable, and the mutant that narrows it to `MEMORY-SHIPPED.md` kills the first tier's rows (narrowing it to
-  `MEMORY.md` would duplicate the tail-pattern mutant's kill set, so it is not used).
+  observable, and the mutant that narrows it to a name nothing carries kills the first tier's rows
+  (narrowing it to `MEMORY.md` would duplicate the tail-pattern mutant's kill set, so it is not used).
+* The `shipped-declined` row is killed alone by the mutant that re-admits `MEMORY-SHIPPED.md` as a covered name.
 """
 
 from __future__ import annotations
@@ -77,11 +75,6 @@ MUTATIONS = [
         "the aggregate boundary flips to strict >, so a file exactly at the threshold passes",
         "total_bytes >= agg_max",
         "total_bytes > agg_max",
-    ),
-    mutate.Mutation(
-        "the first tier's cap is raised past the harness's real limit, so the check never fires in time",
-        'CAPS = {"MEMORY.md": AGG_MAX_BYTES,',
-        'CAPS = {"MEMORY.md": 10**9,',
     ),
     mutate.Mutation(
         "the aggregate is summed from entry blocks, under-counting every non-entry byte",
@@ -187,13 +180,8 @@ MUTATIONS = [
     ),
     mutate.Mutation(
         "the line check is never reached, so only the byte checks survive",
-        'line_breach = abs_file.name == "MEMORY.md" and n_lines >= LINE_MAX',
-        "line_breach = False",
-    ),
-    mutate.Mutation(
-        "the line check also covers the second tier, which the client does not cut by lines",
-        'line_breach = abs_file.name == "MEMORY.md" and n_lines >= LINE_MAX',
         "line_breach = n_lines >= LINE_MAX",
+        "line_breach = False",
     ),
     mutate.Mutation(
         "the line threshold is raised to 250, past the client's own 200-line cut",
@@ -215,31 +203,11 @@ MUTATIONS = [
         'f"{LINE_MAX}-line threshold (the client cuts this file at 200 lines or 25,000 UTF-16 units).",',
         'f"{LINE_MAX}-line limit (the client cuts this file at 200 lines or 25,000 UTF-16 units).",',
     ),
+    # ---- the covered name: cheap guard, exact membership, and the declined second-tier name
     mutate.Mutation(
-        "the line remedy offers the tier whether or not it exists",
-        "        if sibling:\n            remedy = (",
-        "        if True:\n            remedy = (",
-    ),
-    mutate.Mutation(
-        "the line remedy never offers the tier, even when it exists",
-        "        if sibling:\n            remedy = (",
-        "        if False:\n            remedy = (",
-    ),
-    mutate.Mutation(
-        "the sibling is taken to exist everywhere, so every message names the tier",
-        'sibling = (abs_file.parent / "MEMORY-SHIPPED.md").is_file()',
-        "sibling = True",
-    ),
-    mutate.Mutation(
-        "the sibling is taken never to exist, so no message names the tier",
-        'sibling = (abs_file.parent / "MEMORY-SHIPPED.md").is_file()',
-        "sibling = False",
-    ),
-    # ---- the second tier: cheap guard, membership, per-name tail, cap
-    mutate.Mutation(
-        "the cheap suffix guard admits only MEMORY-SHIPPED.md, so the first tier is declined before any read",
+        "the cheap suffix guard admits no covered name, so the first tier is declined before any read",
         "file_path.endswith(tuple(CAPS))",
-        'file_path.endswith("MEMORY-SHIPPED.md")',
+        'file_path.endswith("NO-SUCH-NAME.md")',
     ),
     mutate.Mutation(
         "exact membership is skipped, so X-MEMORY.md reaches the CAPS lookup",
@@ -247,60 +215,20 @@ MUTATIONS = [
         "if False:\n        return 0",
     ),
     mutate.Mutation(
-        "the tail pattern is fixed to MEMORY.md, so the second tier is declined as out of scope",
-        'abs_file.match(f"{SCOPE_DIRS}/{abs_file.name}")',
-        'abs_file.match(f"{SCOPE_DIRS}/MEMORY.md")',
+        "MEMORY-SHIPPED.md is re-admitted as a covered name, so an over-cap second tier is enforced again",
+        'CAPS = {"MEMORY.md": AGG_MAX_BYTES}',
+        'CAPS = {"MEMORY.md": AGG_MAX_BYTES, "MEMORY-SHIPPED.md": AGG_MAX_BYTES}',
     ),
-    mutate.Mutation(
-        "the second tier is held to the first tier's cap",
-        '"MEMORY-SHIPPED.md": SHIPPED_MAX_BYTES}',
-        '"MEMORY-SHIPPED.md": AGG_MAX_BYTES}',
-    ),
-    # ---- the breach wording: the sibling test and each text
-    mutate.Mutation(
-        "the sibling test is always true, so an index with no tier is told to move entries to one",
-        "elif sibling:",
-        "elif True:",
-    ),
-    mutate.Mutation(
-        "the sibling test is always false, so an index WITH a tier is never offered it",
-        "elif sibling:",
-        "elif False:",
-    ),
-    mutate.Mutation(
-        "the second tier is given the first tier's remedy, which offers a hold that does not exist",
-        'if abs_file.name == "MEMORY-SHIPPED.md":\n            fix = (',
-        "if False:\n            fix = (",
-    ),
-    mutate.Mutation(
-        "the second tier is given the first tier's headline, which names the client's cut",
-        'if abs_file.name == "MEMORY.md":\n            headline = (',
-        "if True:\n            headline = (",
-    ),
+    # ---- the breach wording
     mutate.Mutation(
         "the first tier's headline reverts to the false claim that entries are already invisible",
         '"units, 200 lines) so entries are not silently dropped."',
         '"units, 200 lines) but entries past it are ALREADY invisible."',
     ),
     mutate.Mutation(
-        "the no-sibling remedy reinstates 'archive closed items'",
+        "the aggregate remedy reinstates 'archive closed items'",
         '"the pointer. Shortening the file is the only fix; do not narrow this check."',
         '"the pointer, or archive closed items. Shortening the file is the only fix."',
-    ),
-    mutate.Mutation(
-        "the with-sibling remedy says 'beside' where it says 'behind', so the full offer is lost",
-        '"shipped-change entry behind MEMORY-SHIPPED.md, or hold the pointer. "',
-        '"shipped-change entry beside MEMORY-SHIPPED.md, or hold the pointer. "',
-    ),
-    mutate.Mutation(
-        "the second tier's remedy offers holding a pointer again",
-        '"(one line per family); holding a pointer does not apply here. "',
-        '"(one line per family); or hold the pointer. "',
-    ),
-    mutate.Mutation(
-        "the second tier's headline drops the sentence that it is read in full on each open",
-        'f"{agg_max}B cap. It is read in full each time it is opened, not loaded "',
-        'f"{agg_max}B cap. It is not loaded "',
     ),
 ]
 

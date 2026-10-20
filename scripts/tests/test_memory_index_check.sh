@@ -9,13 +9,11 @@ set -uo pipefail
 #          paths (malformed JSON, absent file), and the whole-file aggregate-size check
 #          (over/under/boundary, the small-entries discriminator, the opt-in gate on the
 #          aggregate path, and non-entry content), the 190-line check, the true breach
-#          wording (no "archive", no "ALREADY invisible"), exact basename membership, and the
-#          second tier `MEMORY-SHIPPED.md` (its own cap, per-entry cap, opt-in gate, scope and
-#          sibling-conditional remedy text).
+#          wording (no "archive", no "ALREADY invisible"), exact basename membership, and that `MEMORY-SHIPPED.md` is no longer a covered name.
 # Usage:   bash scripts/tests/test_memory_index_check.sh
 #
-# The byte caps and the line threshold are READ from the checker (`AGG_MAX_BYTES`,
-# `SHIPPED_MAX_BYTES`, `LINE_MAX`) and every fixture is built from them, so raising a cap changes
+# The byte cap and the line threshold are READ from the checker (`AGG_MAX_BYTES`,
+# `LINE_MAX`) and every fixture is built from them, so raising a cap changes
 # no row. One row bounds the byte cap below the client's own cut, which a raise must stay under.
 #
 # Every row asserts BOTH the exit code AND stderr: an exit-0 row requires stderr EMPTY (else a
@@ -161,7 +159,6 @@ def constant(name: str, default: int) -> int:
 
 
 AGG = constant("AGG_MAX_BYTES", 24000)
-SHIPPED = constant("SHIPPED_MAX_BYTES", 30000)
 LINES = constant("LINE_MAX", 190)
 
 
@@ -368,7 +365,7 @@ assert len(ne_content.encode("utf-8")) == AGG + 500, len(ne_content.encode("utf-
 write(at("agg-nonentry-content") / "MEMORY.md", ne_content)
 
 # ---- the cap sits below the client's own cut (a bound the value must stay inside) ----
-(sandbox / "caps.txt").write_text(f"{AGG} {SHIPPED} {LINES}\n")
+(sandbox / "caps.txt").write_text(f"{AGG} {LINES}\n")
 
 # ---- the 190-line check and the true breach wording --------------------------------------------
 # Line fixtures use 40B entries, so they stay far under every byte cap and trip on lines alone.
@@ -376,59 +373,30 @@ write(at("agg-nonentry-content") / "MEMORY.md", ne_content)
 for n in (LINES - 1, LINES, LINES + 25):
     write(at(f"lines-{n}") / "MEMORY.md", lines_index(HEADER, n, 40))
     write(at(f"lines-{n}-q", "projects/q/memory") / "MEMORY.md", lines_index(HEADER, n, 40))
-# A project with a sibling tier: each fixture below that wants one gets the same valid tier.
-T2_HEADER = (
-    "---\nname: MEMORY-SHIPPED\ndescription: x\n---\n\n"
-    "# Shipped-work index (tier 2)\n\n"
-    "One line per entry. Detail lives in the topic file, never here.\n\n"
-)
-VALID_T2 = T2_HEADER + pad_line("- [S](s.md) - ", 120) + "\n"
-
-
-def t2_total(total: int, header: str = T2_HEADER, entry_max: int = 900) -> str:
-    """A second-tier file of exactly TOTAL bytes under HEADER."""
-    return fill_index(header, total, entry_max)
-
-
-# tier-over: over the cap WITH a sibling tier (the remedy names it); tier-over-q: another opted-in
-# project, over the cap, NO sibling (the remedy does not). 900B entries keep the line count far
-# under the line threshold, so these rows reach the byte cap alone.
-write(at("tier-over") / "MEMORY.md", fill_index(HEADER, AGG + 9000, 900))
-write(at("tier-over") / "MEMORY-SHIPPED.md", VALID_T2)
-write(at("tier-over-nosib") / "MEMORY.md", fill_index(HEADER, AGG + 9000, 900))
-write(at("tier-over-q", "projects/q/memory") / "MEMORY.md", fill_index(HEADER, AGG + 9000, 900))
+# wording-over: over the byte cap; wording-over-q: another opted-in project, over the cap. 900B
+# entries keep the line count far under the line threshold, so these rows reach the byte cap alone.
+write(at("wording-over") / "MEMORY.md", fill_index(HEADER, AGG + 9000, 900))
+write(at("wording-over-q", "projects/q/memory") / "MEMORY.md", fill_index(HEADER, AGG + 9000, 900))
 # both-breach: over the byte cap AND over the line threshold at once (100B blank-separated entries
 # give two lines per entry). Both sections must be reported, not one suppressing the other.
 write(at("both-breach") / "MEMORY.md", fill_index(HEADER, AGG + 1500, 100))
 assert (at("both-breach") / "MEMORY.md").read_bytes().count(b"\n") >= LINES
-# tier-lines: 190 lines WITH a sibling tier.
-write(at("tier-lines") / "MEMORY.md", lines_index(HEADER, LINES, 40))
-write(at("tier-lines") / "MEMORY-SHIPPED.md", VALID_T2)
-# tier-ok: a normal index with its sibling, and the sibling alone.
-write(at("tier-ok") / "MEMORY.md", fill_index(HEADER, AGG // 2, 900))
-write(at("tier-ok") / "MEMORY-SHIPPED.md", VALID_T2)
-# mailhost-like: 106 lines, 15347B, opted in, no sibling. Must stay silent.
+# mailhost-like: 106 lines, 15347B, opted in. Must stay silent.
 mail = lines_index(HEADER, 106, 144)
 mail_pad = 15347 - len(mail.encode("utf-8"))
 write(at("mailhost", "projects/q/memory") / "MEMORY.md", mail[:-1] + "x" * mail_pad + "\n")
 assert (sandbox / "mailhost/projects/q/memory/MEMORY.md").read_bytes().count(b"\n") == 106
-# tier cap: over, exactly at, and one under the second tier's own cap.
-write(at("shipped-over") / "MEMORY-SHIPPED.md", t2_total(SHIPPED + 14721))
-write(at("shipped-at-cap") / "MEMORY-SHIPPED.md", t2_total(SHIPPED))
-write(at("shipped-under-cap") / "MEMORY-SHIPPED.md", t2_total(SHIPPED - 1))
-# tier per-entry cap: one 1001B entry in an otherwise small second tier.
-write(at("shipped-entry") / "MEMORY-SHIPPED.md", T2_HEADER + pad_line("- [Big](big.md) - ", 1001) + "\n")
-# tier has no line check: LINES + 25 short lines, far under its byte cap.
-write(at("shipped-lines") / "MEMORY-SHIPPED.md", lines_index(T2_HEADER, LINES + 25, 40))
-# tier scope: the same oversized file where the path is out of scope, and under look-alike names.
-write(at("shipped-scope", "notprojects/proj1/memory") / "MEMORY-SHIPPED.md", t2_total(SHIPPED + 5000))
-write(at("shipped-x") / "X-MEMORY.md", t2_total(SHIPPED + 5000, HEADER))
-write(at("shipped-old") / "OLD-MEMORY-SHIPPED.md", t2_total(SHIPPED + 5000))
-# tier opt-in: an oversized second tier whose opt-in sentence was reworded is declined.
-write(
-    at("shipped-noopt") / "MEMORY-SHIPPED.md",
-    fill_index("---\nname: x\n---\n\n# Tier 2\n\nOne line per entry.\n\n", SHIPPED + 5000, 900),
-)
+# x-memory: an oversized X-MEMORY.md passes the cheap suffix test and must be declined by exact
+# basename membership.
+write(at("x-memory") / "X-MEMORY.md", fill_index(HEADER, AGG + 5000, 900))
+# shipped-declined: MEMORY-SHIPPED.md is no longer a covered name, so an opted-in file over EVERY cap (1500B entry, 2 * AGG + 1000 B, past LINES lines) is declined.
+sd_total = 2 * AGG + 1000
+sd_big = pad_line("- [Big](big.md) - ", 1500)
+sd_rest = fill_index("", sd_total - len(HEADER.encode("utf-8")) - len(sd_big) - 2, 100)
+sd_content = HEADER + sd_big + "\n\n" + sd_rest
+assert len(sd_content.encode("utf-8")) == sd_total, len(sd_content.encode("utf-8"))
+assert sd_content.count("\n") >= LINES
+write(at("shipped-declined") / "MEMORY-SHIPPED.md", sd_content)
 
 print("FIXTURES_OK")
 PY
@@ -493,22 +461,22 @@ run_block 'bare-dash-evasion: bare "- " continuation folds into its block (no br
   "$sandbox/bare-dash-evasion/projects/proj1/memory/MEMORY.md" \
   'memory-index-check:' 'line 3: 5022B'
 
-# ---- aggregate-size rows. AGG, SHIPPED and LINE_CAP are the checker's own constants, read by the
+# ---- aggregate-size rows. AGG and LINE_CAP are the checker's own constants, read by the
 #      fixture builder above; every size a row names is computed from them.
-read -r AGG SHIPPED LINE_CAP < "$sandbox/caps.txt"
+read -r AGG LINE_CAP < "$sandbox/caps.txt"
 m="projects/proj1/memory"
 
-# The fixtures above read three constants from the checker. A name the checker does not declare
+# The fixtures above read two constants from the checker. A name the checker does not declare
 # falls back to a default there, so this row is what makes a missing or renamed constant a FAIL.
 declared=0
-for const in AGG_MAX_BYTES SHIPPED_MAX_BYTES LINE_MAX; do
+for const in AGG_MAX_BYTES LINE_MAX; do
   grep -q "^${const} = [0-9]" "$script" && declared=$((declared + 1))
 done
-if [[ "$declared" -eq 3 ]]; then
-  printf 'PASS  cap-constants: AGG_MAX_BYTES, SHIPPED_MAX_BYTES and LINE_MAX are declared\n'
+if [[ "$declared" -eq 2 ]]; then
+  printf 'PASS  cap-constants: AGG_MAX_BYTES and LINE_MAX are declared\n'
   pass=$((pass + 1))
 else
-  printf 'FAIL  cap-constants: only %d of AGG_MAX_BYTES, SHIPPED_MAX_BYTES, LINE_MAX are declared\n' "$declared"
+  printf 'FAIL  cap-constants: only %d of AGG_MAX_BYTES, LINE_MAX are declared\n' "$declared"
   fail=$((fail + 1))
 fi
 
@@ -545,27 +513,15 @@ else
   fail=$((fail + 1))
 fi
 
-# ---- the true breach wording (PART 1) and the sibling-conditional remedy (second tier) ----
+# ---- the true breach wording ----
 run_block 'wording: over cap names the real cap and the client cut, never "archive" or "ALREADY invisible"' \
-  "$sandbox/tier-over/$m/MEMORY.md" \
+  "$sandbox/wording-over/$m/MEMORY.md" \
   'memory-index-check:' "at or over the ${AGG}B cap" '25,000 UTF-16 units' \
   'or hold the pointer' '!archive' '!ALREADY' '!hub files'
 
-run_block 'wording: with a sibling tier beside it, the remedy offers the tier' \
-  "$sandbox/tier-over/$m/MEMORY.md" \
-  'memory-index-check:' 'shipped-change entry'
-
-run_block 'wording: the offer reads in full — move a shipped-change entry behind the tier, or hold the pointer' \
-  "$sandbox/tier-over/$m/MEMORY.md" \
-  'memory-index-check:' 'move a shipped-change entry behind MEMORY-SHIPPED.md, or hold the pointer'
-
-run_block 'wording: over cap with NO sibling tier — "or hold the pointer", and no mention of a tier' \
-  "$sandbox/tier-over-nosib/$m/MEMORY.md" \
-  'memory-index-check:' 'or hold the pointer' '!shipped-change entry' '!archive' '!ALREADY'
-
-run_block 'wording: another opted-in project over cap, no sibling — the same text, no tier' \
-  "$sandbox/tier-over-q/projects/q/memory/MEMORY.md" \
-  'memory-index-check:' 'or hold the pointer' '!shipped-change entry' '!archive' '!ALREADY'
+run_block 'wording: another opted-in project over cap — the same text' \
+  "$sandbox/wording-over-q/projects/q/memory/MEMORY.md" \
+  'memory-index-check:' 'or hold the pointer' '!archive' '!ALREADY'
 
 # ---- the line check ----
 run_block 'both: over the byte cap AND the line threshold — both sections are reported' \
@@ -575,74 +531,30 @@ run_block 'both: over the byte cap AND the line threshold — both sections are 
 run_ok "lines: $((LINE_CAP - 1)) lines (wc -l) — under the threshold" \
   "$sandbox/lines-$((LINE_CAP - 1))/$m/MEMORY.md"
 
-run_block "lines: exactly $LINE_CAP lines — trips (>=), names the threshold and the remedy, and no tier exists to name" \
+run_block "lines: exactly $LINE_CAP lines — trips (>=), names the threshold and the remedy" \
   "$sandbox/lines-$LINE_CAP/$m/MEMORY.md" \
   'memory-index-check:' "${LINE_CAP}-line threshold" 'Hold a pointer, or shorten the file.' \
-  '!MEMORY-SHIPPED.md' '!shipped-change' '!when that file exists' '!archive'
+  '!archive'
 
 run_block "lines: $((LINE_CAP + 25)) lines — trips, and reports its own line count" \
   "$sandbox/lines-$((LINE_CAP + 25))/$m/MEMORY.md" \
   'memory-index-check:' "has $((LINE_CAP + 25)) lines" "${LINE_CAP}-line threshold"
 
-run_block 'lines: a sibling tier beside a long index changes nothing about the line verdict' \
-  "$sandbox/tier-lines/$m/MEMORY.md" \
-  'memory-index-check:' "${LINE_CAP}-line threshold" 'Hold a pointer'
-
-run_block 'lines: with a sibling tier beside it, the line remedy offers the tier' \
-  "$sandbox/tier-lines/$m/MEMORY.md" \
-  'memory-index-check:' 'Hold a pointer, or move a shipped-change entry behind MEMORY-SHIPPED.md, or shorten the file.'
-
-run_ok "lines: $((LINE_CAP - 1)) lines in another opted-in project (no sibling)" \
+run_ok "lines: $((LINE_CAP - 1)) lines in another opted-in project" \
   "$sandbox/lines-$((LINE_CAP - 1))-q/projects/q/memory/MEMORY.md"
 
-run_block "lines: exactly $LINE_CAP lines in another opted-in project (no second file): the file is NOT named" \
+run_block "lines: exactly $LINE_CAP lines in another opted-in project" \
   "$sandbox/lines-$LINE_CAP-q/projects/q/memory/MEMORY.md" \
-  'memory-index-check:' "${LINE_CAP}-line threshold" 'Hold a pointer, or shorten the file.' \
-  '!MEMORY-SHIPPED.md' '!shipped-change' '!when that file exists'
+  'memory-index-check:' "${LINE_CAP}-line threshold" 'Hold a pointer, or shorten the file.'
 
 run_ok 'lines: the mailhost-shaped index (106 lines, 15347B, opted in) stays silent' \
   "$sandbox/mailhost/projects/q/memory/MEMORY.md"
 
-run_ok 'tier-ok: a normal index with its sibling tier is silent' \
-  "$sandbox/tier-ok/$m/MEMORY.md"
+run_ok 'x-memory: an oversized X-MEMORY.md is declined by exact basename membership' \
+  "$sandbox/x-memory/$m/X-MEMORY.md"
 
-# ---- the second tier, MEMORY-SHIPPED.md ----
-run_ok 'tier-ok: a valid second tier beside its index is silent' \
-  "$sandbox/tier-ok/$m/MEMORY-SHIPPED.md"
-
-run_block 'shipped-over: an oversized second tier trips its own cap and says it is read in full on each open' \
-  "$sandbox/shipped-over/$m/MEMORY-SHIPPED.md" \
-  'memory-index-check:' "${SHIPPED}B cap" 'read in full each time it is opened'
-
-run_block 'shipped-over: its remedy is to split the file or build hub files, never to hold a pointer, and none of the first tier text' \
-  "$sandbox/shipped-over/$m/MEMORY-SHIPPED.md" \
-  'memory-index-check:' 'split the file or build hub files' '!hold the pointer' '!archive' '!ALREADY' '!25,000'
-
-run_block 'shipped-at-cap: exactly the second tier cap trips (>=)' \
-  "$sandbox/shipped-at-cap/$m/MEMORY-SHIPPED.md" \
-  'memory-index-check:' "${SHIPPED}B cap"
-
-run_ok 'shipped-under-cap: one byte under the second tier cap is silent' \
-  "$sandbox/shipped-under-cap/$m/MEMORY-SHIPPED.md"
-
-run_block 'shipped-entry: the per-entry cap applies to the second tier too' \
-  "$sandbox/shipped-entry/$m/MEMORY-SHIPPED.md" \
-  'memory-index-check:' 'line 10: 1001B'
-
-run_ok 'shipped-lines: the second tier has no line check (long, short lines, far under its byte cap)' \
-  "$sandbox/shipped-lines/$m/MEMORY-SHIPPED.md"
-
-run_ok "shipped-scope: an oversized MEMORY-SHIPPED.md outside projects/*/memory is out of scope" \
-  "$sandbox/shipped-scope/notprojects/proj1/memory/MEMORY-SHIPPED.md"
-
-run_ok 'shipped-x: an oversized X-MEMORY.md is declined by exact basename membership' \
-  "$sandbox/shipped-x/$m/X-MEMORY.md"
-
-run_ok 'shipped-old: an oversized OLD-MEMORY-SHIPPED.md is declined by exact basename membership' \
-  "$sandbox/shipped-old/$m/OLD-MEMORY-SHIPPED.md"
-
-run_ok 'shipped-noopt: an oversized second tier that does not declare the opt-in rule is declined' \
-  "$sandbox/shipped-noopt/$m/MEMORY-SHIPPED.md"
+run_ok 'shipped-declined: an over-cap MEMORY-SHIPPED.md is not a covered name and is declined (rc 0, silent)' \
+  "$sandbox/shipped-declined/$m/MEMORY-SHIPPED.md"
 
 # ---- argv-refusal: invoked with an argv arg, stdin at EOF ----
 argv_rc=0

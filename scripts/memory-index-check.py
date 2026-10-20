@@ -25,11 +25,10 @@ is gone and this number owes a re-measure — that sentence is advisory; nothing
 
 Scope is a tail-anchored path match, not a basename test: this is a global always-on hook, and a bare
 basename match would scold unrelated repos whose MEMORY.md never adopted this convention. It
-therefore does NOT cover a memory index kept anywhere else; none exists today. Two file NAMES are
-covered, each only at `projects/*/memory/<name>`: `MEMORY.md` (the always-loaded index) and
-`MEMORY-SHIPPED.md` (the on-demand second tier a project may keep beside it). The cheap guard is a
-suffix test, so the RESOLVED basename must then be an exact key of `CAPS`: `X-MEMORY.md` and
-`OLD-MEMORY-SHIPPED.md` pass the suffix test and are declined with exit 0 and no output.
+therefore does NOT cover a memory index kept anywhere else; none exists today. ONE file name is
+covered, `MEMORY.md` (the always-loaded index), only at `projects/*/memory/MEMORY.md`. The cheap
+guard is a suffix test, so the RESOLVED basename must then be an exact key of `CAPS`: `X-MEMORY.md`
+passes the suffix test and is declined with exit 0 and no output.
 
 Scope is also content-gated, not path-anchored alone: the path predicate above matches every
 project index at that tail, most of which never adopted the cap calibrated here. Requiring the
@@ -65,19 +64,11 @@ than waiting one byte past it, and a `>` convention here would make an exactly-a
 pass with no aggregate logic at all, which is not what "err low" means. Do not "fix" this to match
 the per-entry check's `>`; the mismatch between the two is intentional, not drift.
 
-Line check (`LINE_MAX`, `MEMORY.md` only): the reading harness cuts the file at 200 lines OR 25,000
+Line check (`LINE_MAX`): the reading harness cuts the file at 200 lines OR 25,000
 UTF-16 units, whichever comes first, and the byte cap above does not see lines. The check blocks at
 `content.count(b"\\n") >= LINE_MAX`, so a `wc -l` of LINE_MAX trips and one less passes, under the same
 err-low rule as the byte cap (`AGG_MAX_BYTES`). A file of short lines can reach the client's 200 lines
 far below that byte cap.
-
-Second tier (`SHIPPED_MAX_BYTES`, `MEMORY-SHIPPED.md` only): a project that keeps shipped-work
-records behind one pointer gets the per-entry cap and the opt-in gate on that file too, and its own
-aggregate cap. The tier is read in full each time it is opened rather than loaded every session, so
-its cost is per OPEN and its cap is higher; it has no line check. Holding a pointer does not apply
-to it, and its breach message says so. Until a `MEMORY-SHIPPED.md` exists beside an index none of
-this fires, and no message of the index (the line remedy included) names the second tier: its text
-is then exactly what it was before the second tier was supported.
 
 Known leniencies (false negatives, by choice): a MEMORY.md that is itself a symlink resolves away
 from the tail and is declined; CRLF files retain \\r, shifting the boundary 1 B per line; counts
@@ -105,9 +96,7 @@ OPT_IN_NEEDLE = b"detail lives in the topic file"
 # to "harmonise" it with this — it is a different check, calibrated against a different limit,
 # and belongs to a different backlog entry.
 AGG_MAX_BYTES = 24000
-# The second tier is read in full on each open, not loaded every session; see the docstring.
-SHIPPED_MAX_BYTES = 30000
-CAPS = {"MEMORY.md": AGG_MAX_BYTES, "MEMORY-SHIPPED.md": SHIPPED_MAX_BYTES}
+CAPS = {"MEMORY.md": AGG_MAX_BYTES}
 # The client cuts MEMORY.md at 200 lines or 25,000 UTF-16 units; see the docstring for why LINE_MAX sits lower.
 LINE_MAX = 190
 TOP_N_BY_SIZE = 3
@@ -168,7 +157,7 @@ def main() -> int:
         )
     abs_file = Path(file_path).resolve()
     # Exact membership of the RESOLVED name, before any CAPS lookup: the suffix test above also
-    # admits X-MEMORY.md and OLD-MEMORY-SHIPPED.md, which are not covered.
+    # admits X-MEMORY.md, which is not covered.
     if abs_file.name not in CAPS:
         return 0
     if not abs_file.match(f"{SCOPE_DIRS}/{abs_file.name}") or not abs_file.is_file():
@@ -182,14 +171,10 @@ def main() -> int:
     agg_max = CAPS[abs_file.name]
     agg_breach = total_bytes >= agg_max
     n_lines = content.count(b"\n")
-    line_breach = abs_file.name == "MEMORY.md" and n_lines >= LINE_MAX
+    line_breach = n_lines >= LINE_MAX
 
     if not offenders and not agg_breach and not line_breach:
         return 0
-
-    # A second tier named in any message only when it exists beside this file, so an index that
-    # keeps none reads exactly the text it would without the second-tier support.
-    sibling = (abs_file.parent / "MEMORY-SHIPPED.md").is_file()
 
     # Both checks can breach on the same file at once (a runaway entry inside a runaway file).
     # Decision: report BOTH sections rather than letting one suppress the other. An
@@ -219,28 +204,14 @@ def main() -> int:
             f"{LINE_MAX}-line threshold (the client cuts this file at 200 lines or 25,000 UTF-16 units).",
             file=sys.stderr,
         )
-        if sibling:
-            remedy = (
-                "  Hold a pointer, or move a shipped-change entry behind MEMORY-SHIPPED.md, "
-                "or shorten the file."
-            )
-        else:
-            remedy = "  Hold a pointer, or shorten the file."
-        print(remedy, file=sys.stderr)
+        print("  Hold a pointer, or shorten the file.", file=sys.stderr)
 
     if agg_breach:
-        if abs_file.name == "MEMORY.md":
-            headline = (
-                f"memory-index-check: {abs_file} is {total_bytes}B, at or over the "
-                f"{agg_max}B cap. The cap sits below the client's own cut (25,000 UTF-16 "
-                "units, 200 lines) so entries are not silently dropped."
-            )
-        else:
-            headline = (
-                f"memory-index-check: {abs_file} is {total_bytes}B, at or over its "
-                f"{agg_max}B cap. It is read in full each time it is opened, not loaded "
-                "every session."
-            )
+        headline = (
+            f"memory-index-check: {abs_file} is {total_bytes}B, at or over the "
+            f"{agg_max}B cap. The cap sits below the client's own cut (25,000 UTF-16 "
+            "units, 200 lines) so entries are not silently dropped."
+        )
         print(headline, file=sys.stderr)
         # Named by size, not by offender status: agg-small-entries proves a file can breach
         # the aggregate with every entry individually under MAX_ENTRY_BYTES, so the per-entry
@@ -252,23 +223,10 @@ def main() -> int:
             for lineno, size, head in by_size:
                 excerpt = head.decode("utf-8", errors="replace")[:70]
                 print(f"    line {lineno}: {size}B — {excerpt}…", file=sys.stderr)
-        if abs_file.name == "MEMORY-SHIPPED.md":
-            fix = (
-                "  This index is the on-demand tier: split the file or build hub files "
-                "(one line per family); holding a pointer does not apply here. "
-                "Do not narrow this check."
-            )
-        elif sibling:
-            fix = (
-                "  Move detail out of the largest entries into their topic files; move a "
-                "shipped-change entry behind MEMORY-SHIPPED.md, or hold the pointer. "
-                "Shortening the file is the only fix; do not narrow this check."
-            )
-        else:
-            fix = (
-                "  Move detail out of the largest entries into their topic files, or hold "
-                "the pointer. Shortening the file is the only fix; do not narrow this check."
-            )
+        fix = (
+            "  Move detail out of the largest entries into their topic files, or hold "
+            "the pointer. Shortening the file is the only fix; do not narrow this check."
+        )
         print(fix, file=sys.stderr)
 
     return 2

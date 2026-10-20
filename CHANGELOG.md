@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.133.4 — 2026-10-19
+- refactor(memory-index-check): drop the unused MEMORY-SHIPPED tier
+
 ## v0.133.3 — 2026-10-19
 - docs(claude-md): note markdownlint now searches every nvm dir
 
