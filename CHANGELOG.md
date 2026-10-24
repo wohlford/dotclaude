@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.139.0 — 2026-10-23
+- feat(kill-sets): add the kill-set tool and its tests
+
 ## v0.138.1 — 2026-10-22
 - test(suite-parallel): add the library mutation campaign and its floor
 

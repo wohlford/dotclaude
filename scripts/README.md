@@ -32,6 +32,7 @@ for how the index below stays in sync.
 | `guard-secrets.sh`               | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem)                                              |
 | `hook-machinery-test.sh`         | PostToolUse hook — run the hook tests when a test-runner hook or the machinery around it changes                           |
 | `install-git-hooks.sh`           | Install this repo's tracked ../git-hooks/pre-push into the resolved git hooks directory, copying it rather than symlinking |
+| `kill-sets.py`                   | Run a mutation campaign's mutants one at a time on a fresh copy of the tree and report each mutant's kill set              |
 | `markdownlint-check-test.sh`     | PostToolUse hook — run the markdownlint-check test suite when the lint hook changes                                        |
 | `markdownlint-check.sh`          | PostToolUse hook — run markdownlint-cli2 on edited markdown in opted-in repos                                              |
 | `md-links-check-test.sh`         | PostToolUse hook — run the md-links-check test suite when the checker changes                                              |
@@ -84,3 +85,13 @@ unmutated baseline, without which an already-red suite scores every mutation as 
 campaign prints a flawless sweep. `tests/mutate_lib_mutate.py` is the runner's own campaign, run
 on demand rather than collected by pytest. `python3 lib/mutate.py --help` prints its call
 signature, derived from `run`'s own parameters rather than restated by hand.
+`kill-sets.py --campaign tests/mutate_x.py` runs a campaign's mutants one at a time on a fresh
+copy of the tree and reports each mutant's kill set (duplicates, survivors, mutants that kill
+every row). A killed `kill-sets.py` leaves its `kill-sets.*` temp directory (about twice the
+tree's size) and can leave a suite of about 300 s running in its own session, so before editing
+the tree or starting another run, find the directory with `ls -d "${TMPDIR:-/tmp}"/kill-sets.*`
+and the processes still using it with `lsof +D <that directory>` (read what it prints; it can
+exit 1 while listing them). `pgrep -fl kill-sets` is not enough on its own: it prints nothing
+for a suite whose arguments do not carry the copy path.
+`tests/mutate_audit_shellcheck_parallel.py` reports a false M7c survivor on a host with 8 or
+fewer cores, and the two campaigns whose suite is a `-c` wrapper are refused as opaque.

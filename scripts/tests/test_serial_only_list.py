@@ -75,6 +75,12 @@ SERIAL_BY_MEASUREMENT: dict[str, str] = {
     "scripts/tests/test_guard_parity.py::test_a_hang_is_incomparable_and_the_tolerance_knob_is_honest_about_it": (
         "selected by the serial-only rule: passes a literal --timeout 2 deadline on the command line"
     ),
+    "scripts/tests/test_kill_sets.py::test_t04b_baseline_gating": (
+        "selected by the serial-only rule: passes a literal `timeout` under five seconds to a call"
+    ),
+    "scripts/tests/test_kill_sets.py::test_t09_timeout_and_process_group": (
+        "selected by the serial-only rule: passes a literal `timeout` under five seconds to a call"
+    ),
     "scripts/tests/test_publish_drive.py::test_a_hang_is_INDETERMINATE_not_a_failure_verdict": (
         "selected by the serial-only rule: passes a literal --timeout 1 deadline on the command line"
     ),
