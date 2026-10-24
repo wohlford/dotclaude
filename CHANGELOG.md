@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.138.0 — 2026-10-22
+- feat(audit-test): run the parallel profile and gate its library
+
 ## v0.137.0 — 2026-10-22
 - feat(suite-parallel): add the unit protocol and wire test_audit.sh
 

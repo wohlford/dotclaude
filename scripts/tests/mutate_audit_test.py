@@ -62,6 +62,21 @@ MUTATIONS = [
         '  tail -40 "$tmpdir/suite.out" >&2 || true\n  exit 2\n',
         '  tail -40 "$tmpdir/suite.out" >&2 || true\n  exit 0\n',
     ),
+    mutate.Mutation(
+        "the selector scrub is dropped — caught by the audit polluted-environment row",
+        "suite_env=(-u AUDIT_TEST_ONLY -u AUDIT_TEST_UNIT -u AUDIT_TEST_RUNDIR)\n",
+        "suite_env=()\n",
+    ),
+    mutate.Mutation(
+        "AUDIT_TEST_JOBS is never set — caught by the audit AUDIT_TEST_JOBS rows",
+        '  suite_env+=("AUDIT_TEST_JOBS=$test_jobs")\n',
+        "  suite_env+=(-u AUDIT_TEST_JOBS)\n",
+    ),
+    mutate.Mutation(
+        "the library trigger is dropped — caught by the audit library-edit rows",
+        "  */scripts/lib/suite_parallel.sh|*/scripts/tests/test_suite_parallel.sh) ;;\n",
+        "",
+    ),
 ]
 
 

@@ -138,6 +138,35 @@ drive_audit() {
   audit_err=$(printf '{"tool_input":{"file_path":"%s"}}' "$r/skills/audit/audit.sh" \
     | env "$@" bash "$hookdir/audit-test.sh" 2>&1 >/dev/null) || audit_rc=$?
 }
+# drive_audit_path DIR HOOKDIR FILE [NAME=VALUE ...] — drive an edit of FILE; sets audit_rc and audit_err.
+drive_audit_path() {
+  local hookdir="$2" f="$3"
+  shift 3
+  audit_rc=0
+  audit_err=$(printf '{"tool_input":{"file_path":"%s"}}' "$f" \
+    | env "$@" bash "$hookdir/audit-test.sh" 2>&1 >/dev/null) || audit_rc=$?
+}
+# audit_record_suite DIR — a stub test_audit.sh that records the AUDIT_TEST_* variables it started with.
+audit_record_suite() {
+  cat > "$1/scripts/tests/test_audit.sh" << 'STUB'
+#!/usr/bin/env bash
+printf 'jobs=%s only=%s unit=%s rundir=%s tmpdir=%s\n' "${AUDIT_TEST_JOBS-UNSET}" "${AUDIT_TEST_ONLY-UNSET}" "${AUDIT_TEST_UNIT-UNSET}" "${AUDIT_TEST_RUNDIR-UNSET}" "${TMPDIR-UNSET}" > "$(dirname "$0")/env.seen"
+exit 0
+STUB
+}
+# audit_jobs_row CORES WANT ID — a getconf shim answers CORES; the hook must hand the suite AUDIT_TEST_JOBS=WANT.
+audit_jobs_row() {
+  local r="$tmp/audit_jobs_$3" seen
+  audit_fixture "$r"
+  audit_record_suite "$r"
+  mkdir -p "$r/shim"
+  printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$1" > "$r/shim/getconf"
+  chmod +x "$r/shim/getconf"
+  drive_audit "$r" "$hooks" PATH="$r/shim:$PATH"
+  seen=$(cat "$r/scripts/tests/env.seen" 2>/dev/null)
+  seen=${seen#jobs=}
+  check_eq "${seen%% *}" "$2" "audit: getconf answering [$1] -> AUDIT_TEST_JOBS=$2"
+}
 
 # ---------- hook-machinery-test.sh: classification, selection and the budget ----------
 hm='hook-machinery-test.sh'
@@ -203,6 +232,7 @@ mutate-edit-guard|mutate-edit-guard-test.sh|scripts/mutate-edit-guard.py|scripts
 mutation-anchors-check|mutation-anchors-check-test.sh|scripts/mutation-anchors-check.py|scripts/tests/test_mutation_anchors_check.py
 recast|recast-test.sh|skills/recast/recast-recon-history.sh|skills/recast/tests/test_recast_recon_history.py
 hook-machinery|hook-machinery-test.sh|scripts/style-check-test.sh|scripts/tests/test_hook_suite_guard.sh scripts/tests/test_hook_parity.py scripts/tests/test_hook_argv_refusal.py scripts/tests/test_hook_budget.py
+audit-lib|audit-test.sh|scripts/lib/suite_parallel.sh|scripts/tests/test_suite_parallel.sh
 "
 
 if [ -n "${HOOK_TESTS_ONLY:-}" ]; then
@@ -688,6 +718,98 @@ printf '#!/bin/sh\nexit 1\n' > "$r/shim/python3"
 chmod +x "$r/shim/python3"
 drive_audit "$r" "$hooks" PATH="$r/shim:$PATH"
 check_eq "$audit_rc" 0 'audit: NON-owner + python3 cannot start a session -> exit 0 (inert)'
+
+# The parallel profile: the hook asks for it explicitly and scrubs the selectors, so an exported
+# leftover can never make a firing run one unit and pass.
+r="$tmp/audit_env"
+audit_fixture "$r"
+audit_record_suite "$r"
+drive_audit "$r" "$hooks" AUDIT_TEST_ONLY=rML AUDIT_TEST_UNIT=rPT AUDIT_TEST_RUNDIR=/nonexistent AUDIT_TEST_JOBS=junk
+check_eq "$audit_rc" 0 'audit: a passing suite under a polluted AUDIT_TEST_* environment -> exit 0'
+audit_seen=$(cat "$r/scripts/tests/env.seen" 2>/dev/null)
+check_has "$audit_seen" 'only=UNSET unit=UNSET rundir=UNSET' 'audit: the hook scrubs AUDIT_TEST_ONLY, AUDIT_TEST_UNIT and AUDIT_TEST_RUNDIR'
+audit_jobs=${audit_seen#jobs=}
+audit_jobs=${audit_jobs%% *}
+case "$audit_jobs" in
+  [2-8]) pass_line "audit: the hook sets AUDIT_TEST_JOBS itself, an integer from 2 to 8 ($audit_jobs)" ;;
+  *) fail_line "audit: AUDIT_TEST_JOBS was [$audit_jobs], not an integer from 2 to 8" ;;
+esac
+case "$audit_seen" in
+  *tmpdir=*/audit-test.*) pass_line 'audit: the suite runs with TMPDIR inside the hook own temporary directory' ;;
+  *) fail_line "audit: TMPDIR was not the hook's own temporary directory ($audit_seen)" ;;
+esac
+audit_jobs_row 3 3 three
+audit_jobs_row 1 2 one
+audit_jobs_row 64 8 sixtyfour
+audit_jobs_row '' 4 empty
+audit_jobs_row 0 4 zero
+audit_jobs_row 08 4 leadingzero
+audit_jobs_row x 4 junk
+audit_jobs_row 99999 4 fivedigits
+
+# The suite-driver library gates its own edits: an edit to it, or to its suite, runs ONLY that suite.
+r="$tmp/audit_lib_edit"
+audit_fixture "$r"
+mkdir -p "$r/scripts/lib"
+printf 'x\n' > "$r/scripts/lib/suite_parallel.sh"
+audit_record_suite "$r"
+cat > "$r/scripts/tests/test_suite_parallel.sh" << 'STUB'
+#!/usr/bin/env bash
+printf 'jobs=%s only=%s\n' "${AUDIT_TEST_JOBS-UNSET}" "${AUDIT_TEST_ONLY-UNSET}" > "$(dirname "$0")/lib.seen"
+exit 0
+STUB
+drive_audit_path "$r" "$hooks" "$r/scripts/lib/suite_parallel.sh" AUDIT_TEST_JOBS=7 AUDIT_TEST_ONLY=rML
+check_eq "$audit_rc" 0 'audit: a library edit with a passing library suite -> exit 0'
+check_eq "$(cat "$r/scripts/tests/lib.seen" 2>/dev/null)" 'jobs=UNSET only=UNSET' 'audit: a library edit runs test_suite_parallel.sh with the AUDIT_TEST_* variables scrubbed'
+check_eq "$(test -e "$r/scripts/tests/env.seen" && echo ran || echo not-run)" 'not-run' 'audit: a library edit does not run the audit engine suite'
+rm -f "$r/scripts/tests/lib.seen"
+drive_audit_path "$r" "$hooks" "$r/scripts/tests/test_suite_parallel.sh"
+check_eq "$(test -e "$r/scripts/tests/lib.seen" && echo ran || echo not-run)" 'ran' 'audit: an edit to the library suite itself runs it'
+printf '#!/usr/bin/env bash\necho lib-suite-said-no\nexit 1\n' > "$r/scripts/tests/test_suite_parallel.sh"
+drive_audit_path "$r" "$hooks" "$r/scripts/lib/suite_parallel.sh"
+check_eq "$audit_rc" 2 'audit: a failing library suite -> exit 2'
+check_has "$audit_err" 'suite-driver library test suite FAILED' 'audit: the failure names the library suite'
+check_has "$audit_err" 'lib-suite-said-no' 'audit: the failing library suite output is relayed'
+
+# The library suite's MISSING SUITE alarm: an owner repo that lost test_suite_parallel.sh alarms, and a repo
+# that does not own the hook stays inert. The audit suite is present in the owner row, so a hook that
+# mistook the library edit for an engine edit would find its suite and run it (exit 0).
+r="$tmp/audit_lib_missing_owner"
+audit_fixture "$r"
+mkdir -p "$r/scripts/lib"
+printf 'x\n' > "$r/scripts/lib/suite_parallel.sh"
+audit_record_suite "$r"
+drive_audit_path "$r" "$hooks" "$r/scripts/lib/suite_parallel.sh"
+check_eq "$audit_rc/$(case "$audit_err" in *'MISSING SUITE: scripts/tests/test_suite_parallel.sh'*) echo named ;; *) echo unnamed ;; esac)" '2/named' 'audit: an owner repo with the library suite absent -> exit 2 naming MISSING SUITE: scripts/tests/test_suite_parallel.sh'
+r="$tmp/audit_lib_missing_nonowner"
+mkrepo "$r"
+mkdir -p "$r/scripts/lib" "$r/scripts/tests"
+printf 'x\n' > "$r/scripts/lib/suite_parallel.sh"
+drive_audit_path "$r" "$hooks" "$r/scripts/lib/suite_parallel.sh"
+check_eq "$audit_rc" 0 'audit: a repo that does not own the hook, library suite absent -> exit 0 (inert)'
+
+# An overrun of the parallel profile names the units still running, so GATE DID NOT COMPLETE can say
+# where the time went. The fixture suite is a one-unit driver on the REAL library; a getconf shim fixes
+# the width at 4 so a one-core host still takes the parallel path.
+r="$tmp/audit_overrun_driver"
+audit_fixture "$r"
+mkdir -p "$r/shim"
+printf '#!/bin/sh\necho 4\n' > "$r/shim/getconf"
+chmod +x "$r/shim/getconf"
+cat > "$r/scripts/tests/test_audit.sh" << STUB
+#!/usr/bin/env bash
+set -uo pipefail
+. "$hooks/lib/suite_parallel.sh"
+pass=0
+fail=0
+sp_init "\${BASH_SOURCE[0]}" "slowunit"
+if unit_run slowunit 5; then sleep 30; fi
+unit_finish
+STUB
+drive_audit "$r" "$hooks" AUDIT_TEST_BUDGET=3 PATH="$r/shim:$PATH"
+check_eq "$audit_rc" 2 'audit: an overrun of the parallel profile -> exit 2'
+check_has "$audit_err" 'GATE DID NOT COMPLETE' 'audit: the parallel overrun is reported as an incomplete gate'
+check_has "$audit_err" 'RUNNING slowunit' 'audit: the parallel overrun names the unit that was still running'
 fi
 
 if selected publication-push-guard-test.sh; then
