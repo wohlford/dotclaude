@@ -47,6 +47,7 @@ FLOOR = (
     "mutate_run_long.py",
     "mutate_settings_hooks_check.py",
     "mutate_settings_hooks_lib.py",
+    "mutate_suite_parallel.py",
 )
 
 CAMPAIGN_HEAD = '''\
