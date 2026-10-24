@@ -473,6 +473,37 @@ test -f "$(git rev-parse --show-toplevel)/.publication.toml"
    (`committed − runtime`) for that reason, and it reports runtime-only extras without failing on
    them, since this machine legitimately carries hooks the repo does not track.
 
+   **Then list the memory records this promote made stale.** `propagate-postcheck.sh` verifies the
+   repo and cannot see the project's memory store, where a design record written "LANDED, NOT
+   promoted" before this promote is false the moment it lands (measured four times: the author wrote
+   the claim and a promote falsified it minutes later). Run it only after the postcheck printed
+   `RESULT: PASS`. The block defines everything it uses, because shell state does not survive
+   between Bash calls; `M` is this session's memory directory, the one `/debrief` calls `M`.
+   `rev-parse --verify -q` prints nothing for a ref that is absent, and the checker refuses a range
+   that is not two commit ids, so a missing `ORIG_HEAD` can never resolve in some other repository:
+
+   ```bash
+   live="$(cd -P ~/.claude/skills && git rev-parse --show-toplevel)"
+   M="<the session memory directory>"
+   "$live/scripts/memory-status-check.py" --only promoted --memory-dir "$M" --dev "$(git rev-parse --show-toplevel)" --production "$live" --range "$(git -C "$live" rev-parse --verify -q ORIG_HEAD)..$(git -C "$live" rev-parse --verify -q HEAD)"
+   ```
+
+   Read its last line as an allowlist. Only `RESULT: PASS` is clean; `FAIL`
+   names each record this promote falsified as `STALE <file>:<line>`, with the sentence and a
+   suggested correction; `ERROR`, `INCOMPLETE`, `NOT-APPLICABLE` and an absent line mean the check
+   did not run (here `NOT-APPLICABLE` means the dev repo was not the one resolved: the command
+   names it with `--dev`, so run it from inside the dev working copy), and the report must say so
+   rather than call the memory step clean. If the promote was made from a branch other than `dev`,
+   production is not an ancestor of `dev` and the check reports `ERROR production-unrelated`: a
+   correct verdict under a misleading name. A promote that moved nothing (`ORIG_HEAD` equals
+   `HEAD`) is a legal no-op: the range is empty, nothing is listed and the run prints
+   `RESULT: PASS`. A `FAIL` does not reopen the
+   promote, which has already happened and was verified above, but it is not a note for later: fix
+   each listed row with the Edit tool (state the new stage or, if the sentence is true history, date
+   it with `as of <date>`; never delete it) and re-run the same command until it prints
+   `RESULT: PASS` before you report the promote done. If `$live/scripts/memory-status-check.py` does
+   not exist, report `memory status check not available (production predates it)` and go on.
+
 6. Remind the user to **restart Claude** so the promoted skills/agents/config reload. (Adopted
    repo, `--push` arm: nothing local was promoted by steps 4–5 — this reminder is moot until a
    later plain `/propagate` actually fast-forwards production; **the publish path (adopted
@@ -857,6 +888,25 @@ session, which is why the tooling below is in the repo.
    `remote-refs` check of `scripts/publish-postflight.sh`. A ref outside it is a true defect unless
    you can show it is legitimate, and only then does the operator decide whether to widen the
    allowlist — **never widen it to make a run green without reading what it named.**
+
+9. **List the memory records this publish made stale.** A publish falsifies a whole batch of
+   "NOT published" claims at once (measured: nine hand-corrections after one publish) and nothing
+   else reads the memory store. Run it after step 8 printed `RESULT: PASS rc=0`, from the repo root,
+   with `M` the session's memory directory:
+
+   ```bash
+   M="<the session memory directory>"
+   ./scripts/memory-status-check.py --only published --memory-dir "$M" --dev "$(git rev-parse --show-toplevel)"
+   ```
+
+   It is not ranged on purpose: the watermark ref has no reflog, so the pre-publish value cannot be
+   recomputed in a later Bash call, and at publish time the older leftovers are the set worth
+   cleaning too. Read the last line as in the memory-store paragraph of Process step 5: only `PASS`
+   is clean; `ERROR`, `INCOMPLETE`, `NOT-APPLICABLE` and an absent line mean the check did not run,
+   and the report must say so rather than call the memory step clean; a `FAIL` lists
+   `STALE <file>:<line>` rows to fix with the Edit tool,
+   and the same command is re-run until `RESULT: PASS` before the publish is reported done. It
+   never reopens steps 6 to 8.
 
 **Shared-engine parameterization.** This same procedure is written to be reused, not forked, by the
 one-time orphan cutover. The cutover substitutes two mechanical axes — the **application base**

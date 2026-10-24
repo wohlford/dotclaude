@@ -270,6 +270,42 @@ delegate's closing pause** documents. Step 5 dispatches `/feature --plan-only` a
    *tracked repo file*, apply step 1's sensitivity carve-out. Whether or not anything was saved,
    apply the index check in **Editing MEMORY.md** before leaving this step and quote its result.
 
+   **Then run the stale-status check over the whole store, after every memory write above**, so it
+   grades this run's own lines (the 2026-10-14 debrief wrote a "NOT promoted" line itself and left
+   it false). It runs only where the index check applies (**Editing MEMORY.md**, item 2): the block
+   repeats that test, so a project whose index never opted in is skipped with a one-line report
+   instead of failing every debrief. `since` is the start of the PREVIOUS debrief run. Read it from
+   the ledger directory, not from `ledger.py status`: `status` only sees this session's runs, and
+   nearly every debrief is a new session. The `since=` line takes the newest run file other than
+   this run's own; when there is none, or when `$M/debrief-runs` does not exist yet (`ls` then prints one
+   harmless error line), `since` is empty and the check simply omits the figure
+   (report `stale-before-since: not computed`):
+
+   ```bash
+   M="<the session memory directory>"
+   run_file="<the path ledger.py start printed>"
+   since=$(ls "$M/debrief-runs" | grep -v -F "$(basename "$run_file")" | sed -n 's/^run-.*-\([0-9]\{8\}T[0-9]\{6\}Z\)\(-[0-9]*\)\{0,1\}\.json$/\1/p' | sort | tail -1)
+   if [ -f "$M/MEMORY.md" ] && grep -qi 'detail lives in the topic file' "$M/MEMORY.md"; then
+     ~/.claude/scripts/memory-status-check.py --memory-dir "$M" --since "$since"
+   else
+     echo 'stale-status check not applicable (no index, or not opted in)'
+   fi
+   ```
+
+   Quote its `RESULT:` line and the `stale-before-since=` figure in the step-3 report (or the
+   not-applicable line, exactly `stale-status check not applicable (no index, or not opted
+   in)`). **Step 3 is reportable done only with `RESULT: PASS` (or `NOT-APPLICABLE`)
+   quoted, or with every `STALE` row dispositioned by `file:line` in that report as corrected or
+   anchored as history**; a `FAIL` is not a to-do to defer. A non-zero `stale-before-since` means a
+   promote's own check was skipped or its output ignored: record the count, and when the previous
+   debrief's report also carried a non-zero one, say so in the hand-off. If
+   `~/.claude/scripts/memory-status-check.py` does not exist, report
+   `status check not available (production predates it)`.
+
+   **Write topic-file status lines that state only monotone facts** (`Landed on dev <sha>`), never a
+   negative such as "NOT promoted" or "unpublished": ancestry only advances, so only a negative
+   claim can go stale, and the check above is how a reader learns the later stage.
+
 4. **Automation recommendations.** Invoke
    `claude-code-setup:claude-automation-recommender`. The recommender groups its output by
    category and assigns no priority tiers — assign each recommendation a tier yourself and
