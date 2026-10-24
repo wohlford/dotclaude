@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.135.0 — 2026-10-21
+- feat(scripts): add memory-status-check to flag stale status claims
+
 ## v0.134.1 — 2026-10-19
 - docs(debrief): document backlog.py unpromote
 
