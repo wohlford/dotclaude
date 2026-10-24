@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.139.2 — 2026-10-24
+- docs(claude-md): point to kill-sets.py in the non-skills list
+
 ## v0.139.1 — 2026-10-23
 - test(kill-sets): add the tool's mutation campaign and its floor
 
