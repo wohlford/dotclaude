@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.137.0 — 2026-10-22
+- feat(suite-parallel): add the unit protocol and wire test_audit.sh
+
 ## v0.136.0 — 2026-10-21
 - feat(skills): run memory-status-check after promote, publish, debrief
 

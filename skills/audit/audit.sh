@@ -2029,7 +2029,13 @@ check_tests() {
   while IFS= read -r t; do
     [[ -z "$t" ]] && continue
     ran=true
-    out="$("$scope/$t" 2>&1)"; rc=$?
+    # The gate decides its own profile: the four profile variables (AUDIT_TEST_JOBS, AUDIT_TEST_ONLY,
+    # AUDIT_TEST_UNIT, AUDIT_TEST_RUNDIR) are removed from the environment of every shell suite, so an
+    # exported AUDIT_TEST_JOBS (the parallel profile) or AUDIT_TEST_ONLY (one section) cannot turn this
+    # run, or the adopted finish's tip suite, into something that is not the serial gate. AUDIT_TEST_BUDGET
+    # is an operator setting for the per-edit hook: it is NOT scrubbed, and no suite may fail on it.
+    # Unset inside the substitution, so it needs no `env` on PATH and changes nothing outside it.
+    out="$(unset AUDIT_TEST_JOBS AUDIT_TEST_ONLY AUDIT_TEST_UNIT AUDIT_TEST_RUNDIR; "$scope/$t" 2>&1)"; rc=$?
     if [[ "$rc" -ne 0 ]]; then
       # Per-suite, not per-run: the directory existing does not mean THIS suite's write landed,
       # and claiming preservation that did not happen is worse than admitting it did not.

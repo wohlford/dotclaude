@@ -10,6 +10,24 @@ set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 engine="$here/../../skills/audit/audit.sh"
+
+# ---- Unit protocol and the opt-in parallel profile --------------------------------------------
+# The suite is partitioned into UNITS, each wrapped in `if unit_run <name> <weight>; then ... fi`.
+# With no AUDIT_TEST_* variable set it runs every unit in this process, in file order: that serial
+# run is the pre-publish gate and is unchanged. AUDIT_TEST_JOBS=<n> (n >= 2) makes this file a
+# DRIVER that runs each unit as a child process and aggregates; only the per-edit hook asks for
+# it. Child mode needs AUDIT_TEST_UNIT and AUDIT_TEST_RUNDIR (a directory that exists), never a
+# name alone. scripts/lib/suite_parallel.sh holds the protocol and validates the four profile variables
+# before any row runs. The floor names the units whose loss must alarm.
+sp_lib="$here/../lib/suite_parallel.sh"
+if [[ ! -r "$sp_lib" ]]; then
+  printf 'test_audit.sh: cannot read its unit-protocol library %s\n' "$sp_lib" >&2
+  exit 2
+fi
+# shellcheck source=../lib/suite_parallel.sh
+. "$sp_lib"
+sp_init "${BASH_SOURCE[0]}" "rML rPT cases1-14 case15 rAM rN rO rMA rPP rQ rTGC rSC"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -151,6 +169,7 @@ mk_clean_repo() { # dir -> a fully clean, multi-filetype fixture, all committed
   commit_all "$1" seed
 }
 
+if unit_run rML 4; then
 # rML-BEGIN
 # ============================================================================
 # rML. check_markdownlint finds markdownlint-cli2 in ANY nvm node version directory
@@ -216,8 +235,10 @@ check_eq "$(cat "$rml/log" 2>/dev/null)" pathstub \
 got="$(bash -c 'source "$1"; printf "v9.1.0\nv26.3.0\nv10.2.1\n" | sort_versions_newest_first | tr "\n" " "' _ "$engine" 2>/dev/null)"
 check_eq "$got" 'v26.3.0 v10.2.1 v9.1.0 ' 'rML7: sort_versions_newest_first orders numerically, newest first'
 # rML-END
+fi # unit-end
 if [[ "${AUDIT_TEST_ONLY:-}" == rML ]]; then printf '\n%d passed, %d failed\n' "$pass" "$fail"; [[ "$fail" -eq 0 ]]; exit; fi
 
+if unit_run rPT 146; then
 # rPT-BEGIN
 # ============================================================================
 # rPT. The opt-in parallel pytest mode of check_tests (AUDIT_PYTEST_JOBS)
@@ -783,11 +804,13 @@ rpt_assert 'PT14: no shim process survived the group kill' test "$rpt14_t" -lt 5
 
 printf 'info  the rPT section took %d s\n' "$((SECONDS - rpt_t0))"
 # rPT-END
+fi # unit-end
 if [[ "${AUDIT_TEST_ONLY:-}" == rPT ]]; then
   printf '\n%d passed, %d failed\n' "$pass" "$fail"
   [[ "$fail" -eq 0 ]]
   exit
 fi
+if unit_run cases1-14 73; then
 # ============================================================================
 # 1. Clean repo -> exit 0, PASS format-trailing-ws + PASS exec-bit, no FAIL lines
 # ============================================================================
@@ -868,7 +891,7 @@ if command -v shellcheck >/dev/null 2>&1; then
   run_engine "$r6"
   assert_has 'FAIL shellcheck' 'r6: SC2034 unused local var -> FAIL shellcheck'
 else
-  printf 'skip - shellcheck not installed in this test environment\n'
+  skip_line 'skip - shellcheck not installed in this test environment'
 fi
 
 # ============================================================================
@@ -882,7 +905,7 @@ if command -v ruff >/dev/null 2>&1; then
   run_engine "$r7"
   assert_has 'FAIL ruff' 'r7: unused import (F401) -> FAIL ruff'
 else
-  printf 'skip - ruff not installed in this test environment\n'
+  skip_line 'skip - ruff not installed in this test environment'
 fi
 
 # ============================================================================
@@ -924,7 +947,7 @@ if command -v ruff >/dev/null 2>&1; then
   assert_has 'ruff format --check fmt_fail.py:' \
     'r7b (R5): the FAIL block attributes the failure to the ruff format sub-tool by name'
 else
-  printf 'skip - ruff not installed in this test environment\n'
+  skip_line 'skip - ruff not installed in this test environment'
 fi
 
 # ============================================================================
@@ -952,7 +975,7 @@ if command -v ruff >/dev/null 2>&1; then
   assert_has 'ruff check zchk_fail.py:' \
     'r7c (R5): the FAIL block attributes the failure to the ruff check sub-tool by name'
 else
-  printf 'skip - ruff not installed in this test environment\n'
+  skip_line 'skip - ruff not installed in this test environment'
 fi
 
 # ============================================================================
@@ -1007,7 +1030,7 @@ if command -v ruff >/dev/null 2>&1; then
     i=$((i + 1))
   done
 else
-  printf 'skip - ruff not installed in this test environment\n'
+  skip_line 'skip - ruff not installed in this test environment'
 fi
 
 # ============================================================================
@@ -1043,7 +1066,7 @@ if command -v ruff >/dev/null 2>&1; then
   assert_not_has 'more line(s)' \
     'r7f: a 5-line block against a 12-line bound is NOT truncated'
 else
-  printf 'skip - ruff not installed in this test environment\n'
+  skip_line 'skip - ruff not installed in this test environment'
 fi
 
 # ============================================================================
@@ -1089,7 +1112,7 @@ if command -v ruff >/dev/null 2>&1; then
   check_eq "$r7h_claimed" "$r7h_degraded" \
     'r7h: the notice COUNTS what it claims — N equals the degraded blocks actually emitted'
 else
-  printf 'skip - ruff not installed in this test environment\n'
+  skip_line 'skip - ruff not installed in this test environment'
 fi
 
 # ============================================================================
@@ -1165,7 +1188,7 @@ if command -v ruff >/dev/null 2>&1; then
   run_engine "$r7e4"
   assert_has 'FAIL ruff' '7e4: rc1!=0 rc2!=0 (both failing) -> FAIL ruff'
 else
-  printf 'skip - ruff not installed in this test environment\n'
+  skip_line 'skip - ruff not installed in this test environment'
 fi
 
 # ============================================================================
@@ -1200,7 +1223,7 @@ if command -v jq >/dev/null 2>&1; then
   run_engine "$r10a"
   assert_has 'FAIL json' 'r10a: malformed JSON -> FAIL json'
 else
-  printf 'skip - jq not installed in this test environment\n'
+  skip_line 'skip - jq not installed in this test environment'
 fi
 
 if python3 -c 'import tomllib' >/dev/null 2>&1; then
@@ -1211,7 +1234,7 @@ if python3 -c 'import tomllib' >/dev/null 2>&1; then
   run_engine "$r10b"
   assert_has 'FAIL toml' 'r10b: malformed TOML -> FAIL toml'
 else
-  printf 'skip - python3 tomllib not available in this test environment\n'
+  skip_line 'skip - python3 tomllib not available in this test environment'
 fi
 
 # ============================================================================
@@ -1237,7 +1260,7 @@ assert_rc 0 'r12: restricted PATH, no violations -> exit 0'
 #      restricted PATH with an empty HOME.
 # ============================================================================
 if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
-  printf 'skip - python3 >= 3.10 needed to build the r12b fixture with sync_docs.py\n'
+  skip_line 'skip - python3 >= 3.10 needed to build the r12b fixture with sync_docs.py'
 else
   r12b="$tmp/r12b_sync_py_floor"
   mkrepo "$r12b"
@@ -1336,6 +1359,8 @@ assert_rc 2 '14c: --scope on a non-repo dir -> exit 2'
 run_raw --bogus-flag
 assert_rc 2 '14d: unknown flag -> exit 2'
 
+fi # unit-end
+if unit_run case15 168; then
 # ============================================================================
 # 15. --tests: shell test suite runs only when requested
 # ============================================================================
@@ -1754,6 +1779,25 @@ assert_not_has 'unprovable:' \
   '15r: no unprovable verdict — nothing about this repo needed pytest'
 assert_has 'PASS tests' '15r: the shell family still runs and reports on its own'
 
+# --- 15s: the gate decides its own profile — the four profile variables never reach a shell suite ---
+# An exported AUDIT_TEST_JOBS would make a suite run its parallel profile, and AUDIT_TEST_ONLY or the two
+# child-mode variables could make it run one unit and pass. check_tests removes exactly those four
+# (AUDIT_TEST_JOBS, AUDIT_TEST_ONLY, AUDIT_TEST_UNIT, AUDIT_TEST_RUNDIR) from the environment it hands
+# each suite. AUDIT_TEST_BUDGET is an operator setting that is NOT scrubbed and must not fail this row,
+# so it is exported too. The fixture suite fails only when one of the four is set, so the row is
+# visible through the exit status alone and does not depend on captured output.
+r15s="$tmp/r15s_scrub"
+mkrepo "$r15s"
+mkdir -p "$r15s/scripts/tests"
+printf '#!/usr/bin/env bash\nif env | grep -Eq "^AUDIT_TEST_(JOBS|ONLY|UNIT|RUNDIR)="; then\n  echo "a profile variable reached the suite"\n  exit 1\nfi\nexit 0\n' > "$r15s/scripts/tests/test_scrub.sh"
+chmod +x "$r15s/scripts/tests/test_scrub.sh"
+commit_all "$r15s" x
+OUT="$(env AUDIT_TEST_JOBS=4 AUDIT_TEST_ONLY=rML AUDIT_TEST_UNIT=rML AUDIT_TEST_RUNDIR="$r15s" AUDIT_TEST_BUDGET=20 "$engine" --scope "$r15s" --tests 2>&1)"
+RC=$?
+assert_has 'PASS tests' '15s: the four exported profile variables never reach a shell suite run by --tests, and AUDIT_TEST_BUDGET does not fail it'
+
+fi # unit-end
+if unit_run rAM 25; then
 # ============================================================================
 # 16. BSD-safe newest-version picker (kept as a tested helper; the markdownlint fallback walks sort_versions_newest_first)
 # ============================================================================
@@ -1852,7 +1896,7 @@ if command -v jq >/dev/null 2>&1; then
   run_engine "$rF"
   assert_has 'FAIL json' 'rF: .auditignore excludes the dir but json check still FAILs'
 else
-  printf 'skip - jq not installed in this test environment\n'
+  skip_line 'skip - jq not installed in this test environment'
 fi
 
 # ============================================================================
@@ -2051,6 +2095,8 @@ case "$rM8_last" in
     printf '  --- RESULT line was ---\n%s\n  -----------------------\n' "$rM8_last" ;;
 esac
 
+fi # unit-end
+if unit_run rN 78; then
 # ============================================================================
 # rN. hermetic — a --tests run must leave the working tree exactly as it found it
 #
@@ -2200,6 +2246,8 @@ case "$rN8_out" in
     printf '  --- output ---\n%s\n  --------------\n' "$rN8_out" ;;
 esac
 
+fi # unit-end
+if unit_run rO 58; then
 # ============================================================================
 # rO. hermetic-outside — what a suite run leaves BEYOND the scope
 #
@@ -2548,6 +2596,8 @@ echo "rc=$?"' _ "$engine" "$rO24_root" 2>&1)"
 OUT="$rO24_out"
 assert_has 'rc=1' 'rO24: a failed awk filter fails the walk closed, not open'
 
+fi # unit-end
+if unit_run rMA 3; then
 # ============================================================================
 # rMA. The mutation-anchors gate's POPULATION
 # ============================================================================
@@ -2585,6 +2635,8 @@ run_engine "$rMA2"
 assert_has 'SKIP mutation-anchors' 'rMA2: an IGNORED campaign is a declared exclusion -> SKIP'
 assert_not_has 'FAIL mutation-anchors' 'rMA2: an ignored campaign does not false-block'
 
+fi # unit-end
+if unit_run rPP 15; then
 # ============================================================================
 # rPP. check_pre_push_installed — a HISTORICAL CHECKOUT is an artifact, not a defect
 # ============================================================================
@@ -2754,6 +2806,8 @@ assert_has 'FAIL pre-push-installed' \
 assert_not_has 'artifact of the checked-out commit' \
   'rPP6: two unrelated empty digests must not compare equal into an artifact verdict'
 
+fi # unit-end
+if unit_run rQ 21; then
 # ============================================================================
 # rQ. print_offenders artifact preservation — Task 1 RED rows, plan
 #     plans/2026-08-30-audit-offender-cap.md. `print_offenders` (audit.sh:134) caps every
@@ -2857,7 +2911,7 @@ fi
 #     after the fix. `skills/<name>/SKILL.md` + `<!-- sync:skills -->` is production's own
 #     mechanism (README.md/CLAUDE.md/skills/README.md all use it), so no synthetic handler.
 if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
-  printf 'skip - python3 >= 3.10 needed for row 1b (check_sync_docs SKIPs below it)\n'
+  skip_line 'skip - python3 >= 3.10 needed for row 1b (check_sync_docs SKIPs below it)'
 else
   r1b="$tmp/r1b_sync_drift"
   mkrepo "$r1b"
@@ -3044,6 +3098,8 @@ case "$r1d_out" in
   *) pass_line '1d: check_tests never prints a real path when its own writes all failed' ;;
 esac
 
+fi # unit-end
+if unit_run rTGC 45; then
 # ============================================================================
 # rTGC. check_timing_guard_conf
 # ============================================================================
@@ -3929,7 +3985,7 @@ if [ -n "$rTGC10_no_jq_path" ] && ! PATH="$rTGC10_no_jq_path" command -v jq >/de
   assert_not_has 'FAIL' \
     'rTGC10: no longer FAILs -- the guard itself uses no jq since the rewrite'
 else
-  printf 'skip - rTGC10: could not construct a PATH lacking jq on this machine\n'
+  skip_line 'skip - rTGC10: could not construct a PATH lacking jq on this machine'
 fi
 
 # --- rTGC13: registration UNDERIVABLE: python3 UNUSABLE -> FAIL, not SKIP ------------------
@@ -3984,7 +4040,7 @@ if [ -n "$rTGC15_no_jq_path" ] && ! PATH="$rTGC15_no_jq_path" command -v jq >/de
   assert_has 'python3' \
     'rTGC15: the FAIL reason names python3, not jq'
 else
-  printf 'skip - rTGC15: could not construct a PATH lacking jq on this machine\n'
+  skip_line 'skip - rTGC15: could not construct a PATH lacking jq on this machine'
 fi
 
 # --- rTGC+A: registration tolerates TRAILING ARGUMENTS on the hook command ---------------
@@ -4030,7 +4086,7 @@ if [ -n "$rTGC11_no_jq_path" ] && ! PATH="$rTGC11_no_jq_path" command -v jq >/de
   assert_not_has 'does not exist' \
     'rTGC11: does not borrow settings-absent'"'"'s vocabulary even though settings.json really is absent'
 else
-  printf 'skip - rTGC11: could not construct a PATH lacking jq on this machine\n'
+  skip_line 'skip - rTGC11: could not construct a PATH lacking jq on this machine'
 fi
 
 # --- rTGC12: registered + conf is a DANGLING SYMLINK -> FAIL, never the absent-conf SKIP ----
@@ -4317,6 +4373,8 @@ assert_not_has 'packaging fact' \
 chmod 755 "$rTGCT_home/.claude/scripts" 2>/dev/null || true
 
 
+fi # unit-end
+if unit_run rSC 51; then
 # rSC-BEGIN
 # ============================================================================
 # rSC. The bounded-parallel pool inside check_shellcheck
@@ -4556,7 +4614,7 @@ if command -v shellcheck > /dev/null 2>&1; then
     rsc_assert "rSC2: JOBS=$j -> the offender text names the absolute path" grep -qF "$rSC2/repo/bad.sh" "$rSC2/cap.$j"
   done
 else
-  printf 'skip - shellcheck not installed in this test environment\n'
+  skip_line 'skip - shellcheck not installed in this test environment'
 fi
 
 # ---- rSC3: byte identity and order against the frozen serial loop (A1) ------------------------
@@ -4748,7 +4806,7 @@ if [[ -x /usr/bin/xargs ]]; then
   rsc_inproc "$rSC7/bad" "$rSC7/cap.ser" PATH="$rSC7/bin:$PATH" "${rsc7_env[@]}" AUDIT_SHELLCHECK_JOBS=1 > /dev/null
   rsc_same 'rSC7f: BSD /usr/bin/xargs at JOBS=4 reports exactly what the serial path reports' "$rSC7/cap.bsd" "$rSC7/cap.ser"
 else
-  printf 'skip - /usr/bin/xargs not present for rSC7f\n'
+  skip_line 'skip - /usr/bin/xargs not present for rSC7f'
 fi
 
 # ---- rSC8: every shellcheck status keeps its verdict and its text on the parallel path (A3) ---
@@ -4922,7 +4980,7 @@ if [[ "$(/bin/bash -c 'printf %s "${BASH_VERSINFO[0]}"' 2> /dev/null)" == 3 ]]; 
   rsc_assert 'rSC13: bash 3.2 really overlapped workers (peak at least 2, at most 4)' \
     test "$(rsc_peak "$rSC13/h")" -ge 2 -a "$(rsc_peak "$rSC13/h")" -le 4
 else
-  printf 'skip - /bin/bash is not a 3.x bash in this test environment\n'
+  skip_line 'skip - /bin/bash is not a 3.x bash in this test environment'
 fi
 
 # ---- rSC14: an operator's BASH_ENV does not reach the pool's workers (A11) --------------------
@@ -4943,7 +5001,9 @@ rsc_same 'rSC14: the parallel detail equals the serial detail with BASH_ENV set'
 # The section's own elapsed time is the time this change adds to the suite. The accepted budget is 35-40 s.
 printf 'info  the rSC section took %d s (budget: 35-40 s)\n' "$((SECONDS - rsc_t0))"
 # rSC-END
+fi # unit-end
 
 
+unit_finish
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
