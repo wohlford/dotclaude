@@ -49,6 +49,10 @@ inflates the caught count and measures nothing, so both numbers must be zero.
   observable, and the mutant that narrows it to a name nothing carries kills the first tier's rows
   (narrowing it to `MEMORY.md` would duplicate the tail-pattern mutant's kill set, so it is not used).
 * The `shipped-declined` row is killed alone by the mutant that re-admits `MEMORY-SHIPPED.md` as a covered name.
+* The mutant that calls the threshold something else kills a strict SUBSET of what the mutant whose
+  line check is never reached kills: suppressing the breach removes every line message, so a
+  row asserting the message cannot survive it. Only the row `lines: exactly N lines — trips, and
+  reports the count without needing the threshold's name` separates them; keep it.
 """
 
 from __future__ import annotations

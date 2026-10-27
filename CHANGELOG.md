@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.139.4 — 2026-10-26
+- test(memory-index-check): add rows that separate two mutant pairs
+
 ## v0.139.3 — 2026-10-26
 - test(markdownlint-config): drop the duplicate enforced-side mutant
 

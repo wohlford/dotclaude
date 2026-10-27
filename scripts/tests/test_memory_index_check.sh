@@ -523,6 +523,16 @@ run_block 'wording: another opted-in project over cap — the same text' \
   "$sandbox/wording-over-q/projects/q/memory/MEMORY.md" \
   'memory-index-check:' 'or hold the pointer' '!archive' '!ALREADY'
 
+# One row per sentence, so each reverted sentence fails a row the other one does not. The two
+# rows above bundle both forbidden words and so fail together under either revert.
+run_block 'wording: the aggregate headline says entries are not silently dropped' \
+  "$sandbox/wording-over/$m/MEMORY.md" \
+  'memory-index-check:' 'so entries are not silently dropped'
+
+run_block 'wording: the aggregate remedy says not to narrow the check' \
+  "$sandbox/wording-over/$m/MEMORY.md" \
+  'memory-index-check:' 'do not narrow this check'
+
 # ---- the line check ----
 run_block 'both: over the byte cap AND the line threshold — both sections are reported' \
   "$sandbox/both-breach/$m/MEMORY.md" \
@@ -539,6 +549,13 @@ run_block "lines: exactly $LINE_CAP lines — trips (>=), names the threshold an
 run_block "lines: $((LINE_CAP + 25)) lines — trips, and reports its own line count" \
   "$sandbox/lines-$((LINE_CAP + 25))/$m/MEMORY.md" \
   'memory-index-check:' "has $((LINE_CAP + 25)) lines" "${LINE_CAP}-line threshold"
+
+# Deliberately does NOT name the threshold: every other line row that asserts a message names it,
+# so a mutant that only renames the word and one that suppresses the breach altogether would fail
+# the same four rows. This row fails only when the breach itself goes unreported.
+run_block "lines: exactly $LINE_CAP lines — trips, and reports the count without needing the threshold's name" \
+  "$sandbox/lines-$LINE_CAP/$m/MEMORY.md" \
+  'memory-index-check:' "has ${LINE_CAP} lines"
 
 run_ok "lines: $((LINE_CAP - 1)) lines in another opted-in project" \
   "$sandbox/lines-$((LINE_CAP - 1))-q/projects/q/memory/MEMORY.md"
