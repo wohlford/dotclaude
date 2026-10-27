@@ -203,7 +203,7 @@ def _module_constants(tree):
     """Module-level `NAME = <expr>` bindings, so an anchor held in a constant resolves.
 
     Measured shape: `mutate_markdownlint_config.py` binds its `old` to a module-level `LIVE`
-    and reuses it across three rows.
+    and reuses it across its rows.
     """
     env = {}
     for node in tree.body:

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.139.5 — 2026-10-26
+- docs(mutation-anchors-check): drop a stale row count from a docstring
+
 ## v0.139.4 — 2026-10-26
 - test(memory-index-check): add rows that separate two mutant pairs
 
