@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.139.6 — 2026-10-26
+- docs(claude-md): point kill-sets at the clone's own copy
+
 ## v0.139.5 — 2026-10-26
 - docs(mutation-anchors-check): drop a stale row count from a docstring
 

@@ -129,14 +129,17 @@ by hand, then the tool to use instead.
   property. The worst was the unmutated BASELINE, absent from 7 of 8: without it an already-red
   suite scores every mutation CAUGHT and the sweep reads flawless.
 - **Before hand-writing a script to compare a mutation campaign's kill sets, or trusting
-  `caught=N survived=0` as proof that its mutants differ:** use
-  `~/.claude/scripts/kill-sets.py --campaign <mutate_*.py>` through `run-long.sh`. It runs each
-  mutant serially on a fresh copy of the tree and ends in one `RESULT:` line, clean only at
-  `RESULT: PASS`; `identical_pairs=` above 0 names mutants that kill exactly the same rows.
-  Measured: its first real runs, about 3 minutes each, found duplicate pairs in two campaigns that
-  had read flawless, one pair in `mutate_markdownlint_config.py` and two in
-  `mutate_memory_index_check.py`. It refuses at the baseline a campaign whose suite prints one PASS
-  label twice; that refusal is the suite's defect, not the tool's.
+  `caught=N survived=0` as proof that its mutants differ:** from the root of the clone holding
+  the campaign (a full clone, since the tool refuses a git worktree), run
+  `scripts/kill-sets.py --campaign scripts/tests/<mutate_*.py>` through `run-long.sh`. That
+  `kill-sets.py` is the clone's own, not the copy under `~/.claude/scripts/`: the tool grades
+  the tree its own file lives in, and that path resolves into the production checkout. It runs
+  each mutant serially on a fresh copy of the tree and ends in one `RESULT:` line, clean only
+  at `RESULT: PASS`; `identical_pairs=` above 0 names mutants that kill exactly the same rows.
+  Measured: its first real runs, about 3 minutes each, found duplicate pairs in two campaigns
+  that had read flawless, one pair in `mutate_markdownlint_config.py` and two in
+  `mutate_memory_index_check.py`. It refuses at the baseline a campaign whose suite prints one
+  PASS label twice; that refusal is the suite's defect, not the tool's.
 - **Before re-running a check by hand to learn whether it is flaky:** use
   `~/.claude/scripts/flake-sweep.sh -n <N> -- <command>`. It reports each row's RATE over an
   unchanged tree and FAILs on any variance; its header lists what its tree stamp cannot see.
