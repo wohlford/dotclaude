@@ -10,6 +10,10 @@ off produces no error, no diff noise, and a green /audit — the exact shape tha
 ship with no blank line above it once already. Every row below is a one-token edit that a code
 review would wave through.
 
+`"blanks-around-headings": false` is the only row for "the enforced side is off". The other spelling
+of it, `{ "lines_above": -1, "lines_below": -1 }`, makes markdownlint check exactly as little, so it
+kills the same rows and was removed as a duplicate; do not add it back.
+
 The repo root is derived from __file__, which means invoking this through a symlinked
 `~/.claude/scripts/tests/` would resolve into PRODUCTION's tree and mutate that instead. Run it
 from the working copy you intend to grade.
@@ -34,11 +38,6 @@ MUTATIONS = [
         "the rule goes back to OFF — the exact state that shipped a squashed heading",
         LIVE,
         '"blanks-around-headings": false',
-    ),
-    mutate.Mutation(
-        "the enforced side is disabled while the key still LOOKS configured",
-        LIVE,
-        '"blanks-around-headings": { "lines_above": -1, "lines_below": -1 }',
     ),
     mutate.Mutation(
         "the rule is switched on WHOLESALE, re-flagging the house style it must tolerate",
