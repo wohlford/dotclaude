@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.150.1 — 2026-10-28
+- docs(claude-md): add the threshold-fixture hazard bullet
+
 ## v0.150.0 — 2026-10-28
 - feat(cycle-profile): add the cycle-profile CLI
 

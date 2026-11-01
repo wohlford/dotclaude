@@ -552,6 +552,18 @@ from `scripts/claude-md-structure.py`, which prints every group heading:
   The discriminator is what the row CLAIMS: one claiming to pin the change is condemned by staying
   green, while one asserting a property the change does not alter is green by construction — and it
   earns its keep only by licensing sibling assertions that DO move.
+- **A threshold that every fixture clears cannot show what it gates — the rows agree because they
+  all sit on the same side of it.** Measured: a `--min-cycles` option (default 5) was built and
+  tested as a FLOOR row, and the spec also required the pooled answer to read `undetermined` below
+  it. Every synthetic row, the plan's own Expected rows and the one real-data acceptance run either
+  passed `--min-cycles 1` or ran 14 cycles, so the below-floor consequence never ran: every task
+  review, a 1,050-row suite and a 49-row golden manifest all passed, while a one-cycle transcript
+  at the default printed `RESULT: INCOMPLETE rc=3 ... answer=gate`. The verdict beside it was
+  already right, which is what hid it; only the whole-branch review, running the default on a small
+  input, saw the answer field. **Put one fixture on each side of every threshold the spec names,
+  and assert the FIELD the spec says changes, not the verdict next to it.** Its own failure mode:
+  the below-threshold fixture's natural assertion is that already-INCOMPLETE verdict, so it passes
+  on the old code too — watch the row go RED with the consequence removed.
 
 #### Right verdict, then the world moved under it
 
