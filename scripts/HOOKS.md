@@ -171,8 +171,11 @@ differing type table can make guard and tool diverge; a secret created after the
 `Write` target whose parent does not exist has no physical view for project globs; percent-encodings
 (`%2e%2e`) are not decoded; and the `sed` fallback (no `jq`) skips the directory logic (a file target is still judged). An enumerator that ignores `TERM`
 or sits in uninterruptible I/O is not stopped (`wait` blocks), so the hook can overrun its registered timeout,
-which the harness treats as an allow. The other fail-open points
-are deliberate: a malformed payload, missing keys, an absent `tool_name`, an unreadable globs file, a
+which the harness treats as an allow. A lone high-surrogate JSON escape, which makes `jq` refuse the whole
+payload, is repaired (the escape becomes U+FFFD, as Node writes it into a path) and judged: defense in depth,
+not a known live shape, and it needs `perl` and a payload of at most 16 MiB (otherwise it fails open as before).
+The other fail-open points are deliberate: a malformed payload (any JSON `jq` still cannot parse, nesting beyond
+its depth limit included), missing keys, an absent `tool_name`, an unreadable globs file, a
 `glob`/`type` shape the guard cannot parse (widened, not skipped), and `rg` exit 2 with a partial
 listing. The globs are matched with `[[ == ]]`, which honours extglob syntax on its right-hand side
 whatever the `extglob` shopt, so a line using `!(`, `@(`, `+(`, `?(` or `*(` is reinterpreted (`!(x)`

@@ -57,13 +57,20 @@ set -euo pipefail
 #     definitions and ignore handling can skew in either direction. TOCTOU: a secret created after
 #     the check is not seen.
 #   - SIGPIPE is ignored (trap '' PIPE) so a broken stderr cannot turn a deny into exit 141; children
-#     (jq, rg, find, sed) inherit that disposition and see EPIPE write errors instead of dying silently.
+#     (jq, rg, find, sed, perl) inherit that disposition and see EPIPE write errors instead of dying silently.
 #   - Enumerator that ignores TERM or sits in uninterruptible I/O: the watchdog's kill is a plain
 #     TERM and `wait` blocks until the enumerator exits, so the hook can overrun its registered
 #     timeout, which the harness treats as an ALLOW. The EXIT trap also sends TERM and cannot do more.
 #   - jq absent: the sed fallback extracts a file path only: the universal and project layers still
 #     judge an absolute target, but the directory logic is skipped.
 #     It does not trim either, so trailing padding on a secret name passes there (as in the base guard).
+#   - Lone high surrogate (defense in depth; not known to be reachable from the model): when the first extraction
+#     yields nothing (jq refused the payload, or could not index it), the payload is piped through a perl rewrite
+#     (gs_sanitize) that turns each lone high-surrogate escape into the escape for U+FFFD, which is what Node writes
+#     into a path, and extraction runs once more. So a lone surrogate inside an uncapped field (content, new_string,
+#     pattern) no longer hides the target. The retry never runs when the first extraction succeeded, declines over
+#     16,777,216 bytes (measured at that size, densest shapes (lone-escape and three-backslash units): about 5 to 5.5 s
+#     on /bin/bash 3.2, about 3 s on bash 5), and is skipped when perl is absent or fails.
 #   - Padded payloads are bounded: the path-like fields (target and cwd) were capped at 65,536 bytes and
 #     glob and type at 4,096 before any processing, and over a cap the call is denied with an explicit
 #     message (deny_oversize; a second deliberate exit 2 beside UNVERIFIED).
@@ -77,6 +84,10 @@ set -euo pipefail
 #   - Fail-open on purpose: malformed payload, missing keys, absent tool_name, jq absent (directory
 #     logic skipped), an unreadable/absent globs file, glob/type shapes the guard cannot parse (widened, not skipped),
 #     and rg exit 2 with a partial or post-rerun-empty listing.
+#     Defense in depth, not a known live shape: a lone high-surrogate JSON escape, which makes jq refuse the whole
+#     payload, is repaired and judged rather than skipped (gs_sanitize). What still fails open after that: JSON jq
+#     cannot parse for any other reason (truncation, bad escapes, nesting beyond jq's depth limit), a payload over
+#     16,777,216 bytes whose first parse failed, and a run where perl is missing or fails.
 #   - Project globs are matched with [[ == ]], where extglob syntax on the right-hand side is
 #     honoured whatever the shopt, so a line using !( @( +( ?( or *( is reinterpreted (!(x) matched
 #     every path in bash 3.2 and 5, while a glob meant to match a literal name containing a+(b) does
@@ -102,6 +113,11 @@ if [ "$#" -gt 0 ] || [ -t 0 ]; then
   exit 2
 fi
 
+# The shell takes an exported SECONDS as the counter's starting value, and every deadline below is an
+# absolute reading of it (GS_WALK_CEIL included), so an inherited value is discarded here, before the
+# one step whose length depends on the payload and on the harness.
+SECONDS=0
+
 input=$(cat)
 # Extraction: ONE jq call emits the fields in a fixed order, each terminated by a NUL byte (`jq -j`, which is
 # jq 1.6-compatible), and bash reads them one at a time with `IFS= read -r -d ''`. Nothing is escaped or
@@ -114,11 +130,13 @@ tool_name=""; cwd=""; file_path=""; tool_path=""; output_mode=""; grep_glob=""; 
 TYPE_ARG=(); GLOB_ARGS=(); PGLOBS=()
 # BEGIN hook_ceiling
 # The whole hook must end well before the harness kills it at 30 s (a timeout is an allow). SECONDS counts
-# from the start of the shell (a tick can come up to a second early, never late), so this is absolute: the
+# from the reset at the top of the script (an inherited SECONDS is discarded there; a tick can come up to a
+# second early, never late), so this is absolute: the
 # walk's deadline never passes GS_WALK_CEIL seconds after script start, whatever GUARD_SECRETS_WALK_SECS says
 # and however much slow work came before the walk. The 3 s grace scan of a partial listing then ends the hook
-# at about 22 s. (A longer pre-walk than the caps allow, over 19 s, would push the grace scan later; no
-# payload within the field caps comes near that.)
+# at about 22 s. (A longer pre-walk than the caps allow, over 19 s, would push the grace scan later; the
+# lone-surrogate retry is pre-walk work, at most about 5.6 s on /bin/bash 3.2 at its 16 MiB cap, and no other
+# payload within the field caps comes near 19 s.)
 GS_WALK_CEIL=19
 # END hook_ceiling
 # BEGIN field_caps
@@ -152,7 +170,12 @@ deny_oversize() {
   printf '  (User: to allow this deliberately, remove the guard-secrets PreToolUse entry from ~/.claude/settings.json and restart.)\n' >&2 || true
   exit 2
 }
-if command -v jq >/dev/null 2>&1; then
+# BEGIN gs_sanitize
+gs_sanitize() {
+  perl -C0 -0777 -pe 'exit 3 if length($_) > 16777216; s/(?<!\\)(?:\\\\)*+\K\\u[dD][89abAB][0-9a-fA-F]{2}(?!\\u[dD][c-fC-F][0-9a-fA-F]{2})/\\ufffd/g' 2>/dev/null
+}
+# END gs_sanitize
+gs_extract() {
   # `.path` covers content-returning file tools (Grep) that key the target as `path`, not
   # `file_path`; without it a Grep of a secret file dumps its contents past this gate.
   # glob and type: any value holding a character outside printable ASCII is replaced by the empty
@@ -180,6 +203,13 @@ if command -v jq >/dev/null 2>&1; then
       else ["ok", (.tool_name | pick("grep")), (tp | nn), (.cwd | nn), (.tool_input.output_mode | pick("content")),
             (.tool_input.glob | asc), (.tool_input.type | asc), (tp | nn | trim)] end )
     | map(. + "\u0000") | add' 2>/dev/null) || true
+}
+if command -v jq >/dev/null 2>&1; then
+  gs_extract
+  if [[ -z "$status" && -n "$input" ]]; then
+    san=$(printf '%s' "$input" | gs_sanitize) || san=""
+    if [[ -n "$san" ]]; then input="$san"; unset san; gs_extract; fi
+  fi
   case "$status" in
     oversize:*) IFS=: read -r _ over_field over_len over_cap <<< "$status"; deny_oversize "$over_field" "$over_len" "$over_cap" ;;
   esac

@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.150.5 — 2026-10-31
+- fix(guard-secrets): repair a lone high surrogate and reset SECONDS
+
 ## v0.150.4 — 2026-10-30
 - test(guard-secrets): add a mutation campaign for the guard
 

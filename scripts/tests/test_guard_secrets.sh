@@ -1141,5 +1141,246 @@ for sh in $a12_shells; do
   ceil_row "$sh" "the whole hook ends under 24 s at the maximum walk bound ($sh)"
 done
 
+# ---------- A15: a lone high surrogate is repaired and judged; an inherited SECONDS is discarded ----------
+# A lone high-surrogate escape (JSON text: a backslash, u, d800) makes jq refuse the WHOLE payload, so the guard used
+# to exit 0 having read nothing; the retry in the guard rewrites exactly those escapes to U+FFFD and extracts again.
+# An exported SECONDS is taken by both shells as the counter's start, so the guard resets it before anything else.
+# Fixtures: a valid pair is NEVER spelled as escape text in this file (the tool channel that writes files decodes a
+# valid pair into the literal character), it is built from pieces; heavy payloads are built by the row at run time.
+# Row ids (D1a to D1n, G1 to G6, G6b, G9, S1 to S6) are the second word of the labels below.
+BS=$'\\'
+LONE="${BS}ud800"
+PAIR="${BS}ud83d${BS}ude00"
+FFFD="${BS}ufffd"
+# sg_pay <cwd> <tool> <tool_input-json-text> — a payload whose escapes stay escapes (jq -n would decode them).
+sg_pay() { printf '{"hook_event_name":"PreToolUse","cwd":"%s","tool_name":"%s","tool_input":%s}' "$1" "$2" "$3"; }
+# sg_case <shell: b5|b32> <want> <label> <payload> [must] — one hook_case under the named shell.
+sg_case() {
+  local sh="$1"; shift
+  hook_reset
+  if [[ "$sh" == b32 ]]; then HOOK_ENV=(PATH="$bash32dir:$PATH"); fi
+  hook_case "$1" "$2 ($sh)" "$3" "${4:-}"
+  hook_reset
+}
+# sg_pcase <want> <label> <payload> [must] — one hook_case from the project fixture (its secret-globs file), b5.
+sg_pcase() { proj_reset; hook_case "$1" "$2 (b5)" "$3" "${4:-}"; hook_reset; }
+# a15_payload <kind> — heavy payloads, built at run time (nothing large is committed). The lone escape is last.
+#   cap_u3   exactly 16,777,216 bytes: Write of $repo/.env, content = units of three backslashes + ud800
+#   capover  16,777,217 bytes: the same envelope with plain content, one byte over the cap
+a15_payload() {
+  python3 -c 'import sys
+kind, repo = sys.argv[1], sys.argv[2]
+B = "\\"; lone = B + "ud800"; cap = 16 * 1024 * 1024
+pre = "{\"tool_name\":\"Write\",\"cwd\":\"" + repo + "\",\"tool_input\":{\"file_path\":\"" + repo + "/.env\",\"content\":\""
+suf = lone + "\"}}"
+def fill(n, unit):
+    k = n // len(unit); return unit * k + "a" * (n - k * len(unit))
+if kind == "cap_u3": out = pre + fill(cap - len(pre) - len(suf), B * 3 + "ud800") + suf
+elif kind == "capover": out = pre + "a" * (cap - len(pre) - len(suf) + 1) + suf
+else: raise SystemExit("unknown kind " + kind)
+sys.stdout.write(out)' "$@"
+}
+# a15_timed <shell> <want> <bound-s> <label> <payload> — a timed hook_case (HOOK_CAP 30), HOOK_ENV extras kept.
+a15_timed() {
+  local sh="$1" want="$2" bound="$3" label="$4" pay="$5" t0 t1 envx=("${HOOK_ENV[@]+"${HOOK_ENV[@]}"}")
+  hook_reset; HOOK_CAP=30
+  if [[ "$sh" == b32 ]]; then HOOK_ENV=(PATH="$bash32dir:$PATH" ${envx[@]+"${envx[@]}"}); else HOOK_ENV=(${envx[@]+"${envx[@]}"}); fi
+  t0="$(now_ms)"
+  hc "$want" "$label ($sh)" "$pay"
+  t1="$(now_ms)"; HOOK_CAP=""
+  printf 'time  %s (%s): %s ms\n' "$label" "$sh" "$((t1 - t0))" >&2
+  hc_done "$([[ $((t1 - t0)) -lt $((bound * 1000)) ]] || printf 'wall time %s ms, not under %s s' "$((t1 - t0))" "$bound")"
+  hook_reset
+}
+
+# ---- Defect 1, hook-level rows: before the repair existed each of these wanting 2 got 0, the jq failure having become an allow ----
+sg_case b5 2 "A15 D1a a lone high in Write content: the .env target is still read" "$(sg_pay "$repo" Write "{\"file_path\":\"$repo/.env\",\"content\":\"a${LONE}b\"}")" ".env"
+sg_case b5 2 "A15 D1c a lone high in a Grep pattern: the directory holding .env is still enumerated" "$(sg_pay "$repo" Grep "{\"pattern\":\"S|${LONE}\",\"path\":\"$repo/dotonly\",\"output_mode\":\"content\"}")" "would return secret content"
+sg_case b5 2 "A15 D1d a lone high inside the NAME: a${LONE}.key is a .key file" "$(sg_pay "$repo" Read "{\"file_path\":\"$repo/a${LONE}.key\"}")" "BLOCKED"
+sg_case b5 2 "A15 D1b a lone high in Edit new_string: the .env target is still read" "$(sg_pay "$repo" Edit "{\"file_path\":\"$repo/.env\",\"old_string\":\"a\",\"new_string\":\"${LONE}\"}")" ".env"
+sg_case b5 2 "A15 D1e a lone high as a KEY: the .env target is still read" "$(sg_pay "$repo" Write "{\"file_path\":\"$repo/.env\",\"content\":\"a\",\"x${LONE}\":1}")" ".env"
+sg_case b5 2 "A15 D1f a valid pair then a lone high in content: the .env target is still read" "$(sg_pay "$repo" Write "{\"file_path\":\"$repo/.env\",\"content\":\"${PAIR}${LONE}\"}")" ".env"
+sg_case b5 2 "A15 D1g a lone high at the top of the range (lowercase udbff)" "$(sg_pay "$repo" Write "{\"file_path\":\"$repo/.env\",\"content\":\"${BS}udbff\"}")" ".env"
+sg_case b5 2 "A15 D1h a lone high with an uppercase D (uD800)" "$(sg_pay "$repo" Write "{\"file_path\":\"$repo/.env\",\"content\":\"${BS}uD800\"}")" ".env"
+sg_case b5 2 "A15 D1i the retried parse reaches the oversize check (a 65,537-byte path)" "$(python3 -c 'import sys
+B = "\\"; repo = sys.argv[1]; tail = repo + "/plain.txt"
+print("{\"cwd\":\"" + repo + "\",\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"" + "/" * (65537 - len(tail)) + tail + "\",\"z\":\"" + B + "ud800\"}}", end="")' "$repo")" "BLOCKED path field"
+sg_case b5 2 "A15 D1j a lone high in a Grep glob: the glob is blanked (widened) and the directory is still read" "$(sg_pay "$repo" Grep "{\"pattern\":\"S\",\"path\":\"$repo/dotonly\",\"output_mode\":\"content\",\"glob\":\"*x${LONE}\"}")" "would return secret content"
+# Project-glob rows: the decoded NAME is what the globs see, so these pin what the repair writes (D1k, D1l, D1m, below).
+set_globs '*ud800*\n'
+sg_pcase 2 "A15 D1k an escaped backslash before ud800 is NOT rewritten (the decoded name keeps the letters)" "$(sg_pay "$proj" Write "{\"file_path\":\"$proj/n${BS}${BS}ud800.txt\",\"content\":\"a${LONE}\"}")" "Project secret glob"
+set_globs '*\xf0\x9f\x98\x80*\n'
+sg_pcase 2 "A15 D1l a valid pair survives the repair as one character (its four bytes are in the name)" "$(sg_pay "$proj" Write "{\"file_path\":\"$proj/p${PAIR}q.txt\",\"content\":\"a${LONE}\"}")" "Project secret glob"
+set_globs '*\xef\xbf\xbd*\n'
+sg_pcase 2 "A15 D1m a lone high becomes U+FFFD (three bytes), not nothing" "$(sg_pay "$proj" Write "{\"file_path\":\"$proj/n${LONE}.txt\",\"content\":\"a\"}")" "Project secret glob"
+rm -f "$proj/.claude/secret-globs"; hook_reset
+sg_case b5 2 "A15 D1n an odd run of backslashes: the LAST escape is rewritten (name n, backslash, U+FFFD, .key)" "$(sg_pay "$repo" Read "{\"file_path\":\"$repo/n${BS}${BS}${LONE}.key\"}")" "BLOCKED"
+
+# ---- Defect 1, controls: green on the unchanged guard and after the fix ----
+sg_case b5 2 "A15 G1 a valid pair in Write content: the .env target is denied" "$(sg_pay "$repo" Write "{\"file_path\":\"$repo/.env\",\"content\":\"${PAIR}\"}")" ".env"
+sg_case b5 0 "A15 G2 a lone high in the content of a Write to an ordinary file is allowed" "$(sg_pay "$repo" Write "{\"file_path\":\"$repo/plain.txt\",\"content\":\"a${LONE}b\"}")"
+sg_case b5 2 "A15 G3 a lone LOW in Write content: the .env target is denied (jq already parses it)" "$(sg_pay "$repo" Write "{\"file_path\":\"$repo/.env\",\"content\":\"${BS}udc00\"}")" ".env"
+sg_case b5 0 "A15 G4 an escaped backslash then ud800 in an Edit of an ordinary file is allowed" "$(sg_pay "$repo" Edit "{\"file_path\":\"$repo/plain.txt\",\"old_string\":\"a\",\"new_string\":\"${BS}${BS}ud800\"}")"
+sg_case b5 0 "A15 G5 a Read of .env then a lone high names .env plus U+FFFD, which is not a secret" "$(sg_pay "$repo" Read "{\"file_path\":\"$repo/.env${LONE}\"}")"
+sg_case b5 0 "A15 G6 the literal text garbage is allowed" "garbage"
+sg_case b5 0 "A15 G6b a truncated JSON object is allowed" "{\"tool_input\":{\"file_path\":\"$repo/.env\""
+HOOK_ENV=(PATH="$nojq"); hook_case 2 "A15 G9 jq absent: the sed fallback verdict for a lone high is unchanged and needs no perl" "$(sg_pay "$repo" Write "{\"file_path\":\"$repo/.env\",\"content\":\"a${LONE}\"}")" ".env"; hook_reset
+HOOK_ENV=(PATH="$(stub_dir failperl perl 'exit 1'):$PATH")
+hook_case 0 "A15 a perl that fails leaves today's behaviour (allow), without a crash" "$(sg_pay "$repo" Write "{\"file_path\":\"$repo/.env\",\"content\":\"a${LONE}\"}")"; hook_reset
+HOOK_ENV=(PATH="$(no_rg_path noperl)")
+hook_case 0 "A15 a host without perl keeps today's behaviour (allow): the documented residual" "$(sg_pay "$repo" Write "{\"file_path\":\"$repo/.env\",\"content\":\"a${LONE}\"}")"; hook_reset
+
+# ---- Defect 1, sanitizer level: the gs_sanitize region run in a fresh bash (as walk_secs_case does) ----
+san_fn="$(sed -n '/^# BEGIN gs_sanitize$/,/^# END gs_sanitize$/p' "$script")"
+# san_run <input-file> [VAR=value ...] — sets SAN_RC; the output is in $sandbox/san.out.
+san_run() {
+  local f="$1"; shift
+  env "$@" bash -c "$san_fn"$'\n'"gs_sanitize" <"$f" >"$sandbox/san.out" 2>/dev/null; SAN_RC=$?
+}
+# san_case <label> <input> <want-output> — exact text equality, rc 0.
+san_case() {
+  local label="$1" got
+  printf '%s' "$2" >"$sandbox/san.in"; san_run "$sandbox/san.in"; got="$(<"$sandbox/san.out")"
+  if [[ "$SAN_RC" -eq 0 && "$got" == "$3" ]]; then printf 'PASS  %s\n' "$label"; pass=$((pass + 1))
+  else printf 'FAIL  %s (rc %s, got %s)\n' "$label" "$SAN_RC" "${got:0:60}"; fail=$((fail + 1)); fi
+}
+if [[ -n "$san_fn" ]]; then printf 'PASS  A15 the gs_sanitize marker region exists in the guard\n'; pass=$((pass + 1))
+else printf 'FAIL  A15 the gs_sanitize marker region exists in the guard (region not found)\n'; fail=$((fail + 1)); fi
+san_case "A15 san: a lone high becomes the escape for U+FFFD" "$LONE" "$FFFD"
+san_case "A15 san: a valid pair is unchanged" "$PAIR" "$PAIR"
+san_case "A15 san: a high followed by a valid pair: only the first is rewritten" "${LONE}${PAIR}" "${FFFD}${PAIR}"
+san_case "A15 san: a high then a high: both are lone" "${LONE}${LONE}" "${FFFD}${FFFD}"
+san_case "A15 san: low then high: only the high is rewritten" "${BS}udc00${LONE}" "${BS}udc00${FFFD}"
+san_case "A15 san: an escaped backslash then ud800 is unchanged" "${BS}${BS}ud800" "${BS}${BS}ud800"
+san_case "A15 san: three backslashes then ud800: only the final escape is rewritten" "${BS}${BS}${BS}ud800" "${BS}${BS}${BS}ufffd"
+san_case "A15 san: four backslashes then ud800 is unchanged" "${BS}${BS}${BS}${BS}ud800" "${BS}${BS}${BS}${BS}ud800"
+bs1000="$(head -c 1000 /dev/zero | tr '\0' '\134')"
+san_case "A15 san: 1,001 backslashes then ud800: the final escape is rewritten" "${bs1000}${BS}ud800" "${bs1000}${BS}ufffd"
+san_case "A15 san: 1,000 backslashes then ud800 is unchanged" "${bs1000}ud800" "${bs1000}ud800"
+san_case "A15 san: a capital U is not an escape and is unchanged" "${BS}UD800" "${BS}UD800"
+san_case "A15 san: a lone low is unchanged (jq parses it)" "${BS}udc00" "${BS}udc00"
+san_case "A15 san: mixed-case hex at the top of the range is rewritten" "${BS}uDbFf" "$FFFD"
+san_case "A15 san: text with no backslash is unchanged" "abc ud800 {}" "abc ud800 {}"
+head -c 16777216 /dev/zero | tr '\0' a >"$sandbox/san.cap"
+san_run "$sandbox/san.cap"
+if [[ "$SAN_RC" -eq 0 && "$(wc -c <"$sandbox/san.out" | tr -d ' ')" == 16777216 ]]; then printf 'PASS  A15 san: input of exactly 16,777,216 bytes is processed\n'; pass=$((pass + 1))
+else printf 'FAIL  A15 san: input of exactly 16,777,216 bytes is processed (rc %s)\n' "$SAN_RC"; fail=$((fail + 1)); fi
+head -c 16777217 /dev/zero | tr '\0' a >"$sandbox/san.cap"
+san_run "$sandbox/san.cap"
+if [[ "$SAN_RC" -eq 3 && ! -s "$sandbox/san.out" ]]; then printf 'PASS  A15 san: input of 16,777,217 bytes gives no output and exit 3\n'; pass=$((pass + 1))
+else printf 'FAIL  A15 san: input of 16,777,217 bytes gives no output and exit 3 (rc %s)\n' "$SAN_RC"; fail=$((fail + 1)); fi
+python3 -c 'import sys; sys.stdout.buffer.write("\U0001F600".encode() * 4200000)' >"$sandbox/san.cap"
+san_run "$sandbox/san.cap" PERL_UNICODE=SD
+if [[ "$SAN_RC" -eq 3 && ! -s "$sandbox/san.out" ]]; then printf 'PASS  A15 san: under PERL_UNICODE=SD the cap still counts bytes (4,200,000 four-byte characters decline)\n'; pass=$((pass + 1))
+else printf 'FAIL  A15 san: under PERL_UNICODE=SD the cap still counts bytes (rc %s)\n' "$SAN_RC"; fail=$((fail + 1)); fi
+# The cap is on the whole slurped record: a multi-line input over the cap (every line 17 bytes) is declined too.
+yes aaaaaaaaaaaaaaaa | head -c 16777300 >"$sandbox/san.cap"
+san_run "$sandbox/san.cap"
+if [[ "$SAN_RC" -eq 3 && ! -s "$sandbox/san.out" ]]; then printf 'PASS  A15 san: a multi-line input over the cap is declined as one record (exit 3)\n'; pass=$((pass + 1))
+else printf 'FAIL  A15 san: a multi-line input over the cap is declined as one record (rc %s)\n' "$SAN_RC"; fail=$((fail + 1)); fi
+rm -f "$sandbox/san.cap" "$sandbox/san.in"
+# The property, over inputs nobody listed: the output parses, equals an independent model, changes nothing else.
+a15_property() {
+  SAN_FN="$san_fn" python3 -c 'import os, re, json, random, subprocess, sys
+B = "\\"
+fn = os.environ["SAN_FN"]
+if not fn: print("FAIL gs_sanitize region not found"); sys.exit(0)
+def sanitize(text):
+    r = subprocess.run(["bash", "-c", fn + "\ngs_sanitize"], input=text.encode(), capture_output=True)
+    return r.stdout.decode()
+HEX = re.compile(r"[0-9a-fA-F]{4}")
+def model(s):
+    out = []; i = 0; lone = False
+    while i < len(s):
+        if s[i] == B and i + 1 < len(s):
+            if s[i + 1] == B: out.append(s[i:i + 2]); i += 2; continue
+            if s[i + 1] == "u" and HEX.fullmatch(s[i + 2:i + 6]):
+                h = s[i + 2:i + 6].lower()
+                if "d800" <= h <= "dbff":
+                    nx = s[i + 6:i + 12]
+                    pair = len(nx) == 6 and nx[:2] == B + "u" and HEX.fullmatch(nx[2:]) and "dc00" <= nx[2:].lower() <= "dfff"
+                    if pair: out.append(s[i:i + 6])
+                    else: out.append(B + "ufffd"); lone = True
+                    i += 6; continue
+            out.append(s[i]); i += 1; continue
+        out.append(s[i]); i += 1
+    return "".join(out), lone
+def norm(v):
+    if isinstance(v, str): return re.sub("[\ud800-\udfff]", chr(0xfffd), v)
+    if isinstance(v, list): return [norm(x) for x in v]
+    if isinstance(v, dict): return {norm(k): norm(x) for k, x in v.items()}
+    return v
+atoms = [B * 2, B * 3, B * 4, B + "ud800", B + "uD800", B + "udbff", B + "uDBFF", B + "uDbFf", B + "udc00", B + "uDFFF",
+         B + "ud83d", B + "ude00", B + "u0041", B + "n", B + chr(34), "a", "u", "d", "8", "0", B + "/", B + "ud8", B + "u", " ", "."]
+random.seed(7); docs = []
+while len(docs) < 1500:
+    s = "".join(random.choice(atoms) for _ in range(random.randint(0, 14)))
+    d = "{\"k\":\"" + s + "\",\"tool_input\":{\"file_path\":\"/x/" + s + "\"}}"
+    try: json.loads(d)
+    except Exception: continue
+    docs.append(d)
+out = sanitize("\n".join(docs)).split("\n")
+if len(out) != len(docs): print("FAIL output line count %d != %d" % (len(out), len(docs))); sys.exit(0)
+j = subprocess.run(["jq", "-c", "."], input="\n".join(out).encode(), capture_output=True)
+lines = j.stdout.decode().split("\n")[:-1]
+if j.returncode != 0 or len(lines) != len(docs): print("FAIL jq rc %d, %d lines for %d documents" % (j.returncode, len(lines), len(docs))); sys.exit(0)
+lone_n = 0
+for d, o, l in zip(docs, out, lines):
+    exp, lone = model(d); lone_n += lone
+    if o != exp: print("FAIL text differs from the model: %r" % d); sys.exit(0)
+    if len(o.encode()) != len(d.encode()): print("FAIL length changed: %r" % d); sys.exit(0)
+    if json.loads(l) != norm(json.loads(d)): print("FAIL decoded value differs: %r" % d); sys.exit(0)
+    if not lone and o != d: print("FAIL a document without a lone high changed: %r" % d); sys.exit(0)
+if sanitize("\n".join(out)).split("\n") != out: print("FAIL not idempotent"); sys.exit(0)
+if lone_n < 300 or len(docs) - lone_n < 300: print("FAIL generator floors: %d with a lone high, %d without" % (lone_n, len(docs) - lone_n)); sys.exit(0)
+for d in docs[:300]:
+    rejected = subprocess.run(["jq", "-c", "."], input=d.encode(), capture_output=True).returncode != 0
+    if rejected != model(d)[1]: print("FAIL the model disagrees with jq on %r" % d); sys.exit(0)
+print("OK %d documents, %d with a lone high" % (len(docs), lone_n))'
+}
+prop="$(a15_property)"
+if [[ "$prop" == OK* ]]; then printf 'PASS  A15 san property: output parses, equals the model, changes nothing else (%s)\n' "$prop"; pass=$((pass + 1))
+else printf 'FAIL  A15 san property (%s)\n' "$prop"; fail=$((fail + 1)); fi
+
+# ---- Defect 1, heavy rows (HOOK_CAP 30; bounds are 2.4 to 6 times the idle measurements) ----
+# One at-cap row (b32, among the densest shapes) and one over-cap row, because the whole suite runs under a PostToolUse
+# hook with a 300 s timeout (about 235 s, measured, with these rows). Left out as duplicates or too costly: a b5 at-cap
+# row, a 40 MiB valid payload row, and hook-level pretty-printed and PERL_UNICODE rows (the last two are pinned at the
+# sanitizer level above, where each kills the same mutant in a fraction of a second). Measured idle, b32: 4.9 s whole
+# script at the cap.
+hook_reset; a15_timed b32 2 15 "A15 at the cap (16 MiB, units of three backslashes + ud800): the repair finishes and denies" "$(a15_payload cap_u3 "$repo")"
+hook_reset; a15_timed b5 0 6 "A15 one byte over the cap: the repair is declined (documented residual), allowed" "$(a15_payload capover "$repo")"
+hook_reset
+
+# ---- Defect 2: an inherited SECONDS ----
+sec_pay="$(pl Grep "$repo" "$(gti "$repo/specs" content)")"
+sec_case() {
+  local sh="$1" val="$2" want="$3" label="$4"
+  hook_reset
+  if [[ "$sh" == b32 ]]; then HOOK_ENV=(PATH="$bash32dir:$PATH" SECONDS="$val"); else HOOK_ENV=(SECONDS="$val"); fi
+  hook_case "$want" "$label ($sh)" "$sec_pay"
+  hook_reset
+}
+sec_case b5 25 0 "A15 S1 an inherited SECONDS=25 does not make a clean directory Grep UNVERIFIED"
+sec_case b5 19 0 "A15 S2 an inherited SECONDS=19 (the first value that tripped) does not either"
+sec_case b5 100 0 "A15 S3 an inherited SECONDS=100 does not either"
+sec_case b5 18 0 "A15 S4 control: SECONDS=18 allowed before and after"
+sec_case b5 abc 0 "A15 S5 control: a non-numeric SECONDS is read as 0 by the shell"
+# S6: the ceiling with a negative inherited value. Measured on the unchanged guard (hung rg stub listing 2,000,000
+# names, GUARD_SECRETS_WALK_SECS=20, padded path and cwd): 29.0 s on /bin/bash against 22.0 s with SECONDS unset.
+neg_row() {
+  local label="$1" pay t0 t1
+  pay="$(a13_payload ceil 0 "$repo")"
+  hook_reset; HOOK_CAP=40
+  HOOK_ENV=(PATH="$bash32dir:$ceil_stub:$PATH" GUARD_SECRETS_WALK_SECS=20 SECONDS=-100)
+  t0="$(now_ms)"
+  hc 2 "$label" "$pay" "UNVERIFIED (enumeration exceeded 20 s)"
+  t1="$(now_ms)"; HOOK_CAP=""
+  printf 'time  %s: %s ms\n' "$label" "$((t1 - t0))" >&2
+  hc_done "$([[ $((t1 - t0)) -lt 25000 ]] || printf 'wall time %s ms, not under 25000' "$((t1 - t0))")"
+  hook_reset
+}
+if [[ -x /bin/bash ]]; then neg_row "A15 S6 a negative inherited SECONDS does not lift the absolute ceiling (b32, under 25 s)"; fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
