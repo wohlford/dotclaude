@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.150.3 — 2026-10-30
+- test(guard-secrets): extend the guard suite for the directory Grep
+
 ## v0.150.2 — 2026-10-30
 - fix(guard-secrets): deny a content-mode directory Grep holding a secret
 
