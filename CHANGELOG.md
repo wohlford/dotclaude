@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.143.0 — 2026-10-28
+- feat(cycle-profile): add the delegates module
+
 ## v0.142.0 — 2026-10-28
 - feat(cycle-profile): add the classes module
 
