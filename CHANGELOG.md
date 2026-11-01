@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.147.0 — 2026-10-28
+- feat(cycle-profile): add the checks module
+
 ## v0.146.0 — 2026-10-28
 - feat(cycle-profile): add the privacy module
 
