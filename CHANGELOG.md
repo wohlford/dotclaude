@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.150.2 — 2026-10-30
+- fix(guard-secrets): deny a content-mode directory Grep holding a secret
+
 ## v0.150.1 — 2026-10-28
 - docs(claude-md): add the threshold-fixture hazard bullet
 

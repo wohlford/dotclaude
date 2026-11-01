@@ -139,14 +139,49 @@ PostToolUse when the result should be checked.
 
 Same stdin-JSON contract, same `jq` idiom, same fail-safe principle — only a genuine match may
 exit 2, and a broken hook fails open (any non-2 exit allows the call). Worked example:
-`guard-secrets.sh`, which denies `Read`/`Edit`/`Write`/`MultiEdit` on universally-secret files
-(`.env*`, `*.env`, `*.key`, `*.pem`, SSH private keys), enforcing CONTRIBUTING's never-commit list
-at access time.
+`guard-secrets.sh`, which denies `Read`/`Edit`/`Write`/`MultiEdit`/`Grep`/`NotebookEdit` on universally-secret
+files (`.env*`, `*.env`, `*.key`, `*.pem`, SSH private keys), enforcing CONTRIBUTING's never-commit
+list at access time. It also denies a content-mode `Grep` of a directory when the files the tool would
+read include a secret: it lists them with `rg --files`, passing the Grep call's own `glob` and `type` (plus the guard's own
+`--no-config`, `--hidden` and VCS excludes); when `rg` is absent it uses `find -H`, which applies
+neither `glob` nor `type` and is blind to ignore rules. The walk is bounded by `GUARD_SECRETS_WALK_SECS` (default 10, clamped to 20, counted from the start
+of the walk, so between N and N+1 seconds), under an absolute ceiling counted from the start of the script
+so the whole hook ends well inside the 30 s kill (a timeout is an allow): the walk stops 19 s after script
+start, and the 3 s grace scan of a partial listing that follows ends the hook at about 22 s. Past the bound, or if the enumerator fails to run, it
+denies as `UNVERIFIED`, the deliberate fail-closed enumeration verdict. A second deliberate `exit 2` refuses an oversize field before any other step: the target and `cwd` over 65,536 bytes, or `glob` or `type` over 4,096 (no real call comes near these). The path it judges is
+the one the Grep tool itself opens: trimmed (the JavaScript `String.trim` set), `~` expanded and lexically
+collapsed of `.` and `..`, with relative paths resolved against the payload `cwd`; that path is what is
+name-matched and enumerated. The raw path as sent is kept too: its leaf is symlink-checked, and when it
+names a different existing directory (a `..` after a symlinked directory resolves physically there) it
+is enumerated as a second root, which can only over-block. A project may add globs, one per line, in
+`$CLAUDE_PROJECT_DIR/.claude/secret-globs` (else the payload `cwd`): a data file, never sourced, with
+`#` comments, bash `[[ == ]]` matching (`*` matches `/`, case-insensitive), more than 3 stars ignored,
+unioned with the universal list, outranking its exemptions (`.env.example`, `*.pub`). The universal
+check always runs first.
 
 Accepted limits of that guard, for the record: it intercepts **file tools only** (a `cat` via the
-Bash tool still reaches the file); it matches **basenames** (a file inside a directory named `.env`
-slips); and `*.key`/`*.pem` occasionally hit non-secrets (Keynote decks, public certs) — a rare,
-explainable false block we accept for a tight deny list.
+Bash tool still reaches the file); a `files_with_matches` or `count` `Grep` of a directory is allowed,
+so crafted patterns can still learn whether a secret file matches (a pattern oracle); it matches
+**basenames** (a file inside a directory named `.env` is matched only by its own name, so
+`.env/config` has basename `config`); and `*.key`/`*.pem` occasionally hit non-secrets (Keynote decks,
+public certs) — a rare, explainable false block we accept for a tight deny list. The directory
+enumeration is a prediction of what the tool reads, pinned to Claude Code 2.1.312's flags and glob
+tokenization and to a bundled ripgrep of 14.1.1 against the PATH `rg`, so a later release or a
+differing type table can make guard and tool diverge; a secret created after the check is not seen; a
+`Write` target whose parent does not exist has no physical view for project globs; percent-encodings
+(`%2e%2e`) are not decoded; and the `sed` fallback (no `jq`) skips the directory logic (a file target is still judged). An enumerator that ignores `TERM`
+or sits in uninterruptible I/O is not stopped (`wait` blocks), so the hook can overrun its registered timeout,
+which the harness treats as an allow. The other fail-open points
+are deliberate: a malformed payload, missing keys, an absent `tool_name`, an unreadable globs file, a
+`glob`/`type` shape the guard cannot parse (widened, not skipped), and `rg` exit 2 with a partial
+listing. The globs are matched with `[[ == ]]`, which honours extglob syntax on its right-hand side
+whatever the `extglob` shopt, so a line using `!(`, `@(`, `+(`, `?(` or `*(` is reinterpreted (`!(x)`
+matched every path in bash 3.2 and 5, while a glob meant to match a literal name containing `a+(b)`
+does not match that name). On stock macOS `/bin/bash` 3.2 a failing multi-star match is cubic in the name length: a
+content-mode directory `Grep` answers `UNVERIFIED` at the shared deadline, but where no enumeration
+runs (a `Read`, a `files_with_matches` `Grep`) there is no deadline, so a hostile globs file plus a
+long path can push that call's project check past the hook timeout, which removes only project
+protection for that call.
 
 Another deny-gate, `mutate-edit-guard.py`, refuses `Edit`/`Write`/`MultiEdit`/`NotebookEdit` on a
 file whose `<file>.mutate-backup` sidecar exists — the signal `lib/mutate.py` leaves while a
@@ -262,7 +297,7 @@ copy it. `scripts/tests/test_hook_budget.py` pins the `HOOK_BUDGET_SECS` of ever
 Register the hook in the `hooks` → `PostToolUse`, `PreToolUse` or `SessionStart` array in
 [`../settings.json`](../settings.json), with the `~/.claude/scripts/<name>` command path and a
 matcher. For the tool events the matcher names tools (`Edit|Write` for the post-edit checks;
-`Read|Edit|Write|MultiEdit` for the secrets deny-gate); for `SessionStart` it filters on the
+`Read|Edit|Write|MultiEdit|Grep|NotebookEdit` for the secrets deny-gate); for `SessionStart` it filters on the
 payload's `source` (`startup|resume` for the farm hook; see
 [SessionStart: advisory hooks](#sessionstart-advisory-hooks)). After wiring, restart Claude to load
 it.

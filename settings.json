@@ -2,11 +2,12 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Read|Edit|Write|MultiEdit|Grep",
+        "matcher": "Read|Edit|Write|MultiEdit|Grep|NotebookEdit",
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/scripts/guard-secrets.sh"
+            "command": "$HOME/.claude/scripts/guard-secrets.sh",
+            "timeout": 30
           }
         ]
       },
@@ -92,7 +93,8 @@
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/scripts/guard-secrets-test.sh"
+            "command": "$HOME/.claude/scripts/guard-secrets-test.sh",
+            "timeout": 300
           },
           {
             "type": "command",
