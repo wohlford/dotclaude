@@ -12,7 +12,7 @@ token edits, because the property they pin is an ORDER: their `old`/`new` are li
 guard's blocks (so the anchors checker can read them), and the campaign fails loudly if the guard's
 text drifts from the copy.
 
-Documented exclusions: a survivor here is NOT a defect, and none of these has a row (six).
+Documented exclusions: a survivor here is NOT a defect, and none of these has a row (eleven).
 
   1. The two `|| true` guards on the watchdog's final `kill "$pid"` and on `wait "$wd"`. They defend
      a race window (the enumerator exiting between the last `kill -0` and the `kill`) and are
@@ -45,6 +45,14 @@ Documented exclusions: a survivor here is NOT a defect, and none of these has a 
   6. The 256-name deadline check inside `scan_universal`. The universal pass costs about 0.07 ms a
      name, so tripping its own deadline needs roughly 150,000 names, which no row builds; the
      project pass's checks (one mutant below) are the ones a row can reach.
+
+  10. The A15 reset of SECONDS moved from before `input=$(cat)` to after it: only a row that delays stdin
+      could kill that, and the suite has no such rig. Its placement is argued by the order of the guard's
+      own steps: `cat` is the one step whose length depends on the payload and on the harness, so the
+      reset sits before it.
+  11. The same reset moved from the top of the script to just before the walk: a move across about 300
+      lines, not a single (old, new) replacement, so the negative-constant mutant pins that the reset
+      value matters and the placement relative to the pre-walk work is left unpinned.
 
 Not covered by a row, by design of the brief rather than by oversight:
 
@@ -806,6 +814,67 @@ MUTATIONS = [
         "A11: the SIGPIPE trap moved after the contract check (argv row only, block move)",
         _TRAP_TO_INPUT,
         _TRAP_MOVED,
+    ),
+    # ---- A15: the lone-surrogate repair (gs_sanitize and gs_extract's retry) and the SECONDS reset ----
+    M(
+        "A15: the retry no longer re-extracts (every D1 row and the at-cap row)",
+        'input="$san"; unset san; gs_extract; fi',
+        'input="$san"; unset san; fi',
+    ),
+    M(
+        "A15: the lookahead that keeps a valid pair removed (D1l, the sanitizer pair rows, the property row)",
+        r"(?!\\u[dD][c-fC-F][0-9a-fA-F]{2})",
+        "",
+    ),
+    M(
+        "A15: the lookbehind that starts a match at the first backslash of a run removed (D1k, the escaped-backslash sanitizer rows)",
+        r"s/(?<!\\)(?:",
+        "s/(?:",
+    ),
+    M(
+        "A15: the whole-pair consumption removed, odd runs read as even (D1n, the three- and 1,001-backslash sanitizer rows, the at-cap row)",
+        r"(?:\\\\)*+\K",
+        r"\K",
+    ),
+    M(
+        "A15: the replacement text emptied, a lone high deleted instead of replaced (D1j, D1m, G5 and the sanitizer rows)",
+        r"/\\ufffd/g'",
+        "//g'",
+    ),
+    M(
+        "A15: the top of the high range dropped, DBxx no longer repaired (D1g and the mixed-case sanitizer row)",
+        "[89abAB]",
+        "[89aA]",
+    ),
+    M(
+        "A15: the uppercase D of the high class dropped (D1h and the mixed-case sanitizer row)",
+        r"\K\\u[dD][89abAB]",
+        r"\K\\ud[89abAB]",
+    ),
+    M(
+        "A15: a failing perl no longer tolerated, set -e ends the hook (the failing-perl, no-perl and over-cap rows)",
+        'gs_sanitize) || san=""',
+        "gs_sanitize)",
+    ),
+    M(
+        "A15: the 16 MiB cap removed (the over-cap hook row and three sanitizer rows)",
+        "exit 3 if length($_) > 16777216; ",
+        "",
+    ),
+    M(
+        "A15: the whole-record slurp removed, the cap applies per line (the multi-line sanitizer row)",
+        "-C0 -0777 -pe",
+        "-C0 -pe",
+    ),
+    M(
+        "A15: the byte-count switch removed, the cap counts characters under PERL_UNICODE (the PERL_UNICODE sanitizer row)",
+        "perl -C0 -0777",
+        "perl -0777",
+    ),
+    M(
+        "A15: the inherited SECONDS no longer discarded (S1, S2, S3, S6)",
+        "SECONDS=0\n",
+        "",
     ),
 ]
 
