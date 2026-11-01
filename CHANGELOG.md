@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.139.7 — 2026-10-27
+- docs(claude-md): add the per-event duration hazard
+
 ## v0.139.6 — 2026-10-26
 - docs(claude-md): point kill-sets at the clone's own copy
 

@@ -1034,6 +1034,19 @@ from `scripts/claude-md-structure.py`, which prints every group heading:
   that probe tests NAVIGABILITY, never FIDELITY — whether the text points somewhere, not whether
   what it says is true — so it complements the mechanical checks and never replaces them.
 
+- **A per-event DURATION field measures the event's own runtime, not the time the caller spent
+  blocked on it — and only the second holds the long waits.** Measured: a profile adopted
+  `hook_success` records' `durationMs` as hook time because the markers existed and an implementer
+  had reported them. Over a 27-minute implementer dispatch (task notification `duration_ms`
+  1,619,876) they summed to 11.2 s, 0.7%. Its three Edit calls waited 1,025 s, 530 s and 513 s
+  on their PostToolUse hooks, which serialize across parallel edits, so the union of the waits
+  was 1,558.4 s, 96.2%. The plan's own known-dispatch row exposed it, run against that delegate's
+  transcript before anything was built on the markers; reading the marker list had passed.
+  **Measure the interval the caller was blocked — the call's start to its result, as a UNION
+  when calls overlap** — and keep the event's own field only as a labelled cross-check. Its own
+  failure mode: call latency includes every cause, so a slow edit that is not a hook reads as
+  hook time; state that limit.
+
 #### It answered about the PARTS; your claim is about the WHOLE
 
 - **A tool that answers one question per item has not answered how the items COMPOSE — and an
