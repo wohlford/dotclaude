@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.140.0 — 2026-10-28
+- feat(cycle-profile): add the model and records modules
+
 ## v0.139.7 — 2026-10-27
 - docs(claude-md): add the per-event duration hazard
 
