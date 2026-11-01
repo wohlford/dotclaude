@@ -1,0 +1,123 @@
+[
+  {
+    "name": "example completed cycles",
+    "recorded": 2,
+    "selector": "cycles.completed",
+    "unit": "count",
+    "tolerance": 0,
+    "independence": "guaranteed",
+    "gate": true
+  },
+  {
+    "name": "example total wall",
+    "recorded": 600.0,
+    "selector": "wall.all_min",
+    "unit": "min",
+    "independence": "independent"
+  },
+  {
+    "name": "example active wall",
+    "recorded": 505.0,
+    "selector": "wall.active_min",
+    "unit": "min"
+  },
+  {
+    "name": "example away time",
+    "recorded": 100.0,
+    "selector": "away.min",
+    "unit": "min",
+    "tolerance": 5
+  },
+  {
+    "name": "example subagent time",
+    "recorded": 200.0,
+    "selector": "class.SUBAGENT.min",
+    "unit": "min",
+    "gate": true
+  },
+  {
+    "name": "example work share",
+    "recorded": 55.0,
+    "selector": "half.active.work_pct",
+    "unit": "pct"
+  },
+  {
+    "name": "example gate share",
+    "recorded": 30.0,
+    "selector": "half.active.gate_pct",
+    "unit": "pct"
+  },
+  {
+    "name": "example operator share",
+    "recorded": 10.0,
+    "selector": "half.active.operator_pct",
+    "unit": "pp"
+  },
+  {
+    "name": "example answer",
+    "recorded": "gate",
+    "selector": "answer",
+    "unit": "token",
+    "gate": true
+  },
+  {
+    "name": "example fence",
+    "recorded": 350,
+    "selector": "fence.inner_s",
+    "unit": "s",
+    "tolerance": 1
+  },
+  {
+    "name": "example idle gaps",
+    "recorded": 5,
+    "selector": "idle.gaps",
+    "unit": "count"
+  },
+  {
+    "name": "example coverage",
+    "recorded": 12,
+    "selector": "coverage.matched",
+    "unit": "count",
+    "tolerance": 0
+  },
+  {
+    "name": "example first corner",
+    "recorded": 10.0,
+    "selector": "corner.1.min",
+    "unit": "min"
+  },
+  {
+    "name": "example first cycle wall",
+    "recorded": 60.0,
+    "selector": "cycle[2030-01-01T00:00].wall_min",
+    "unit": "min"
+  },
+  {
+    "name": "example first cycle suites",
+    "recorded": 2,
+    "selector": "cycle[2030-01-01T00:00].suite_runs",
+    "unit": "count",
+    "tolerance": 0
+  },
+  {
+    "name": "example first cycle execute stage",
+    "recorded": 20.0,
+    "selector": "cycle[2030-01-01T00:00].stage.execute.SUBAGENT.min",
+    "unit": "min"
+  },
+  {
+    "name": "example second cycle wall",
+    "recorded": 1800.0,
+    "selector": "cycle[2030-01-01T06:30].wall_min",
+    "unit": "s"
+  },
+  {
+    "name": "example clock pair",
+    "kind": "clock",
+    "cycle": "2030-01-01T00:00",
+    "recorded": 5,
+    "local_start": "2029-12-31T19:00:30",
+    "local_end": "2029-12-31T20:00:00",
+    "gate": true
+  }
+]
