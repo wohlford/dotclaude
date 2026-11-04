@@ -165,9 +165,14 @@ _BASH_SYNTAX_ERROR_RCS = (1, 2)
 TIMEOUT_FLOOR_SECONDS = 60.0
 TIMEOUT_MULTIPLIER = 20.0
 
-# The baseline has no measured duration of its own to scale from, so it gets a flat, generous
-# cap. A suite that needs more than this UNMUTATED is pathological and worth being told about.
-BASELINE_TIMEOUT_SECONDS = 600.0
+# The baseline has no measured duration of its own to scale from, so it gets a flat cap whose one
+# job is to end a genuine hang. Measured: the unmutated full test_audit.sh took 641s (812 passed,
+# 0 failed, rc 0) on 2026-11-02, after it gained the opt-in shell-suite pool unit (about 267s);
+# before that it read 555s and 590s (2026-10-22) and 336s on a lighter day (2026-10-15), a 1.75x
+# load spread. 1800s is about 2.8x the worst observed run, covers the loaded projection (about
+# 1100s), and still ends a hang in 30 minutes. The cap is flat while the per-mutant cap derives
+# from the baseline, so this one erodes first: read the `baseline=NNNs/1800s` HEADROOM figure.
+BASELINE_TIMEOUT_SECONDS = 1800.0
 
 
 def derive_timeout(baseline_elapsed: float, override):

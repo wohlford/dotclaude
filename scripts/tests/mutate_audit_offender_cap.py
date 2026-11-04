@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(Path.home() / ".claude" / "scripts" / "lib"))
+sys.path.insert(0, str(REPO / "scripts" / "lib"))
 import mutate  # noqa: E402
 
 SUBJECT = REPO / "skills" / "audit" / "audit.sh"
