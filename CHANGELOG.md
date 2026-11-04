@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.154.1 — 2026-11-03
+- docs(debrief): document backlog.py status and repair
+
 ## v0.154.0 — 2026-11-03
 - feat(backlog): add repair, status, plain-head retier and date checks
 

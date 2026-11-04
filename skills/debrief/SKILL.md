@@ -504,13 +504,25 @@ B=<the session memory directory>/BACKLOG.md
 ~/.claude/skills/debrief/backlog.py --path "$B" unpromote 'a substring of one head' < note.md
 # step 0 — drop (tick, append the note, move under `## Closed`)
 ~/.claude/skills/debrief/backlog.py --path "$B" close 'a substring of one head' < note.md
+# BACKLOG.md health: read-only check (backlog.py status, not ledger.py status), then repair strays
+~/.claude/skills/debrief/backlog.py --path "$B" status    # read-only; `RESULT: CLEAN rc=0` is the only clean answer (BROKEN rc 1, UNREADABLE rc 3)
+~/.claude/skills/debrief/backlog.py --path "$B" repair    # moves strays (a - [x] entry above ## Closed, or a - [ ] entry below it) as a pure reorder; idempotent; refuses malformed heads, duplicate or reversed headings, a missing ## Closed (operator's job)
 ```
 
-A **keep** writes nothing at all. The needle must match exactly one *open* entry's head line;
-matching none or several exits 1 rather than guessing. Each command reports the resulting
-open/closed counts, and refuses — leaving the file byte-identical — if the edit's actual effect
-differs from what the operation declared, if a note lands outside the entry it was addressed to, or
-if the result would strand an entry on the wrong side of `## Closed`.
+Step 0 does **not** run `backlog.py status` or `repair`: they are tools for the operator, or for a
+routine explicitly told to call them. When one is run, `RESULT: CLEAN` — proceed. `BROKEN` by
+strays — run `repair`, then re-run `backlog.py status`. `BROKEN` for any other cause,
+`UNREADABLE`, or a `repair` refusal — make no write to `BACKLOG.md` and report the verdict in the
+step-7 hand-off, the same rule the step-0 cross-check stopping rule uses; a plain `/debrief` never
+pauses to ask.
+
+A **keep** writes nothing at all. For the commands that take a needle (`append`, `close`,
+`promote`, `unpromote`, `amend-head`, `retier`), the needle must match exactly one *open* entry's
+head line; matching none or several exits 1 rather than guessing. Each editing command (everything
+but `backlog.py status`, which writes nothing) reports the resulting open/closed counts, and refuses
+— leaving the file byte-identical — if the edit's actual effect differs from what the operation
+declared, if a note lands outside the entry it was addressed to, or if the result would strand an
+entry on the wrong side of `## Closed`.
 
 Reach for the Python API (`from backlog import Backlog`) only when several edits must land as one
 transaction; `save()` is the sole writer either way, so the checks cannot be skipped.
