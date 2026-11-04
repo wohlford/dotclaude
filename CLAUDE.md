@@ -1171,6 +1171,17 @@ from `scripts/claude-md-structure.py`, which prints every group heading:
   once: that the tool's scope is your change, and that its file types are the ones you associate with
   it, since a formatter follows code fences into markdown. Name the paths you touched, and read an
   unexpected path in `git status` as a finding rather than noise.
+- **A probe that reads an OLD revision through `--work-tree` writes the real repo's INDEX, so the
+  next commit carries files you never staged.** Measured 2026-11-03: to compare a base-branch file
+  against the branch tip, `git --work-tree="$T" checkout <base> -- CLAUDE.md .claude` put the
+  base-branch CLAUDE.md into the INDEX while the working tree kept the tip's, and
+  `git status --short` read `MM CLAUDE.md`. Had the next `git add <other files> && git commit`
+  landed, it would have committed the base version over a reviewed task's documented insertions,
+  silently reverting that task under a commit message naming something else. **Read an old
+  revision with `git show <rev>:<path> > <file>` or `git archive`, never a checkout**, and before
+  every commit read `git diff --cached --stat`, treating a staged path you did not stage as a
+  finding. Its own failure mode: `git show` of a path absent at that revision exits with an
+  error, so a comparison script must check that status rather than compare against an empty file.
 
 #### The teardown you are counting on — narrower than you think, or never reached
 

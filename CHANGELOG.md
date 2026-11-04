@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.155.0 — 2026-11-03
+- feat(claude-md): add index-write hazard for --work-tree checkout
+
 ## v0.154.3 — 2026-11-03
 - test(backlog): add mutants for repair, status, heads, dates
 
