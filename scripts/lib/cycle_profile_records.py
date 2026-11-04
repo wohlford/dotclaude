@@ -111,7 +111,9 @@ _NOTIF_RE = {
     "tool_use_id": re.compile(r"<tool-use-id>([^<]*)"),
     "duration_ms": re.compile(r"<duration_ms>([0-9]{1,15})"),
 }
-_RESULT_RE = re.compile(r"RESULT: (PASS|FAIL|ERROR|INCOMPLETE|INDETERMINATE)")
+_RESULT_RE = re.compile(
+    r"RESULT: (PARALLEL-PASS|PASS|FAIL|ERROR|INCOMPLETE|INDETERMINATE)"
+)
 _DONE_RE = re.compile(r"\bDONE\b")
 _RUNNING_RE = re.compile(r"\bRUNNING\b")
 _LANE_RE = re.compile(r"\b(fast|full)[ -]lane\b", re.I)
@@ -193,7 +195,8 @@ def _result_value(content: Any) -> Optional[str]:
     text = _result_text(content)
     verdicts = _RESULT_RE.findall(text)
     if verdicts:
-        return verdicts[-1]
+        # PARALLEL-PASS is a pass of the parallel profile; the closed value set keeps one PASS
+        return "PASS" if verdicts[-1] == "PARALLEL-PASS" else verdicts[-1]
     if _DONE_RE.search(text) and not _RUNNING_RE.search(text):
         return "DONE"
     return None

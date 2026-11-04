@@ -101,7 +101,9 @@ FULL_LANE_DISPATCHES = 3
 ARTIFACT_END_TOLERANCE_S = 60
 
 _EXIT_RE = re.compile(r"^RUN_LONG_EXIT_STATUS=([0-9]{1,3})\s*$", re.M)
-_VERDICT_RE = re.compile(r"^RESULT: (PASS|FAIL|ERROR|INCOMPLETE|INDETERMINATE)\b", re.M)
+_VERDICT_RE = re.compile(
+    r"^RESULT: (PARALLEL-PASS|PASS|FAIL|ERROR|INCOMPLETE|INDETERMINATE)\b", re.M
+)
 _SHA_FULL_RE = re.compile(r"[0-9a-f]{7,40}")
 _TAIL_BYTES = 1 << 16
 
@@ -544,7 +546,10 @@ def _read_artifact(path: Path) -> Tuple[int, Optional[str], Optional[str]]:
         text = handle.read().decode("utf-8", "replace")
     exits = _EXIT_RE.findall(text)
     verdicts = _VERDICT_RE.findall(text)
-    return mtime, (exits[-1] if exits else None), (verdicts[-1] if verdicts else None)
+    verdict = verdicts[-1] if verdicts else None
+    if verdict == "PARALLEL-PASS":  # the closed verdict set keeps one PASS
+        verdict = "PASS"
+    return mtime, (exits[-1] if exits else None), verdict
 
 
 def artifact_end_check(

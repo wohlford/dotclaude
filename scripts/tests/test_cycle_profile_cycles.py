@@ -665,6 +665,13 @@ def test_t36_artifact_end_check(tmp_path):
     assert (res.agree, res.absent) == (1, 1)
     first = [row for row in res.rows if row.check_class == "suite-feature-tip"][0]
     assert first.exit_status is None and first.verdict is None
+    # a PARALLEL-PASS verdict line is read as a verdict, never dropped
+    par = tmp / "par"
+    par.mkdir()
+    _artifact(par, "art1", 1500, "RESULT: PARALLEL-PASS rc=0\nRUN_LONG_EXIT_STATUS=0\n")
+    res = c.artifact_end_check(cs, [par])
+    first = [row for row in res.rows if row.check_class == "suite-feature-tip"][0]
+    assert first.verdict == "PASS"
     # a file whose name differs from the key by one character is no match
     near = tmp / "near"
     near.mkdir()

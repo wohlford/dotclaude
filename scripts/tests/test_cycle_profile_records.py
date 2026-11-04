@@ -303,6 +303,7 @@ def test_t00_human_prompts_are_unchanged_by_the_auto_continuation_rule():
         ("RUNNING then DONE", None),
         ("RESULT: PASS rc=0 DONE", "PASS"),
         ("DONE\nRESULT: FAIL rc=1", "FAIL"),
+        ("RESULT: PARALLEL-PASS rc=0 DONE", "PASS"),
         ("UNDONE", None),
         ("DONEX", None),
         ("RUN_LONG_DONE", None),
