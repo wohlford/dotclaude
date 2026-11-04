@@ -18,7 +18,9 @@ import datetime
 import io
 import os
 import random
+import shlex
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -50,6 +52,16 @@ def undated_entry(token, body=()):
 def tiered_entry(token, tier, date="2026-07-01", body=()):
     # A head that already carries a tier, for the "refuse rather than overwrite" tests.
     return [f"- [ ] {date} — **{tier} — {token} — headline for {token}.**", *body]
+
+
+def plain_tiered_entry(token, tier, date="2026-07-01", body=()):
+    # The plain `TIER — ` lead (no `**`): 99 of the 230 live heads are written this way.
+    return [f"- [ ] {date} — {tier} — {token} — headline for {token}.", *body]
+
+
+def paren_tiered_entry(token, tier, date="2026-07-01", body=()):
+    # The parenthetical shape: a tier named later in the headline, with no leading tier token.
+    return [f"- [ ] {date} — **{token} headline** ({tier}; carved", *body]
 
 
 def stamped_entry(token, stamp, date="2026-07-01", closed=False, body=()):
@@ -451,32 +463,58 @@ def test_amend_head_refuses_a_tier_when_rest_has_no_bold_delimiter(tmp_path):
 
 
 @pytest.mark.parametrize("tier", ["HIGH", "MEDIUM", "LOW"])
-def test_amend_head_bold_guard_is_the_only_refusal_for_a_plain_tier_head(
+def test_amend_head_bold_guard_is_the_only_refusal_for_an_untiered_plain_head(
     tmp_path, tier
 ):
     """The `**` guard is decisive here, and its absence CORRUPTS rather than refuses.
 
-    A head carrying a tier in the plain `TIER — ` form (no `**`) is not hypothetical: 23 of the 91
-    open entries in the live backlog are written that way, 2 of them HIGH and 1 LOW. Inserting a
-    tier into one does `rest[2:]`, which eats the first two characters of real text.
-
-    When the inserted tier EQUALS the one already spelled out, the subsequence postcondition no
-    longer catches it — the inserted token supplies exactly the characters that were dropped — and
-    the length delta is unchanged, so every other postcondition passes too. Measured with the guard
-    removed from the real module: `- [ ] … — HIGH — text` + `--tier HIGH` writes
-    `- [ ] … — **HIGH — GH — text`, silently.
-
-    So this fixture is built at the smallest case where the two readings DIVERGE, not at the
-    smallest one that runs the code. The row above uses a head with no tier at all and is caught by
-    a different check; only this one can go red when the guard is deleted.
+    The head `- [ ] 2026-08-31 — HI there` carries no tier token, so the already-carries check
+    does not fire, and its `rest` (`HI there`) has no `**`. With the guard off the head becomes
+    `**HIGH —  there` (the `rest[2:]` slice eats `HI`), which passes the head's own subsequence
+    postcondition, the length postcondition and the front-of-rest check, so only the guard's own
+    message refuses it. Fixture built where the two readings DIVERGE: the first two characters
+    of the real text are exactly the start of the tier being inserted.
     """
-    head = f"- [ ] 2026-08-31 — {tier} — a plain-form head carrying its tier unbolded"
+    head = "- [ ] 2026-08-31 — HI there"
     path = write_doc(tmp_path, make_doc([[head]]))
     doc = path.read_text()
     with pytest.raises(
         BacklogError, match=r"rest has no '\*\*' to insert a tier inside"
     ):
-        Backlog(path).amend_head("plain-form head", tier=tier)
+        Backlog(path).amend_head("there", tier="HIGH")
+    assert path.read_text() == doc
+
+
+@pytest.mark.parametrize("tier", ["HIGH", "MEDIUM", "LOW"])
+def test_amend_head_plain_tier_head_is_refused_as_already_tiered(tmp_path, tier):
+    path = write_doc(tmp_path, make_doc([plain_tiered_entry("A", tier)]))
+    doc = path.read_text()
+    with pytest.raises(BacklogError, match=r"already carries a tier") as e:
+        Backlog(path).amend_head("A —", tier="MEDIUM")
+    assert "rest has no" not in str(e.value)
+    assert path.read_text() == doc
+
+
+def test_amend_head_refuses_a_parenthetical_tier_without_writing(tmp_path):
+    path = write_doc(tmp_path, make_doc([paren_tiered_entry("A", "MEDIUM")]))
+    doc = path.read_text()
+    with pytest.raises(
+        BacklogError, match=r"head already names a tier inside a parenthetical"
+    ):
+        Backlog(path).amend_head("A headline", tier="HIGH")
+    assert path.read_text() == doc
+
+
+def test_amend_head_refuses_prose_mentioning_a_tier_in_parentheses(tmp_path):
+    # Fail-closed by design: the guard searches all of `rest`, so an UNTIERED head whose prose
+    # says `(HIGH priority)` is refused too.
+    head = "- [ ] 2026-08-31 — **fix the thing (HIGH priority) soon.**"
+    path = write_doc(tmp_path, make_doc([[head]]))
+    doc = path.read_text()
+    with pytest.raises(
+        BacklogError, match=r"head already names a tier inside a parenthetical"
+    ):
+        Backlog(path).amend_head("fix the thing", tier="LOW")
     assert path.read_text() == doc
 
 
@@ -1234,25 +1272,101 @@ def test_retier_validates_both_tiers_at_the_method_level(
     assert path.read_text() == doc
 
 
-def test_retier_refuses_a_plain_form_head_without_routing_to_amend_head(tmp_path):
-    """A plain `TIER — ` head (no `**`) is refused, and the refusal names that form.
+_RETIER_FORMS = {
+    "bold": ("**", "- [ ] 2026-07-01 — {lead}{tier} — ZED — headline for ZED."),
+    "plain": ("", "- [ ] 2026-07-01 — {lead}{tier} — ZED — headline for ZED."),
+    "plain-stamped": (
+        "",
+        "- [ ] 2026-07-01 — *promoted 2026-07-02* — {lead}{tier} — ZED — headline.",
+    ),
+    "bold-stamped": (
+        "**",
+        "- [ ] 2026-07-01 — *promoted 2026-07-02* — {lead}{tier} — ZED — headline.",
+    ),
+}
+_TIER_PAIRS = [
+    (a, b)
+    for a in ("HIGH", "MEDIUM", "LOW")
+    for b in ("HIGH", "MEDIUM", "LOW")
+    if a != b
+]
 
-    23 of the 91 open entries in the live backlog are written that way. `amend_head` refuses them
-    too — its `rest` has no `**` to insert inside — so a message telling the operator to reach for
-    `amend-head` would send them in a circle. Supporting the plain form is out of scope; saying so
-    is not.
-    """
-    head = "- [ ] 2026-08-31 — HIGH — a plain-form head carrying its tier unbolded"
+
+@pytest.mark.parametrize("from_tier,to_tier", _TIER_PAIRS)
+@pytest.mark.parametrize("form", list(_RETIER_FORMS))
+def test_retier_both_forms_change_exactly_the_token(tmp_path, form, from_tier, to_tier):
+    lead, template = _RETIER_FORMS[form]
+    old = template.format(lead=lead, tier=from_tier)
+    path = write_doc(tmp_path, make_doc([[old, "  a body line"], entry("B")]))
+    bl = Backlog(path)
+    bl.retier("ZED —", from_tier, to_tier, "re-graded", "2026-09-08")
+    bl.save()
+    expected = old.replace(f"{lead}{from_tier} — ", f"{lead}{to_tier} — ", 1)
+    lines = path.read_text().split("\n")
+    at = lines.index(expected)
+    assert head_of(path, "ZED") == expected
+    assert lines[at + 1] == "  a body line"
+    assert lines[at + 2] == f"  - 2026-09-08 — {from_tier} → {to_tier}: re-graded"
+
+
+def test_retier_refuses_a_parenthetical_tier_naming_the_shape(tmp_path):
+    path = write_doc(tmp_path, make_doc([paren_tiered_entry("A", "MEDIUM")]))
+    doc = path.read_text()
+    with pytest.raises(BacklogError) as e:
+        Backlog(path).retier("A headline", "MEDIUM", "LOW", "re-graded", "2026-09-08")
+    assert (
+        "head carries no leading tier token ('**TIER — ' or 'TIER — ') to change, "
+        "refusing to retier it — a tier named later in the headline, as in "
+        "'**title** (MEDIUM; ...', is not supported:"
+    ) in str(e.value)
+    assert path.read_text() == doc
+
+
+def test_retier_refuses_a_head_with_no_tier_token_at_all(tmp_path):
+    head = "- [ ] 2026-07-01 — a head with no tier anywhere"
     path = write_doc(tmp_path, make_doc([[head]]))
     doc = path.read_text()
-    with pytest.raises(
-        BacklogError, match=r"no bold '\*\*TIER — ' token to change"
-    ) as e:
+    with pytest.raises(BacklogError) as e:
         Backlog(path).retier(
-            "plain-form head", "HIGH", "LOW", "re-graded", "2026-09-08"
+            "no tier anywhere", "HIGH", "LOW", "re-graded", "2026-09-08"
         )
-    assert "amend" not in str(e.value).lower()
-    assert "plain 'TIER — ' form" in str(e.value)
+    text = str(e.value)
+    assert (
+        "head carries no tier token ('**TIER — ' or 'TIER — ') to change, "
+        "refusing to retier it:"
+    ) in text
+    assert "later in the headline" not in text
+    assert path.read_text() == doc
+
+
+def _early_tier_span(match, located):
+    # A span starting 2 characters before the real tier token, ending where it ends.
+    base = match.start("rest")
+    return base + located.start("tier") - 2, base + located.end("tier")
+
+
+def test_retier_wrong_span_is_refused_by_the_lead_clause_on_a_bold_head(
+    tmp_path, monkeypatch
+):
+    # `**HIGH — x` with the span 2 early becomes plain `LOW — x`, which clauses 1-3 all accept
+    # (a plain head carrying LOW re-reads fine); only the lead clause sees `**` become nothing.
+    path = write_doc(tmp_path, make_doc([tiered_entry("X", "HIGH")]))
+    doc = path.read_text()
+    monkeypatch.setattr(backlog, "_tier_span", _early_tier_span)
+    with pytest.raises(BacklogError, match=r"bold or plain lead"):
+        Backlog(path).retier("X —", "HIGH", "LOW", "re-graded", "2026-09-08")
+    assert path.read_text() == doc
+
+
+def test_retier_wrong_span_is_refused_by_clause_three_on_a_plain_head(
+    tmp_path, monkeypatch
+):
+    path = write_doc(tmp_path, make_doc([plain_tiered_entry("X", "HIGH")]))
+    doc = path.read_text()
+    monkeypatch.setattr(backlog, "_tier_span", _early_tier_span)
+    with pytest.raises(BacklogError) as e:
+        Backlog(path).retier("X —", "HIGH", "LOW", "re-graded", "2026-09-08")
+    assert "does not find LOW at the front of rest" in str(e.value)
     assert path.read_text() == doc
 
 
@@ -1947,3 +2061,1162 @@ def test_unpromote_handles_each_synthesized_stamp_spelling(tmp_path, stamp):
     assert removed == stamp
     assert head_of(path, "A") == "- [ ] 2026-07-01 — **A — headline for A.**"
     assert f"  - 2026-10-19 — withdrew {stamp.removesuffix(' — ')}" in path.read_text()
+
+
+# ---------- shared scan ----------
+
+MALFORMED_SHAPES = ["- [X] x", "- [] x", "- [ ]x"]
+
+
+def test_is_malformed_head_recognises_checkbox_shaped_non_heads():
+    for line in ["- [X] x", "- [] x", "- [ ]x", "- [x]x"]:
+        assert backlog._is_malformed_head(line), line
+    for line in ["- [ ] x", "- [x] x", "- [see](link)", "  - [ ] x", "- [ab] x"]:
+        assert not backlog._is_malformed_head(line), line
+
+
+def test_scan_sections_reports_counts_strays_and_malformed():
+    lines = [
+        "## Open",
+        "- [ ] a",
+        "- [ ] b",
+        "- [x] stray closed",
+        "- [X] y",
+        "## Closed",
+        "- [ ] stray open",
+        "- [x] c",
+    ]
+    scan = backlog.scan_sections(lines)
+    assert scan.open_count == 2
+    assert scan.closed_count == 1
+    assert scan.stray_closed == [3]
+    assert scan.stray_open == [6]
+    assert scan.malformed == [4]
+    assert scan.extra_headings == []
+    assert scan.order_reversed is False
+
+
+def test_scan_sections_reports_duplicate_and_reversed_headings():
+    dup = backlog.scan_sections(["## Open", "## Closed", "- [x] a", "## Closed"])
+    assert len(dup.extra_headings) == 1
+    assert dup.closed_at == 1
+    reversed_ = backlog.scan_sections(["## Closed", "- [x] a", "## Open"])
+    assert reversed_.order_reversed is True
+
+
+@pytest.mark.parametrize("method", ["append", "close", "unpromote"])
+@pytest.mark.parametrize("bad", MALFORMED_SHAPES)
+def test_note_lines_refuse_a_malformed_head_shape(tmp_path, method, bad):
+    path = write_doc(
+        tmp_path, make_doc([stamped_entry("A", "*promoted 2026-07-28* — ")])
+    )
+    pre = path.read_bytes()
+    bl = Backlog(path)
+    note = f"  ok\n{bad}"
+    with pytest.raises(InvalidNote):
+        if method == "append":
+            bl.append_note("A —", note)
+        elif method == "close":
+            bl.close_entry("A —", note)
+        else:
+            bl.unpromote("A —", note, "2026-10-19")
+    assert path.read_bytes() == pre
+
+
+def test_a_link_list_note_line_is_accepted(tmp_path):
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    bl = Backlog(path)
+    bl.append_note("A —", "  ok\n- [see](link)")
+    bl.save()
+    assert "- [see](link)" in path.read_text()
+
+
+@pytest.mark.parametrize("bad", MALFORMED_SHAPES)
+def test_add_entry_refuses_a_malformed_continuation_line(tmp_path, bad):
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    pre = path.read_bytes()
+    bl = Backlog(path)
+    with pytest.raises(InvalidNote):
+        bl.add_entry(f"- [ ] 2026-11-03 — **N — new.**\n{bad}")
+    assert path.read_bytes() == pre
+
+
+def test_scan_sections_without_a_closed_heading_has_no_boundary():
+    scan = backlog.scan_sections(["## Open", "- [ ] a", "- [ ] b", "- [x] c"])
+    assert scan.closed_at is None
+    assert scan.open_count == 2
+    assert scan.closed_count == 1
+    assert scan.stray_closed == []
+    assert scan.stray_open == []
+
+
+def _stage_stray(bl, line):
+    """Insert `line` right after `## Open`, declared as a gained line so only the invariant fires."""
+    open_at = bl._heading_index(backlog.OPEN_HEADING)
+    bl.lines = bl.lines[: open_at + 1] + [line] + bl.lines[open_at + 1 :]
+    bl._expected_gained[line] += 1
+
+
+def test_save_raises_section_invariant_broken_with_the_same_text(tmp_path):
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    pre = path.read_bytes()
+    bl = Backlog(path)
+    _stage_stray(bl, "- [x] 2026-07-02 — **S — stray.**")
+    with pytest.raises(backlog.SectionInvariantBroken) as info:
+        bl.save()
+    assert isinstance(info.value, ShapeViolation)
+    assert path.read_bytes() == pre
+
+
+def test_add_on_a_file_without_closed_is_still_refused(tmp_path):
+    path = write_doc(tmp_path, "## Open\n\n- [ ] 2026-07-01 — **A — a.**\n")
+    pre = path.read_bytes()
+    bl = Backlog(path)
+    with pytest.raises(BacklogError):
+        bl.add_entry("- [ ] 2026-11-03 — **N — new.**")
+        bl.save()
+    assert path.read_bytes() == pre
+
+
+def test_save_message_counts_stay_attached_to_the_right_side(tmp_path):
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    bl = Backlog(path)
+    _stage_stray(bl, "- [x] 2026-07-02 — **S — stray.**")
+    with pytest.raises(ShapeViolation) as info:
+        bl.save()
+    assert str(info.value) == (
+        "section invariant broken: 1 closed entries above ## Closed, "
+        "0 open entries below it"
+    )
+    path2 = write_doc(tmp_path, make_doc([entry("A")]), name="B.md")
+    bl2 = Backlog(path2)
+    closed_at = bl2._closed_index()
+    line = "- [ ] 2026-07-02 — **S — stray.**"
+    bl2.lines = bl2.lines[: closed_at + 1] + [line] + bl2.lines[closed_at + 1 :]
+    bl2._expected_gained[line] += 1
+    with pytest.raises(ShapeViolation) as info2:
+        bl2.save()
+    assert str(info2.value) == (
+        "section invariant broken: 0 closed entries above ## Closed, "
+        "1 open entries below it"
+    )
+
+
+# ---------- calendar-date validation ----------
+
+_BAD_DATES = [
+    "",
+    "*",
+    "2026-13-45",
+    "2026-02-30",
+    "2026-1-5",
+    "20261103",
+    "2026-W44-2",
+    "2026-11-03\n",
+    " 2026-11-03",
+    "２０２６-１１-０３",
+    "2026-11-03T00:00",
+]
+_DATED_OPS = ["promote", "unpromote", "retier", "amend-head"]
+
+
+def _dated_op_fixture(tmp_path, op):
+    """A document on which `op` would otherwise SUCCEED, so only the date can refuse it."""
+    if op == "promote":
+        entries = [entry("A")]
+    elif op == "unpromote":
+        entries = [stamped_entry("A", "*promoted 2026-07-28* — ")]
+    elif op == "retier":
+        entries = [tiered_entry("A", "HIGH")]
+    else:
+        entries = [undated_entry("A")]
+    return write_doc(tmp_path, make_doc(entries))
+
+
+def _library_call(path, op, value):
+    bl = Backlog(path)
+    if op == "promote":
+        bl.stamp_promoted("A —", value)
+    elif op == "unpromote":
+        bl.unpromote("A —", "  note", value)
+    elif op == "retier":
+        bl.retier("A —", "HIGH", "LOW", "why", value)
+    else:
+        bl.amend_head("A —", date=value)
+
+
+def _cli_argv(path, op, value):
+    base = ["--path", str(path), op, "A —"]
+    if op == "retier":
+        base += ["--from", "HIGH", "--to", "LOW", "--reason", "why"]
+    return [*base, "--date", value]
+
+
+@pytest.mark.parametrize("value", _BAD_DATES)
+@pytest.mark.parametrize("op", _DATED_OPS)
+def test_invalid_date_is_refused_by_the_library(tmp_path, op, value):
+    path = _dated_op_fixture(tmp_path, op)
+    before = path.read_bytes()
+    with pytest.raises(BacklogError) as info:
+        _library_call(path, op, value)
+    assert str(info.value) == (
+        f"{op}: --date must be a real calendar date YYYY-MM-DD: {value!r}"
+    )
+    assert path.read_bytes() == before
+    assert not (tmp_path / "backlog-snapshots").exists()
+
+
+@pytest.mark.parametrize("value", ["2026-13-45", "2026-02-30", "２０２６-１１-０３"])
+def test_add_refuses_an_invalid_head_date(tmp_path, value):
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    before = path.read_bytes()
+    with pytest.raises(BacklogError) as info:
+        Backlog(path).add_entry(f"- [ ] {value} — **NEW — headline.**")
+    assert str(info.value) == (
+        f"add: head date must be a real calendar date YYYY-MM-DD: {value!r}"
+    )
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("value", ["2026-1-5", "20261103", "2026-11-03T00:00"])
+def test_add_still_refuses_a_head_without_a_well_formed_date_first(tmp_path, value):
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    before = path.read_bytes()
+    with pytest.raises(InvalidNote, match="a new entry must carry a date"):
+        Backlog(path).add_entry(f"- [ ] {value} — **NEW — headline.**")
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("value", _BAD_DATES)
+@pytest.mark.parametrize("op", _DATED_OPS)
+def test_invalid_date_is_refused_by_the_cli(tmp_path, capsys, monkeypatch, op, value):
+    path = _dated_op_fixture(tmp_path, op)
+    before = path.read_bytes()
+    _stdin(monkeypatch, "  note")
+    rc = backlog.main(_cli_argv(path, op, value))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert err.startswith("backlog: ")
+    assert f"{op}: --date must be a real calendar date YYYY-MM-DD" in err
+    assert path.read_bytes() == before
+    assert not (tmp_path / "backlog-snapshots").exists()
+
+
+@pytest.mark.parametrize("value", ["2024-02-29", "2026-03-04"])
+@pytest.mark.parametrize("op", _DATED_OPS)
+def test_valid_date_that_differs_from_the_default_lands(
+    tmp_path, monkeypatch, op, value
+):
+    path = _dated_op_fixture(tmp_path, op)
+    _stdin(monkeypatch, "  note")
+    assert backlog.main(_cli_argv(path, op, value)) == 0
+    text = path.read_text()
+    if op == "promote":
+        assert f"*promoted {value}* — " in text
+    elif op in ("unpromote", "retier"):
+        assert f"  - {value} — " in text
+    else:
+        assert f"- [ ] {value} — **A —" in text
+
+
+@pytest.mark.parametrize("value", ["2024-02-29", "2026-03-04"])
+def test_valid_head_date_that_differs_from_the_default_lands(tmp_path, value):
+    path = write_doc(tmp_path, make_doc([entry("A")]))
+    bl = Backlog(path)
+    bl.add_entry(f"- [ ] {value} — **NEW — headline.**")
+    bl.save()
+    assert f"- [ ] {value} — **NEW — headline.**" in path.read_text()
+
+
+def test_amend_head_empty_date_is_refused(tmp_path):
+    path = write_doc(tmp_path, make_doc([undated_entry("A")]))
+    before = path.read_bytes()
+    with pytest.raises(BacklogError, match="amend-head: --date must be a real"):
+        Backlog(path).amend_head("A —", date="")
+    assert path.read_bytes() == before
+
+
+# ---------- head collisions: name the cause ----------
+
+
+def test_unpromote_collision_names_the_stripped_head(tmp_path):
+    stamped = "- [ ] 2026-07-01 — *promoted 2026-07-02* — **T**"
+    twin = "- [ ] 2026-07-01 — **T**"
+    path = write_doc(tmp_path, make_doc([[stamped], [twin]]))
+    before = path.read_bytes()
+    with pytest.raises(backlog.HeadCollision) as info:
+        Backlog(path).unpromote("promoted", "evidence", "2026-10-19")
+    message = str(info.value)
+    assert "cannot unpromote" in message
+    assert "not unique" in message
+    assert twin in message
+    assert not isinstance(info.value, AmbiguousEntry)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "- [ ] 2026-07-01 — **{tier} — x**",
+        "- [ ] 2026-07-01 — {tier} — x",
+    ],
+    ids=["bold", "plain"],
+)
+def test_retier_collision_names_the_regraded_head(tmp_path, template):
+    first = template.format(tier="HIGH")
+    other = template.format(tier="MEDIUM")
+    path = write_doc(tmp_path, make_doc([[first], [other]]))
+    before = path.read_bytes()
+    with pytest.raises(backlog.HeadCollision) as info:
+        Backlog(path).retier("HIGH — x", "HIGH", "MEDIUM", "re-graded", "2026-09-08")
+    message = str(info.value)
+    assert "cannot retier" in message
+    assert "not unique" in message
+    assert other in message
+    assert not isinstance(info.value, AmbiguousEntry)
+    assert path.read_bytes() == before
+
+
+def test_a_closed_head_equal_to_the_stripped_head_does_not_collide(tmp_path):
+    stamped = "- [ ] 2026-07-01 — *promoted 2026-07-02* — **T**"
+    closed_twin = "- [x] 2026-07-01 — **T**"
+    path = write_doc(tmp_path, make_doc([[stamped]], [[closed_twin]]))
+    bl = Backlog(path)
+    removed = bl.unpromote("promoted", "evidence", "2026-10-19")
+    bl.save()
+    assert removed == "*promoted 2026-07-02* — "
+    assert "- [ ] 2026-07-01 — **T**" in path.read_text().split("\n")
+
+
+def test_unpromote_refuses_when_another_head_is_contained_in_the_stripped_head(
+    tmp_path,
+):
+    shorter = "- [ ] 2026-07-03 — foo"
+    stamped = "- [ ] 2026-07-03 — *promoted 2026-07-04* — foo bar"
+    path = write_doc(tmp_path, make_doc([[shorter], [stamped]]))
+    before = path.read_bytes()
+    with pytest.raises(backlog.HeadCollision) as info:
+        Backlog(path).unpromote("foo bar", "evidence", "2026-10-19")
+    message = str(info.value)
+    assert "cannot unpromote" in message
+    assert "not unique" in message
+    assert shorter in message
+    assert not message.startswith("backlog: ")
+    assert path.read_bytes() == before
+
+
+def test_retier_refuses_when_another_head_is_contained_in_the_regraded_head(tmp_path):
+    shorter = "- [ ] 2026-07-03 — HIGH — foo"
+    longer = "- [ ] 2026-07-03 — LOW — foo bar"
+    path = write_doc(tmp_path, make_doc([[shorter], [longer]]))
+    before = path.read_bytes()
+    with pytest.raises(backlog.HeadCollision) as info:
+        Backlog(path).retier("foo bar", "LOW", "HIGH", "re-graded", "2026-09-08")
+    message = str(info.value)
+    assert "cannot retier" in message
+    assert "not unique" in message
+    assert shorter in message
+    assert not message.startswith("backlog: ")
+    assert path.read_bytes() == before
+
+
+def test_collision_cli_prints_one_backlog_prefix(tmp_path, capsys, monkeypatch):
+    stamped = "- [ ] 2026-07-01 — *promoted 2026-07-02* — **T**"
+    twin = "- [ ] 2026-07-01 — **T**"
+    path = write_doc(tmp_path, make_doc([[stamped], [twin]]))
+    before = path.read_bytes()
+    _stdin(monkeypatch, "evidence")
+    rc = backlog.main(["--path", str(path), "unpromote", "promoted"])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert err.startswith("backlog: cannot unpromote: ")
+    assert "backlog: backlog:" not in err
+    assert path.read_bytes() == before
+
+
+# ---------- repair ----------
+
+
+def ticked_in_place(token, date="2026-07-01", body=()):
+    # A `- [x]` head left in the Open section: the stray `repair` moves under Closed.
+    return entry(token, date=date, closed=True, body=body)
+
+
+def unticked_below(token, date="2026-07-01", body=()):
+    # A `- [ ]` head left in the Closed section: the stray `repair` moves back to Open.
+    return entry(token, date=date, closed=False, body=body)
+
+
+def _repair(path):
+    return backlog.main(["--path", str(path), "repair"])
+
+
+def _trim(block):
+    block = list(block)
+    while len(block) > 1 and not block[-1].strip():
+        block.pop()
+    return tuple(block)
+
+
+def _trimmed_blocks(lines):
+    return [(s, _trim(lines[s:e])) for s, e in entry_blocks(lines)]
+
+
+def _stray_fixture(tmp_path, body=("  one", "  two")):
+    return write_doc(
+        tmp_path,
+        make_doc(
+            [entry("A"), ticked_in_place("S", body=body), entry("B")],
+            [entry("C", closed=True)],
+        ),
+    )
+
+
+def test_repair_subcommand_exists_and_exits_zero_on_a_stray_fixture(tmp_path):
+    path = _stray_fixture(tmp_path)
+    assert _repair(path) == 0
+
+
+def test_repair_relocates_the_stray_block_whole(tmp_path, capsys):
+    quoted = "  - [ ] 2026-07-02 — **a quoted entry**"
+    body = ["  one", quoted]
+    path = _stray_fixture(tmp_path, body=body)
+    original = path.read_text().split("\n")
+    head_line = original.index("- [x] 2026-07-01 — **S — headline for S.**") + 1
+    rc = _repair(path)
+    out = capsys.readouterr().out
+    assert rc == 0
+    lines = path.read_text().split("\n")
+    closed_at = lines.index("## Closed")
+    at = lines.index("- [x] 2026-07-01 — **S — headline for S.**")
+    assert at > closed_at
+    assert lines[at : at + 3] == [
+        "- [x] 2026-07-01 — **S — headline for S.**",
+        "  one",
+        quoted,
+    ]
+    assert not [ln for ln in lines[:closed_at] if ln.startswith("- [x]")]
+    out_lines = out.rstrip("\n").split("\n")
+    assert any(
+        ln.startswith(f"moved to Closed: line {head_line}: ") for ln in out_lines
+    )
+    assert out_lines[-1] == (
+        f"{path}: repaired, moved 1 (1 to Closed, 0 to Open); 2 open, 2 closed "
+        "(+0/-0 lines)"
+    )
+    assert "backlog: backlog:" not in out
+
+
+def test_repair_moves_strays_both_ways_in_one_run(tmp_path, capsys):
+    path = write_doc(
+        tmp_path,
+        make_doc(
+            [entry("A"), ticked_in_place("X1"), entry("B")],
+            [entry("C", closed=True), unticked_below("O1")],
+        ),
+    )
+    assert _repair(path) == 0
+    out = capsys.readouterr().out.rstrip("\n").split("\n")
+    assert out[0].startswith("moved to Closed: ")
+    assert out[1].startswith("moved to Open: ")
+    assert out[-1].startswith(f"{path}: repaired, moved 2 (1 to Closed, 1 to Open);")
+    lines = path.read_text().split("\n")
+    closed_at = lines.index("## Closed")
+    assert any("X1 —" in ln and ln.startswith("- [x]") for ln in lines[closed_at:])
+    assert any("O1 —" in ln and ln.startswith("- [ ]") for ln in lines[:closed_at])
+
+
+def test_repair_order_among_moved_blocks_is_preserved(tmp_path):
+    path = write_doc(
+        tmp_path,
+        make_doc(
+            [ticked_in_place("X1"), entry("A"), ticked_in_place("X2")],
+            [unticked_below("O1"), entry("C", closed=True), unticked_below("O2")],
+        ),
+    )
+    assert _repair(path) == 0
+    lines = path.read_text().split("\n")
+    closed_at = lines.index("## Closed")
+    heads_open = [ln for ln in lines[:closed_at] if ln.startswith("- [")]
+    heads_closed = [ln for ln in lines[closed_at:] if ln.startswith("- [")]
+    assert [h.split("**")[1].split(" ")[0] for h in heads_open] == ["O1", "O2", "A"]
+    assert [h.split("**")[1].split(" ")[0] for h in heads_closed] == ["X1", "X2", "C"]
+
+
+def test_repair_closed_side_lands_above_existing_closed(tmp_path):
+    path = write_doc(
+        tmp_path,
+        make_doc(
+            [ticked_in_place("X1")],
+            [entry("C1", closed=True), entry("C2", closed=True)],
+        ),
+    )
+    assert _repair(path) == 0
+    lines = path.read_text().split("\n")
+    heads = [ln for ln in lines[lines.index("## Closed") :] if ln.startswith("- [")]
+    assert ["X1" in heads[0], "C1" in heads[1], "C2" in heads[2]] == [True] * 3
+
+
+def test_repair_open_side_lands_above_existing_open(tmp_path):
+    path = write_doc(
+        tmp_path,
+        make_doc(
+            [entry("A1"), entry("A2")],
+            [unticked_below("O1")],
+        ),
+    )
+    assert _repair(path) == 0
+    lines = path.read_text().split("\n")
+    heads = [ln for ln in lines[: lines.index("## Closed")] if ln.startswith("- [")]
+    assert ["O1" in heads[0], "A1" in heads[1], "A2" in heads[2]] == [True] * 3
+
+
+def test_repair_second_run_moves_nothing_and_writes_nothing(tmp_path, capsys):
+    path = _stray_fixture(tmp_path)
+    assert _repair(path) == 0
+    capsys.readouterr()
+    snap = tmp_path / "backlog-snapshots" / "BACKLOG.prev"
+    bytes_after = path.read_bytes()
+    mtime = path.stat().st_mtime_ns
+    snap_bytes = snap.read_bytes()
+    snap_mtime = snap.stat().st_mtime_ns
+    assert _repair(path) == 0
+    out = capsys.readouterr().out.rstrip("\n").split("\n")
+    assert out == [f"{path}: nothing to move; 2 open, 2 closed"]
+    assert path.read_bytes() == bytes_after
+    assert path.stat().st_mtime_ns == mtime
+    assert snap.read_bytes() == snap_bytes
+    assert snap.stat().st_mtime_ns == snap_mtime
+
+
+def test_repair_on_a_clean_file_creates_no_snapshot_directory(tmp_path, capsys):
+    path = write_doc(tmp_path, make_doc([entry("A")], [entry("C", closed=True)]))
+    before = path.read_bytes()
+    assert _repair(path) == 0
+    assert capsys.readouterr().out.rstrip("\n") == (
+        f"{path}: nothing to move; 1 open, 1 closed"
+    )
+    assert path.read_bytes() == before
+    assert not (tmp_path / "backlog-snapshots").exists()
+
+
+@pytest.mark.parametrize("bad", ["- [X] x", "- [] x", "- [x]nospace"])
+@pytest.mark.parametrize("with_stray", [False, True])
+def test_repair_refuses_malformed_heads(tmp_path, capsys, bad, with_stray):
+    opens = [entry("A"), [bad]]
+    if with_stray:
+        opens.append(ticked_in_place("S"))
+    path = write_doc(tmp_path, make_doc(opens, [entry("C", closed=True)]))
+    before = path.read_bytes()
+    assert _repair(path) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("backlog: repair refused: 1 head line(s) are neither ")
+    assert "backlog: backlog:" not in err
+    assert f"'{bad}'" in err
+    assert path.read_bytes() == before
+    assert not (tmp_path / "backlog-snapshots").exists()
+
+
+@pytest.mark.parametrize("count,more", [(5, False), (6, True)])
+def test_repair_malformed_listing_caps_at_five(tmp_path, capsys, count, more):
+    opens = [entry("A")] + [["- [X] bad"] for _ in range(count)]
+    path = write_doc(tmp_path, make_doc(opens, [entry("C", closed=True)]))
+    before = path.read_bytes()
+    assert _repair(path) == 1
+    err = capsys.readouterr().err
+    assert f"{count} head line(s)" in err
+    assert err.count("line ") - 0 >= 5
+    if more:
+        assert err.rstrip("\n").endswith(" (+1 more)")
+    else:
+        assert "more)" not in err
+    assert path.read_bytes() == before
+
+
+def test_a_link_list_line_is_not_malformed_for_repair(tmp_path, capsys):
+    path = write_doc(
+        tmp_path,
+        make_doc(
+            [entry("A", body=["- [see](link)"]), ticked_in_place("S")],
+            [entry("C", closed=True)],
+        ),
+    )
+    assert _repair(path) == 0
+    assert "- [see](link)" in path.read_text()
+
+
+def test_repair_refuses_duplicate_or_reversed_headings(tmp_path, capsys):
+    dup = make_doc([ticked_in_place("S")], [entry("C", closed=True)]) + "\n## Closed\n"
+    path = write_doc(tmp_path, dup)
+    before = path.read_bytes()
+    assert _repair(path) == 1
+    err = capsys.readouterr().err
+    assert err.startswith(
+        "backlog: repair refused: the file has duplicate or reversed "
+    )
+    assert "## Closed at line" in err
+    assert path.read_bytes() == before
+
+    rev = write_doc(
+        tmp_path,
+        "## Closed\n\n- [x] 2026-07-01 — **C — c.**\n\n## Open\n\n"
+        "- [ ] 2026-07-01 — **A — a.**\n",
+        name="R.md",
+    )
+    before = rev.read_bytes()
+    assert _repair(rev) == 1
+    err = capsys.readouterr().err
+    assert "## Open below ## Closed" in err
+    assert "backlog: backlog:" not in err
+    assert rev.read_bytes() == before
+
+
+def test_repair_keeps_intro_text_under_the_heading(tmp_path):
+    text = (
+        "## Open\n\n- [ ] 2026-07-01 — **A — a.**\n- [x] 2026-07-01 — **S — s.**\n\n"
+        "## Closed\n\nIntro prose under closed.\n\n"
+        "- [x] 2026-07-01 — **C — c.**\n"
+    )
+    path = write_doc(tmp_path, text)
+    assert _repair(path) == 0
+    lines = path.read_text().split("\n")
+    closed_at = lines.index("## Closed")
+    intro = lines.index("Intro prose under closed.")
+    s_at = lines.index("- [x] 2026-07-01 — **S — s.**")
+    c_at = lines.index("- [x] 2026-07-01 — **C — c.**")
+    assert closed_at < intro < s_at < c_at
+
+
+def _tamper_fixture(tmp_path):
+    return write_doc(
+        tmp_path,
+        make_doc(
+            [
+                entry("A"),
+                ticked_in_place("S1", body=["  c1", "  c2"]),
+                ticked_in_place("S2", body=["  d1"]),
+            ],
+            [entry("C", closed=True)],
+        ),
+    )
+
+
+def _patched_relocate(monkeypatch, tamper):
+    real = backlog._relocate
+
+    def wrapper(lines, moved_x, moved_o):
+        return tamper(real(lines, moved_x, moved_o))
+
+    monkeypatch.setattr(backlog, "_relocate", wrapper)
+
+
+def _assert_block_check_refuses(path, capsys):
+    before = path.read_bytes()
+    assert _repair(path) == 1
+    err = capsys.readouterr().err
+    assert "repair split, reordered or altered an entry block" in err
+    assert "backlog: backlog:" not in err
+    assert path.read_bytes() == before
+    assert not (tmp_path_snapshots(path)).exists()
+
+
+def tmp_path_snapshots(path):
+    return path.parent / "backlog-snapshots"
+
+
+def test_repair_block_check_refuses_a_split(tmp_path, monkeypatch, capsys):
+    def tamper(lines):
+        at = lines.index("  c1")
+        return [*lines[:at], "## Misc", *lines[at:]]
+
+    path = _tamper_fixture(tmp_path)
+    _patched_relocate(monkeypatch, tamper)
+    _assert_block_check_refuses(path, capsys)
+
+
+def test_repair_block_check_refuses_a_reorder(tmp_path, monkeypatch, capsys):
+    def tamper(lines):
+        spans = entry_blocks(lines)
+        by_head = {lines[s]: (s, e) for s, e in spans}
+        (s1, e1) = by_head["- [x] 2026-07-01 — **S1 — headline for S1.**"]
+        (s2, e2) = by_head["- [x] 2026-07-01 — **S2 — headline for S2.**"]
+        assert e1 <= s2
+        return [
+            *lines[:s1],
+            *lines[s2:e2],
+            *lines[e1:s2],
+            *lines[s1:e1],
+            *lines[e2:],
+        ]
+
+    path = _tamper_fixture(tmp_path)
+    _patched_relocate(monkeypatch, tamper)
+    _assert_block_check_refuses(path, capsys)
+
+
+def test_repair_block_check_refuses_an_altered_continuation_line(
+    tmp_path, monkeypatch, capsys
+):
+    def tamper(lines):
+        return ["  c1 CHANGED" if ln == "  c1" else ln for ln in lines]
+
+    path = _tamper_fixture(tmp_path)
+    _patched_relocate(monkeypatch, tamper)
+    _assert_block_check_refuses(path, capsys)
+
+
+def test_repair_declaring_nothing_makes_save_refuse_an_altered_document(tmp_path):
+    # Calls only existing machinery, so it passes before and after the repair change: a guard
+    # on `save()`'s declaration check, which is what `repair` leans on by declaring nothing.
+    path = _stray_fixture(tmp_path)
+    before = path.read_bytes()
+    bl = Backlog(path)
+    altered = ["  one CHANGED" if ln == "  one" else ln for ln in bl.lines]
+    bl._stage(altered, collections.Counter(), collections.Counter())
+    with pytest.raises(ShapeViolation, match="edit lost lines it did not declare"):
+        bl.save()
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("seed", range(200))
+def test_repair_is_a_pure_reorder_on_generated_documents(seed, tmp_path, capsys):
+    rng = random.Random(seed)
+    doc, _tokens = random_doc(rng)
+    lines = doc.split("\n")
+    closed_at = lines.index("## Closed")
+    open_heads = [
+        i for i, ln in enumerate(lines[:closed_at]) if ln.startswith("- [ ] ")
+    ]
+    closed_heads = [
+        i for i in range(closed_at, len(lines)) if lines[i].startswith("- [x] ")
+    ]
+    for i in rng.sample(open_heads, min(len(open_heads), rng.randint(0, 3))):
+        lines[i] = lines[i].replace("- [ ]", "- [x]", 1)
+    for i in rng.sample(closed_heads, min(len(closed_heads), rng.randint(0, 3))):
+        lines[i] = lines[i].replace("- [x]", "- [ ]", 1)
+    # Give closed-side entries bodies, duplicating lines the open side also uses.
+    out = []
+    for i, ln in enumerate(lines):
+        out.append(ln)
+        if i > closed_at and ln.startswith("- ["):
+            out.extend(["  shared line", f"  closed body {i}"][: rng.randint(0, 2)])
+    text = "\n".join(out)
+    path = write_doc(tmp_path, text, name=f"R{seed}.md")
+    before_lines = text.split("\n")
+    before_blocks = _trimmed_blocks(before_lines)
+    b_closed = before_lines.index("## Closed")
+    strays_x = [
+        b for s, b in before_blocks if s < b_closed and b[0].startswith("- [x] ")
+    ]
+    strays_o = [
+        b for s, b in before_blocks if s > b_closed and b[0].startswith("- [ ] ")
+    ]
+    above = [b for s, b in before_blocks if s < b_closed and b[0].startswith("- [ ] ")]
+    below = [b for s, b in before_blocks if s > b_closed and b[0].startswith("- [x] ")]
+
+    if strays_x or strays_o:
+        rc_before, out_before = _status(path, capsys)
+        assert rc_before == 1
+        assert f"stray-closed-above: {len(strays_x)}" in out_before
+        assert f"stray-open-below: {len(strays_o)}" in out_before
+        assert out_before[-1] == "RESULT: BROKEN rc=1"
+
+    assert _repair(path) == 0
+    capsys.readouterr()
+    rc_after, out_after = _status(path, capsys)
+    assert rc_after == 0
+    assert out_after[-1] == "RESULT: CLEAN rc=0"
+    after = path.read_text()
+    assert nonblank(text) == nonblank(after)
+    after_lines = after.split("\n")
+    after_blocks = _trimmed_blocks(after_lines)
+    assert collections.Counter(b for _, b in before_blocks) == collections.Counter(
+        b for _, b in after_blocks
+    )
+    a_closed = after_lines.index("## Closed")
+    assert [b for s, b in after_blocks if s < a_closed] == strays_o + above
+    assert [b for s, b in after_blocks if s > a_closed] == strays_x + below
+    assert not [ln for ln in after_lines[:a_closed] if ln.startswith("- [x]")]
+    assert not [ln for ln in after_lines[a_closed:] if ln.startswith("- [ ]")]
+    again = path.read_bytes()
+    assert _repair(path) == 0
+    assert path.read_bytes() == again
+
+
+def test_repair_cli_exit_code_through_a_real_process(tmp_path):
+    path = _stray_fixture(tmp_path)
+    cmd = [sys.executable, backlog.__file__, "--path", str(path), "repair"]
+    first = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    assert first.returncode == 0, first.stderr
+    assert first.stdout.rstrip("\n").split("\n")[-1].startswith(str(path))
+    assert "repaired, moved 1" in first.stdout
+    second = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    assert second.returncode == 0
+    assert "nothing to move" in second.stdout
+
+
+def test_every_other_subcommand_still_refuses_while_a_stray_exists(
+    tmp_path, monkeypatch, capsys
+):
+    stamped_tiered = [
+        "- [ ] 2026-07-01 — *promoted 2026-07-28* — **HIGH — A — headline for A.**"
+    ]
+    cases = {
+        "add": (["add"], "- [ ] 2026-11-03 — **N — new.**"),
+        "append": (["append", "A —"], "  note"),
+        "close": (["close", "A —"], "  note"),
+        "promote": (["promote", "A —", "--date", "2026-11-03"], ""),
+        "unpromote": (["unpromote", "A —", "--date", "2026-11-03"], "  note"),
+        "retier": (
+            [
+                "retier",
+                "A —",
+                "--from",
+                "HIGH",
+                "--to",
+                "LOW",
+                "--reason",
+                "why",
+                "--date",
+                "2026-11-03",
+            ],
+            "",
+        ),
+        "amend-head": (["amend-head", "B —", "--date", "2026-07-01"], ""),
+    }
+    for name, (argv, note) in cases.items():
+        sub = tmp_path / name
+        sub.mkdir()
+        path = write_doc(
+            sub,
+            make_doc(
+                [stamped_tiered, ticked_in_place("S"), undated_entry("B")],
+                [entry("C", closed=True)],
+            ),
+        )
+        before = path.read_bytes()
+        _stdin(monkeypatch, note)
+        rc = backlog.main(["--path", str(path), *argv])
+        err = capsys.readouterr().err
+        assert rc == 1, name
+        assert "section invariant broken" in err, (name, err)
+        assert path.read_bytes() == before, name
+
+
+# ---------- status ----------
+
+_HINT = (
+    "backlog: run 'backlog.py --path PATH repair' to relocate the stray entries "
+    "(see 'status')"
+)
+
+
+def _status(path, capsys):
+    rc = backlog.main(["--path", str(path), "status"])
+    return rc, capsys.readouterr().out.rstrip("\n").split("\n")
+
+
+def _fingerprint(path):
+    return (
+        path.read_bytes(),
+        path.stat().st_mtime_ns,
+        sorted(p.name for p in path.parent.iterdir()),
+    )
+
+
+def _lineno(path, head):
+    return path.read_text().split("\n").index(head) + 1
+
+
+def _status_summary(path, o, c, x, y, m, headings):
+    return [
+        f"backlog status: {path}",
+        f"open: {o}",
+        f"closed: {c}",
+        f"stray-closed-above: {x}",
+        f"stray-open-below: {y}",
+        f"malformed-heads: {m}",
+        f"headings: {headings}",
+    ]
+
+
+def test_status_clean_prints_the_exact_lines_and_rc_zero(tmp_path, capsys):
+    path = write_doc(tmp_path, make_doc([entry("A")], [entry("C", closed=True)]))
+    before = _fingerprint(path)
+    rc, out = _status(path, capsys)
+    assert rc == 0
+    assert out == [*_status_summary(path, 1, 1, 0, 0, 0, "ok"), "RESULT: CLEAN rc=0"]
+    assert _fingerprint(path) == before
+
+
+def test_status_reports_a_closed_entry_above_the_boundary(tmp_path, capsys):
+    path = _stray_fixture(tmp_path)
+    head = entry("S", closed=True)[0]
+    before = _fingerprint(path)
+    rc, out = _status(path, capsys)
+    assert rc == 1
+    assert out == [
+        *_status_summary(path, 2, 1, 1, 0, 0, "ok"),
+        f"stray-closed-above line {_lineno(path, head)}: {head[6:76]}",
+        "RESULT: BROKEN rc=1",
+    ]
+    assert _fingerprint(path) == before
+
+
+def test_status_reports_an_open_entry_below_the_boundary(tmp_path, capsys):
+    path = write_doc(
+        tmp_path,
+        make_doc([entry("A")], [entry("C", closed=True), unticked_below("U")]),
+    )
+    head = entry("U")[0]
+    before = _fingerprint(path)
+    rc, out = _status(path, capsys)
+    assert rc == 1
+    assert out == [
+        *_status_summary(path, 1, 1, 0, 1, 0, "ok"),
+        f"stray-open-below line {_lineno(path, head)}: {head[6:76]}",
+        "RESULT: BROKEN rc=1",
+    ]
+    assert _fingerprint(path) == before
+
+
+def test_status_reports_a_malformed_head_capped_at_seventy(tmp_path, capsys):
+    bad = "- [X] " + "m" * 80
+    path = write_doc(tmp_path, make_doc([entry("A"), [bad]], [entry("C", closed=True)]))
+    before = _fingerprint(path)
+    rc, out = _status(path, capsys)
+    assert rc == 1
+    assert out == [
+        *_status_summary(path, 1, 1, 0, 0, 1, "ok"),
+        f"malformed-head line {_lineno(path, bad)}: {bad[:70]}",
+        "RESULT: BROKEN rc=1",
+    ]
+    assert _fingerprint(path) == before
+
+
+def test_status_reports_a_missing_closed_heading(tmp_path, capsys):
+    text = make_doc([entry("A")]).replace("## Closed\n", "")
+    path = write_doc(tmp_path, text)
+    before = _fingerprint(path)
+    rc, out = _status(path, capsys)
+    assert rc == 1
+    assert out == [
+        *_status_summary(path, 1, 0, 0, 0, 0, "missing: ## Closed"),
+        "RESULT: BROKEN rc=1",
+    ]
+    assert _fingerprint(path) == before
+
+
+def test_status_reports_a_duplicate_closed_heading(tmp_path, capsys):
+    text = make_doc([entry("A")], [entry("C", closed=True)]) + "\n## Closed\n"
+    path = write_doc(tmp_path, text)
+    before = _fingerprint(path)
+    at = _lineno(path, "## Closed")
+    dup = len(text.split("\n")) - 2  # 0-based index of the second heading
+    rc, out = _status(path, capsys)
+    assert rc == 1
+    assert out == [
+        *_status_summary(
+            path, 1, 1, 0, 0, 0, f"duplicate: ## Closed at line {dup + 1}"
+        ),
+        "RESULT: BROKEN rc=1",
+    ]
+    assert at < dup + 1
+    assert _fingerprint(path) == before
+
+
+def test_status_reports_open_heading_below_closed(tmp_path, capsys):
+    text = "\n".join(
+        ["## Closed", "", *entry("C", closed=True), "", "## Open", "", *entry("A"), ""]
+    )
+    path = write_doc(tmp_path, text)
+    before = _fingerprint(path)
+    rc, out = _status(path, capsys)
+    assert rc == 1
+    assert out[6] == "headings: order: ## Open at line 5 below ## Closed at line 1"
+    assert out[-1] == "RESULT: BROKEN rc=1"
+    assert _fingerprint(path) == before
+
+
+def test_status_unreadable_is_rc_three(tmp_path, capsys):
+    missing = tmp_path / "nope.md"
+    before = sorted(p.name for p in tmp_path.iterdir())
+    rc, out = _status(missing, capsys)
+    assert rc == 3
+    assert out[-1] == "RESULT: UNREADABLE rc=3"
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+    binary = tmp_path / "bin.md"
+    binary.write_bytes(b"\xff\xfe\x00bad")
+    before = sorted(p.name for p in tmp_path.iterdir())
+    rc = backlog.main(["--path", str(binary), "status"])
+    cap = capsys.readouterr()
+    assert rc == 3
+    assert cap.out.rstrip("\n").split("\n")[-1] == "RESULT: UNREADABLE rc=3"
+    assert cap.err.startswith("backlog: ")
+    assert "backlog: backlog:" not in cap.err
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+
+def test_status_counts_match_the_whole_file_grep_identity(tmp_path, capsys):
+    # `- [ ]x` above the boundary counts as open under startswith, not under HEAD_RE.
+    path = write_doc(
+        tmp_path,
+        make_doc(
+            [entry("A"), ["- [ ]x loose"]],
+            [entry("C", closed=True), unticked_below("U")],
+        ),
+    )
+    rc, out = _status(path, capsys)
+    counts = {ln.split(": ")[0]: int(ln.split(": ")[1]) for ln in out[1:6]}
+    whole = sum(1 for ln in path.read_text().split("\n") if ln.startswith("- [ ]"))
+    assert counts["open"] + counts["stray-open-below"] == whole
+    assert counts["open"] == 2
+    assert counts["stray-open-below"] == 1
+
+
+@pytest.mark.parametrize("n,capped", [(70, False), (71, True)])
+def test_status_title_is_capped_at_seventy_characters(tmp_path, capsys, n, capped):
+    head = "- [x] " + "T" * n
+    path = write_doc(
+        tmp_path,
+        make_doc([entry("A"), [head]], [entry("C", closed=True)]),
+    )
+    rc, out = _status(path, capsys)
+    detail = [ln for ln in out if ln.startswith("stray-closed-above line")]
+    assert len(detail) == 1
+    title = detail[0].split(": ", 1)[1]
+    assert len(title) == 70
+    assert title == head[6:76]
+    assert (len(head) - 6 > 70) == capped
+    assert _repair(path) == 0
+    moved = [ln for ln in capsys.readouterr().out.split("\n") if ln.startswith("moved")]
+    assert len(moved) == 1
+    assert moved[0].split(": ", 2)[2] == head[6:76]
+
+
+def test_status_through_a_real_process_exits_with_the_verdict(tmp_path):
+    clean = write_doc(
+        tmp_path, make_doc([entry("A")], [entry("C", closed=True)]), name="clean.md"
+    )
+    broken = _stray_fixture(tmp_path)
+    for path, rc, last in ((clean, 0, "CLEAN"), (broken, 1, "BROKEN")):
+        before = _fingerprint(path)
+        proc = subprocess.run(
+            [sys.executable, backlog.__file__, "--path", str(path), "status"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == rc, proc.stderr
+        assert proc.stdout.rstrip("\n").split("\n")[-1] == f"RESULT: {last} rc={rc}"
+        assert _fingerprint(path) == before
+
+
+def test_the_repair_hint_is_printed_for_a_pre_existing_stray(
+    tmp_path, monkeypatch, capsys
+):
+    path = _stray_fixture(tmp_path)
+    before = path.read_bytes()
+    _stdin(monkeypatch, "  note")
+    assert (
+        backlog.main(
+            [
+                "--path",
+                str(path),
+                "append",
+                "A —",
+            ]
+        )
+        == 1
+    )
+    err = capsys.readouterr().err.rstrip("\n").split("\n")
+    assert err[0].startswith("backlog: section invariant broken")
+    assert err[-1] == _HINT
+    assert len(err) == 2
+    assert path.read_bytes() == before
+
+
+def test_the_repair_hint_is_not_printed_when_the_operation_creates_the_stray(
+    tmp_path, monkeypatch, capsys
+):
+    # A clean file where the operation itself creates the stray: no hint.
+    clean_dir = tmp_path / "clean"
+    clean_dir.mkdir()
+    clean = write_doc(clean_dir, make_doc([entry("A")], [entry("C", closed=True)]))
+
+    def stage_a_stray(self, text):
+        lines = self.lines
+        at = lines.index("## Open") + 1
+        ticked = entry("Z", closed=True)[0]
+        self._stage(
+            [*lines[: at + 1], ticked, "", *lines[at + 1 :]],
+            collections.Counter(),
+            collections.Counter([ticked]),
+        )
+
+    monkeypatch.setattr(Backlog, "add_entry", stage_a_stray)
+    _stdin(monkeypatch, entry("N")[0])
+    assert backlog.main(["--path", str(clean), "add"]) == 1
+    err = capsys.readouterr().err
+    assert "section invariant broken" in err
+    assert "repair" not in err
+    assert "backlog: backlog:" not in err
+    # `repair` is deliberately not asserted here: it cannot reach `SectionInvariantBroken`, so
+    # "repair never prints the hint" cannot fail and would pin nothing.
+
+
+def test_main_reports_a_non_utf8_file_without_a_traceback(
+    tmp_path, monkeypatch, capsys
+):
+    path = tmp_path / "BACKLOG.md"
+    path.write_bytes(b"\xff\xfe\x00not utf-8")
+    _stdin(monkeypatch, "  note")
+    assert backlog.main(["--path", str(path), "append", "A —"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("backlog: ")
+    assert "backlog: backlog:" not in err
+
+
+def test_the_skill_md_status_and_repair_commands_run_as_written(tmp_path):
+    skill = Path(backlog.__file__).parent / "SKILL.md"
+    lines = skill.read_text().splitlines()
+    found = {}
+    for verb in ("status", "repair"):
+        marker = f'backlog.py --path "$B" {verb}'
+        hits = [ln for ln in lines if marker in ln]
+        assert len(hits) == 1, f"expected one documented {verb} line, got {hits}"
+        found[verb] = hits[0]
+    path = _stray_fixture(tmp_path)
+
+    def run(verb):
+        argv = shlex.split(found[verb], comments=True)
+        assert argv[0] == "~/.claude/skills/debrief/backlog.py"
+        assert argv[1:3] == ["--path", "$B"]
+        argv = [sys.executable, backlog.__file__, "--path", str(path), *argv[3:]]
+        return subprocess.run(argv, shell=False, capture_output=True, text=True)
+
+    assert run("status").returncode == 1
+    assert run("repair").returncode == 0
+    assert run("status").returncode == 0
+
+
+def test_repair_keeps_a_blank_line_before_each_heading_after_a_stray_above_one(
+    tmp_path, capsys
+):
+    # The stray is jammed against the entry above it, so the blank line that ends the Open
+    # section belongs to the stray and leaves with it.
+    jammed = make_doc([[*entry("O"), *ticked_in_place("S")]])
+    path = write_doc(tmp_path, jammed)
+    before = path.read_text()
+    assert _repair(path) == 0
+    capsys.readouterr()
+    text = path.read_text()
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.startswith("## "):
+            assert i > 0 and lines[i - 1] == "", f"no blank before {ln!r}"
+    assert nonblank(text) == nonblank(before)
+    again = path.read_bytes()
+    assert _repair(path) == 0
+    assert "nothing to move" in capsys.readouterr().out
+    assert path.read_bytes() == again
