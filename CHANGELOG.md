@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.156.1 — 2026-11-04
+- fix(style-check): block only shellcheck notes an edit introduces
+
 ## v0.156.0 — 2026-11-03
 - feat(claude-md): add the partial-landing hazard for bulk writers
 
