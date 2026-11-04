@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.154.3 — 2026-11-03
+- test(backlog): add mutants for repair, status, heads, dates
+
 ## v0.154.2 — 2026-11-03
 - test(backlog): cover repair, status, head forms, dates and collisions
 

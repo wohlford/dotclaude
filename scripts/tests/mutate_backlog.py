@@ -26,10 +26,11 @@ evidence about the SUITE, not about the subject: strengthen the suite row, never
 mutation.
 
 `mutate.py` refuses any anchor that does not appear EXACTLY ONCE in the file. Two consequences
-worth knowing before editing this list: `if _is_head(ln):` is deliberately absent because it occurs
-twice, and any new message text added to the subject must not duplicate a phrase anchored here —
-`"unrecognized entry head, refusing to guess: "` already occurs three times and is unusable as an
-anchor for that reason.
+worth knowing before editing this list: anchors are SUBSTRING counts over the whole file, so
+indentation never disambiguates two lines (a bare `return 1`, which occurs several times in
+`main()`, is absent for that reason), and any new message text added to the subject must not
+duplicate a phrase anchored here — `"unrecognized entry head, refusing to guess: "` already occurs
+three times and is unusable as an anchor for that reason.
 """
 
 from __future__ import annotations
@@ -111,9 +112,8 @@ MUTATIONS = [
     ),
     mutate.Mutation(
         "no-bold-guard-off: `amend_head` stops requiring the headline to open with '**' before "
-        "inserting a tier inside it. Measured: 23 of 91 open entries carry a plain 'TIER — ' head, "
-        "and without this guard each would be rewritten to '**MEDIUM — DIUM — …', eating two "
-        "characters of real text",
+        "inserting a tier inside it. The fixture is a plain head with no tier; without this guard "
+        "it would be rewritten to '**MEDIUM — DIUM — …', eating two characters of real text",
         '            if not rest.startswith("**"):',
         "            if False:",
     ),
@@ -213,8 +213,9 @@ MUTATIONS = [
         "        if False:",
     ),
     mutate.Mutation(
-        "no-tier-guard-off: `retier` stops refusing a head with no bold tier to change. 23 of the "
-        "91 live open entries are that shape",
+        "no-tier-guard-off: `retier` stops refusing a head with no bold tier to change: the "
+        "legacy no-tier shape and the parenthetical shape (3 of 230 live entries are "
+        "parenthetical)",
         "        if located is None:",
         "        if False:",
     ),
@@ -316,6 +317,235 @@ MUTATIONS = [
         "`tier` attribute",
         '        elif args.command == "unpromote":',
         '        elif args.command == "unpromote-disabled":',
+    ),
+    # ---- repair: relocating stray blocks must move exactly the blocks, in order, and only then
+    mutate.Mutation(
+        "repair-block-slice-truncated: `repair` lifts only the first line of each stray closed "
+        "block, so a multi-line entry is split and its continuation lines are left behind",
+        "closed_blocks = [lines[s : _trimmed_end(lines, s, e)] for s, e in moved_x]",
+        "closed_blocks = [lines[s : s + 1] for s, e in moved_x]",
+    ),
+    mutate.Mutation(
+        "repair-block-check-off: `repair` stops comparing the staged block sequence with the one "
+        "it expected, so a relocation that reorders, drops or duplicates a block writes cleanly",
+        "        if _block_sequence(staged) != expected:",
+        "        if False:",
+    ),
+    mutate.Mutation(
+        "repair-order-reversed: `repair` relocates the stray closed blocks in reverse order, so "
+        "the history of the Closed section is silently inverted",
+        "closed_blocks = [lines[s : _trimmed_end(lines, s, e)] for s, e in moved_x]",
+        "closed_blocks = [lines[s : _trimmed_end(lines, s, e)] for s, e in reversed(moved_x)]",
+    ),
+    mutate.Mutation(
+        "repair-bottom-insert-closed: `repair` appends relocated closed blocks at the very end of "
+        "the Closed section instead of at its insertion point, past any trailing prose",
+        "    at = _insert_at(rest, rest.index(CLOSED_HEADING))",
+        "    at = _section_end(rest, rest.index(CLOSED_HEADING))",
+    ),
+    mutate.Mutation(
+        "repair-bottom-insert-open: `repair` appends relocated open blocks at the very end of the "
+        "Open section instead of at its insertion point, past any trailing prose",
+        "    at = _insert_at(rest, rest.index(OPEN_HEADING))",
+        "    at = _section_end(rest, rest.index(OPEN_HEADING))",
+    ),
+    mutate.Mutation(
+        "repair-skips-below: `repair` stops collecting stray open blocks that sit BELOW the "
+        "Closed heading, so the commonest misplacement is reported repaired and is not",
+        "        moved_o = _stray_spans(self.lines, closed_at, below=True)",
+        "        moved_o = []",
+    ),
+    mutate.Mutation(
+        "repair-malformed-off: `repair` stops refusing a file holding a malformed checkbox line, "
+        "so it relocates blocks around a line it cannot classify",
+        "        if scan.malformed:",
+        "        if False:",
+    ),
+    mutate.Mutation(
+        "repair-heading-check-off: `repair` stops refusing a file with a duplicated or reversed "
+        "section heading, so it picks a section to repair in a file whose layout is unknown",
+        "        if scan.extra_headings or scan.order_reversed:",
+        "        if False:",
+    ),
+    mutate.Mutation(
+        "repair-always-saves: `main()` stops skipping `save()` when `repair` moved nothing, so a "
+        "clean file is rewritten and gains a snapshot. DEVIATION from the spec's table, which "
+        "anchored this on `if not moved_x and not moved_o:` inside `repair()`: that guard only "
+        "returns early, and without it `repair()` stages an unchanged document and returns [], "
+        "so that mutant is equivalent. Anchored on the `main()` guard instead, per the controller",
+        '        if args.command == "repair" and not moved:',
+        "        if False:",
+    ),
+    # ---- status: read-only, and its exit code is the verdict
+    mutate.Mutation(
+        "status-rc-always-0: `status_report` exits 0 whatever it found, so a file with strays or "
+        "malformed lines reads as clean to any caller that checks the exit code",
+        "    rc = 0 if clean else 1",
+        "    rc = 0",
+    ),
+    mutate.Mutation(
+        "status-writes: `status` constructs a `Backlog` and saves the unchanged file, breaking the "
+        "read-only promise: the file is rewritten and a snapshot directory appears",
+        "        text = Path(path).read_text()",
+        "        text = Path(path).read_text(); Backlog(path).save()",
+    ),
+    mutate.Mutation(
+        "status-unicode-uncaught: `status` stops catching UnicodeDecodeError, so a file that is "
+        "not valid UTF-8 crashes with a traceback instead of reporting an unreadable file",
+        "    except (OSError, UnicodeDecodeError) as exc:",
+        "    except OSError as exc:",
+    ),
+    mutate.Mutation(
+        "status-open-count-head-re: `status` counts only entries whose head matches HEAD_RE, so "
+        "an open entry with a malformed or undated head vanishes from the count",
+        'open_count = sum(1 for ln in lines[:boundary] if ln.startswith("- [ ]"))',
+        'open_count = sum(1 for ln in lines[:boundary] if HEAD_RE.match(ln) and ln.startswith("- [ ]"))',
+    ),
+    # ---- malformed checkbox lines: refused on every write path that could swallow them
+    mutate.Mutation(
+        "malformed-predicate-widened: the checkbox-shaped predicate matches any text inside the "
+        "brackets, so a body line such as `- [see below]` is classified as a malformed head",
+        '_CHECKBOX_SHAPED_RE = re.compile(r"^- \\[.?\\]")',
+        '_CHECKBOX_SHAPED_RE = re.compile(r"^- \\[.*\\]")',
+    ),
+    mutate.Mutation(
+        "note-malformed-allowed: `append_note` stops refusing a note whose first line is a "
+        "malformed checkbox head, so the note is written as a body line that reads as an entry",
+        "            if _is_malformed_head(ln):",
+        "            if False:",
+    ),
+    mutate.Mutation(
+        "add-malformed-allowed: `add` stops refusing an entry block containing a malformed "
+        "checkbox line, so it lands inside the open section as a phantom entry",
+        "            if _is_malformed_head(line):",
+        "            if False:",
+    ),
+    # ---- head collisions in both directions, and the blank line above a heading after repair
+    mutate.Mutation(
+        "collision-one-way: `_require_addressable` refuses only a new head contained in another "
+        "open head, so a new head that CONTAINS another open head is accepted and leaves that "
+        "other entry permanently ambiguous",
+        "and (new in staged[s] or staged[s] in new)",
+        "and new in staged[s]",
+    ),
+    mutate.Mutation(
+        "relocate-drops-heading-blank: `_relocate` stops restoring the blank line before a "
+        "heading when the lifted block carried it away, so an open entry abuts `## Closed`",
+        'if ln.startswith("## ") and i - 1 in dropped and rest and rest[-1].strip():',
+        "if False:",
+    ),
+    # ---- the repair hint
+    mutate.Mutation(
+        "hint-unconditional: the repair hint is printed after every non-repair command, even when "
+        "the file has no strays, so the operator is told to repair a healthy file",
+        '        if args.command != "repair" and _has_strays(backlog._original):',
+        '        if args.command != "repair":',
+    ),
+    mutate.Mutation(
+        "hint-never: the repair hint is never printed, so strays are never surfaced to an "
+        "operator who has not run `status`",
+        '        if args.command != "repair" and _has_strays(backlog._original):',
+        "        if False:",
+    ),
+    # ---- head forms: tier located in bold and plain heads, parenthetical tiers refused
+    mutate.Mutation(
+        "tier-regex-bold-only: the tier regex stops accepting a plain `TIER — ` head, so a plain "
+        "head reads as having no tier",
+        r'rf"^(?:\*\*)?(?P<tier>',
+        r'rf"^\*\*(?P<tier>',
+    ),
+    mutate.Mutation(
+        "paren-tier-guard-off: `amend_head` stops refusing a head whose tier is parenthetical, "
+        "so it inserts a second tier beside the existing one",
+        "            if _PAREN_TIER_RE.search(rest):",
+        "            if False:",
+    ),
+    mutate.Mutation(
+        "retier-paren-branch-true: `retier` treats every head as parenthetical, so an ordinary "
+        "head is refused as one",
+        "            if paren:",
+        "            if True:",
+    ),
+    mutate.Mutation(
+        "retier-paren-branch-false: `retier` never treats a head as parenthetical, so a "
+        "parenthetical tier is rewritten as though it were a bold one",
+        "            if paren:",
+        "            if False:",
+    ),
+    mutate.Mutation(
+        "tier-span-early: the located tier span starts two characters early, so a retier eats "
+        "the characters before the tier",
+        '    return base + located.start("tier"), base + located.end("tier")',
+        '    return base + located.start("tier") - 2, base + located.end("tier")',
+    ),
+    mutate.Mutation(
+        "lead-clause-off: `retier` stops checking that the text before the tier is unchanged "
+        "after the rewrite, so a retier that disturbs the head's lead passes",
+        '        if check["rest"][: rechecked.start("tier")] != lead:',
+        "        if False:",
+    ),
+    # ---- calendar-date validation in the library
+    mutate.Mutation(
+        "date-promote-off: `promote` stops validating its date, so a malformed date is stamped "
+        "into the entry",
+        '        _require_date(date, "promote")',
+        "        pass",
+    ),
+    mutate.Mutation(
+        "date-unpromote-off: `unpromote` stops validating its date, so a malformed date is "
+        "stamped into the withdrawal record",
+        '        _require_date(date, "unpromote")',
+        "        pass",
+    ),
+    mutate.Mutation(
+        "date-retier-off: `retier` stops validating its date, so a malformed date is written "
+        "into the retier stamp",
+        '        _require_date(date, "retier")',
+        "        pass",
+    ),
+    mutate.Mutation(
+        "date-amend-off: `amend_head` stops validating an optional date when one is given, so a "
+        "malformed date is written into the head",
+        '        _require_date(date, "amend-head", optional=True)',
+        "        pass",
+    ),
+    mutate.Mutation(
+        "date-add-off: `add` stops validating the head date of a new entry, so an entry with an "
+        "impossible date is appended",
+        '        _require_date(lines[0][6:16], "add", label="head date")',
+        "        pass",
+    ),
+    mutate.Mutation(
+        "date-optional-truthiness: an optional date is skipped when merely falsy, so an empty "
+        "string passes as 'not supplied' instead of being refused",
+        "    if optional and value is None:",
+        "    if optional and not value:",
+    ),
+    mutate.Mutation(
+        "date-calendar-off: the date check stops asking the calendar, so a well-shaped but "
+        "impossible date such as 2026-02-30 is accepted",
+        "        datetime.date.fromisoformat(value)",
+        "        pass",
+    ),
+    mutate.Mutation(
+        "date-shape-off: the date check drops the strict YYYY-MM-DD shape test and keeps only the "
+        "type test. Observable only on Python 3.12 and later: on 3.10 `fromisoformat` alone "
+        "rejects `20261103` and `2026-W44-2`, so the mutant is equivalent there",
+        "    if not isinstance(value, str) or not _DATE_RE.fullmatch(value):",
+        "    if not isinstance(value, str):",
+    ),
+    # ---- collisions: a rewritten head must not become indistinguishable from another entry
+    mutate.Mutation(
+        "collision-unpromote-off: `unpromote` stops checking that the rewritten head is still "
+        "addressable, so it can produce an entry no needle selects uniquely",
+        '        self._require_addressable(staged, start, new, "unpromote")',
+        "        pass",
+    ),
+    mutate.Mutation(
+        "collision-retier-off: `retier` stops checking that the rewritten head is still "
+        "addressable, so it can produce an entry no needle selects uniquely",
+        '        self._require_addressable(staged, start, new, "retier")',
+        "        pass",
     ),
 ]
 
