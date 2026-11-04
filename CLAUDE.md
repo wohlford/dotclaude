@@ -1182,6 +1182,18 @@ from `scripts/claude-md-structure.py`, which prints every group heading:
   every commit read `git diff --cached --stat`, treating a staged path you did not stage as a
   finding. Its own failure mode: `git show` of a path absent at that revision exits with an
   error, so a comparison script must check that status rather than compare against an empty file.
+- **A batch through a writer that fails closed row by row can land PARTIALLY, and a count the
+  landed rows never move reads as "nothing happened".** Measured: a 110-row backlog triage, one
+  `backlog.py` call per row, had all 40 `close` rows refused — their needle carried the `- [ ]`
+  checkbox and its trailing space, which ticking the head removes, so the note placement found no
+  entry after the edit — while the same run had already landed 69 `retier` rows, the one note row
+  and 13 per-target notes the merges append. A retier changes no count, so the file read
+  `230 open, 181 closed` before and after; only `cmp` against a pre-run backup showed 69 heads
+  rewritten, and a blind rerun would have duplicated every note.
+  **Back the file up before the batch, `diff` it against the backup after the first refusal, and
+  give the driver a resume mode that skips what landed.** Its own failure mode: the diff names
+  what landed, never whether the rows that did not land are safe to retry as written, so fix the
+  refusal's cause (here the needle) before any rerun.
 
 #### The teardown you are counting on — narrower than you think, or never reached
 
