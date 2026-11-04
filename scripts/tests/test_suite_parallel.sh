@@ -271,6 +271,12 @@ note_first="$(printf '%s\n' "$OUT" | head -n 1)"
 run_fx "$s2"
 note_control="$(printf '%s\n' "$OUT" | grep -c 'partial run')"
 check_eq "$note_first|$note_control" 'NOTE: partial run (AUDIT_TEST_ONLY=rML), not the gate|0' 'F4b: a partial run opens with the not-the-gate note, and an unset run prints none'
+s2c="$tmp/note-sj.sh"
+fx_suite "$s2c" "rSJ" << 'EOB'
+if unit_run rSJ 5; then pass_line "rSJ ok"; fi
+EOB
+run_fx "$s2c" AUDIT_TEST_ONLY=rSJ
+check_eq "$RC|$(printf '%s\n' "$OUT" | head -n 1)" '0|NOTE: partial run (AUDIT_TEST_ONLY=rSJ), not the gate' 'F4c: rSJ is a selectable section, and a partial run of it opens with the not-the-gate note'
 s3="$tmp/third.sh"
 fx_suite "$s3" "a" << 'EOB'
 if unit_run a 5 serial; then pass_line "a ok"; fi
@@ -377,7 +383,7 @@ check_eq "$?" 1 'H6: a failing unit still exits 1 with stderr closed'
 # The REAL suite and the floor it declares to sp_init. A row pins the declaration to this list, so
 # moving the floor is itself a failure that needs this file to change too.
 real_suite="$here/test_audit.sh"
-real_floor="rML rPT cases1-14 case15 rAM rN rO rMA rPP rQ rTGC rSC"
+real_floor="rML rPT rSJ cases1-14 case15 rAM rN rO rMA rPP rQ rTGC rSC"
 
 # ---- I: the REAL test_audit.sh, in its cheap modes only ----------------------------------------------
 real_out=$(env AUDIT_TEST_UNIT=rML bash "$real_suite" 2>&1)
@@ -471,7 +477,7 @@ fi # unit-end
 EOB
 check_eq "$(cross_unit_calls "$cf")" 'helper a between' 'I13: CONTROL — the scan finds a call made between two units'
 check_eq "$(cross_unit_calls "$real_suite" | tr '\n' ';')" "" 'I13: no function of the REAL suite is defined in one unit and called in another or between units'
-check_eq "$(grep -c '^fi # unit-end$' "$real_suite")" 12 'I13: the REAL suite closes exactly 12 unit wrappers with the unit-end closer'
+check_eq "$(grep -c '^fi # unit-end$' "$real_suite")" 13 'I13: the REAL suite closes exactly 13 unit wrappers with the unit-end closer'
 
 # suite_tail_ok FILE — the last three non-blank lines are unit_finish and the two summary lines. unit_finish
 # EXITS in the listing pass and in a child, so a row placed between it and the summary would run serially

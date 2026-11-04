@@ -97,8 +97,8 @@ sp_init() {
   fi
   if [ -n "${AUDIT_TEST_ONLY:-}" ]; then
     case "$AUDIT_TEST_ONLY" in
-      rML | rPT) ;;
-      *) sp_usage "AUDIT_TEST_ONLY=${AUDIT_TEST_ONLY} names no selectable section (rML or rPT)" ;;
+      rML | rPT | rSJ) ;;
+      *) sp_usage "AUDIT_TEST_ONLY=${AUDIT_TEST_ONLY} names no selectable section (rML, rPT or rSJ)" ;;
     esac
     if [ "$jobs" -gt 1 ] || [ "$SP_MODE" != serial ]; then
       sp_usage "AUDIT_TEST_ONLY cannot be combined with AUDIT_TEST_JOBS above 1 or with AUDIT_TEST_UNIT / AUDIT_TEST_RUNDIR: a partial run is serial and single-process"

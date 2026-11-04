@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.151.0 — 2026-11-03
+- feat(suite-parallel): add the rSJ selector for the shell-pool rows
+
 ## v0.150.8 — 2026-11-03
 - fix(cycle-profile): read PARALLEL-PASS as a passing verdict
 
