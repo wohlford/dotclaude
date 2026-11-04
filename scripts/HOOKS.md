@@ -115,6 +115,12 @@ exit 0
   microseconds. The extension/path `case` comes before any `git` or tool call.
 - **Only real violations reach `exit 2`,** and they print a fix-oriented message to stderr (the user
   reads it as Claude's feedback). Use `printf`, not `echo`, for that message.
+- **Block only what the edit introduced.** A finding that already stands in the file's committed
+  (HEAD) version is not a violation this edit committed, so a hook that lints a whole file must not
+  block on it where a baseline exists. `style-check.sh` grades shellcheck notes against the HEAD
+  version and blocks only a note whose (SC code, trimmed flagged line) pair is new; with no
+  obtainable baseline (an untracked file, no HEAD, a git error) every note blocks, so a baseline
+  failure can only be strict. Errors, warnings and lines of no gcc shape are never suppressed.
 - **bash-3.2 / BSD-safe.** These run under macOS's system bash; no `mapfile`, no associative arrays, no
   GNU-only flags. See [`../STYLE.md`](../STYLE.md).
 
