@@ -26,6 +26,7 @@ for how the index below stays in sync.
 | `farm-drift-check.py`            | SessionStart hook — warn when the ~/.claude symlink farm has drifted from its source clone                                 |
 | `fixture-signing-check.py`       | Flag test fixtures whose git repos can inherit the operator's global signing config                                        |
 | `flake-sweep.sh`                 | Run a command N times against a verifiably unchanged tree and report each row's pass/fail/skip rate.                       |
+| `gate-sweep-eval.py`             | Decide whether the parallel gate's acceptance bound holds from a sweep's gate.tsv and its flake-sweep line                 |
 | `git-timing-guard.py`            | PreToolUse hook — block PUBLISHING outside a configured time window                                                        |
 | `git-timing-guard.sh`            | TRANSITIONAL shim — exec's the real hook, scripts/git-timing-guard.py                                                      |
 | `guard-parity.py`                | Replay every distinct transcript Bash command through two pinned guard builds and list each verdict difference             |
