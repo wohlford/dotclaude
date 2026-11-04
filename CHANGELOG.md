@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.153.0 — 2026-11-03
+- feat(audit): add an opt-in parallel pool for the shell suites
+
 ## v0.152.0 — 2026-11-03
 - feat(audit): add the acceptance-sweep evaluator and its rows
 

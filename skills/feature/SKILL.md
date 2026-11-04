@@ -784,13 +784,13 @@ history never had to be.
 
      ```bash
      ~/.claude/scripts/run-long.sh --out <file outside the repo> \
-       --expect 'RESULT: (PASS|FAIL|ERROR|INCOMPLETE) rc=[0-9]+' -- \
-       skills/audit/audit.sh --scope "$PWD" --tests
+       --expect '^RESULT: (PASS|PARALLEL-PASS|FAIL|ERROR|INCOMPLETE) rc=[0-9]+' -- \
+       env AUDIT_SHELL_JOBS=4 AUDIT_PYTEST_JOBS=8 skills/audit/audit.sh --scope "$PWD" --tests
      ```
 
      Wait on it with `run-long.sh --wait` through `run_in_background`, and read its verdict back with
-     `--status`. Freeze only on `RESULT: PASS rc=0`; a `FAIL`, any other value, or an absent
-     line is a stop — point 4 needs a passing suite, so a pre-existing FAIL would stop there too.
+     `--status`. Freeze only on `RESULT: PASS rc=0`, or `RESULT: PARALLEL-PASS rc=0` when the launch line of that very run carried both `AUDIT_SHELL_JOBS=4` and `AUDIT_PYTEST_JOBS=8` (an inherited or leaked variable never counts); a `FAIL`, any other value, or an absent
+     line is a stop — point 4 needs a passing suite, so a pre-existing FAIL would stop there too. A red under the parallel profile on a pinned, verified-unchanged tree is a finding to file (the row, the suite, the rate); the verdict of record for that run is a serial `audit.sh --tests` of the same tree, and a red is never cleared by re-running the parallel profile. On a `FAIL` of a run that used the parallel profile, stop and file the finding (row, suite, rate), then run the serial `audit.sh --tests` on the same pinned, verified-unchanged tree: that serial verdict is the verdict of record. A serial `RESULT: PASS rc=0` may proceed; a serial `FAIL` is a stop and the offending commit is fixed. On a host without pytest-xdist, drop `AUDIT_PYTEST_JOBS` and run serial: the parallel profile fails closed there. A `PARALLEL-PASS` never stands in for `PASS` anywhere else (a plain `/audit` sweep, `/propagate`'s other checks, any consumer that did not launch the run itself). Zero reds in 10 sweep runs bounds the per-run flake rate only to about 26% at 95% confidence, so the safety of this profile rests on the serial verdict of record, not on the sweep.
      It grades the tree as of its launch, so any change to the tip afterwards — a fix for a FAIL, a
      rebase — re-runs it, **and re-runs the final review and its tree assert**, which judged a
      tree that no longer exists. A repo with no `skills/audit/audit.sh` of its own has no sweep to run; run its full
@@ -847,7 +847,7 @@ history never had to be.
    **Never a fixup commit**: it pollutes the narrative the re-derivation exists to produce.
 4. **At the tip, prove convergence.** Assert the tree matches the frozen oracle exactly, lossless —
    the last brick's `--final` does this, reporting `converged: HEAD tree == oracle`; by hand it is
-   **`git diff --quiet <feature-tip-SHA> HEAD`** — **and** run the **full test suite once more**.
+   **`git diff --quiet <feature-tip-SHA> HEAD`** — **and** run the **full test suite once more** (`env AUDIT_SHELL_JOBS=4 AUDIT_PYTEST_JOBS=8 skills/audit/audit.sh --scope "$PWD" --tests`, read by the rule of point 1: `RESULT: PASS rc=0`, or `RESULT: PARALLEL-PASS rc=0` when the launch line of that very run carried both variables, with the same fallback to a serial run of record).
    Both must pass. (This subsumes `finishing-a-development-branch`'s suite check; adopted repos never
    invoke that skill.) **Run that suite even when you already ran it on the oracle and the tree was
    just proven identical** — it is the last suite run before `/propagate` updates the live

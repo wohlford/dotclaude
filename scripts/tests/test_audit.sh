@@ -26,7 +26,7 @@ if [[ ! -r "$sp_lib" ]]; then
 fi
 # shellcheck source=../lib/suite_parallel.sh
 . "$sp_lib"
-sp_init "${BASH_SOURCE[0]}" "rML rPT cases1-14 case15 rAM rN rO rMA rPP rQ rTGC rSC"
+sp_init "${BASH_SOURCE[0]}" "rML rPT rSJ cases1-14 case15 rAM rN rO rMA rPP rQ rTGC rSC"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -44,6 +44,11 @@ mkdir -p "$TMPDIR"
 # An exported AUDIT_PYTEST_JOBS would reach every row that runs the engine with --tests and turn the
 # terminal status word of a passing run into PARALLEL-PASS. The rPT rows set it explicitly.
 unset AUDIT_PYTEST_JOBS
+
+# An exported AUDIT_SHELL_JOBS would reach every row that runs the engine with --tests: check_tests would
+# run that fixture's shell suites in the pool and its terminal word would read PARALLEL-PASS. The rSJ rows
+# set it explicitly. This is its own line, never appended to the one above (PT15 counts that one).
+unset AUDIT_SHELL_JOBS
 
 pass=0
 fail=0
@@ -476,12 +481,12 @@ rpt_order() { # first second -> succeeds when both lines are in $OUT and the fir
 }
 
 # A real engine run with --tests: OUT = stdout only, RC. Extra arguments are NAME=value settings
-# for this run alone; AUDIT_PYTEST_JOBS and PYTEST_ADDOPTS are removed first so a row never
-# inherits either from the operator's shell.
+# for this run alone; AUDIT_PYTEST_JOBS, AUDIT_SHELL_JOBS and PYTEST_ADDOPTS are removed first so a
+# row never inherits any of them from the operator's shell.
 rpt_engine() { # row-dir repo [NAME=value...]
   local d="$1" repo="$2"
   shift 2
-  OUT="$(env -u AUDIT_PYTEST_JOBS -u PYTEST_ADDOPTS PATH="$d/bin:$PATH" SHIM_REC="$d/rec" \
+  OUT="$(env -u AUDIT_PYTEST_JOBS -u AUDIT_SHELL_JOBS -u PYTEST_ADDOPTS PATH="$d/bin:$PATH" SHIM_REC="$d/rec" \
     TMPDIR="$d/tmp" RPT_SENTINEL="$d/sentinel" "$@" "$engine" --scope "$repo" --tests 2>/dev/null)"
   RC=$?
 }
@@ -751,17 +756,23 @@ assert_has "the scratch directory $rPT17/repo/tmpin lies inside the scope" 'PT17
 check_eq "$(rpt_n "$rPT17/rec" run)" 0 'PT17: no serial fallback (no runner call)'
 assert_not_has 'FAIL hermetic' 'PT17: the ignored TMPDIR keeps the pollution check about the row'"'"'s own subject'
 
-# ---- PT12: the readers of a --tests last line refuse the new word --------------------------------
-# A control: it asserts text this change does not edit, so it is green before and after, which is
-# the claim. It takes the word from PT3's real run, so a respelling to a PASS-prefixed word is caught.
-rpt12_re="$(sed -n "s/.*--expect '\\(RESULT: [^']*\\)'.*/\\1/p" "$here/../../skills/feature/SKILL.md" | head -1)"
+# ---- PT12: the readers of a --tests last line accept the parallel word only where the launch line carried both variables --
+# The flip commit superseded the earlier property that no reader accepted PARALLEL-PASS: the reach-a-verdict pattern now
+# lists the word, and the acceptance rule lives in the sentence beside the launch line in each skill. What stays true is
+# checked here: the pattern is anchored, still accepts the clean verdict, and the parallel terminal line still does not
+# begin with RESULT: PASS, which a prefix match would accept. It takes the word from PT3's real run.
+rpt12_has() { # file text -> succeeds when the text occurs in the file with every run of whitespace read as one space
+  python3 -c 'import re, sys; t = re.sub(r"\s+", " ", open(sys.argv[1]).read()); sys.exit(0 if sys.argv[2] in t else 1)' "$1" "$2"
+}
+rpt12_q="'"
+rpt12_line="$(grep -o -- "--expect '^RESULT: [^']*'" "$here/../../skills/feature/SKILL.md" | sed -n 1p)"
+rpt12_re="${rpt12_line#--expect $rpt12_q}"
+rpt12_re="${rpt12_re%$rpt12_q}"
 rpt_assert 'PT12: the feature SKILL --expect pattern was found' test -n "$rpt12_re"
 rpt_assert 'PT12: control: that pattern accepts RESULT: PASS rc=0' rpt_match "$rpt12_re" 'RESULT: PASS rc=0 checks=1/0/0'
-if rpt_match "$rpt12_re" "$rpt3_last"; then
-  fail_line "PT12: the feature SKILL pattern must NOT accept the parallel terminal line ($rpt3_last)"
-else
-  pass_line 'PT12: the feature SKILL pattern does not accept the parallel terminal line'
-fi
+rpt_assert 'PT12: the feature SKILL pattern reaches the parallel terminal line (a reach-a-verdict check: the supersession)' rpt_match "$rpt12_re" "$rpt3_last"
+rpt_assert 'PT12: the pattern is anchored: an indented fixture excerpt does not match' \
+  test "$(rpt_match "$rpt12_re" '  RESULT: PASS rc=0 checks=1/0/0' && echo yes || echo no)" = no
 if [[ "$rpt3_last" == 'RESULT: PASS'* ]]; then
   fail_line "PT12: the parallel terminal line must not begin with RESULT: PASS, which a prefix match would accept ($rpt3_last)"
 else
@@ -769,8 +780,8 @@ else
 fi
 rpt_assert 'PT12: control: the rejected spelling PASS-PARALLEL WOULD begin with RESULT: PASS' \
   test "$([[ 'RESULT: PASS-PARALLEL rc=0' == 'RESULT: PASS'* ]] && echo yes || echo no)" = yes
-rpt_assert 'PT12: the propagate SKILL still holds the tip-suite sentence this design relies on' \
-  grep -qF 'counts as held only on `RESULT: PASS rc=0`' "$here/../../skills/propagate/SKILL.md"
+rpt_assert 'PT12: the propagate SKILL accepts the parallel word only on a launch line that carried both variables' \
+  rpt12_has "$here/../../skills/propagate/SKILL.md" 'or `RESULT: PARALLEL-PASS rc=0` when the launch line of that very run carried both `AUDIT_SHELL_JOBS='
 
 # ---- PT14: a TERM to the process group mid-pool leaves no scratch directory ----------------------
 rPT14="$(rpt_row PT14)"
@@ -806,6 +817,831 @@ printf 'info  the rPT section took %d s\n' "$((SECONDS - rpt_t0))"
 # rPT-END
 fi # unit-end
 if [[ "${AUDIT_TEST_ONLY:-}" == rPT ]]; then
+  printf '\n%d passed, %d failed\n' "$pass" "$fail"
+  [[ "$fail" -eq 0 ]]
+  exit
+fi
+if unit_run rSJ 271; then
+# rSJ-BEGIN
+# ============================================================================
+# rSJ. The opt-in shell-suite pool of check_tests (AUDIT_SHELL_JOBS)
+#
+# This section sits right after rPT's guard and before case 1 so that
+# `AUDIT_TEST_ONLY=rSJ bash scripts/tests/test_audit.sh` can run it alone (the guard after rSJ-END
+# exits). Every row has its own row directory (TMPDIR, event log, witness file), removes
+# AUDIT_SHELL_JOBS and AUDIT_PYTEST_JOBS from the engine's environment unless it sets them, and is
+# never a wall-clock bound: ordering is read from an append-only event log, never from timestamps.
+# Fixture suites are tracked files of a fixture repository, built under $tmp.
+# ============================================================================
+rsj_t0="$SECONDS"
+
+# ---- S18: the variable does not leak into the suite -----------------------------------------
+check_eq "$(grep -c '^unset AUDIT_SHELL_JOBS$' "$here/test_audit.sh")" 1 \
+  'S18: test_audit.sh carries exactly one preamble line that unsets AUDIT_SHELL_JOBS'
+check_eq "${AUDIT_SHELL_JOBS+set}" '' 'S18: the suite preamble cleared AUDIT_SHELL_JOBS'
+
+# ---- helpers (defined here and used only by this unit's rows) -------------------------------
+rsj_root="$(cd "$tmp" && pwd -P)/rSJ"
+mkdir -p "$rsj_root"
+rsj_xdist=no
+python3 -c 'import xdist' > /dev/null 2>&1 && rsj_xdist=yes
+
+rsj_row() { # name -> a fresh row directory holding tmp/ ; prints its path
+  local d="$rsj_root/$1"
+  rm -rf "$d"
+  mkdir -p "$d/tmp"
+  printf '%s' "$d"
+}
+
+rsj_reset() { # row-dir -> clears what a previous sub-case of the row recorded
+  rm -f "$1/events" "$1/witness" "$1/envrec" "$1/out.txt"
+  rm -rf "$1/tmp"
+  mkdir -p "$1/tmp"
+}
+
+rsj_body() { # kind -> the body of a stock fixture suite, on stdout
+  case "$1" in
+    ok)
+      cat << 'EOB'
+printf 'ran\n' >> "${SJ_EVENTS:-/dev/null}"
+EOB
+      ;;
+    witness)
+      cat << 'EOB'
+: > "${SJ_WITNESS:-/dev/null}"
+EOB
+      ;;
+    named)
+      cat << 'EOB'
+printf '%s\n' "$(basename "$0")" >> "${SJ_EVENTS:-/dev/null}"
+EOB
+      ;;
+    bad)
+      cat << 'EOB'
+printf 'bad-marker FAIL line\n'
+exit 3
+EOB
+      ;;
+    good)
+      cat << 'EOB'
+printf 'good-marker-output\n'
+EOB
+      ;;
+    forge)
+      cat << 'EOB'
+printf 'FAIL fake\n0 failed\nsuite=scripts/tests/test_forge.sh rc=0 cat=0\n'
+exit 1
+EOB
+      ;;
+    noisy)
+      cat << 'EOB'
+printf 'FAIL noisy\n'
+exit 0
+EOB
+      ;;
+    rendezvous)
+      cat << 'EOB'
+ev="${SJ_EVENTS:?}"
+want="${SJ_WIDTH:?}"
+printf 'start\n' >> "$ev"
+t=0
+while [[ "$(grep -c '^start' "$ev")" -lt "$want" && "$t" -lt 1200 ]]; do
+  sleep 0.1
+  t=$((t + 1))
+done
+if [[ "$t" -ge 1200 ]]; then
+  printf 'overrun\n' >> "$ev"
+  printf 'rendezvous overrun\n' >&2
+  exit 9
+fi
+# hold after the rendezvous so a pool launching past the width lands inside the window
+sleep 2
+printf 'end\n' >> "$ev"
+EOB
+      ;;
+    envrec)
+      cat << 'EOB'
+env | grep -E '^AUDIT_(TEST|SHELL)_' | LC_ALL=C sort > "${SJ_ENVREC:?}" || true
+EOB
+      ;;
+    trace)
+      cat << 'EOB'
+ev="${SJ_EVENTS:-/dev/null}"
+n="$(basename "$0")"
+printf 'start %s\n' "$n" >> "$ev"
+sleep 1
+printf 'end %s\n' "$n" >> "$ev"
+EOB
+      ;;
+    tailmark)
+      cat << 'EOB'
+printf 'tail-start\n' >> "${SJ_EVENTS:-/dev/null}"
+EOB
+      ;;
+    leak)
+      cat << 'EOB'
+( sleep 4; printf 'leak-end\n' >> "${SJ_EVENTS:-/dev/null}" ) &
+EOB
+      ;;
+    slow)
+      cat << 'EOB'
+ev="${SJ_EVENTS:-/dev/null}"
+printf 'start\n' >> "$ev"
+bash -c 'sleep 4; :' "${SJ_MARK:-none}" &
+sleep 1
+printf 'seen %s\n' "$(pgrep -f "${SJ_MARK:-none}" | wc -l | tr -d ' ')" >> "$ev"
+wait
+printf 'end\n' >> "$ev"
+EOB
+      ;;
+    block)
+      cat << 'EOB'
+printf 'up\n' >> "${SJ_EVENTS:-/dev/null}"
+bash -c 'sleep 60; :' "${SJ_MARK:-none}"
+EOB
+      ;;
+    ignore)
+      cat << 'EOB'
+bash -c 'trap "" TERM; printf "up\n" >> "${SJ_EVENTS:-/dev/null}"; i=0; while [ "$i" -lt 120 ]; do sleep 1; i=$((i + 1)); done' "${SJ_MARK:-none}"
+EOB
+      ;;
+    quick)
+      cat << 'EOB'
+printf 'quick-done\n' >> "${SJ_EVENTS:-/dev/null}"
+EOB
+      ;;
+    recdir0)
+      cat << 'EOB'
+d="$(ls -d "${TMPDIR:?}"/audit-shell.* 2> /dev/null | sed -n 1p)"
+[ -n "$d" ] || exit 7
+mkdir "$d/0.rec.tmp"
+EOB
+      ;;
+    recfinal)
+      cat << 'EOB'
+d="$(ls -d "${TMPDIR:?}"/audit-shell.* 2> /dev/null | sed -n 1p)"
+[ -n "$d" ] || exit 7
+mkdir "$d/0.rec"
+EOB
+      ;;
+  esac
+}
+
+rsj_suite() { # repo name kind -> an executable shell suite under scripts/tests, not yet committed
+  mkdir -p "$1/scripts/tests"
+  {
+    printf '#!/usr/bin/env bash\nset -uo pipefail\n\n# Script: %s\n# Purpose: fixture suite\n# Usage: ./%s\n' "$2" "$2"
+    rsj_body "$3"
+  } > "$1/scripts/tests/$2"
+  chmod +x "$1/scripts/tests/$2"
+}
+
+rsj_fix() { # repo kind name... -> a clean fixture repository with one suite of KIND per NAME, committed
+  local repo="$1" kind="$2" n
+  shift 2
+  mk_clean_repo "$repo"
+  for n in "$@"; do rsj_suite "$repo" "$n" "$kind"; done
+  commit_all "$repo" suites
+}
+
+rsj_manifest() { # repo -> writes scripts/tests/serial_shell_suites.txt from stdin
+  mkdir -p "$1/scripts/tests"
+  cat > "$1/scripts/tests/serial_shell_suites.txt"
+}
+
+rsj_pytest() { # repo -> a tracked python test that records what it sees at the moment pytest runs it
+  printf '__pycache__/\n.pytest_cache/\n' > "$1/.gitignore"
+  cat > "$1/test_thing.py" << 'EOPY'
+import glob
+import os
+import subprocess
+
+
+def test_thing() -> None:
+    tmp = os.environ.get("TMPDIR", "")
+    scratch = len(glob.glob(os.path.join(tmp, "audit-shell.*")))
+    mark = os.environ.get("SJ_MARK", "none")
+    got = subprocess.run(
+        ["pgrep", "-f", mark],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    alive = len(got.stdout.split())
+    path = os.environ.get("SJ_OUT", "")
+    drained = 0
+    if os.path.exists(path):
+        with open(path) as fh:
+            drained = fh.read().count("shell phase drained in")
+    line = f"pytest-start drained={drained} alive={alive} scratch={scratch}\n"
+    with open(os.environ.get("SJ_EVENTS", os.devnull), "a") as fh:
+        fh.write(line)
+EOPY
+}
+
+# A real engine run with --tests. OUT is stdout only, read from a file the run writes live (a test inside the run can read
+# it); RC is the engine's status. Extra arguments are NAME=value settings for this run alone. Everything that could change
+# the profile is removed first, so a row never inherits any of it from the operator's shell or from a unit child's own
+# environment; a row that wants one passes it explicitly.
+rsj_engine() { # row-dir repo [NAME=value...]
+  local d="$1" repo="$2"
+  shift 2
+  env -u AUDIT_SHELL_JOBS -u AUDIT_PYTEST_JOBS -u PYTEST_ADDOPTS -u AUDIT_TEST_JOBS -u AUDIT_TEST_ONLY \
+    -u AUDIT_TEST_UNIT -u AUDIT_TEST_RUNDIR TMPDIR="$d/tmp" SJ_EVENTS="$d/events" SJ_WITNESS="$d/witness" \
+    SJ_OUT="$d/out.txt" SJ_MARK="rsj-$(basename "$d")-$$" "$@" \
+    "$engine" --scope "$repo" --tests > "$d/out.txt" 2> /dev/null
+  RC=$?
+  OUT="$(cat "$d/out.txt")"
+}
+
+rsj_assert() { # label command... -> pass when the command succeeds
+  local label="$1"
+  shift
+  if "$@" > /dev/null 2>&1; then pass_line "$label"; else fail_line "$label"; fi
+}
+rsj_pos() { # file ere -> the number of the first line matching, empty when none
+  awk -v re="$2" '$0 ~ re { print NR; exit }' "$1" 2> /dev/null
+}
+rsj_lastpos() { # file ere -> the number of the last line matching, empty when none
+  awk -v re="$2" '$0 ~ re { n = NR } END { if (n) print n }' "$1" 2> /dev/null
+}
+rsj_before() { # a b -> succeeds when both are numbers and a is smaller
+  [[ -n "$1" && -n "$2" && "$1" -lt "$2" ]]
+}
+rsj_diff() { # a b -> b - a, or "none" when either is empty
+  if [[ -n "$1" && -n "$2" ]]; then printf '%d' "$(($2 - $1))"; else printf 'none'; fi
+}
+rsj_maxconc() { # events-file -> the highest number of suites between a start and its end
+  awk '$1 == "start" { c++; if (c > m) m = c } $1 == "end" { c-- } END { print m + 0 }' "$1" 2> /dev/null
+}
+rsj_scratch() { # row-dir -> how many pool scratch directories remain under the row's TMPDIR
+  find "$1/tmp" -maxdepth 1 -name 'audit-shell.*' 2> /dev/null | wc -l | tr -d ' '
+}
+rsj_last_prefix() { # file prefix -> succeeds when the file's last line begins with the prefix
+  case "$(tail -n 1 "$1")" in "$2"*) return 0 ;; esac
+  return 1
+}
+
+# ---- S1: an invalid AUDIT_SHELL_JOBS fails the tests check before any suite ran ----------------
+rSJ1="$(rsj_row S1)"
+rsj_fix "$rSJ1/repo" witness test_w.sh
+for rsj1_v in 0 04 abc 99999 2.5; do
+  rsj_reset "$rSJ1"
+  rsj_engine "$rSJ1" "$rSJ1/repo" AUDIT_SHELL_JOBS="$rsj1_v"
+  assert_has "FAIL tests — AUDIT_SHELL_JOBS must be a positive integer (got '$rsj1_v')" "S1: AUDIT_SHELL_JOBS='$rsj1_v' fails the tests check, naming the variable"
+  check_eq "$([[ -e "$rSJ1/witness" ]] && echo ran || echo clean)" clean "S1: AUDIT_SHELL_JOBS='$rsj1_v' failed before any suite ran"
+done
+
+# ---- S2: a completed pool run (distinctive width 3, never the default) ------------------------
+rSJ2="$(rsj_row S2)"
+rsj_fix "$rSJ2/repo" ok test_a.sh test_b.sh test_c.sh test_d.sh test_e.sh
+rsj_engine "$rSJ2" "$rSJ2/repo" AUDIT_SHELL_JOBS=3
+assert_last_line_prefix 'RESULT: PARALLEL-PASS rc=0' 'S2: a completed pool run ends RESULT: PARALLEL-PASS rc=0'
+assert_has 'NOTE tests: shell suites run in a pool of 3 (AUDIT_SHELL_JOBS)' 'S2: the pool NOTE names the width'
+check_eq "$(printf '%s\n' "$OUT" | grep -c '^PASS  tests-shell scripts/tests/test_.\.sh (')" 5 'S2: one tests-shell line per suite'
+check_eq "$(grep -c . "$rSJ2/events")" 5 'S2: every suite ran exactly once'
+
+# ---- S3: CONTROL — unset, empty and 1 are the serial gate (green before and after this change) -
+rSJ3="$(rsj_row S3)"
+rsj_fix "$rSJ3/repo" named test_a.sh test_b.sh test_c.sh
+for rsj3_mode in unset empty one; do
+  rsj_reset "$rSJ3"
+  case "$rsj3_mode" in
+    unset) rsj_engine "$rSJ3" "$rSJ3/repo" ;;
+    empty) rsj_engine "$rSJ3" "$rSJ3/repo" AUDIT_SHELL_JOBS= ;;
+    one) rsj_engine "$rSJ3" "$rSJ3/repo" AUDIT_SHELL_JOBS=1 ;;
+  esac
+  assert_last_line_prefix 'RESULT: PASS rc=0' "S3: CONTROL: AUDIT_SHELL_JOBS $rsj3_mode is the serial gate"
+  assert_not_has 'NOTE tests: shell suites run in a pool' "S3: CONTROL: AUDIT_SHELL_JOBS $rsj3_mode prints no pool NOTE"
+  check_eq "$(tr '\n' ' ' < "$rSJ3/events")" 'test_a.sh test_b.sh test_c.sh ' "S3: CONTROL: AUDIT_SHELL_JOBS $rsj3_mode runs the suites in listing order"
+done
+
+# ---- S4: one suite exits 3 while another passes ------------------------------------------------
+rSJ4="$(rsj_row S4)"
+mk_clean_repo "$rSJ4/repo"
+rsj_suite "$rSJ4/repo" test_bad.sh bad
+rsj_suite "$rSJ4/repo" test_good.sh good
+commit_all "$rSJ4/repo" suites
+rsj_engine "$rSJ4" "$rSJ4/repo" AUDIT_SHELL_JOBS=2
+assert_last_line_prefix 'RESULT: FAIL rc=1' 'S4: a red suite in the pool ends RESULT: FAIL rc=1'
+assert_has 'FAIL tests — test suite failure(s)' 'S4: the tests check fails'
+assert_has 'scripts/tests/test_bad.sh exited 3' 'S4: the failing suite is named with its status'
+assert_has 'FAIL  tests-shell scripts/tests/test_bad.sh (rc 3)' 'S4: the failing suite has its tests-shell FAIL line'
+assert_has 'PASS  tests-shell scripts/tests/test_good.sh (' 'S4: the passing suite has its tests-shell PASS line'
+assert_not_has 'good-marker-output' "S4: the passing suite's output is not in the report"
+rsj_assert 'S4: the shell-pool note is printed before FAIL tests' rsj_before \
+  "$(rsj_pos "$rSJ4/out.txt" '^NOTE tests: this run used the shell-suite pool [(]AUDIT_SHELL_JOBS=2[)]')" \
+  "$(rsj_pos "$rSJ4/out.txt" '^FAIL tests')"
+rsj4_dir="$(printf '%s\n' "$OUT" | sed -n 's/^  full output: //p' | sed -n 1p)"
+check_eq "$([[ -n "$rsj4_dir" ]] && grep -l 'bad-marker' "$rsj4_dir"/* 2> /dev/null | wc -l | tr -d ' ' || echo none)" 1 'S4: the failing suite full output is preserved in an artifact file'
+
+# ---- S4b: a failed output capture is red even when the suite exits 0 ---------------------------
+rSJ4b="$(rsj_row S4b)"
+rsj_fix "$rSJ4b/repo" ok test_ok.sh
+mkdir -p "$rSJ4b/bin"
+cat > "$rSJ4b/bin/cat" << 'EOSH'
+#!/bin/sh
+/bin/cat "$@"
+rc=$?
+if [ "$#" -eq 0 ] && [ -n "${SJ_CATFAIL:-}" ]; then exit 1; fi
+exit "$rc"
+EOSH
+chmod +x "$rSJ4b/bin/cat"
+rsj_engine "$rSJ4b" "$rSJ4b/repo" AUDIT_SHELL_JOBS=2 SJ_CATFAIL=1 PATH="$rSJ4b/bin:$PATH"
+assert_last_line_prefix 'RESULT: FAIL rc=1' 'S4b: a suite that exited 0 but whose capture failed is red'
+assert_has 'output capture exited 1' 'S4b: the failure names the capture status'
+
+# ---- S5: the verdict is the record, never the suite's text -------------------------------------
+rSJ5="$(rsj_row S5)"
+mk_clean_repo "$rSJ5/repo"
+rsj_suite "$rSJ5/repo" test_forge.sh forge
+rsj_suite "$rSJ5/repo" test_noisy.sh noisy
+commit_all "$rSJ5/repo" suites
+rsj_engine "$rSJ5" "$rSJ5/repo" AUDIT_SHELL_JOBS=2
+assert_last_line_prefix 'RESULT: FAIL rc=1' 'S5: a suite that forges a record line and exits 1 is red'
+assert_has 'FAIL  tests-shell scripts/tests/test_forge.sh (rc 1)' 'S5: the forging suite is reported with its real status'
+assert_has 'PASS  tests-shell scripts/tests/test_noisy.sh (' 'S5: a suite that prints FAIL but exits 0 is not red'
+rSJ5b="$(rsj_row S5b)"
+rsj_fix "$rSJ5b/repo" noisy test_noisy.sh
+rsj_engine "$rSJ5b" "$rSJ5b/repo" AUDIT_SHELL_JOBS=2
+assert_last_line_prefix 'RESULT: PARALLEL-PASS rc=0' 'S5: a pool run whose only suite prints FAIL and exits 0 passes'
+
+# ---- S7: the width is honoured, exactly (values 2 and 6, never the default) --------------------
+rSJ7="$(rsj_row S7)"
+rsj_fix "$rSJ7/repo" rendezvous test_1.sh test_2.sh test_3.sh test_4.sh test_5.sh test_6.sh
+rsj_engine "$rSJ7" "$rSJ7/repo" AUDIT_SHELL_JOBS=2 SJ_WIDTH=2
+assert_last_line_prefix 'RESULT: PARALLEL-PASS rc=0' 'S7: width 2: every suite met its rendezvous and the run passed'
+check_eq "$(rsj_maxconc "$rSJ7/events")" 2 'S7: width 2: exactly two suites ran at once (green by construction on the old engine: it counts starts with no ends)'
+check_eq "$(grep -c '^overrun$' "$rSJ7/events" 2> /dev/null)" 0 'S7: width 2: no suite hit the rendezvous overrun (a nonzero count means the pool never reached the width)'
+rSJ7b="$(rsj_row S7b)"
+rsj_fix "$rSJ7b/repo" rendezvous test_1.sh test_2.sh test_3.sh test_4.sh test_5.sh test_6.sh
+rsj_engine "$rSJ7b" "$rSJ7b/repo" AUDIT_SHELL_JOBS=6 SJ_WIDTH=6
+assert_last_line_prefix 'RESULT: PARALLEL-PASS rc=0' 'S7: width 6: every suite met its rendezvous and the run passed'
+check_eq "$(rsj_maxconc "$rSJ7b/events")" 6 'S7: width 6: exactly six suites ran at once (green by construction on the old engine: it counts starts with no ends)'
+check_eq "$(grep -c '^overrun$' "$rSJ7b/events" 2> /dev/null)" 0 'S7: width 6: no suite hit the rendezvous overrun (a nonzero count means the pool never reached the width)'
+
+# ---- S8: the scrub, per name (distinctive exported values; AUDIT_TEST_BUDGET stays) ------------
+rSJ8="$(rsj_row S8)"
+rsj_fix "$rSJ8/repo" envrec test_env.sh
+rsj_engine "$rSJ8" "$rSJ8/repo" AUDIT_SHELL_JOBS=2 SJ_ENVREC="$rSJ8/envrec" AUDIT_TEST_JOBS=7 AUDIT_TEST_ONLY=rML \
+  AUDIT_TEST_UNIT=rsjunit AUDIT_TEST_RUNDIR="$rSJ8" AUDIT_TEST_BUDGET=11
+for rsj_n in AUDIT_TEST_JOBS AUDIT_TEST_ONLY AUDIT_TEST_UNIT AUDIT_TEST_RUNDIR AUDIT_SHELL_JOBS; do
+  check_eq "$(grep -c "^$rsj_n=" "$rSJ8/envrec" 2> /dev/null)" 0 "S8: a pool child does not see $rsj_n"
+done
+check_eq "$(grep -c '^AUDIT_TEST_BUDGET=11$' "$rSJ8/envrec" 2> /dev/null)" 1 'S8: a pool child still sees AUDIT_TEST_BUDGET'
+
+# ---- S18 (c): an engine child run from this suite sees no AUDIT_SHELL_JOBS ---------------------
+rSJ18="$(rsj_row S18)"
+rsj_fix "$rSJ18/repo" envrec test_env.sh
+OUT="$(TMPDIR="$rSJ18/tmp" SJ_ENVREC="$rSJ18/envrec" "$engine" --scope "$rSJ18/repo" --tests 2> /dev/null)"
+rsj_assert 'S18: the fixture suite ran under an engine child of this suite' test -e "$rSJ18/envrec"
+check_eq "$(grep -c '^AUDIT_SHELL_JOBS=' "$rSJ18/envrec" 2> /dev/null)" 0 'S18: an engine child run from this suite sees no AUDIT_SHELL_JOBS'
+
+# ---- S19: the serial path scrubs all five names too --------------------------------------------
+rSJ19="$(rsj_row S19)"
+rsj_fix "$rSJ19/repo" envrec test_env.sh
+rsj_engine "$rSJ19" "$rSJ19/repo" AUDIT_SHELL_JOBS=1 SJ_ENVREC="$rSJ19/envrec" AUDIT_TEST_JOBS=7 AUDIT_TEST_ONLY=rML \
+  AUDIT_TEST_UNIT=rsjunit AUDIT_TEST_RUNDIR="$rSJ19" AUDIT_TEST_BUDGET=11
+for rsj_n in AUDIT_TEST_JOBS AUDIT_TEST_ONLY AUDIT_TEST_UNIT AUDIT_TEST_RUNDIR AUDIT_SHELL_JOBS; do
+  check_eq "$(grep -c "^$rsj_n=" "$rSJ19/envrec" 2> /dev/null)" 0 "S19: with AUDIT_SHELL_JOBS=1 the serial loop does not pass $rsj_n on"
+done
+check_eq "$(grep -c '^AUDIT_TEST_BUDGET=11$' "$rSJ19/envrec" 2> /dev/null)" 1 'S19: with AUDIT_SHELL_JOBS=1 the serial loop still passes AUDIT_TEST_BUDGET'
+rSJ19b="$(rsj_row S19b)"
+mk_clean_repo "$rSJ19b/repo"
+rsj_suite "$rSJ19b/repo" test_a.sh ok
+rsj_suite "$rSJ19b/repo" test_tail.sh envrec
+rsj_manifest "$rSJ19b/repo" << 'EOM'
+[serial]
+test_tail.sh  # fixture: a serial-tail member
+[weights]
+[floor]
+EOM
+commit_all "$rSJ19b/repo" suites
+rsj_engine "$rSJ19b" "$rSJ19b/repo" AUDIT_SHELL_JOBS=3 SJ_ENVREC="$rSJ19b/envrec" AUDIT_TEST_JOBS=7 AUDIT_TEST_ONLY=rML \
+  AUDIT_TEST_UNIT=rsjunit AUDIT_TEST_RUNDIR="$rSJ19b" AUDIT_TEST_BUDGET=11
+assert_has 'NOTE tests: shell suites run in a pool of 3' 'S19: the serial-tail run really was a pool run'
+for rsj_n in AUDIT_TEST_JOBS AUDIT_TEST_ONLY AUDIT_TEST_UNIT AUDIT_TEST_RUNDIR AUDIT_SHELL_JOBS; do
+  check_eq "$(grep -c "^$rsj_n=" "$rSJ19b/envrec" 2> /dev/null)" 0 "S19: a serial-tail member under a width-3 pool does not see $rsj_n"
+done
+check_eq "$(grep -c '^AUDIT_TEST_BUDGET=11$' "$rSJ19b/envrec" 2> /dev/null)" 1 'S19: a serial-tail member under a width-3 pool still sees AUDIT_TEST_BUDGET'
+
+# ---- S20: the profile notes (needs the pytest-xdist the real gate uses) ------------------------
+if [[ "$rsj_xdist" == yes ]]; then
+  rSJ20="$(rsj_row S20)"
+  mk_clean_repo "$rSJ20/repo"
+  rsj_suite "$rSJ20/repo" test_a.sh ok
+  rsj_pytest "$rSJ20/repo"
+  commit_all "$rSJ20/repo" suites
+  rsj_engine "$rSJ20" "$rSJ20/repo" AUDIT_SHELL_JOBS=2 AUDIT_PYTEST_JOBS=2
+  assert_last_line_prefix 'RESULT: PARALLEL-PASS rc=0' 'S20: both profiles together end RESULT: PARALLEL-PASS rc=0 (green on the old engine: the pytest lever alone yields it)'
+  assert_has 'NOTE tests: shell suites run in a pool of 2 (AUDIT_SHELL_JOBS)' 'S20: the pool NOTE is present'
+  assert_has 'NOTE tests: pytest runs under pytest-xdist with 2 workers' 'S20: the pytest NOTE is present (green on the old engine: the pytest lever alone yields it)'
+  assert_has 'NOTE tests: shell phase drained in' 'S20: the drained line is present'
+  check_eq "$(grep -c '^pytest-start drained=1 ' "$rSJ20/events")" 1 'S20: the drained line was already printed when pytest ran'
+  rsj_reset "$rSJ20"
+  rsj_engine "$rSJ20" "$rSJ20/repo"
+  assert_not_has 'NOTE tests' 'S20: with neither variable set no profile note is printed'
+else
+  skip_line 'skip - rSJ S20: pytest-xdist is not importable here'
+fi
+
+# ---- helpers of group B -------------------------------------------------------------------------
+rsj_inject() { # row-dir kind -> a two-suite fixture whose target (heaviest weight, so pool index 0) misbehaves per KIND; runs it
+  local d="$1" kind="$2"
+  rsj_reset "$d"
+  rm -rf "$d/repo"
+  mk_clean_repo "$d/repo"
+  rsj_suite "$d/repo" test_target.sh "$kind"
+  rsj_suite "$d/repo" test_other.sh ok
+  rsj_manifest "$d/repo" << 'EOM'
+[serial]
+[weights]
+test_target.sh 900
+test_other.sh 5
+[floor]
+EOM
+  commit_all "$d/repo" suites
+  rsj_engine "$d" "$d/repo" AUDIT_SHELL_JOBS=2
+}
+
+rsj_cons() { # dir -> the verdict of the engine's own conservation function over a hand-built scratch directory
+  "$BASH" -c 'source "$1"; shell_pool_conserve "$2" "$2/pool"; rc=$?; printf "%s\n" "$shell_conserve_err"; printf "RC=%s\n" "$rc"' _ "$engine" "$1" 2>&1
+}
+
+rsj_mkcons() { # dir name... -> a complete, consistent scratch directory: order, pool and one good record per suite
+  local d="$1" i=0 n
+  shift
+  rm -rf "$d"
+  mkdir -p "$d"
+  : > "$d/order"
+  for n in "$@"; do
+    printf '%s\n' "$n" >> "$d/order"
+    printf 'suite=%s rc=0 cat=0\n' "$n" > "$d/$i.rec"
+    i=$((i + 1))
+  done
+  cp "$d/order" "$d/pool"
+}
+
+# ---- S6: conservation, in-process on hand-built directories -------------------------------------
+rSJ6="$rsj_root/S6"
+rsj6a=scripts/tests/test_a.sh
+rsj6b=scripts/tests/test_b.sh
+rsj6c=scripts/tests/test_c.sh
+rsj6z=scripts/tests/test_z.sh
+rsj_mkcons "$rSJ6" "$rsj6a" "$rsj6b" "$rsj6c"
+OUT="$(rsj_cons "$rSJ6")"
+check_eq "$(printf '%s\n' "$OUT" | tail -n 1)" 'RC=0' 'S6: CONTROL: a complete, consistent scratch directory conserves'
+rsj_mkcons "$rSJ6" "$rsj6a" "$rsj6b" "$rsj6c"
+rm -f "$rSJ6/1.rec"
+OUT="$(rsj_cons "$rSJ6")"
+assert_has "$rsj6b: no result record" 'S6: a deleted record names the suite as having no result record'
+assert_has 'RC=1' 'S6: a deleted record is a failure'
+rsj_mkcons "$rSJ6" "$rsj6a" "$rsj6b" "$rsj6c"
+printf 'suite=%s rc=0 cat=0\n' "$rsj6b" > "$rSJ6/2.rec"
+OUT="$(rsj_cons "$rSJ6")"
+assert_has "$rsj6b: more than one result record" 'S6: a duplicate record names the suite'
+assert_has 'RC=1' 'S6: a duplicate record is a failure'
+rsj_mkcons "$rSJ6" "$rsj6a" "$rsj6b" "$rsj6c"
+printf 'suite=%s rc=0 cat=0\n' "$rsj6z" > "$rSJ6/1.rec"
+OUT="$(rsj_cons "$rSJ6")"
+assert_has "$rsj6z: a result record for a suite that was not listed" 'S6: a record naming an unlisted suite is named'
+assert_has 'RC=1' 'S6: an unlisted record is a failure'
+rsj_mkcons "$rSJ6" "$rsj6a" "$rsj6b" "$rsj6c"
+printf 'suite=%s rc=0 cat=0\n' "$rsj6c" > "$rSJ6/1.rec"
+printf 'suite=%s rc=0 cat=0\n' "$rsj6b" > "$rSJ6/2.rec"
+OUT="$(rsj_cons "$rSJ6")"
+assert_has "$rsj6b: its record names $rsj6c" 'S6: a record whose suite does not match its index is named (the sets are equal)'
+assert_has 'RC=1' 'S6: an index mismatch is a failure'
+rsj_mkcons "$rSJ6" "$rsj6a" "$rsj6b" "$rsj6c"
+rm -f "$rSJ6/1.rec"
+printf 'suite=%s rc=0 cat=0\n' "$rsj6z" > "$rSJ6/3.rec"
+OUT="$(rsj_cons "$rSJ6")"
+assert_has "$rsj6b: no result record" 'S6: equal counts, different sets: the MISSING suite is named (a count compare cannot name it)'
+assert_has "$rsj6z: a result record for a suite that was not listed" 'S6: equal counts, different sets: the unlisted record is named'
+rsj_mkcons "$rSJ6" "$rsj6a" "$rsj6b" "$rsj6c"
+printf 'garbage\n' > "$rSJ6/1.rec"
+OUT="$(rsj_cons "$rSJ6")"
+assert_has "$rsj6b: unreadable result record" 'S6: an unreadable record is named'
+
+# ---- S14: one record path broken, real process, nothing else broken -----------------------------
+rSJ14="$(rsj_row S14)"
+rsj_inject "$rSJ14" recdir0
+assert_last_line_prefix 'RESULT: FAIL rc=1' 'S14: a suite whose record path is broken fails the run'
+assert_has 'scripts/tests/test_target.sh: no result record' 'S14: the failure names the target as having no result record'
+assert_has 'PASS  tests-shell scripts/tests/test_other.sh (' 'S14: the break did not poison the other suite'
+assert_not_has 'scripts/tests/test_target.sh: unreadable result record' 'S14: the chained mv leaves NO record (a directory is never moved into place as an unreadable one)'
+check_eq "$(rsj_scratch "$rSJ14")" 0 'S14: the scratch directory stayed removable and was removed'
+rsj14_dir="$(printf '%s\n' "$OUT" | sed -n 's/^  full output: //p' | sed -n 1p)"
+check_eq "$([[ -e "$rsj14_dir/shell-conserve.log" ]] && echo yes || echo no)" yes 'S14: the conservation message is itself preserved as the shell-conserve artifact'
+
+# ---- S9: parity with suite_parallel.sh on the shared invariants, real processes on both sides ----
+rSJ9="$(rsj_row S9)"
+rsj_inject "$rSJ9" recdir0
+assert_has 'scripts/tests/test_target.sh: no result record' 'S9: pool: a missing record is rejected and names the suite'
+rsj_inject "$rSJ9" bad
+assert_has 'scripts/tests/test_target.sh exited 3' 'S9: pool: a nonzero status is rejected and names the suite'
+rsj_inject "$rSJ9" recfinal
+assert_has 'scripts/tests/test_target.sh: unreadable result record' 'S9: pool: an unreadable record is rejected and names the suite'
+rsj9_sp="$rsj_root/S9-sp-fixture.sh"
+{
+  printf '#!/usr/bin/env bash\nset -uo pipefail\n. "%s"\n' "$here/../lib/suite_parallel.sh"
+  # Every line is indented: the I13 scan matches `^if unit_run ` and `^name() {` at column 0 anywhere in this file, heredoc
+  # bodies included, so a column-0 fixture line would end the rSJ unit's range early and switch the cross-unit guard off.
+  cat << 'SPFX'
+  pass=0
+  fail=0
+  pass_line() { printf 'PASS  %s\n' "$1"; pass=$((pass + 1)); }
+  sp_init "${BASH_SOURCE[0]}" "umiss unrc ugarble"
+  if unit_run umiss 3; then pass_line "m"; kill -KILL $$; fi
+  if unit_run unrc 2; then trap 'exit 5' EXIT; pass_line "n"; fi
+  if unit_run ugarble 1; then pass_line "g"; fail=x; fi
+  unit_finish
+  printf '\n%d passed, %d failed\n' "$pass" "$fail"
+  [[ "$fail" -eq 0 ]]
+SPFX
+} > "$rsj9_sp"
+OUT="$(env -u AUDIT_TEST_JOBS -u AUDIT_TEST_ONLY -u AUDIT_TEST_UNIT -u AUDIT_TEST_RUNDIR TMPDIR="$rSJ9/tmp" AUDIT_TEST_JOBS=3 bash "$rsj9_sp" 2>&1)"
+assert_has 'umiss: no result record' 'S9: suite_parallel: a missing record is rejected and names the unit'
+assert_has 'unrc: exit status 5' 'S9: suite_parallel: a nonzero status with fail=0 is rejected and names the unit'
+assert_has 'ugarble: unreadable result record' 'S9: suite_parallel: an unreadable record is rejected and names the unit'
+
+# ---- S10: the serial tail never overlaps anything and runs after the pool ------------------------
+rSJ10="$(rsj_row S10)"
+mk_clean_repo "$rSJ10/repo"
+rsj_suite "$rSJ10/repo" test_a.sh trace
+rsj_suite "$rSJ10/repo" test_b.sh trace
+rsj_suite "$rSJ10/repo" test_tail.sh trace
+rsj_manifest "$rSJ10/repo" << 'EOM'
+[serial]
+test_tail.sh  # fixture: runs alone, after the pool
+[weights]
+[floor]
+EOM
+commit_all "$rSJ10/repo" suites
+rsj_engine "$rSJ10" "$rSJ10/repo" AUDIT_SHELL_JOBS=2
+assert_last_line_prefix 'RESULT: PARALLEL-PASS rc=0' 'S10: a pool run with a serial tail passes'
+assert_has 'PASS  tests-shell scripts/tests/test_a.sh (' 'S10: the pool ran (positive evidence)'
+assert_not_has 'tests-shell scripts/tests/test_tail.sh' 'S10: the tail member is not a pool member'
+rsj_assert 'S10: the tail member started only after every pool suite ended' rsj_before \
+  "$(rsj_lastpos "$rSJ10/events" '^end test_[ab][.]sh$')" "$(rsj_pos "$rSJ10/events" '^start test_tail[.]sh$')"
+check_eq "$(rsj_diff "$(rsj_pos "$rSJ10/events" '^start test_tail[.]sh$')" "$(rsj_pos "$rSJ10/events" '^end test_tail[.]sh$')")" 1 'S10: nothing else ran between the tail start and its end'
+rSJ10g="$(rsj_row S10g)"
+mk_clean_repo "$rSJ10g/repo"
+rsj_suite "$rSJ10g/repo" test_a.sh witness
+rsj_manifest "$rSJ10g/repo" << 'EOM'
+[serial]
+test_ghost.sh  # fixture: names a suite that is not tracked
+[weights]
+[floor]
+EOM
+commit_all "$rSJ10g/repo" suites
+rsj_engine "$rSJ10g" "$rSJ10g/repo" AUDIT_SHELL_JOBS=2
+assert_has "FAIL tests — shell pool: the serial-tail suite 'test_ghost.sh' is named in scripts/tests/serial_shell_suites.txt but is not a tracked suite" 'S10: a tail name that is not a tracked suite is a named failure'
+check_eq "$([[ -e "$rSJ10g/witness" ]] && echo ran || echo clean)" clean 'S10: ...and it failed before any suite ran'
+
+# ---- S11: no overlap with pytest (needs the pytest-xdist the real gate uses) -----------------------
+if [[ "$rsj_xdist" == yes ]]; then
+  rSJ11="$(rsj_row S11)"
+  mk_clean_repo "$rSJ11/repo"
+  rsj_suite "$rSJ11/repo" test_a.sh slow
+  rsj_suite "$rSJ11/repo" test_b.sh slow
+  rsj_suite "$rSJ11/repo" test_tail.sh tailmark
+  rsj_manifest "$rSJ11/repo" << 'EOM'
+[serial]
+test_tail.sh  # fixture: runs alone, after the pool
+[weights]
+[floor]
+EOM
+  rsj_pytest "$rSJ11/repo"
+  commit_all "$rSJ11/repo" suites
+  rsj_engine "$rSJ11" "$rSJ11/repo" AUDIT_SHELL_JOBS=2 AUDIT_PYTEST_JOBS=2
+  assert_last_line_prefix 'RESULT: PARALLEL-PASS rc=0' 'S11: both profiles together pass'
+  assert_has 'PASS  tests-shell scripts/tests/test_a.sh (' 'S11: the pool ran (positive evidence)'
+  rsj11_py="$(rsj_pos "$rSJ11/events" '^pytest-start ')"
+  rsj_assert 'S11: every pool suite had ended when the serial tail started' rsj_before \
+    "$(rsj_lastpos "$rSJ11/events" '^end$')" "$(rsj_pos "$rSJ11/events" '^tail-start$')"
+  rsj_assert 'S11: CONTROL: pgrep saw the marker while a fixture suite process ran (the alive=0 reading below is not vacuous)' \
+    test "$(grep -c '^seen [1-9]' "$rSJ11/events")" -ge 1
+  rsj_assert 'S11: pytest started only after the serial tail (green by construction on the old engine, which runs every suite serially before pytest; no campaign mutant targets it)' rsj_before "$(rsj_pos "$rSJ11/events" '^tail-start$')" "$rsj11_py"
+  check_eq "$(sed -n "${rsj11_py:-0}p" "$rSJ11/events")" 'pytest-start drained=1 alive=0 scratch=0' \
+    'S11: when pytest ran no fixture-suite process was alive, the shell phase was reported drained and the pool scratch was gone'
+else
+  skip_line 'skip - rSJ S11: pytest-xdist is not importable here'
+fi
+
+# ---- S12: the manifest floor and the zero-listing floor --------------------------------------------
+rSJ12="$(rsj_row S12)"
+mk_clean_repo "$rSJ12/repo"
+rsj_suite "$rSJ12/repo" test_a.sh witness
+rsj_manifest "$rSJ12/repo" << 'EOM'
+[serial]
+[weights]
+[floor]
+test_a.sh
+test_gone.sh
+EOM
+commit_all "$rSJ12/repo" suites
+rsj_engine "$rSJ12" "$rSJ12/repo" AUDIT_SHELL_JOBS=2
+assert_has "FAIL tests — shell pool: the floor suite 'test_gone.sh' is named in scripts/tests/serial_shell_suites.txt but is not a tracked suite" 'S12: a floor suite absent from the listing is a named failure'
+check_eq "$([[ -e "$rSJ12/witness" ]] && echo ran || echo clean)" clean 'S12: ...and it failed before any suite ran'
+rsj_reset "$rSJ12"
+rsj_manifest "$rSJ12/repo" << 'EOM'
+[serial]
+[weights]
+[floor]
+test_a.sh
+EOM
+commit_all "$rSJ12/repo" floor-ok
+rsj_engine "$rSJ12" "$rSJ12/repo" AUDIT_SHELL_JOBS=2
+assert_last_line_prefix 'RESULT: PARALLEL-PASS rc=0' 'S12: CONTROL: with the floor satisfied the same fixture passes'
+rSJ12z="$(rsj_row S12z)"
+mk_clean_repo "$rSJ12z/repo"
+rsj_suite "$rSJ12z/repo" test_x.sh witness
+rsj_engine "$rSJ12z" "$rSJ12z/repo" AUDIT_SHELL_JOBS=2
+assert_has 'FAIL tests — shell pool: git listed no shell suite, but 1 test_*.sh file(s) exist under scripts/tests' 'S12: a listing of zero suites over a repo that has a test_*.sh file is a failure, not a pass'
+check_eq "$([[ -e "$rSJ12z/witness" ]] && echo ran || echo clean)" clean 'S12: ...and the untracked suite was not run'
+
+# ---- S13: the scratch directory is removed on every path; an in-scope scratch is refused ----------
+rSJ13="$(rsj_row S13)"
+rsj_fix "$rSJ13/repo" ok test_a.sh test_b.sh
+rsj_engine "$rSJ13" "$rSJ13/repo" AUDIT_SHELL_JOBS=2
+assert_has 'NOTE tests: shell suites run in a pool of 2' 'S13: the pool ran (positive evidence)'
+check_eq "$(rsj_scratch "$rSJ13")" 0 'S13: the scratch directory is gone after a clean run'
+rsj_reset "$rSJ13"
+rm -rf "$rSJ13/repo"
+mk_clean_repo "$rSJ13/repo"
+rsj_suite "$rSJ13/repo" test_bad.sh bad
+rsj_suite "$rSJ13/repo" test_good.sh good
+commit_all "$rSJ13/repo" suites
+rsj_engine "$rSJ13" "$rSJ13/repo" AUDIT_SHELL_JOBS=2
+assert_has 'NOTE tests: shell suites run in a pool of 2' 'S13: the pool ran in the red case (positive evidence)'
+check_eq "$(rsj_scratch "$rSJ13")" 0 'S13: the scratch directory is gone after a red run'
+rsj_reset "$rSJ13"
+rm -rf "$rSJ13/repo"
+rsj_fix "$rSJ13/repo" witness test_w.sh
+mkdir -p "$rSJ13/repo/tmpin"
+rsj_engine "$rSJ13" "$rSJ13/repo" AUDIT_SHELL_JOBS=2 TMPDIR="$rSJ13/repo/tmpin"
+assert_has "the scratch directory $rSJ13/repo/tmpin lies inside the scope" 'S13: a scratch directory inside the scope is refused, naming it'
+assert_has 'FAIL tests' 'S13: the refusal is a FAIL tests'
+check_eq "$([[ -e "$rSJ13/witness" ]] && echo ran || echo clean)" clean 'S13: ...and no suite ran'
+rsj_reset "$rSJ13"
+rm -rf "$rSJ13/repo"
+mk_clean_repo "$rSJ13/repo"
+rsj_suite "$rSJ13/repo" test_a.sh block
+rsj_suite "$rSJ13/repo" test_b.sh block
+commit_all "$rSJ13/repo" suites
+rsj13_mark="rsj-S13g-$$"
+set -m
+env -u AUDIT_SHELL_JOBS -u AUDIT_PYTEST_JOBS -u PYTEST_ADDOPTS -u AUDIT_TEST_JOBS -u AUDIT_TEST_ONLY -u AUDIT_TEST_UNIT -u AUDIT_TEST_RUNDIR \
+  TMPDIR="$rSJ13/tmp" SJ_EVENTS="$rSJ13/events" SJ_MARK="$rsj13_mark" \
+  AUDIT_SHELL_JOBS=2 "$engine" --scope "$rSJ13/repo" --tests > "$rSJ13/out.txt" 2> /dev/null &
+rsj13_pid=$!
+rsj13_t=0
+while [[ "$(grep -c '^up' "$rSJ13/events" 2> /dev/null)" -lt 2 && "$rsj13_t" -lt 600 ]]; do
+  sleep 0.1
+  rsj13_t=$((rsj13_t + 1))
+done
+check_eq "$(grep -c '^up' "$rSJ13/events" 2> /dev/null)" 2 'S13: both suites were inside the pool when the group TERM was sent'
+rsj_assert 'S13: CONTROL: pgrep saw the marker before the TERM (the survivor check below is not vacuous)' \
+  test "$(pgrep -f -- "$rsj13_mark" | wc -l | tr -d ' ')" -ge 1
+kill -TERM -"$rsj13_pid" 2> /dev/null
+rsj13_t=0
+while kill -0 "$rsj13_pid" 2> /dev/null && [[ "$rsj13_t" -lt 300 ]]; do
+  sleep 0.1
+  rsj13_t=$((rsj13_t + 1))
+done
+if kill -0 "$rsj13_pid" 2> /dev/null; then
+  kill -KILL -"$rsj13_pid" 2> /dev/null
+  fail_line 'S13: the audit was still running 30 s after the group TERM (its process group was KILLed)'
+fi
+wait "$rsj13_pid" 2> /dev/null
+rsj13_rc=$?
+set +m
+check_eq "$rsj13_rc" 143 'S13: a process-group TERM mid-pool ends the run with 143'
+rsj_assert 'S13: the run ends RESULT: INCOMPLETE rc=143, never either PASS spelling' grep -q '^RESULT: INCOMPLETE rc=143' "$rSJ13/out.txt"
+check_eq "$(rsj_scratch "$rSJ13")" 0 'S13: the scratch directory is gone after a process-group TERM (this does not prove the exit handling stopped a child: S17 does)'
+rsj13_t=0
+while pgrep -f -- "$rsj13_mark" > /dev/null && [[ "$rsj13_t" -lt 50 ]]; do
+  sleep 0.1
+  rsj13_t=$((rsj13_t + 1))
+done
+rsj_assert 'S13: no fixture process survived the group kill' test "$rsj13_t" -lt 50
+pkill -KILL -f -- "$rsj13_mark" 2> /dev/null || true
+
+# ---- S16: a leaked descendant holding the suite's stdout is waited for ----------------------------
+rSJ16="$(rsj_row S16)"
+mk_clean_repo "$rSJ16/repo"
+rsj_suite "$rSJ16/repo" test_leak.sh leak
+rsj_suite "$rSJ16/repo" test_tail.sh tailmark
+rsj_manifest "$rSJ16/repo" << 'EOM'
+[serial]
+test_tail.sh  # fixture: runs alone, after the pool
+[weights]
+[floor]
+EOM
+commit_all "$rSJ16/repo" suites
+rsj_engine "$rSJ16" "$rSJ16/repo" AUDIT_SHELL_JOBS=2
+assert_last_line_prefix 'RESULT: PARALLEL-PASS rc=0' 'S16: a pool run over a suite that leaks a stdout-holding process passes'
+rsj_assert 'S16: the pool waited for pipe EOF (the leaked process ended before the serial tail started)' rsj_before \
+  "$(rsj_pos "$rSJ16/events" '^leak-end$')" "$(rsj_pos "$rSJ16/events" '^tail-start$')"
+rsj_reset "$rSJ16"
+rsj_engine "$rSJ16" "$rSJ16/repo"
+assert_last_line_prefix 'RESULT: PASS rc=0' 'S16: the serial profile reaches the same verdict for the same fixture'
+
+# ---- S17: the exit handling, TERM to the audit's PID alone ----------------------------------------
+rSJ17="$(rsj_row S17)"
+mk_clean_repo "$rSJ17/repo"
+rsj_suite "$rSJ17/repo" test_a_quick.sh quick
+rsj_suite "$rSJ17/repo" test_b_ignore.sh ignore
+commit_all "$rSJ17/repo" suites
+rsj17_mark="rsj-S17-$$"
+set -m
+env -u AUDIT_SHELL_JOBS -u AUDIT_PYTEST_JOBS -u PYTEST_ADDOPTS -u AUDIT_TEST_JOBS -u AUDIT_TEST_ONLY -u AUDIT_TEST_UNIT -u AUDIT_TEST_RUNDIR \
+  TMPDIR="$rSJ17/tmp" SJ_EVENTS="$rSJ17/events" SJ_MARK="$rsj17_mark" \
+  AUDIT_SHELL_JOBS=2 "$engine" --scope "$rSJ17/repo" --tests > "$rSJ17/out.txt" 2> /dev/null &
+rsj17_pid=$!
+rsj17_t=0
+while [[ ! ( -e "$rSJ17/events" && "$(grep -c -E '^(up|quick-done)$' "$rSJ17/events")" -ge 2 ) && "$rsj17_t" -lt 600 ]]; do
+  sleep 0.1
+  rsj17_t=$((rsj17_t + 1))
+done
+check_eq "$(grep -c -E '^(up|quick-done)$' "$rSJ17/events" 2> /dev/null)" 2 'S17: one suite had finished and one was still running when the TERM was sent'
+rsj_assert 'S17: the pool ran (positive evidence)' grep -q '^NOTE tests: shell suites run in a pool of 2' "$rSJ17/out.txt"
+kill -TERM "$rsj17_pid" 2> /dev/null
+rsj17_t=0
+while ! grep -q '^RESULT: INCOMPLETE' "$rSJ17/out.txt" 2> /dev/null && [[ "$rsj17_t" -lt 200 ]]; do
+  sleep 0.05
+  rsj17_t=$((rsj17_t + 1))
+done
+rsj17_alive="$(pgrep -f -- "$rsj17_mark" | wc -l | tr -d ' ')"
+rsj_assert 'S17: the INCOMPLETE line was spoken while the TERM-ignoring descendant was still alive (the verdict comes first)' test "$rsj17_alive" -ge 1
+rsj17_t=0
+while kill -0 "$rsj17_pid" 2> /dev/null && [[ "$rsj17_t" -lt 300 ]]; do
+  sleep 0.1
+  rsj17_t=$((rsj17_t + 1))
+done
+if kill -0 "$rsj17_pid" 2> /dev/null; then
+  kill -KILL -"$rsj17_pid" 2> /dev/null
+  fail_line 'S17: the audit was still running 30 s after the TERM (the exit handling never ended; its process group was KILLed)'
+else
+  pass_line 'S17: the audit exited within 30 s of the TERM'
+fi
+wait "$rsj17_pid" 2> /dev/null
+set +m
+rsj17_t=0
+while pgrep -f -- "$rsj17_mark" > /dev/null && [[ "$rsj17_t" -lt 100 ]]; do
+  sleep 0.1
+  rsj17_t=$((rsj17_t + 1))
+done
+rsj_assert 'S17: the descendant that ignores TERM was KILLed within the bounded wait' test "$rsj17_t" -lt 100
+rsj_assert 'S17: the last stdout line is the INCOMPLETE verdict' rsj_last_prefix "$rSJ17/out.txt" 'RESULT: INCOMPLETE'
+check_eq "$(rsj_scratch "$rSJ17")" 0 'S17: the scratch directory is gone'
+pkill -KILL -f -- "$rsj17_mark" 2> /dev/null || true
+
+# ---- S21: the scratch gate, mktemp failing inside the check (a read-only TMPDIR also breaks the engine's own mktemps first) --
+rSJ21="$(rsj_row S21)"
+rsj_fix "$rSJ21/repo" witness test_w.sh
+OUT="$(env -u AUDIT_SHELL_JOBS TMPDIR="$rSJ21/tmp" SJ_WITNESS="$rSJ21/witness" AUDIT_SHELL_JOBS=2 "$BASH" -c '
+  source "$1"
+  audit_scope="$2"
+  mktemp() { return 1; }
+  check_tests "$2"
+  printf "COUNTS=%s/%s/%s\n" "$pass_count" "$fail_count" "$skip_count"' _ "$engine" "$rSJ21/repo" 2>&1)"
+assert_has 'FAIL tests — AUDIT_SHELL_JOBS=2: the scratch directory' 'S21: a scratch directory that cannot be created fails the tests check'
+assert_has 'set TMPDIR to a directory outside the scope' 'S21: the failure names TMPDIR'
+assert_has 'COUNTS=0/1/0' 'S21: exactly one FAIL was recorded'
+check_eq "$([[ -e "$rSJ21/witness" ]] && echo ran || echo clean)" clean 'S21: no suite ran'
+
+# ---- S15: the consumers accept the parallel word only on the sentence with both variables, and carry the fallback ----
+rsj_has() { # file text -> succeeds when the text occurs in the file with every run of whitespace read as one space
+  python3 -c 'import re, sys; t = re.sub(r"\s+", " ", open(sys.argv[1]).read()); sys.exit(0 if sys.argv[2] in t else 1)' "$1" "$2"
+}
+rsj_lacks() { ! rsj_has "$@"; }
+rsj_matches() { # file regex -> succeeds when the regex matches the whitespace-normalised file
+  python3 -c 'import re, sys; t = re.sub(r"\s+", " ", open(sys.argv[1]).read()); sys.exit(0 if re.search(sys.argv[2], t) else 1)' "$1" "$2"
+}
+for rsj15_skill in feature propagate; do
+  rsj15_f="$here/../../skills/$rsj15_skill/SKILL.md"
+  rsj_assert "S15: the $rsj15_skill skill accepts the parallel word only where the launch line carried both variables" \
+    rsj_has "$rsj15_f" 'or `RESULT: PARALLEL-PASS rc=0` when the launch line of that very run carried both `AUDIT_SHELL_JOBS='
+  case "$rsj15_skill" in
+    feature) rsj15_launch='env AUDIT_SHELL_JOBS=[0-9]+ AUDIT_PYTEST_JOBS=8 skills/audit/audit.sh --scope "[$]PWD" --tests' ;;
+    *) rsj15_launch='env AUDIT_SHELL_JOBS=[0-9]+ AUDIT_PYTEST_JOBS=8 ./skills/audit/audit.sh --tests --scope "[$]PWD"' ;;
+  esac
+  rsj_assert "S15: the $rsj15_skill skill's launch command carries both variables" rsj_matches "$rsj15_f" "$rsj15_launch"
+  rsj_assert "S15: the $rsj15_skill skill carries the fallback sentence" \
+    rsj_has "$rsj15_f" 'is a finding to file (the row, the suite, the rate); the verdict of record for that run is a serial `audit.sh --tests` of the same tree, and a red is never cleared by re-running the parallel profile'
+  rsj_assert "S15: the $rsj15_skill skill says the parallel word never stands in for PASS elsewhere" \
+    rsj_has "$rsj15_f" 'A `PARALLEL-PASS` never stands in for `PASS` anywhere else'
+  rsj_assert "S15: the $rsj15_skill skill carries no unsubstituted width marker" rsj_lacks "$rsj15_f" 'AUDIT_SHELL_JOBS=W'
+done
+rsj_assert 'S15: the feature skill names the anchored launch pattern that lists the parallel word' \
+  rsj_has "$here/../../skills/feature/SKILL.md" "--expect '^RESULT: (PASS|PARALLEL-PASS|FAIL|ERROR|INCOMPLETE) rc=[0-9]+'"
+
+printf 'info  the rSJ section took %d s\n' "$((SECONDS - rsj_t0))"
+# rSJ-END
+fi # unit-end
+if [[ "${AUDIT_TEST_ONLY:-}" == rSJ ]]; then
   printf '\n%d passed, %d failed\n' "$pass" "$fail"
   [[ "$fail" -eq 0 ]]
   exit

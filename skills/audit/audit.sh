@@ -37,17 +37,20 @@ set -uo pipefail
 #
 # Terminal verdict line: every run this script exits from itself prints, as its LAST
 # line of stdout, `RESULT: <STATUS> rc=<n> checks=<pass>/<fail>/<skip>` where STATUS is
-# PASS (completed, zero FAILs) | PARALLEL-PASS (completed, zero FAILs, opt-in parallel pytest
-# iteration run; see below) | FAIL (completed, >=1 FAIL) | ERROR (usage error, no
+# PASS (completed, zero FAILs) | PARALLEL-PASS (completed, zero FAILs, opt-in parallel pytest and/or
+# shell-suite pool iteration run; see below) | FAIL (completed, >=1 FAIL) | ERROR (usage error, no
 # sweep ran) | INCOMPLETE (died mid-sweep on a catchable signal). Clean is EXACTLY
 # `RESULT: PASS` — an allowlist, so any value not anticipated here reads as not-clean.
 # The line CANNOT be emitted on SIGKILL, so its ABSENCE never means clean: it means
 # the run did not complete.
 #
-# One more status exists for an opt-in iteration run: when AUDIT_PYTEST_JOBS asked for pytest
-# under xdist (a count of 2 or more) and the run completed with zero FAILs, the last line is
-# `RESULT: PARALLEL-PASS rc=0 ...`. It is NOT a clean verdict for any gate, and its first word is
-# deliberately not PASS, so a reader matching on a PASS prefix does not accept it.
+# One more status exists for an opt-in iteration run: when AUDIT_PYTEST_JOBS asked for pytest under xdist,
+# or AUDIT_SHELL_JOBS asked for the shell suites in a bounded pool (each a count of 2 or more), and the run
+# completed with zero FAILs, the last line is `RESULT: PARALLEL-PASS rc=0 ...`. It is NOT a clean verdict for
+# any gate, and its first word is deliberately not PASS, so a reader matching on a PASS prefix does not accept
+# it. A consumer accepts it by NAME and only when it launched the run itself with both variables on its own
+# command line: a PARALLEL-PASS from an inherited or leaked variable is never a gate result. Which profile ran
+# is read from the NOTE lines of the run, not from this line.
 #
 # NOTE: no `-e` — sweep-runner exemption (STYLE.md): one failing check or tool invocation
 # must not abort the whole sweep, so every check below guards its own commands explicitly
@@ -95,6 +98,30 @@ shellcheck_tmp=""
 # and it is read BARE (no default) in the trap, so this top-level initialisation is load-bearing
 # under `set -u`.
 audit_pytest_tmp=""
+
+# The scratch directory the opt-in shell-suite pool (AUDIT_SHELL_JOBS) keeps its per-suite output and result records
+# in, and the "index:pid" tokens of the pool wrappers not yet reaped. Global for the same reason as audit_pytest_tmp:
+# audit_on_exit() must see them, and it reads them BARE (no default) under `set -u`, so these top-level initialisations
+# are load-bearing.
+audit_shell_tmp=""
+audit_shell_running=""
+
+# The pool width. Assigned when the first suite is LAUNCHED and at no earlier point, so empty means the serial gate ran
+# the shell suites (or none ran). main() reads it to choose the terminal status word.
+tests_shell_parallel=""
+
+# True once a pool suite was red or its conservation check failed; gates the note that points the operator at the
+# serial gate. The remaining names are the pool's own scratch state, global so the helpers and the in-process rows can
+# read what a helper set.
+shell_red=false
+shell_pool_t0=0
+shell_pool_pid=""
+shell_pool_err=""
+shell_conserve_err=""
+shell_serial_list=""
+rec_suite=""
+rec_rc=""
+rec_cat=""
 
 # The worker count of the opt-in parallel pytest run. Assigned when pass one is LAUNCHED and at no
 # earlier point, so empty means the serial gate ran (or no python test ran at all). main() reads it
@@ -168,12 +195,19 @@ audit_on_exit() { # exit-status
   [[ -n "$hermetic_marker" ]] && rm -f "$hermetic_marker"
   shellcheck_remove_tmp   # exit-trap backstop
   pytest_remove_tmp   # exit-trap backstop
-  [[ "$audit_reported" == yes ]] && return
+  if [[ "$audit_reported" == yes ]]; then
+    shell_pool_cleanup   # normal path: nothing is running by now; a backstop only
+    return
+  fi
   if [[ "$audit_phase" == init && "$1" -eq 2 ]]; then
     audit_result_line ERROR "$1"
   else
     audit_result_line INCOMPLETE "$1"
   fi
+  # AFTER the terminal line, never before: stopping children takes up to about 3 s plus a KILL, and an outer
+  # escalation that killed the audit during that wait would otherwise leave no verdict line at all. Stopping prints
+  # nothing, so the line above stays the last line of stdout.
+  shell_pool_cleanup
 }
 
 print_offenders() { # detail-block (newline-separated, unindented) [label] -> indent 2sp, cap 50 lines
@@ -672,6 +706,333 @@ pytest_parallel_passes() { # scope jobs
 # is not quoted as the gate's red.
 pytest_red_note() {
   printf 'NOTE tests: this run used pytest under xdist (AUDIT_PYTEST_JOBS=%s), not the serial gate; a red here is a finding to sweep under the parallel profile, not load to dismiss\n' "$tests_parallel_jobs"
+}
+
+# ---- The opt-in pool for the shell suites (AUDIT_SHELL_JOBS) ----------------------------------------------
+#
+# The shell suites run through a bounded pool, longest first, only when AUDIT_SHELL_JOBS is 2 or more; the default is
+# the serial loop in check_tests. The protocol is the one scripts/lib/suite_parallel.sh uses: the verdict comes from a
+# per-suite RECORD (`suite=<t> rc=<n> cat=<n>`), written atomically by the child only after its pipeline returned,
+# never from the suite's text; a missing, unreadable, duplicate or unlisted record fails the run. It is a second copy
+# of that small protocol on purpose: audit.sh is a distributed skill and an adopting repo carries no lib/ directory.
+
+SHELL_MANIFEST_REL="scripts/tests/serial_shell_suites.txt"
+
+# The ONE place check_tests starts a shell suite: the serial loop, the pool and the serial tail all call it, so the
+# three cannot drift. The five profile variables are removed from the suite's environment, so an exported
+# AUDIT_TEST_JOBS or AUDIT_TEST_ONLY cannot turn a gate run into something else, and a suite that itself runs
+# `audit.sh --tests` cannot recurse into a pool. AUDIT_TEST_BUDGET is an operator setting for the per-edit hook and is
+# deliberately NOT removed.
+run_suite_scrubbed() { # suite-path -> the suite's combined output on stdout; its status is the function's
+  (
+    unset AUDIT_TEST_JOBS AUDIT_TEST_ONLY AUDIT_TEST_UNIT AUDIT_TEST_RUNDIR AUDIT_SHELL_JOBS
+    "$1" 2>&1
+  )
+}
+
+# Removes the pool's scratch directory and clears the handle. Called by the pool itself on every normal path and by the
+# exit trap as a backstop for interrupted runs; the basename test keeps a corrupted handle from pointing `rm -rf` elsewhere.
+shell_pool_remove_tmp() {
+  if [[ -n "$audit_shell_tmp" && -d "$audit_shell_tmp" ]]; then
+    case "$audit_shell_tmp" in
+      */audit-shell.*) rm -rf "$audit_shell_tmp" ;;
+    esac
+  fi
+  audit_shell_tmp=""
+  return 0
+}
+
+# The descendants of PID, one per line, depth first, read while their parents still live: a descendant of an exited
+# wrapper is reparented to init and cannot be found afterwards.
+shell_pool_descendants() { # pid
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null); do
+    printf '%s\n' "$c"
+    shell_pool_descendants "$c"
+  done
+}
+
+# TERM every running wrapper and its descendants, wait at most 3 s, KILL what is left. Prints nothing. Residuals, stated and
+# not claimed away: SIGKILL of the audit cannot reach this; a descendant that left in a process group of its own after
+# the snapshot is invisible to the walk.
+shell_pool_stop() {
+  local tok all="" d alive
+  for tok in $audit_shell_running; do
+    all="$all ${tok#*:} $(shell_pool_descendants "${tok#*:}" | tr '\n' ' ')"
+  done
+  audit_shell_running=""
+  [[ -n "${all// /}" ]] || return 0
+  # shellcheck disable=SC2086  # $all is a space-separated list of pids
+  kill -TERM $all 2>/dev/null || true
+  for _ in 1 2 3 4 5 6; do
+    alive=0
+    for d in $all; do
+      kill -0 "$d" 2>/dev/null && alive=1
+    done
+    [[ "$alive" -eq 0 ]] && return 0
+    sleep 0.5
+  done
+  # shellcheck disable=SC2086
+  kill -KILL $all 2>/dev/null || true
+  return 0
+}
+
+shell_pool_cleanup() { # the exit-trap and normal-path ending of the pool
+  shell_pool_stop   # children first, then the directory they write into
+  shell_pool_remove_tmp
+}
+
+# The rows of one section of the manifest (comment-only and blank lines dropped; an entry's own trailing comment stays).
+shell_manifest_section() { # file section
+  awk -v want="$2" '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    /^\[[a-z]+\][[:space:]]*$/ { cur = $0; sub(/^\[/, "", cur); sub(/\].*$/, "", cur); next }
+    cur == want { print }
+  ' "$1"
+}
+
+# The pool's order: heaviest first by the manifest's recorded seconds, an unweighted suite after the weighted ones in
+# listing order. The weights file is ARGV[1] and tested by name, never by record number, so an empty weights file cannot
+# turn the listing into weights.
+shell_pool_order() { # listing-file weights-file
+  awk 'FILENAME == ARGV[1] { w[$1] = $2; next }
+       { n = $0; sub(/.*\//, "", n); printf "%d %d %s\n", (n in w) ? w[n] : -1, FNR, $0 }' "$2" "$1" \
+    | sort -k1,1nr -k2,2n | cut -d' ' -f3-
+}
+
+# A record file -> rec_suite, rec_rc, rec_cat. Returns 1 when the file is absent, not a regular file, or not exactly
+# `suite=<t> rc=<n> cat=<n>` with numeric statuses.
+shell_pool_parse_rec() { # file
+  local line="" rest
+  rec_suite=""
+  rec_rc=""
+  rec_cat=""
+  [[ -f "$1" ]] || return 1
+  IFS= read -r line < "$1" || [[ -n "$line" ]] || return 1
+  case "$line" in
+    suite=*" rc="*" cat="*) ;;
+    *) return 1 ;;
+  esac
+  rest="${line##* rc=}"
+  rec_cat="${rest##*cat=}"
+  rec_rc="${rest%% *}"
+  rec_suite="${line#suite=}"
+  rec_suite="${rec_suite%% rc=*}"
+  case "$rec_rc" in
+    '' | *[!0-9]* | 0[0-9]*) rec_suite=""; rec_rc=""; rec_cat=""; return 1 ;;
+  esac
+  case "$rec_cat" in
+    '' | *[!0-9]* | 0[0-9]*) rec_suite=""; rec_rc=""; rec_cat=""; return 1 ;;
+  esac
+  [[ -n "$rec_suite" ]] || return 1
+  return 0
+}
+
+# Before anything is launched: the listing floor, the manifest floor and the serial-tail names. Sets shell_pool_err.
+shell_pool_preflight() { # scratch-dir fs-count
+  local d="$1" fname tname
+  shell_pool_err=""
+  sed 's|.*/||' "$d/all" > "$d/all.base" || { shell_pool_err="the suite listing could not be read"; return 1; }
+  if [[ ! -s "$d/all" && "$2" -gt 0 ]]; then
+    shell_pool_err="git listed no shell suite, but ${2} test_*.sh file(s) exist under scripts/tests"
+    return 1
+  fi
+  while IFS= read -r fname; do
+    [[ -z "$fname" ]] && continue
+    if ! grep -qxF -- "$fname" "$d/all.base"; then
+      shell_pool_err="the floor suite '${fname}' is named in ${SHELL_MANIFEST_REL} but is not a tracked suite"
+      return 1
+    fi
+  done < "$d/floor"
+  while IFS= read -r tname; do
+    [[ -z "$tname" ]] && continue
+    if ! grep -qxF -- "$tname" "$d/all.base"; then
+      shell_pool_err="the serial-tail suite '${tname}' is named in ${SHELL_MANIFEST_REL} but is not a tracked suite"
+      return 1
+    fi
+  done < "$d/tail"
+  return 0
+}
+
+# One pool child: a wrapper subshell started in the background. The suite's output is piped into `cat` on purpose (the
+# serial loop's drain semantics: this pipeline returns only when every holder of the pipe's write end has closed it, so a
+# suite that leaks a background process delays the record instead of letting it overlap later work). Both statuses are
+# read in ONE expansion on the very next line, because the next simple command would overwrite PIPESTATUS. The record is
+# written only after the pipeline returned, and the `mv` is chained with `&&`: a broken record path then leaves NO record
+# (a named failure) and never a directory renamed into place.
+shell_pool_launch() { # index scope suite scratch-dir -> sets shell_pool_pid
+  local i="$1" scope="$2" t="$3" d="$4"
+  (
+    s0="$SECONDS"
+    run_suite_scrubbed "$scope/$t" 2>&1 | cat > "$d/$i.out"
+    read -r rc crc <<< "${PIPESTATUS[*]}"
+    printf '%s\n' "$((SECONDS - s0))" > "$d/$i.sec"
+    printf 'suite=%s rc=%s cat=%s\n' "$t" "$rc" "$crc" > "$d/$i.rec.tmp" && mv -f "$d/$i.rec.tmp" "$d/$i.rec"
+  ) > /dev/null 2>&1 &
+  shell_pool_pid=$!
+}
+
+# Conservation, over the SUBJECT's records and not over the launches: every listed suite has exactly one readable record
+# whose suite matches its index, and no record names a suite that was not listed. Compared as SETS (sorted, `comm`),
+# never as counts. Sets shell_conserve_err and returns 1 on any violation; callable in-process on a hand-built directory
+# holding `order` (one suite per line, index = line number - 1), the listed-suites file, and `<index>.rec` files.
+shell_pool_conserve() { # scratch-dir listed-file
+  local d="$1" listed="$2" rf base idx name msg=""
+  shell_conserve_err=""
+  if [[ ! -r "$d/order" || ! -r "$listed" ]]; then
+    shell_conserve_err="shell pool conservation failed: its order or listing file is unreadable"
+    return 1
+  fi
+  : > "$d/recnames"
+  for rf in "$d"/*.rec; do
+    [[ -e "$rf" ]] || continue
+    base="${rf##*/}"
+    idx="${base%.rec}"
+    if [[ "$idx" != 0 ]] && shellcheck_jobs_invalid "$idx"; then
+      msg="${msg}  ${base}: a result record whose name is not a suite index"$'\n'
+      continue
+    fi
+    name="$(sed -n "$((idx + 1))p" "$d/order")"
+    if ! shell_pool_parse_rec "$rf"; then
+      msg="${msg}  ${name:-$base}: unreadable result record"$'\n'
+      continue
+    fi
+    printf '%s\n' "$rec_suite" >> "$d/recnames"
+    if [[ -z "$name" ]]; then
+      msg="${msg}  ${rec_suite}: a result record for a suite that was not listed (index ${idx})"$'\n'
+    elif [[ "$rec_suite" != "$name" ]]; then
+      msg="${msg}  ${name}: its record names ${rec_suite}"$'\n'
+    fi
+  done
+  LC_ALL=C sort "$listed" > "$d/listed.sorted" || { shell_conserve_err="shell pool conservation failed: the listing could not be sorted"; return 1; }
+  LC_ALL=C sort "$d/recnames" > "$d/recnames.sorted" || { shell_conserve_err="shell pool conservation failed: the records could not be sorted"; return 1; }
+  LC_ALL=C comm -23 "$d/listed.sorted" "$d/recnames.sorted" > "$d/norec" || { shell_conserve_err="shell pool conservation failed: the listing could not be compared with the records"; return 1; }
+  LC_ALL=C comm -13 "$d/listed.sorted" "$d/recnames.sorted" > "$d/unlisted" || { shell_conserve_err="shell pool conservation failed: the records could not be compared with the listing"; return 1; }
+  LC_ALL=C uniq -d "$d/recnames.sorted" > "$d/dups" || { shell_conserve_err="shell pool conservation failed: the records could not be checked for duplicates"; return 1; }
+  while IFS= read -r name; do
+    [[ -n "$name" ]] && msg="${msg}  ${name}: no result record"$'\n'
+  done < "$d/norec"
+  while IFS= read -r name; do
+    [[ -n "$name" ]] && msg="${msg}  ${name}: a result record for a suite that was not listed"$'\n'
+  done < "$d/unlisted"
+  while IFS= read -r name; do
+    [[ -n "$name" ]] && msg="${msg}  ${name}: more than one result record"$'\n'
+  done < "$d/dups"
+  [[ -z "$msg" ]] && return 0
+  shell_conserve_err="shell pool conservation failed:"$'\n'"${msg%$'\n'}"
+  return 1
+}
+
+# The pool itself. Appends failures to the CALLER's `detail` and `wrote_any` (check_tests declares both; bash dynamic
+# scope), as pytest_parallel_passes does. Returns 0, or 2 once a verdict_fail was already printed (the caller returns).
+# tests_shell_parallel is assigned here, at launch, and nowhere earlier. The caller has created the scratch directory.
+shell_pool_run() { # scope jobs sh-list manifest
+  local scope="$1" jobs="$2" list="$3" mf="$4" d="$audit_shell_tmp"
+  local total next=0 running=0 finished=0 i t tok newrun fs_count sname sout snote sec capnote
+  shell_serial_list=""
+  printf '%s\n' "$list" | sed '/^$/d' > "$d/all" || {
+    verdict_fail tests "shell pool: the suite listing could not be written"
+    shell_pool_remove_tmp
+    return 2
+  }
+  : > "$d/floor"
+  : > "$d/tail"
+  : > "$d/weights"
+  if [[ -r "$mf" ]]; then
+    shell_manifest_section "$mf" floor | awk '{ print $1 }' > "$d/floor"
+    shell_manifest_section "$mf" serial | awk '{ print $1 }' > "$d/tail"
+    shell_manifest_section "$mf" weights | awk 'NF >= 2 && $2 ~ /^[0-9]+$/ { print $1, $2 }' > "$d/weights"
+  fi
+  fs_count="$(find "$scope/scripts/tests" -maxdepth 1 -name 'test_*.sh' 2>/dev/null | wc -l | tr -d ' ')"
+  if ! shell_pool_preflight "$d" "$fs_count"; then
+    verdict_fail tests "shell pool: ${shell_pool_err}"
+    shell_pool_remove_tmp
+    return 2
+  fi
+  : > "$d/pool"
+  while IFS= read -r t; do
+    [[ -z "$t" ]] && continue
+    if grep -qxF -- "${t##*/}" "$d/tail"; then
+      shell_serial_list="${shell_serial_list}${t}"$'\n'
+    else
+      printf '%s\n' "$t" >> "$d/pool"
+    fi
+  done < "$d/all"
+  shell_serial_list="${shell_serial_list%$'\n'}"
+  if ! shell_pool_order "$d/pool" "$d/weights" > "$d/order"; then
+    verdict_fail tests "shell pool: ordering the suites by weight failed"
+    shell_pool_remove_tmp
+    return 2
+  fi
+  total="$(wc -l < "$d/order" | tr -d ' ')"
+  if [[ "$total" -ne "$(wc -l < "$d/pool" | tr -d ' ')" ]]; then
+    verdict_fail tests "shell pool: the weight ordering dropped or invented a suite"
+    shell_pool_remove_tmp
+    return 2
+  fi
+  if [[ "$total" -eq 0 ]]; then
+    shell_pool_remove_tmp
+    return 0
+  fi
+  tests_shell_parallel="$jobs"
+  printf 'NOTE tests: shell suites run in a pool of %s (AUDIT_SHELL_JOBS), not the serial gate; a red here is a finding to re-run serially, not load to dismiss\n' "$jobs"
+  shell_pool_t0="$SECONDS"
+  while [[ "$finished" -lt "$total" ]]; do
+    newrun=""
+    for tok in $audit_shell_running; do
+      if kill -0 "${tok#*:}" 2>/dev/null; then
+        newrun="$newrun $tok"
+      else
+        wait "${tok#*:}" 2>/dev/null
+        running=$((running - 1))
+        finished=$((finished + 1))
+      fi
+    done
+    audit_shell_running="${newrun# }"
+    while [[ "$running" -lt "$jobs" && "$next" -lt "$total" ]]; do
+      t="$(sed -n "$((next + 1))p" "$d/order")"
+      shell_pool_launch "$next" "$scope" "$t" "$d"
+      audit_shell_running="${audit_shell_running:+$audit_shell_running }${next}:${shell_pool_pid}"
+      next=$((next + 1))
+      running=$((running + 1))
+    done
+    [[ "$finished" -lt "$total" ]] && sleep 0.2
+  done
+  if ! shell_pool_conserve "$d" "$d/pool"; then
+    detail="${detail}${shell_conserve_err}"$'\n'
+    shell_red=true
+    if audit_artifact_write "$scope" shell-conserve "$shell_conserve_err"; then wrote_any=true; fi
+  fi
+  i=0
+  while [[ "$i" -lt "$total" ]]; do
+    sname="$(sed -n "$((i + 1))p" "$d/order")"
+    sec="$(cat "$d/$i.sec" 2>/dev/null)"
+    if shell_pool_parse_rec "$d/$i.rec" && [[ "$rec_suite" == "$sname" ]]; then
+      if [[ "$rec_rc" -eq 0 && "$rec_cat" -eq 0 ]]; then
+        printf 'PASS  tests-shell %s (%ss)\n' "$sname" "${sec:-0}"
+      else
+        capnote=""
+        [[ "$rec_cat" -ne 0 ]] && capnote=", output capture exited ${rec_cat}"
+        printf 'FAIL  tests-shell %s (rc %s%s)\n' "$sname" "$rec_rc" "$capnote"
+        sout="$(cat "$d/$i.out" 2>/dev/null)"
+        if audit_artifact_write "$scope" "$sname" "$sout"; then snote=""; wrote_any=true
+        else snote=' (full output NOT preserved)'; fi
+        detail="${detail}${sname} exited ${rec_rc}:${snote}${capnote}"$'\n'"$(tests_excerpt "$sout")"$'\n'
+        shell_red=true
+      fi
+    else
+      printf 'FAIL  tests-shell %s (no usable result record)\n' "$sname"
+      shell_red=true
+    fi
+    i=$((i + 1))
+  done
+  shell_pool_remove_tmp   # normal path
+  return 0
+}
+
+# Printed directly before the unchanged `FAIL tests` line of a red pool run, so it is not quoted as the gate's red.
+shell_red_note() {
+  printf 'NOTE tests: this run used the shell-suite pool (AUDIT_SHELL_JOBS=%s), not the serial gate; a red here is a finding to re-run serially, not load to dismiss\n' "$tests_shell_parallel"
 }
 
 # The pytest runner, with the operator's PYTEST_ADDOPTS removed. pytest reads that variable on its
@@ -1986,6 +2347,15 @@ check_tests() {
     verdict_fail tests "AUDIT_PYTEST_JOBS must be a positive integer (got '$pytest_jobs')"
     return
   fi
+  local shell_jobs="${AUDIT_SHELL_JOBS:-}" want_pool=false sh_serial_list="" pytest_shell_note="" sh_rc=0
+  # AUDIT_SHELL_JOBS is validated here too, before any suite runs, by the same pattern-first predicate (no leading zero,
+  # digits only, at most four digits). Unset, empty and 1 are the serial gate; only 2 or more selects the pool, and the
+  # width is the value itself: no cap and no transform, so the number a consumer's launch line names is the number run.
+  if [[ -n "$shell_jobs" ]] && shellcheck_jobs_invalid "$shell_jobs"; then
+    verdict_fail tests "AUDIT_SHELL_JOBS must be a positive integer (got '$shell_jobs')"
+    return
+  fi
+  [[ -n "$shell_jobs" && "$shell_jobs" -gt 1 ]] && want_pool=true
   [[ -n "$pytest_jobs" && "$pytest_jobs" -gt 1 ]] && want_parallel=true
   # `:(glob)` is load-bearing. A plain `*test_*.py` pathspec is wildmatch WITHOUT WM_PATHNAME,
   # so `*` crosses `/` and `test_` matches anywhere in the PATH: `src/latest_run.py` matches
@@ -2023,19 +2393,42 @@ check_tests() {
       verdict_fail tests "AUDIT_PYTEST_JOBS=${pytest_jobs}: the scratch directory ${pbase} lies inside the scope (or could not be created); set TMPDIR to a directory outside the scope"
       return
     fi
-    printf 'NOTE tests: pytest runs under pytest-xdist with %s workers in two passes (AUDIT_PYTEST_JOBS); this is an iteration run, not the serial gate; shell suites run serially\n' "$pytest_jobs"
+    if [[ "$want_pool" == true ]]; then pytest_shell_note="shell suites run in a pool (AUDIT_SHELL_JOBS)"; else pytest_shell_note="shell suites run serially"; fi
+    printf 'NOTE tests: pytest runs under pytest-xdist with %s workers in two passes (AUDIT_PYTEST_JOBS); this is an iteration run, not the serial gate; %s\n' "$pytest_jobs" "$pytest_shell_note"
   fi
   sh_list="$(git -C "$scope" ls-files -- 'scripts/tests/test_*.sh' 2>/dev/null)"
+  sh_rc=$?
+  sh_serial_list="$sh_list"
+  if [[ "$want_pool" == true ]]; then
+    local sbase="${TMPDIR:-/tmp}"
+    if [[ "$sh_rc" -ne 0 ]]; then
+      verdict_fail tests "AUDIT_SHELL_JOBS=${shell_jobs}: git ls-files failed (status ${sh_rc}), so the suite listing cannot be trusted"
+      pytest_remove_tmp
+      return
+    fi
+    audit_shell_tmp=""
+    if audit_scratch_outside_scope "$scope" "$sbase"; then
+      audit_shell_tmp="$(mktemp -d "$sbase/audit-shell.XXXXXX" 2>/dev/null)" || audit_shell_tmp=""
+    fi
+    if [[ -z "$audit_shell_tmp" ]]; then
+      verdict_fail tests "AUDIT_SHELL_JOBS=${shell_jobs}: the scratch directory ${sbase} lies inside the scope (or could not be created); set TMPDIR to a directory outside the scope"
+      pytest_remove_tmp
+      return
+    fi
+    shell_pool_run "$scope" "$shell_jobs" "$sh_list" "$scope/$SHELL_MANIFEST_REL" || { pytest_remove_tmp; return; }
+    sh_serial_list="$shell_serial_list"
+    [[ -n "$sh_list" ]] && ran=true
+  fi
   while IFS= read -r t; do
     [[ -z "$t" ]] && continue
     ran=true
-    # The gate decides its own profile: the four profile variables (AUDIT_TEST_JOBS, AUDIT_TEST_ONLY,
-    # AUDIT_TEST_UNIT, AUDIT_TEST_RUNDIR) are removed from the environment of every shell suite, so an
-    # exported AUDIT_TEST_JOBS (the parallel profile) or AUDIT_TEST_ONLY (one section) cannot turn this
-    # run, or the adopted finish's tip suite, into something that is not the serial gate. AUDIT_TEST_BUDGET
-    # is an operator setting for the per-edit hook: it is NOT scrubbed, and no suite may fail on it.
-    # Unset inside the substitution, so it needs no `env` on PATH and changes nothing outside it.
-    out="$(unset AUDIT_TEST_JOBS AUDIT_TEST_ONLY AUDIT_TEST_UNIT AUDIT_TEST_RUNDIR; "$scope/$t" 2>&1)"; rc=$?
+    # The gate decides its own profile: run_suite_scrubbed removes the five profile variables (the four AUDIT_TEST_*
+    # ones and AUDIT_SHELL_JOBS) from the environment of every shell suite, so an exported AUDIT_TEST_JOBS (the
+    # parallel profile) or AUDIT_TEST_ONLY (one section) cannot turn this run, or the adopted finish's tip suite, into
+    # something that is not the serial gate. AUDIT_TEST_BUDGET is an operator setting for the per-edit hook: it is NOT
+    # scrubbed, and no suite may fail on it. In the pool profile this loop runs only the serial tail named in the
+    # manifest, through the same helper.
+    out="$(run_suite_scrubbed "$scope/$t" 2>&1)"; rc=$?
     if [[ "$rc" -ne 0 ]]; then
       # Per-suite, not per-run: the directory existing does not mean THIS suite's write landed,
       # and claiming preservation that did not happen is worse than admitting it did not.
@@ -2043,7 +2436,10 @@ check_tests() {
       else note=' (full output NOT preserved)'; fi
       detail="${detail}${t} exited ${rc}:${note}"$'\n'"$(tests_excerpt "$out")"$'\n'
     fi
-  done <<< "$sh_list"
+  done <<< "$sh_serial_list"
+  if [[ -n "$tests_shell_parallel" ]]; then
+    printf 'NOTE tests: shell phase drained in %ss\n' "$((SECONDS - shell_pool_t0))"
+  fi
 
   # APPLICABILITY and EXECUTION are separate questions, and must not share one flag. With a
   # single `ran`, a passing shell suite above laundered this family's silence into `PASS tests`
@@ -2098,6 +2494,7 @@ check_tests() {
   fi
   if [[ -n "$detail" ]]; then
     [[ -n "$tests_parallel_jobs" && "$pytest_red" == true ]] && pytest_red_note
+    [[ -n "$tests_shell_parallel" && "$shell_red" == true ]] && shell_red_note
     verdict_fail tests 'test suite failure(s)'
     # Printed BEFORE the detail: it is the one line whose loss would make the rest pointless.
     # Gated on `wrote_any`, not on `$audit_artifact_root` — the shared global can be non-empty
@@ -2452,7 +2849,7 @@ EOF
   # and a process killed before this point can only ever be reported INCOMPLETE, because
   # PASS and FAIL are unreachable from audit_on_exit().
   if [[ "$fail_count" -eq 0 ]]; then
-    if [[ -n "$tests_parallel_jobs" ]]; then
+    if [[ -n "$tests_parallel_jobs" || -n "$tests_shell_parallel" ]]; then
       audit_result_line PARALLEL-PASS 0
     else
       audit_result_line PASS 0

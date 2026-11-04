@@ -29,9 +29,10 @@ The user may optionally provide:
 - `--scope <path>` — target repo (default: git toplevel of cwd)
 - `--tests` — also run the repo's shell suites (`scripts/tests/test_*.sh`) and pytest (off by
   default; the sweep is otherwise static). Setting the environment variable AUDIT_PYTEST_JOBS to a
-  count of 2 or more runs the pytest part in parallel as an iteration aid, never as the gate; an
-  invalid value FAILs the tests check. It is read from the environment the audit inherits, not
-  passed as a flag. See the pytest bullet under Rules at the end of this file.
+  count of 2 or more runs the pytest part in parallel as an iteration aid, not a gate result
+  except under the PARALLEL-PASS rule in Rules; an invalid value FAILs the tests check.
+  AUDIT_SHELL_JOBS likewise runs the shell suites through a bounded pool (same validation, same
+  rule). Both are read from the environment the audit inherits, not passed as flags. See the pytest and shell-suite bullets under Rules at the end of this file.
 
 ### Process
 
@@ -48,7 +49,7 @@ The user may optionally provide:
    | Line | Meaning |
    | :--- | :--- |
    | `RESULT: PASS rc=0 …` | Completed, zero FAILs. **The only clean verdict.** |
-   | `RESULT: PARALLEL-PASS rc=0 …` | Completed, zero FAILs, but pytest ran under the opt-in parallel mode (AUDIT_PYTEST_JOBS). An iteration result, **not a clean verdict for any gate**; the caller re-runs with the variable unset or set to 1 (step 5). |
+   | `RESULT: PARALLEL-PASS rc=0 …` | Completed, zero FAILs, but pytest ran under the opt-in parallel mode (AUDIT_PYTEST_JOBS) or the shell suites ran through the opt-in pool (AUDIT_SHELL_JOBS). An iteration result, **never a clean verdict for /audit itself**; see the PARALLEL-PASS rule under Rules for the one condition under which a consumer may accept it, otherwise the caller re-runs with the variables unset or set to 1 (step 5). |
    | `RESULT: FAIL rc=1 …` | Completed, at least one FAIL. |
    | `RESULT: ERROR rc=2 …` | Usage error — no sweep ran. Relay stderr; on exit 2 say which flags were actually passed, since the stderr synopsis alone does not identify the cause. |
    | `RESULT: INCOMPLETE rc=<n> …` | The run began but did not finish — a catchable signal, or any other abnormal exit once the sweep had started. The counts are a prefix, not a result. |
@@ -68,9 +69,10 @@ The user may optionally provide:
    relay it verbatim, since it may read `(unavailable — …)` rather than a path, and a path that
    does resolve is temp-rooted and may be aged out by the time anyone opens it), the
    stderr synopsis and the flags actually passed for `ERROR`, and the fact that the counts
-   are only a prefix for `INCOMPLETE` or an absent line, and for `PARALLEL-PASS` that pytest
-   ran in the opt-in parallel mode, so it recommends a re-run with `AUDIT_PYTEST_JOBS` unset or
-   set to 1 and leaves that re-run to the caller. **Do not retry automatically**,
+   are only a prefix for `INCOMPLETE` or an absent line, and for `PARALLEL-PASS` that pytest or
+   the shell suites ran in an opt-in parallel profile, so it recommends a re-run with
+   `AUDIT_PYTEST_JOBS` and `AUDIT_SHELL_JOBS` unset or set to 1 and leaves that re-run to the
+   caller. **Do not retry automatically**,
    and do not attempt a fix unless asked. An `INCOMPLETE` or missing verdict is a reason
    to re-run deliberately, not to assume the sweep would have passed.
 
@@ -416,7 +418,8 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   to the serial loop's. On a host whose xargs cannot run the pool the check fails closed: the FAIL
   line says either that shellcheck did not run for some files, with the xargs exit status, or that
   xargs exited non-zero, and the value 1 is the remedy.
-- **pytest can run in parallel, as an opt-in iteration mode and never as the gate.** The default is
+- **pytest can run in parallel, as an opt-in iteration mode, not a gate result except under the
+  PARALLEL-PASS rule (the last bullet of this list).** The default is
   serial and is what the finish of a feature and a promote require. Setting the environment variable
   AUDIT_PYTEST_JOBS to a positive integer of at most four digits, with no leading zero, selects it:
   the value 1 and an empty value stay serial, and any other value fails the tests check with a FAIL
@@ -429,16 +432,45 @@ with load-bearing trailing whitespace, vendored dumps, etc.).
   executed exactly the distinct tests it collected, the two together being every collected test; a
   mismatch FAILs the tests check with the cause in its detail, and the NOTE line is printed on a
   failed parallel run as well.
-  The shell suites stay serial. A run that used the mode prints a NOTE line and, when it completes
-  with zero FAILs, ends RESULT: PARALLEL-PASS rc=0 instead of RESULT: PASS rc=0; the first word is
+  By itself this mode leaves the shell suites serial (the next bullet). A run that used the mode
+  prints a NOTE line and, when it completes with zero FAILs, ends RESULT: PARALLEL-PASS rc=0 instead of RESULT: PASS rc=0; the first word is
   deliberately not PASS, so a reader matching a PASS prefix does not accept it. A tool that waits for
   an audit run through a closed pattern needs one that lists the new word:
   RESULT: (PASS|PARALLEL-PASS|FAIL|ERROR|INCOMPLETE) rc=[0-9]+. What this documentation claims
-  is narrow: the mode has been run over the whole suite under the pool in only four runs, and a
-  per-row sweep covers only the rows it names, so every other row is unswept, not safe. A red
+  is narrow: the mode was swept over the whole suite on 2026-11-03: 10 runs together with the shell
+  pool (the next bullet) all ended PARALLEL-PASS, and a per-row sweep covers only the rows it names, so
+  every other row is unswept, not safe. A red
   parallel run is therefore a finding, never load: whoever hits it sweeps that row's rate with
   `~/.claude/scripts/flake-sweep.sh`, running the row as a member of a `-n 8` run of its module,
   and either fixes the row or marks it `@pytest.mark.serial_only`, recording that sweep as its
   evidence in `SERIAL_BY_MEASUREMENT` in `scripts/tests/test_serial_only_list.py`; one green
   serial run does not clear it. Independently of the mode, every pytest call the check makes removes the operator's PYTEST_ADDOPTS from its environment, so an exported
   worker option or selection cannot change what the serial gate runs while it still reads PASS.
+- **The shell suites can run through a bounded pool, as an opt-in iteration mode, not a gate result except under
+  the PARALLEL-PASS rule (the next bullet).** Setting the environment variable AUDIT_SHELL_JOBS to a positive integer of at
+  most four digits, with no leading zero, selects it: 1 and an empty value stay serial, and any other value fails the
+  tests check with a FAIL line naming the variable before any suite runs. The width is the value itself: there is no cap
+  and no automatic value, so a value above the number of suites simply starts every suite at once; a value that large
+  buys nothing and makes the run maximally concurrent, which is the load that can turn wall-clock rows red (the
+  validator rejects only more than four digits). The suites then run longest first under that width, each through a child that records its own exit
+  status in a scratch directory outside the scope, and the verdict is read from those records, never from the suites'
+  text: a suite with no readable record, a duplicate or unlisted record, a nonzero status or a failed output capture
+  FAILs the tests check and names the suite. Suites named under `[serial]` in `scripts/tests/serial_shell_suites.txt`
+  run alone, one after another, after the pool drains and before pytest, so the pytest pass never overlaps the pool;
+  the same file's `[floor]` names suites whose absence fails the check, and `[weights]` orders the pool. A run that
+  used the pool prints a NOTE before it and `NOTE tests: shell phase drained in <n>s` after the shell phase, and a
+  completed run with zero FAILs ends RESULT: PARALLEL-PASS rc=0, the same word as the pytest mode; which profile ran is
+  read from the NOTE lines, not from that line. When every suite is listed under `[serial]` the pool is empty: no pool
+  NOTE is printed and the run ends `RESULT: PASS` (when pytest also ran serially), because the engine returns before
+  it marks the run as a pool run. Measured on 2026-11-03, on one machine in one day with other sessions present: a
+  10-run sweep at AUDIT_SHELL_JOBS=4 with AUDIT_PYTEST_JOBS=8 ended PARALLEL-PASS 10 of 10 with no varying rows,
+  median wall 1456 s, against two serial brackets of 3442 s and 3363 s (mean 3402 s), a ratio of 0.428. Earlier
+  single runs took 1401 s at width 4 and 1484 s at width 8, so width 4 is the recommended value: 8 was no faster.
+  Zero reds in 10 runs bounds the per-run flake rate only to about 26% at 95% confidence, so the serial verdict of
+  record, not the sweep, is the safety. An oversized value is not guarded against. Wall-clock rows in the suites
+  can fail under concurrent load, so a red pool run is a finding to file, whose gate verdict is settled by a serial run of the
+  same tree, never load to dismiss, and the serial gate's verdict is the one of record.
+- **`RESULT: PARALLEL-PASS` is never a clean verdict for /audit itself.** A consumer skill may accept it as a gate
+  result only if that skill's own text names the word and it launched the run itself with both AUDIT_PYTEST_JOBS and
+  AUDIT_SHELL_JOBS set explicitly on that launch command, each to a count or to 1, so that an inherited or leaked
+  value cannot be what supplied the word. Otherwise the run is not cleared: re-run serially.

@@ -33,6 +33,7 @@ CHECKER = REPO / "scripts" / "mutation-anchors-check.py"
 # half a glob cannot supply. Adding a campaign here is correct — removing one needs a reason.
 FLOOR = (
     "mutate_audit_hermetic_subtree.py",
+    "mutate_audit_shell_pool.py",
     "mutate_audit_test.py",
     "mutate_hook_budget.py",
     "mutate_hook_machinery_test.py",

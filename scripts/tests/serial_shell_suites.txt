@@ -1,0 +1,72 @@
+# Shell suites for the opt-in pool of skills/audit/audit.sh (AUDIT_SHELL_JOBS). Three sections, in any order:
+#   [serial]   suites that must not overlap anything else: they run one after another AFTER the pool drains and
+#              BEFORE pytest. Each member carries its evidence on the SAME line after the name (`<suite>  # <evidence>`: the
+#              instrument output and the row names that earned the seat); an evidence-free member is refused by test_serial_shell_suites.py.
+#   [weights]  `<suite> <seconds>`: each suite's per-suite wall seconds, measured serially, used only to start the heaviest suites first.
+#   [floor]    suites whose absence from the tracked listing fails the audit, so a deleted suite cannot make the
+#              pool smaller silently.
+# A repo with no such file runs its whole listing through the pool.
+
+[serial]
+
+[weights]
+test_audit.sh 643
+test_guard_secrets.sh 222
+test_flake_sweep.sh 171
+test_hook_suite_guard.sh 170
+test_recast_hooks.sh 124
+test_publication_push_guard.sh 103
+test_run_long.sh 75
+test_publish_brick.sh 67
+test_propagate_postcheck.sh 64
+test_install.sh 57
+test_publish_postflight.sh 53
+test_git_timing_guard.sh 23
+test_pre_push_hook.sh 20
+test_suite_parallel.sh 19
+test_publish_preflight.sh 18
+test_push_guard.sh 17
+test_commit_subject_guard.sh 9
+test_exec_bit_integrity.sh 9
+test_exec_bit_guard.sh 8
+test_install_git_hooks.sh 7
+test_markdownlint_check.sh 5
+test_memory_index_check.sh 4
+test_markdownlint_config.sh 3
+test_py39_compat.sh 3
+test_audit_name_parity.sh 2
+test_md_links_check.sh 2
+test_style_check.sh 2
+test_ruff_check.sh 1
+test_scaffold_coverage.sh 1
+
+[floor]
+test_audit.sh
+test_audit_name_parity.sh
+test_commit_subject_guard.sh
+test_exec_bit_guard.sh
+test_exec_bit_integrity.sh
+test_flake_sweep.sh
+test_git_timing_guard.sh
+test_guard_secrets.sh
+test_hook_suite_guard.sh
+test_install.sh
+test_install_git_hooks.sh
+test_markdownlint_check.sh
+test_markdownlint_config.sh
+test_md_links_check.sh
+test_memory_index_check.sh
+test_pre_push_hook.sh
+test_propagate_postcheck.sh
+test_publication_push_guard.sh
+test_publish_brick.sh
+test_publish_postflight.sh
+test_publish_preflight.sh
+test_push_guard.sh
+test_py39_compat.sh
+test_recast_hooks.sh
+test_ruff_check.sh
+test_run_long.sh
+test_scaffold_coverage.sh
+test_style_check.sh
+test_suite_parallel.sh

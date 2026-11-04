@@ -771,19 +771,19 @@ session, which is why the tooling below is in the repo.
    check stops proving real convergence. Once the tree-compare passes, run the **full test suite once
    more, at the tip** — the repo's suites via `/audit --tests` (shell suites + pytest) — both must
    hold — and `audit.sh`'s single `tests` check already runs both sub-suites, so one verdict line
-   settles both. **That run counts as held only on `RESULT: PASS rc=0`.** `--tests` is the longest
+   settles both. **That run counts as held only on `RESULT: PASS rc=0`, or `RESULT: PARALLEL-PASS rc=0` when the launch line of that very run carried both `AUDIT_SHELL_JOBS=4` and `AUDIT_PYTEST_JOBS=8` (an inherited or leaked variable never counts).** A red under the parallel profile on a pinned, verified-unchanged tree is a finding to file (the row, the suite, the rate); the verdict of record for that run is a serial `audit.sh --tests` of the same tree, and a red is never cleared by re-running the parallel profile. On a `FAIL` of a run that used the parallel profile, stop and file the finding (row, suite, rate), then run the serial `audit.sh --tests` on the same pinned, verified-unchanged tree: that serial verdict is the verdict of record. A serial `RESULT: PASS rc=0` may proceed; a serial `FAIL` is a stop and the offending commit is fixed. On a host without pytest-xdist, drop `AUDIT_PYTEST_JOBS` and run serial: the parallel profile fails closed there. A `PARALLEL-PASS` never stands in for `PASS` anywhere else (a plain `/audit` sweep, `/propagate`'s other checks, any consumer that did not launch the run itself). Zero reds in 10 sweep runs bounds the per-run flake rate only to about 26% at 95% confidence, so the safety of this profile rests on the serial verdict of record, not on the sweep. `--tests` is the longest
    sweep there is, which makes it the most likely of all to be cut short by a timeout — and a
    cut-short run is exactly the one that reads clean to every cheap instrument. Require the verdict
-   line to be *present* and to say `PASS rc=0`.
+   line to be *present* and to say `PASS rc=0` (or `PARALLEL-PASS rc=0` under the rule above).
 
-   **Measured: this run exceeds a single foreground timeout** (~10 minutes here, against ~21s for
-   the per-brick static sweep). So **background it, and record its exit status INSIDE the artifact
+   **Measured: this run exceeds a single foreground timeout** (about 57 minutes serial and about 24 minutes under the parallel profile, measured
+   2026-11-03, against ~21s for the per-brick static sweep). So **background it, and record its exit status INSIDE the artifact
    you will read back** — never wrap it in a foreground wait loop, which is itself killable and
    whose own death then looks exactly like the sweep's:
 
    ```bash
    tip="$(mktemp -d)/tip-audit.txt"
-   { ./skills/audit/audit.sh --tests --scope "$PWD" 2>&1; printf 'AUDIT_EXIT_STATUS=%d\n' "$?"; } \
+   { env AUDIT_SHELL_JOBS=4 AUDIT_PYTEST_JOBS=8 ./skills/audit/audit.sh --tests --scope "$PWD" 2>&1; printf 'AUDIT_EXIT_STATUS=%d\n' "$?"; } \
      > "$tip" &
    printf 'reading back: %s\n' "$tip"
    ```
@@ -795,7 +795,9 @@ session, which is why the tooling below is in the repo.
    before step 6 makes the
    work public and irreversible, so nothing here is advisory:** on `FAIL` or `ERROR`, stop and
    report — do not push — fixing the offending commit for a `FAIL` and the invocation for an
-   `ERROR`; on `INCOMPLETE` or a missing line, re-run to completion and read the new verdict, never
+   `ERROR`; a `FAIL` of a run that used the parallel profile keeps that stop until the serial
+   `audit.sh --tests` verdict of record on the same tree is in hand, and a serial `FAIL` then
+   fixes the offending commit as stated; on `INCOMPLETE` or a missing line, re-run to completion and read the new verdict, never
    conclude either way from the truncated one.
 
 6. **Push `main`.** Publish with a **plain `git push`**, led by the required override.
