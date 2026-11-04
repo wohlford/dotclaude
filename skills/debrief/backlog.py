@@ -33,6 +33,8 @@ Usage:
   backlog.py --path PATH amend-head NEEDLE [--date YYYY-MM-DD] [--tier HIGH|MEDIUM|LOW]
   backlog.py --path PATH retier NEEDLE --from TIER --to TIER --reason TEXT [--date YYYY-MM-DD]
   backlog.py --path PATH unpromote NEEDLE [--date YYYY-MM-DD]  < note.md
+  backlog.py --path PATH repair
+  backlog.py --path PATH status
 
 The first four, plus `unpromote`, cover every place `/debrief` mutates the file: the new
 entries steps 4 and 5 file (`add`) and step 0's three dispositions — keep leaves the entry
@@ -56,6 +58,9 @@ Exit codes:
   0  the edit landed and every postcondition held
   1  the edit was refused (entry not found or ambiguous, bad note, shape violation)
   2  usage error
+
+`status` is read-only and has its own vocabulary: 0 the section invariant holds, 1 it is broken
+(strays, malformed heads, bad headings), 3 the file cannot be read.
 """
 
 from __future__ import annotations
@@ -108,16 +113,93 @@ STAMPED_HEAD_RE = re.compile(
 # one. The real file contains exactly one.
 DATED_HEAD_RE = re.compile(rf"^{DATED_HEAD_PREFIX}")
 NEW_ENTRY_HEAD_RE = re.compile(rf"^{DATED_HEAD_PREFIX}(?!{PROMOTED_STAMP})")
-# "This headline already carries a tier" — checked against `STAMPED_HEAD_RE`'s `rest` group,
-# where `amend_head` inserts a tier. Anchored at the front of `rest`, right inside the `**`
-# that opens it, which is exactly where `amend_head` would insert a new one.
+# "This headline already carries a tier" — checked against `STAMPED_HEAD_RE`'s `rest` group.
+# Anchored at the front of `rest`, with an OPTIONAL `**` lead: both the bold `**TIER — ` form
+# and the plain `TIER — ` form are real heads (128 bold, 99 plain, 3 parenthetical of 230,
+# measured 2026-11-03). `amend_head` inserts only the bold form, but it must still recognise a
+# plain tier as "already carries one".
 #
 # The token is CAPTURED, not just matched: `amend_head` asks only whether a tier is there, but
 # `retier` has to know which one and exactly where it sits, and a second regex spelling the same
 # thing is the drift this file has already been bitten by once. `amend_head` tests the match for
 # truth only, so the group is invisible to it.
 _TIER_TOKENS = ("HIGH", "MEDIUM", "LOW")
-_TIER_PREFIX_RE = re.compile(rf"^\*\*(?P<tier>{'|'.join(_TIER_TOKENS)}) — ")
+_TIER_PREFIX_RE = re.compile(rf"^(?:\*\*)?(?P<tier>{'|'.join(_TIER_TOKENS)}) — ")
+# A tier named later in the headline, as in `**title** (MEDIUM; carved`. Neither head form
+# above, so `retier` and `amend_head` both refuse it rather than guess where the tier is.
+_PAREN_TIER_RE = re.compile(rf"\((?:{'|'.join(_TIER_TOKENS)})\b")
+
+
+def _tier_span(match, located):
+    """Absolute `(start, end)` of the tier token in the head `match` was taken from."""
+    base = match.start("rest")
+    return base + located.start("tier"), base + located.end("tier")
+
+
+# A column-0 line shaped like a checkbox head (`- [`, at most one character, `]`). A markdown
+# link list item such as `- [see](link)` has more than one character inside, so it is not one.
+_CHECKBOX_SHAPED_RE = re.compile(r"^- \[.?\]")
+
+
+def _is_malformed_head(line: str) -> bool:
+    """A column-0 checkbox-shaped line that HEAD_RE rejects: `- [X] `, `- [] `, `- [ ]x`."""
+    return bool(_CHECKBOX_SHAPED_RE.match(line)) and not HEAD_RE.match(line)
+
+
+@dataclass(frozen=True)
+class SectionScan:
+    """One classification of a document's lines against the `## Open` / `## Closed` split."""
+
+    closed_at: int | None
+    open_at: int | None
+    extra_headings: list[str]
+    order_reversed: bool
+    open_count: int
+    closed_count: int
+    stray_closed: list[int]
+    stray_open: list[int]
+    malformed: list[int]
+
+
+def scan_sections(lines: list[str]) -> SectionScan:
+    """Classify `lines` once, so `save`, `status` and `repair` cannot disagree.
+
+    Counts use the `startswith` predicates (no trailing space), as `Report` does. With no
+    `## Closed` heading there is no boundary: every line is "above" it and no stray exists.
+    """
+    closed_at = next((i for i, ln in enumerate(lines) if ln == CLOSED_HEADING), None)
+    open_at = next((i for i, ln in enumerate(lines) if ln == OPEN_HEADING), None)
+    extra_headings = []
+    for i, ln in enumerate(lines):
+        if ln in (OPEN_HEADING, CLOSED_HEADING) and i not in (closed_at, open_at):
+            extra_headings.append(f"{ln} at line {i + 1}")
+    boundary = closed_at if closed_at is not None else len(lines)
+    closed_scan = lines if closed_at is None else lines[boundary:]
+    open_count = sum(1 for ln in lines[:boundary] if ln.startswith("- [ ]"))
+    closed_count = sum(1 for ln in closed_scan if ln.startswith("- [x]"))
+    if closed_at is None:
+        stray_closed: list[int] = []
+        stray_open: list[int] = []
+    else:
+        stray_closed = [
+            i for i, ln in enumerate(lines[:boundary]) if ln.startswith("- [x]")
+        ]
+        stray_open = [
+            i for i, ln in enumerate(lines) if i >= boundary and ln.startswith("- [ ]")
+        ]
+    return SectionScan(
+        closed_at=closed_at,
+        open_at=open_at,
+        extra_headings=extra_headings,
+        order_reversed=(
+            closed_at is not None and open_at is not None and open_at > closed_at
+        ),
+        open_count=open_count,
+        closed_count=closed_count,
+        stray_closed=stray_closed,
+        stray_open=stray_open,
+        malformed=[i for i, ln in enumerate(lines) if _is_malformed_head(ln)],
+    )
 
 
 class BacklogError(Exception):
@@ -132,12 +214,20 @@ class AmbiguousEntry(BacklogError):
     """More than one open entry's head line contains the needle."""
 
 
+class HeadCollision(BacklogError):
+    """An edited head would be contained in another open entry's head."""
+
+
 class InvalidNote(BacklogError):
     """A note would restructure the document rather than annotate an entry."""
 
 
 class ShapeViolation(BacklogError):
     """The edit's actual effect on the document differs from what was declared."""
+
+
+class SectionInvariantBroken(ShapeViolation):
+    """An entry sits on the wrong side of `## Closed` after the edit."""
 
 
 @dataclass(frozen=True)
@@ -231,6 +321,131 @@ def _strip_stamp(match: re.Match[str]) -> str:
     return match["prefix"] + match["rest"]
 
 
+_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def _require_date(
+    value: object, op: str, *, optional: bool = False, label: str = "--date"
+) -> None:
+    """Refuse `value` unless it is a real calendar date spelled `YYYY-MM-DD` in ASCII digits.
+
+    Args:
+        value: The candidate. Anything that is not a `str` is refused.
+        op: The operation name, quoted first in the refusal.
+        optional: When true, `None` means "not given" and passes.
+        label: What the refusal calls the value.
+
+    Raises:
+        BacklogError: `value` is not a real calendar date.
+    """
+    if optional and value is None:
+        return
+    problem = BacklogError(
+        f"{op}: {label} must be a real calendar date YYYY-MM-DD: {value!r}"
+    )
+    if not isinstance(value, str) or not _DATE_RE.fullmatch(value):
+        raise problem
+    try:
+        datetime.date.fromisoformat(value)
+    except ValueError:
+        raise problem from None
+
+
+@dataclass(frozen=True)
+class Moved:
+    """One block `repair` relocated: where it went, where it was, and a short title."""
+
+    direction: str
+    line_no: int
+    title: str
+
+
+def _short_title(head: str) -> str:
+    """Return the head after its checkbox, capped at 70 characters."""
+    return head[6:76]
+
+
+def _trimmed_end(lines: list[str], s: int, e: int) -> int:
+    """Return the end of the block `[s, e)` without its trailing blank lines."""
+    while e > s + 1 and not lines[e - 1].strip():
+        e -= 1
+    return e
+
+
+def _stray_spans(
+    lines: list[str], closed_at: int, *, below: bool
+) -> list[tuple[int, int]]:
+    """Return the blocks on the wrong side of `## Closed`: ticked above it, or unticked below."""
+    spans = []
+    for s, e in entry_blocks(lines):
+        if below and s > closed_at and lines[s].startswith("- [ ] "):
+            spans.append((s, e))
+        elif not below and s < closed_at and lines[s].startswith("- [x] "):
+            spans.append((s, e))
+    return spans
+
+
+def _section_end(lines: list[str], heading_at: int) -> int:
+    """Return the index of the next `## ` heading after `heading_at`, else the end."""
+    return next(
+        (i for i in range(heading_at + 1, len(lines)) if _is_heading(lines[i])),
+        len(lines),
+    )
+
+
+def _insert_at(lines: list[str], heading_at: int) -> int:
+    """Return where a relocated run goes: before the section's first entry head.
+
+    Intro prose under the heading stays with the heading. A section with no head takes the
+    run at its end.
+    """
+    end = _section_end(lines, heading_at)
+    return next(
+        (i for i in range(heading_at + 1, end) if _is_head(lines[i])),
+        end,
+    )
+
+
+def _block_sequence(lines: list[str]) -> list[tuple[str, ...]]:
+    """Return every entry block, trailing blanks trimmed, in document order."""
+    return [tuple(lines[s : _trimmed_end(lines, s, e)]) for s, e in entry_blocks(lines)]
+
+
+def _with_run(lines: list[str], at: int, blocks: list[list[str]]) -> list[str]:
+    """Insert `blocks` at `at`, each followed by a blank, with a leading blank if needed."""
+    if not blocks:
+        return lines
+    run: list[str] = []
+    if at > 0 and lines[at - 1].strip():
+        run.append("")
+    for block in blocks:
+        run.extend([*block, ""])
+    return [*lines[:at], *run, *lines[at:]]
+
+
+def _relocate(
+    lines: list[str],
+    moved_x: list[tuple[int, int]],
+    moved_o: list[tuple[int, int]],
+) -> list[str]:
+    """Return `lines` with each stray block moved to the top of its proper section."""
+    closed_blocks = [lines[s : _trimmed_end(lines, s, e)] for s, e in moved_x]
+    open_blocks = [lines[s : _trimmed_end(lines, s, e)] for s, e in moved_o]
+    dropped = {i for s, e in [*moved_x, *moved_o] for i in range(s, e)}
+    rest: list[str] = []
+    for i, ln in enumerate(lines):
+        if i in dropped:
+            continue
+        # A lifted block carries its trailing blank; keep the one that ends the section.
+        if ln.startswith("## ") and i - 1 in dropped and rest and rest[-1].strip():
+            rest.append("")
+        rest.append(ln)
+    at = _insert_at(rest, rest.index(CLOSED_HEADING))
+    rest = _with_run(rest, at, closed_blocks)
+    at = _insert_at(rest, rest.index(OPEN_HEADING))
+    return _with_run(rest, at, open_blocks)
+
+
 class Backlog:
     """A staged batch of edits to one BACKLOG.md, verified as a whole before it reaches disk.
 
@@ -301,6 +516,34 @@ class Backlog:
             )
         return hits[0]
 
+    def _require_addressable(
+        self, staged: list[str], start: int, new: str, op: str
+    ) -> None:
+        """Refuse an edit whose new head a later needle could not tell from another entry's.
+
+        Raises:
+            HeadCollision: `new` contains, or is contained in, another OPEN entry's head in
+                `staged`, so a later needle could not separate the two.
+        """
+        closed_at = self._closed_index(staged)
+        collided = [
+            staged[s]
+            for s, _ in entry_blocks(staged)
+            if s < closed_at and s != start and (new in staged[s] or staged[s] in new)
+        ]
+        if collided:
+            what = (
+                "the head left after removing the stamp"
+                if op == "unpromote"
+                else "the re-graded head"
+            )
+            raise HeadCollision(
+                f"cannot {op}: {what} is not unique — it contains, or is contained "
+                f"in, {len(collided)} other open entry "
+                f"{'head' if len(collided) == 1 else 'heads'}, so a later needle "
+                f"cannot separate them: {collided[0][:90]!r}"
+            )
+
     # ---------- validation ----------
 
     @staticmethod
@@ -315,6 +558,11 @@ class Backlog:
         if not any(ln.strip() for ln in lines):
             raise InvalidNote("note is blank")
         for ln in lines:
+            if _is_malformed_head(ln):
+                raise InvalidNote(
+                    f"note line is checkbox-shaped but not a '- [ ] ' / '- [x] ' head: "
+                    f"{ln[:70]!r}"
+                )
             if _is_head(ln):
                 raise InvalidNote(
                     f"note line would parse as an entry head: {ln[:70]!r}"
@@ -332,8 +580,10 @@ class Backlog:
             text: The whole entry — a `- [ ] ` head line, plus any indented continuation lines.
 
         Raises:
-            InvalidNote: The first line is not an open head, the head carries no date, or a
-                continuation line would open a second entry or a section of its own.
+            InvalidNote: The first line is not an open head, the head carries no date, a
+                continuation line is checkbox-shaped but not a head, or one would open a
+                second entry or a section of its own.
+            BacklogError: The head's date is not a real calendar date.
         """
         lines = text.rstrip("\n").split("\n")
         if not lines[0].startswith("- [ ] "):
@@ -342,11 +592,17 @@ class Backlog:
             raise InvalidNote(
                 f"a new entry must carry a date, '- [ ] YYYY-MM-DD — ': {lines[0][:70]!r}"
             )
-        for ln in lines[1:]:
-            if _is_head(ln):
-                raise InvalidNote(f"line would open a second entry: {ln[:70]!r}")
-            if _is_heading(ln):
-                raise InvalidNote(f"line would parse as a heading: {ln[:70]!r}")
+        _require_date(lines[0][6:16], "add", label="head date")
+        for line in lines[1:]:
+            if _is_malformed_head(line):
+                raise InvalidNote(
+                    f"line is checkbox-shaped but not a '- [ ] ' / '- [x] ' head: "
+                    f"{line[:70]!r}"
+                )
+            if _is_head(line):
+                raise InvalidNote(f"line would open a second entry: {line[:70]!r}")
+            if _is_heading(line):
+                raise InvalidNote(f"line would parse as a heading: {line[:70]!r}")
 
         open_at = self._heading_index(OPEN_HEADING)
         staged = self.lines[: open_at + 1] + ["", *lines] + self.lines[open_at + 1 :]
@@ -375,9 +631,11 @@ class Backlog:
         repeated call with the same arguments is a no-op.
 
         Raises:
-            BacklogError: The head does not have the `- [ ] YYYY-MM-DD — ` shape, or `reason`
-                contains `*`, which would break the stamp's own delimiters.
+            BacklogError: `date` is not a real calendar date; the head does not have the
+                `- [ ] YYYY-MM-DD — ` shape; or `reason` contains `*`, which would break the
+                stamp's own delimiters.
         """
+        _require_date(date, "promote")
         if reason is not None and "*" in reason:
             raise BacklogError("a promote reason may not contain '*'")
         start, _ = self._find_open(needle)
@@ -407,9 +665,13 @@ class Backlog:
             InvalidNote: `note` is blank or would restructure the document.
             EntryNotFound: No open entry matches `needle`.
             AmbiguousEntry: More than one open entry matches `needle`.
-            BacklogError: The head is not a dated entry head, carries no stamp, carries more
-                than one, or the stripped result fails a postcondition.
+            HeadCollision: The stripped head contains, or is contained in, another open
+                entry's head, so a later needle could not separate them.
+            BacklogError: `date` is not a real calendar date; the head is not a dated entry
+                head, carries no stamp, carries more than one, or the stripped result fails a
+                postcondition.
         """
+        _require_date(date, "unpromote")
         # Validated first and alone, for its refusals (blank note, a line that would parse as
         # an entry head or heading), exactly as `close_entry` does. The return value is not
         # needed: `append_note` re-splits the text it is given.
@@ -444,6 +706,7 @@ class Backlog:
         composed = f"  - {date} — withdrew {removed.removesuffix(' — ')}"
         staged = list(self.lines)
         staged[start] = new
+        self._require_addressable(staged, start, new, "unpromote")
         self._stage(staged, collections.Counter([old]), collections.Counter([new]))
         self.append_note(new, composed + "\n" + note)
         return removed
@@ -468,13 +731,15 @@ class Backlog:
                 already carry one.
 
         Raises:
-            BacklogError: Neither `date` nor `tier` was given; the head already carries the
-                value being inserted; the head does not open with `- [ ] `; or `rest` (the
-                headline with the date prefix and any stamp already removed) has no `**` to
-                insert a tier inside.
+            BacklogError: Neither `date` nor `tier` was given; `date` is not a real calendar
+                date; the head already carries the value being inserted; the head already names
+                a tier inside a parenthetical; the head does not open with `- [ ] `; or `rest`
+                (the headline with the date prefix and any stamp already removed) has no `**`
+                to insert a tier inside.
             EntryNotFound: No open entry matches `needle`.
             AmbiguousEntry: More than one open entry matches `needle`.
         """
+        _require_date(date, "amend-head", optional=True)
         if date is None and tier is None:
             raise BacklogError("amend_head requires date and/or tier")
         start, _ = self._find_open(needle)
@@ -506,6 +771,11 @@ class Backlog:
             if _TIER_PREFIX_RE.match(rest):
                 raise BacklogError(
                     f"head already carries a tier, refusing to overwrite: {old[:90]!r}"
+                )
+            if _PAREN_TIER_RE.search(rest):
+                raise BacklogError(
+                    "head already names a tier inside a parenthetical, refusing to insert "
+                    f"a second one: {old[:90]!r}"
                 )
             if not rest.startswith("**"):
                 raise BacklogError(
@@ -574,12 +844,16 @@ class Backlog:
             date: Date for that reason line, `YYYY-MM-DD`.
 
         Raises:
-            BacklogError: Either tier is not one of `_TIER_TOKENS`; the two are equal; the head
-                is not a dated entry head; the head carries no bold tier to change; or the head
-                carries a tier other than `from_tier`.
+            HeadCollision: The re-graded head contains, or is contained in, another open
+                entry's head, so a later needle could not separate them.
+            BacklogError: Either tier is not one of `_TIER_TOKENS`; the two are equal; `date`
+                is not a real calendar date; the head is not a dated entry head; the head
+                carries no leading tier token to change; or the head carries a tier other
+                than `from_tier`.
             EntryNotFound: No open entry matches `needle`.
             AmbiguousEntry: More than one open entry matches `needle`.
         """
+        _require_date(date, "retier")
         # Validated HERE and not only at the CLI: argparse `choices` protects the command line
         # and nothing else, and a library caller reaches this method directly.
         for label, value in (("--from", from_tier), ("--to", to_tier)):
@@ -602,13 +876,18 @@ class Backlog:
         rest = match["rest"]
         located = _TIER_PREFIX_RE.match(rest)
         if located is None:
-            # Deliberately does NOT route the operator to `amend-head`. Measured: 23 of the 91
-            # live open entries carry the plain `TIER — ` form, and `amend_head` refuses every
-            # one of them too (its `rest` has no `**`), so that advice is a circle. Name the
-            # form that is unsupported instead.
+            # Deliberately does NOT route the operator to `amend-head`, which would insert a
+            # SECOND tier into a parenthetical head. Name the shape that is unsupported.
+            paren = _PAREN_TIER_RE.search(rest)
+            if paren:
+                raise BacklogError(
+                    "head carries no leading tier token ('**TIER — ' or 'TIER — ') to "
+                    "change, refusing to retier it — a tier named later in the headline, as "
+                    f"in '**title** (MEDIUM; ...', is not supported: {old[:90]!r}"
+                )
             raise BacklogError(
-                "head carries no bold '**TIER — ' token to change, refusing to retier it — "
-                f"the plain 'TIER — ' form is not supported here: {old[:90]!r}"
+                "head carries no tier token ('**TIER — ' or 'TIER — ') to change, "
+                f"refusing to retier it: {old[:90]!r}"
             )
         current = located["tier"]
         if current != from_tier:
@@ -617,15 +896,17 @@ class Backlog:
                 f"retier on a stale expectation: {old[:90]!r}"
             )
 
-        span_start = match.start("rest") + located.start("tier")
-        span_end = match.start("rest") + located.end("tier")
+        span_start, span_end = _tier_span(match, located)
         new = _splice(old, span_start, span_end, to_tier)
 
-        # Shape postcondition, in three clauses because two are not enough. Measured: asserting
+        # Shape postcondition, in four clauses because two are not enough. Measured: asserting
         # only that the text around the span is untouched leaves the span itself unconstrained,
         # and `**MEDIUN — `, `**medium — ` and `**       — ` all pass while silently destroying
         # the tier. The third clause re-derives the head from `new` alone, carrying no offset
-        # from the construction — a mislocated offset fools the first two identically.
+        # from the construction — a mislocated offset fools the first two identically. The
+        # fourth compares the lead before the tier: a wrong span OFFSET (say two characters
+        # early, turning `**HIGH — x` into plain `LOW — x`) passes clauses 1-3, and only that
+        # lead comparison catches it.
         if (
             new[:span_start] != old[:span_start]
             or new[span_start + len(to_tier) :] != old[span_end:]
@@ -639,9 +920,15 @@ class Backlog:
             raise BacklogError(
                 f"re-reading the new head does not find {to_tier} at the front of rest"
             )
+        lead = rest[: located.start("tier")]
+        if check["rest"][: rechecked.start("tier")] != lead:
+            raise BacklogError(
+                "retier changed the bold or plain lead before the tier token"
+            )
 
         staged = list(self.lines)
         staged[start] = new
+        self._require_addressable(staged, start, new, "retier")
         self._stage(staged, collections.Counter([old]), collections.Counter([new]))
         self.append_note(new, f"  - {date} — {from_tier} → {to_tier}: {reason}")
 
@@ -664,6 +951,65 @@ class Backlog:
         gained[new_head] += 1
         self._stage(staged, collections.Counter([old_head]), gained)
         self._expect_note_inside(needle, next(ln for ln in note_lines if ln.strip()))
+
+    # ---------- repair ----------
+
+    def repair(self) -> list[Moved]:
+        """Move every block on the wrong side of `## Closed` to the right one, whole.
+
+        Returns:
+            One `Moved` per relocated block: strays above `## Closed` first, then strays below,
+            each in document order. Empty when nothing needed to move; nothing is staged then.
+
+        Raises:
+            BacklogError: A heading is missing, duplicated or reversed, or a head line is
+                checkbox-shaped but malformed: a move would be a guess, so none is made.
+            ShapeViolation: The relocation split, reordered or altered an entry block.
+        """
+        closed_at = self._closed_index()
+        self._heading_index(OPEN_HEADING)
+        scan = scan_sections(self.lines)
+        if scan.extra_headings or scan.order_reversed:
+            found = list(scan.extra_headings)
+            if scan.order_reversed:
+                found.append(f"{OPEN_HEADING} below {CLOSED_HEADING}")
+            raise BacklogError(
+                f"repair refused: the file has duplicate or reversed section headings "
+                f"({', '.join(found)}), a move would be a guess"
+            )
+        if scan.malformed:
+            listed = "; ".join(
+                f"line {i + 1}: {self.lines[i][:70]!r}" for i in scan.malformed[:5]
+            )
+            more = len(scan.malformed) - 5
+            suffix = f" (+{more} more)" if more > 0 else ""
+            raise BacklogError(
+                f"repair refused: {len(scan.malformed)} head line(s) are neither "
+                f"'- [ ] ' nor '- [x] ': {listed}{suffix}"
+            )
+        moved_x = _stray_spans(self.lines, closed_at, below=False)
+        moved_o = _stray_spans(self.lines, closed_at, below=True)
+        if not moved_x and not moved_o:
+            return []
+        staged = _relocate(self.lines, moved_x, moved_o)
+
+        def trimmed(span: tuple[int, int]) -> tuple[str, ...]:
+            return tuple(self.lines[span[0] : _trimmed_end(self.lines, *span)])
+
+        every = entry_blocks(self.lines)
+        expected = (
+            [trimmed(sp) for sp in moved_o]
+            + [trimmed(sp) for sp in every if sp[0] < closed_at and sp not in moved_x]
+            + [trimmed(sp) for sp in moved_x]
+            + [trimmed(sp) for sp in every if sp[0] > closed_at and sp not in moved_o]
+        )
+        if _block_sequence(staged) != expected:
+            raise ShapeViolation("repair split, reordered or altered an entry block")
+        moved = [
+            Moved("Closed", s + 1, _short_title(self.lines[s])) for s, _ in moved_x
+        ] + [Moved("Open", s + 1, _short_title(self.lines[s])) for s, _ in moved_o]
+        self._stage(staged, collections.Counter(), collections.Counter())
+        return moved
 
     # ---------- the only writer ----------
 
@@ -708,10 +1054,11 @@ class Backlog:
                 )
 
         closed_at = self._closed_index(new_lines)
-        strays_open = [ln for ln in new_lines[:closed_at] if ln.startswith("- [x]")]
-        strays_closed = [ln for ln in new_lines[closed_at:] if ln.startswith("- [ ]")]
+        scan = scan_sections(new_lines)
+        strays_open = [new_lines[i] for i in scan.stray_closed]
+        strays_closed = [new_lines[i] for i in scan.stray_open]
         if strays_open or strays_closed:
-            raise ShapeViolation(
+            raise SectionInvariantBroken(
                 f"section invariant broken: {len(strays_open)} closed entries above "
                 f"{CLOSED_HEADING}, {len(strays_closed)} open entries below it"
             )
@@ -864,6 +1211,73 @@ class Backlog:
 # ---------- CLI ----------
 
 
+def _has_strays(text: str) -> bool:
+    """Report whether `text` already has an entry on the wrong side of `## Closed`."""
+    scan = scan_sections(text.split("\n"))
+    return bool(scan.stray_closed or scan.stray_open)
+
+
+def status_report(text: str) -> tuple[list[str], int]:
+    """Return the `status` lines (verdict last) and the exit code for the document `text`."""
+    lines = text.split("\n")
+    scan = scan_sections(lines)
+    clean = not (
+        scan.stray_closed
+        or scan.stray_open
+        or scan.malformed
+        or scan.extra_headings
+        or scan.order_reversed
+        or scan.closed_at is None
+        or scan.open_at is None
+    )
+    problems = []
+    absent = [
+        name
+        for name, at in ((OPEN_HEADING, scan.open_at), (CLOSED_HEADING, scan.closed_at))
+        if at is None
+    ]
+    if absent:
+        problems.append("missing: " + ", ".join(absent))
+    if scan.extra_headings:
+        problems.append("duplicate: " + ", ".join(scan.extra_headings))
+    if scan.order_reversed:
+        problems.append(
+            f"order: {OPEN_HEADING} at line {(scan.open_at or 0) + 1} below "
+            f"{CLOSED_HEADING} at line {(scan.closed_at or 0) + 1}"
+        )
+    out = [
+        f"open: {scan.open_count}",
+        f"closed: {scan.closed_count}",
+        f"stray-closed-above: {len(scan.stray_closed)}",
+        f"stray-open-below: {len(scan.stray_open)}",
+        f"malformed-heads: {len(scan.malformed)}",
+        "headings: " + ("; ".join(problems) or "ok"),
+    ]
+    for i in scan.stray_closed:
+        out.append(f"stray-closed-above line {i + 1}: {_short_title(lines[i])}")
+    for i in scan.stray_open:
+        out.append(f"stray-open-below line {i + 1}: {_short_title(lines[i])}")
+    for i in scan.malformed:
+        out.append(f"malformed-head line {i + 1}: {lines[i][:70]}")
+    rc = 0 if clean else 1
+    out.append(f"RESULT: {'CLEAN' if clean else 'BROKEN'} rc={rc}")
+    return out, rc
+
+
+def _status_main(path):
+    """Print the read-only `status` report for `path`; never constructs `Backlog`."""
+    try:
+        text = Path(path).read_text()
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"backlog: {exc}", file=sys.stderr)
+        print("RESULT: UNREADABLE rc=3")
+        return 3
+    out, rc = status_report(text)
+    print(f"backlog status: {path}")
+    print("\n".join(out))
+    return rc
+
+
 def _today() -> str:
     """Return today's date as `YYYY-MM-DD`, the CLI default for `retier` and `unpromote` dates.
 
@@ -957,6 +1371,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_today(),
         help="date for the reason line, YYYY-MM-DD (default: today)",
     )
+
+    sub.add_parser("status", help="report the section invariant, read-only")
+
+    sub.add_parser(
+        "repair",
+        help="move entry blocks on the wrong side of ## Closed to the right one",
+    )
     return parser
 
 
@@ -970,7 +1391,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "amend-head" and args.date is None and args.tier is None:
         parser.error("amend-head requires --date and/or --tier")
+    if args.command == "status":
+        return _status_main(args.path)
     removed_stamp = ""
+    moved: list[Moved] = []
     try:
         backlog = Backlog(args.path)
         if args.command == "add":
@@ -991,15 +1415,44 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "unpromote":
             removed_stamp = backlog.unpromote(args.needle, _read_note(), args.date)
+        elif args.command == "repair":
+            moved = backlog.repair()
         else:
             backlog.amend_head(args.needle, date=args.date, tier=args.tier)
+        if args.command == "repair" and not moved:
+            scan = scan_sections(backlog.lines)
+            print(
+                f"{args.path}: nothing to move; {scan.open_count} open, "
+                f"{scan.closed_count} closed"
+            )
+            return 0
         report = backlog.save()
+    except SectionInvariantBroken as exc:
+        print(f"backlog: {exc}", file=sys.stderr)
+        if args.command != "repair" and _has_strays(backlog._original):
+            print(
+                "backlog: run 'backlog.py --path PATH repair' to relocate the stray "
+                "entries (see 'status')",
+                file=sys.stderr,
+            )
+        return 1
     except BacklogError as exc:
         print(f"backlog: {exc}", file=sys.stderr)
         return 1
-    except OSError as exc:
+    except (UnicodeDecodeError, OSError) as exc:
         print(f"backlog: {exc}", file=sys.stderr)
         return 1
+    if args.command == "repair":
+        for m in moved:
+            print(f"moved to {m.direction}: line {m.line_no}: {m.title}")
+        to_closed = sum(1 for m in moved if m.direction == "Closed")
+        print(
+            f"{report.path}: repaired, moved {len(moved)} ({to_closed} to Closed, "
+            f"{len(moved) - to_closed} to Open); {report.open_count} open, "
+            f"{report.closed_count} closed "
+            f"(+{report.lines_gained}/-{report.lines_lost} lines)"
+        )
+        return 0
     print(
         f"{report.path}: {report.open_count} open, {report.closed_count} closed "
         f"(+{report.lines_gained}/-{report.lines_lost} lines)"
