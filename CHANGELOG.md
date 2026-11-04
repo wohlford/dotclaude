@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.156.3 — 2026-11-04
+- fix(style-check): show every failed row in the suite hook output
+
 ## v0.156.2 — 2026-11-04
 - test(style-check): add the ratchet mutation campaign
 

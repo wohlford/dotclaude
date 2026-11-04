@@ -63,18 +63,29 @@ if [[ ! -f "$root/scripts/tests/test_style_check.sh" ]]; then
 fi
 
 # ---------- Dependencies ----------
-# jq is already required above to parse stdin (as in every hook), and the suite drives
-# style-check with .md files only — needing just grep/tail/wc/awk beyond that. So there
-# is no extra optional dependency to guard here. If the suite ever gains .sh/.py/.yaml
-# cases, style-check would need shellcheck/python3/yamllint, and a guard for those (exit 0
-# when absent, to avoid a false block) should be added before running it.
+# jq is already required above to parse stdin (as in every hook). The suite drives style-check with
+# .md and .toml fixtures and, for the shellcheck note ratchet, with real .sh fixtures in throwaway
+# git repositories, so it also needs shellcheck, git and (for its bash 3.2 pass) /bin/bash. No guard
+# is added here: the suite itself prints one SKIP line per missing tool, covering every row that
+# needs it and counted apart from the passed rows, so a machine without them neither false-blocks
+# nor reports a clean pass for rows that never ran. Cost: a run takes about 75 s here (its real-file rows grade the three
+# tracked scripts that carry the most notes) and every edit to style-check.sh or the suite pays it;
+# this hook carries no timeout, so the harness default of 600 s applies.
 
 # ---------- Run the suite (set -e-safe exit capture) ----------
 output=$(cd "$root" && bash scripts/tests/test_style_check.sh 2>&1) && rc=0 || rc=$?
 
 if [[ "$rc" -ne 0 ]]; then
   printf 'style-check tests FAILED after editing %s:\n' "$file_path" >&2
-  printf '%s\n' "$output" | tail -20 >&2
+  # Every FAIL line first, then the summary: a bare tail would cut an early FAIL and keep the PASS rows.
+  # With no FAIL line (the suite died before or between rows) the tail is the only diagnostic left.
+  fails=$(printf '%s\n' "$output" | grep '^FAIL' || true)
+  if [[ -n "$fails" ]]; then
+    printf '%s\n' "$fails" >&2
+    printf '%s\n' "$output" | tail -1 >&2
+  else
+    printf '%s\n' "$output" | tail -20 >&2
+  fi
   exit 2
 fi
 
