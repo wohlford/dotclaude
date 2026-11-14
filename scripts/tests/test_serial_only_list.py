@@ -81,6 +81,42 @@ SERIAL_BY_MEASUREMENT: dict[str, str] = {
     "scripts/tests/test_kill_sets.py::test_t09_timeout_and_process_group": (
         "selected by the serial-only rule: passes a literal `timeout` under five seconds to a call"
     ),
+    "scripts/tests/test_kill_sets.py::test_t15b_parity_and_order": (
+        "selected by the serial-only rule: a mutant sleeps two seconds against the other workers' runs, so the completion order is inverted and the release in mutant order is the thing asserted"
+    ),
+    "scripts/tests/test_kill_sets.py::test_t17_isolation_under_concurrency": (
+        "selected by the serial-only rule: three mutants sleep two seconds each so that all three overlap in time on three workers"
+    ),
+    "scripts/tests/test_kill_sets.py::test_t16a2_fixed_lock_collision": (
+        "selected by the serial-only rule: the suite holds a fixed lock for three seconds so that the concurrent runs overlap in time"
+    ),
+    "scripts/tests/test_kill_sets.py::test_t16d1_start_barrier": (
+        "selected by the serial-only rule: the probe suite runs 3 s in one copy and 2.5 s in the others against a copy refresh of about a second, so the order of the starts is the thing asserted"
+    ),
+    "scripts/tests/test_kill_sets.py::test_t16d2_end_barrier": (
+        "selected by the serial-only rule: the probe suite runs 3 s in one copy and 2.5 s in the others, so a copy that changes while another suite still runs is the thing asserted"
+    ),
+    "scripts/tests/test_kill_sets.py::test_t16e1_timeout_line_under_jobs": (
+        "selected by the serial-only rule: relies on a literal --timeout 10 deadline firing against a 30 s hang"
+    ),
+    "scripts/tests/test_kill_sets.py::test_t18b3_refresh_always_fails": (
+        "selected by the serial-only rule: asserts an elapsed wall-clock time, a bound of 60 s on a run that ends in seconds"
+    ),
+    "scripts/tests/test_kill_sets.py::test_t19a_signals_exit_by_the_signal": (
+        "selected by the serial-only rule: signals a tool whose suites hold for 60 s against a 20 s join bound, and the exit by the signal is the thing asserted"
+    ),
+    "scripts/tests/test_kill_sets.py::test_t19b_signals_leave_nothing_behind": (
+        "selected by the serial-only rule: signals a tool whose suites hold for 60 s against a 20 s join bound, and a surviving suite process or temp directory is the thing asserted"
+    ),
+    "scripts/tests/test_kill_sets.py::test_t19c_signal_after_result": (
+        "selected by the serial-only rule: signals the tool during a 3 s sleep after its RESULT line, so the moment of the signal is the thing asserted"
+    ),
+    "scripts/tests/test_kill_sets.py::test_t19d_stop_line_before_a_hard_kill": (
+        "selected by the serial-only rule: signals a tool whose worker is held inside a copy, and the order of the STOP line and the emulated SIGKILL is the thing asserted"
+    ),
+    "scripts/tests/test_kill_sets.py::test_t19e_a_copy_in_flight_does_not_delay_the_stop": (
+        "selected by the serial-only rule: signals a tool whose worker is in a 60 s copy, and a stop that finishes inside the 20 s join bound is the thing asserted"
+    ),
     "scripts/tests/test_publish_drive.py::test_a_hang_is_INDETERMINATE_not_a_failure_verdict": (
         "selected by the serial-only rule: passes a literal --timeout 1 deadline on the command line"
     ),

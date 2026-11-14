@@ -9,68 +9,68 @@ for how the index below stays in sync.
 ## Index
 
 <!-- sync:scripts -->
-| Script                           | Purpose                                                                                                                    |
-| :------------------------------- | :------------------------------------------------------------------------------------------------------------------------- |
-| `audit-test.sh`                  | PostToolUse hook — run the audit engine suite, or the suite-driver suite, when its files change                            |
-| `claude-md-structure.py`         | Measure CLAUDE.md's verification-hazards section — group sizes, member counts, lengths                                     |
-| `commit-subject-advisor.py`      | PostToolUse hook — advise an amend when a committed subject reaches the advisory limit                                     |
-| `commit-subject-guard.py`        | PreToolUse hook — refuse a commit whose subject is provably at or over the block limit                                     |
-| `commit-subject-test.sh`         | PostToolUse hook — run the commit-subject suites, and py39-compat on any scripts/*.py edit                                 |
-| `cycle-profile.py`               | Report where the wall-clock of each /feature cycle in a Claude Code session transcript went, by time class and stage       |
-| `debrief-backlog-test.sh`        | PostToolUse hook — run the debrief backlog-helper suite when its Python changes                                            |
-| `env-claims-check-test.sh`       | PostToolUse hook — run the env-claims-check test suite when the checker changes                                            |
-| `env-claims-check.py`            | Verify CLAUDE.md's documented environment claims still hold on this machine                                                |
-| `exec-bit-guard-test.sh`         | PostToolUse hook — run the exec-bit-guard test suite when the gate or its suite changes                                    |
-| `exec-bit-guard.sh`              | PreToolUse hook — block `git commit` when it would record a new shebang file without the exec bit (or a 755→644 downgrade) |
-| `explain-git-command.py`         | Show WHICH byte broke `scripts/lib/git_command.py`'s parse, or what it found if it didn't                                  |
-| `farm-drift-check.py`            | SessionStart hook — warn when the ~/.claude symlink farm has drifted from its source clone                                 |
-| `fixture-signing-check.py`       | Flag test fixtures whose git repos can inherit the operator's global signing config                                        |
-| `flake-sweep.sh`                 | Run a command N times against a verifiably unchanged tree and report each row's pass/fail/skip rate.                       |
-| `gate-sweep-eval.py`             | Decide whether the parallel gate's acceptance bound holds from a sweep's gate.tsv and its flake-sweep line                 |
-| `git-timing-guard.py`            | PreToolUse hook — block PUBLISHING outside a configured time window                                                        |
-| `git-timing-guard.sh`            | TRANSITIONAL shim — exec's the real hook, scripts/git-timing-guard.py                                                      |
-| `guard-parity.py`                | Replay every distinct transcript Bash command through two pinned guard builds and list each verdict difference             |
-| `guard-secrets-test.sh`          | PostToolUse hook — run the guard-secrets test suite when the guard changes                                                 |
-| `guard-secrets.sh`               | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem)                                              |
-| `heavy-gate.sh`                  | Global turn-taking and thermal-throttle gate so concurrent Claude sessions start heavy work one at a time                  |
-| `hook-machinery-test.sh`         | PostToolUse hook — run the hook tests when a test-runner hook or the machinery around it changes                           |
-| `install-git-hooks.sh`           | Install this repo's tracked ../git-hooks/pre-push into the resolved git hooks directory, copying it rather than symlinking |
-| `kill-sets.py`                   | Run a mutation campaign's mutants one at a time on a fresh copy of the tree and report each mutant's kill set              |
-| `markdownlint-check-test.sh`     | PostToolUse hook — run the markdownlint-check test suite when the lint hook changes                                        |
-| `markdownlint-check.sh`          | PostToolUse hook — run markdownlint-cli2 on edited markdown in opted-in repos                                              |
-| `md-links-check-test.sh`         | PostToolUse hook — run the md-links-check test suite when the checker changes                                              |
-| `md-links-check.py`              | PostToolUse hook — verify relative links and anchors in edited markdown resolve                                            |
-| `memory-index-check-test.sh`     | PostToolUse hook — run the memory-index-check test suite when the checker changes                                          |
-| `memory-index-check.py`          | PostToolUse hook — flag a memory-index entry, or the whole file, grown too large                                           |
-| `memory-status-check.py`         | Report memory-store status claims that git ancestry has falsified (not promoted, not published)                            |
-| `mutate-edit-guard-test.sh`      | PostToolUse hook — run the mutate-edit-guard test suite when the guard or mutate.py changes                                |
-| `mutate-edit-guard.py`           | PreToolUse hook — refuse an edit to a file a mutation campaign owns (its sidecar exists)                                   |
-| `mutation-anchors-check-test.sh` | PostToolUse hook — run the mutation-anchors-check test suite when the checker changes                                      |
-| `mutation-anchors-check.py`      | Assert every mutation campaign's `old` anchor resolves exactly once and its mutant parses                                  |
-| `plan-rehearse.py`               | Run an implementation plan's verification checks in an isolated clone and report what ran                                  |
-| `propagate-postcheck.sh`         | Verify /propagate's LOCAL promote landed and, where configured, that the boundary hook and config farm are current         |
-| `prose-diff.py`                  | Verify a restructuring is lossless by diffing word or line multisets in both directions                                    |
-| `publication-push-guard-test.sh` | PostToolUse hook — run the suites of every gate built on git_command.py when a gate, its suite, or the tokenizer changes   |
-| `publication-push-guard.py`      | PreToolUse hook — fail-closed dev-block keeping `dev` private in a repo that adopted the dev/main publication model        |
-| `publish-brick.sh`               | Materialise, prove and commit ONE brick, tagged onto main or re-derived onto dev                                           |
-| `publish-drive.py`               | Drive publish-brick.sh once per brick over a reviewed plan, halting on the first failure                                   |
-| `publish-fold-plan.py`           | Propose brick boundaries for the publish path by classifying what each commit removes                                      |
-| `publish-postflight.sh`          | Verify /propagate's adopted-publish END invariant (read-only) after the push and the watermark advance                     |
-| `publish-preflight.sh`           | Verify /propagate's publish start-invariant before any brick is applied, tagged, or pushed                                 |
-| `publish-rehearse.py`            | Predict, per brick, which /audit checks a fold plan would fail once actually applied                                       |
-| `push-guard.py`                  | PreToolUse hook — block `git push` unless the push segment leads with an ALLOW_PUSH=1 override                             |
-| `recast-commit-gate.py`          | PreToolUse hook — run the recast suite before a commit that touches recast source                                          |
-| `recast-test.sh`                 | PostToolUse hook — run the matching recast test file when a recast source changes                                          |
-| `ruff-check.sh`                  | PostToolUse hook — run ruff lint+format check on edited Python in ruff projects                                            |
-| `run-hooks.py`                   | Re-run the hooks settings.json registers for an edit or Bash command, as the harness would                                 |
-| `run-long.sh`                    | Launch a long job in the background and record its real exit status inside the artifact                                    |
-| `script-header-check.py`         | Verify every scripts/ file carries a Purpose header sync-docs' extractor can read whole                                    |
-| `settings-hooks-check.py`        | Verify a promoted runtime settings.json kept every hook registration and never lowered a committed timeout                 |
-| `shellcheck-check.sh`            | PostToolUse hook — run shellcheck on edited shell scripts                                                                  |
-| `style-check-test.sh`            | PostToolUse hook — run the style-check test suite when style-check changes                                                 |
-| `style-check.sh`                 | Global PostToolUse hook — validate file edits against STYLE.md                                                             |
-| `sync-docs-check.sh`             | PostToolUse hook — block edits that leave /sync-docs index tables drifted                                                  |
-| `sync-docs-test.sh`              | PostToolUse hook — run the sync-docs test suite when its Python changes                                                    |
+| Script                           | Purpose                                                                                                                        |
+| :------------------------------- | :----------------------------------------------------------------------------------------------------------------------------- |
+| `audit-test.sh`                  | PostToolUse hook — run the audit engine suite, or the suite-driver suite, when its files change                                |
+| `claude-md-structure.py`         | Measure CLAUDE.md's verification-hazards section — group sizes, member counts, lengths                                         |
+| `commit-subject-advisor.py`      | PostToolUse hook — advise an amend when a committed subject reaches the advisory limit                                         |
+| `commit-subject-guard.py`        | PreToolUse hook — refuse a commit whose subject is provably at or over the block limit                                         |
+| `commit-subject-test.sh`         | PostToolUse hook — run the commit-subject suites, and py39-compat on any scripts/*.py edit                                     |
+| `cycle-profile.py`               | Report where the wall-clock of each /feature cycle in a Claude Code session transcript went, by time class and stage           |
+| `debrief-backlog-test.sh`        | PostToolUse hook — run the debrief backlog-helper suite when its Python changes                                                |
+| `env-claims-check-test.sh`       | PostToolUse hook — run the env-claims-check test suite when the checker changes                                                |
+| `env-claims-check.py`            | Verify CLAUDE.md's documented environment claims still hold on this machine                                                    |
+| `exec-bit-guard-test.sh`         | PostToolUse hook — run the exec-bit-guard test suite when the gate or its suite changes                                        |
+| `exec-bit-guard.sh`              | PreToolUse hook — block `git commit` when it would record a new shebang file without the exec bit (or a 755→644 downgrade)     |
+| `explain-git-command.py`         | Show WHICH byte broke `scripts/lib/git_command.py`'s parse, or what it found if it didn't                                      |
+| `farm-drift-check.py`            | SessionStart hook — warn when the ~/.claude symlink farm has drifted from its source clone                                     |
+| `fixture-signing-check.py`       | Flag test fixtures whose git repos can inherit the operator's global signing config                                            |
+| `flake-sweep.sh`                 | Run a command N times against a verifiably unchanged tree and report each row's pass/fail/skip rate.                           |
+| `gate-sweep-eval.py`             | Decide whether the parallel gate's acceptance bound holds from a sweep's gate.tsv and its flake-sweep line                     |
+| `git-timing-guard.py`            | PreToolUse hook — block PUBLISHING outside a configured time window                                                            |
+| `git-timing-guard.sh`            | TRANSITIONAL shim — exec's the real hook, scripts/git-timing-guard.py                                                          |
+| `guard-parity.py`                | Replay every distinct transcript Bash command through two pinned guard builds and list each verdict difference                 |
+| `guard-secrets-test.sh`          | PostToolUse hook — run the guard-secrets test suite when the guard changes                                                     |
+| `guard-secrets.sh`               | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem)                                                  |
+| `heavy-gate.sh`                  | Global turn-taking and thermal-throttle gate so concurrent Claude sessions start heavy work one at a time                      |
+| `hook-machinery-test.sh`         | PostToolUse hook — run the hook tests when a test-runner hook or the machinery around it changes                               |
+| `install-git-hooks.sh`           | Install this repo's tracked ../git-hooks/pre-push into the resolved git hooks directory, copying it rather than symlinking     |
+| `kill-sets.py`                   | Run a mutation campaign's mutants, one at a time or on --jobs N parallel copies of the tree, and report each mutant's kill set |
+| `markdownlint-check-test.sh`     | PostToolUse hook — run the markdownlint-check test suite when the lint hook changes                                            |
+| `markdownlint-check.sh`          | PostToolUse hook — run markdownlint-cli2 on edited markdown in opted-in repos                                                  |
+| `md-links-check-test.sh`         | PostToolUse hook — run the md-links-check test suite when the checker changes                                                  |
+| `md-links-check.py`              | PostToolUse hook — verify relative links and anchors in edited markdown resolve                                                |
+| `memory-index-check-test.sh`     | PostToolUse hook — run the memory-index-check test suite when the checker changes                                              |
+| `memory-index-check.py`          | PostToolUse hook — flag a memory-index entry, or the whole file, grown too large                                               |
+| `memory-status-check.py`         | Report memory-store status claims that git ancestry has falsified (not promoted, not published)                                |
+| `mutate-edit-guard-test.sh`      | PostToolUse hook — run the mutate-edit-guard test suite when the guard or mutate.py changes                                    |
+| `mutate-edit-guard.py`           | PreToolUse hook — refuse an edit to a file a mutation campaign owns (its sidecar exists)                                       |
+| `mutation-anchors-check-test.sh` | PostToolUse hook — run the mutation-anchors-check test suite when the checker changes                                          |
+| `mutation-anchors-check.py`      | Assert every mutation campaign's `old` anchor resolves exactly once and its mutant parses                                      |
+| `plan-rehearse.py`               | Run an implementation plan's verification checks in an isolated clone and report what ran                                      |
+| `propagate-postcheck.sh`         | Verify /propagate's LOCAL promote landed and, where configured, that the boundary hook and config farm are current             |
+| `prose-diff.py`                  | Verify a restructuring is lossless by diffing word or line multisets in both directions                                        |
+| `publication-push-guard-test.sh` | PostToolUse hook — run the suites of every gate built on git_command.py when a gate, its suite, or the tokenizer changes       |
+| `publication-push-guard.py`      | PreToolUse hook — fail-closed dev-block keeping `dev` private in a repo that adopted the dev/main publication model            |
+| `publish-brick.sh`               | Materialise, prove and commit ONE brick, tagged onto main or re-derived onto dev                                               |
+| `publish-drive.py`               | Drive publish-brick.sh once per brick over a reviewed plan, halting on the first failure                                       |
+| `publish-fold-plan.py`           | Propose brick boundaries for the publish path by classifying what each commit removes                                          |
+| `publish-postflight.sh`          | Verify /propagate's adopted-publish END invariant (read-only) after the push and the watermark advance                         |
+| `publish-preflight.sh`           | Verify /propagate's publish start-invariant before any brick is applied, tagged, or pushed                                     |
+| `publish-rehearse.py`            | Predict, per brick, which /audit checks a fold plan would fail once actually applied                                           |
+| `push-guard.py`                  | PreToolUse hook — block `git push` unless the push segment leads with an ALLOW_PUSH=1 override                                 |
+| `recast-commit-gate.py`          | PreToolUse hook — run the recast suite before a commit that touches recast source                                              |
+| `recast-test.sh`                 | PostToolUse hook — run the matching recast test file when a recast source changes                                              |
+| `ruff-check.sh`                  | PostToolUse hook — run ruff lint+format check on edited Python in ruff projects                                                |
+| `run-hooks.py`                   | Re-run the hooks settings.json registers for an edit or Bash command, as the harness would                                     |
+| `run-long.sh`                    | Launch a long job in the background and record its real exit status inside the artifact                                        |
+| `script-header-check.py`         | Verify every scripts/ file carries a Purpose header sync-docs' extractor can read whole                                        |
+| `settings-hooks-check.py`        | Verify a promoted runtime settings.json kept every hook registration and never lowered a committed timeout                     |
+| `shellcheck-check.sh`            | PostToolUse hook — run shellcheck on edited shell scripts                                                                      |
+| `style-check-test.sh`            | PostToolUse hook — run the style-check test suite when style-check changes                                                     |
+| `style-check.sh`                 | Global PostToolUse hook — validate file edits against STYLE.md                                                                 |
+| `sync-docs-check.sh`             | PostToolUse hook — block edits that leave /sync-docs index tables drifted                                                      |
+| `sync-docs-test.sh`              | PostToolUse hook — run the sync-docs test suite when its Python changes                                                        |
 <!-- /sync:scripts -->
 
 ## Libraries
@@ -88,13 +88,45 @@ unmutated baseline, without which an already-red suite scores every mutation as 
 campaign prints a flawless sweep. `tests/mutate_lib_mutate.py` is the runner's own campaign, run
 on demand rather than collected by pytest. `python3 lib/mutate.py --help` prints its call
 signature, derived from `run`'s own parameters rather than restated by hand.
-`kill-sets.py --campaign tests/mutate_x.py` runs a campaign's mutants one at a time on a fresh
-copy of the tree and reports each mutant's kill set (duplicates, survivors, mutants that kill
-every row). A killed `kill-sets.py` leaves its `kill-sets.*` temp directory (about twice the
-tree's size) and can leave a suite of about 300 s running in its own session, so before editing
-the tree or starting another run, find the directory with `ls -d "${TMPDIR:-/tmp}"/kill-sets.*`
-and the processes still using it with `lsof +D <that directory>` (read what it prints; it can
-exit 1 while listing them). `pgrep -fl kill-sets` is not enough on its own: it prints nothing
-for a suite whose arguments do not carry the copy path.
+
+`kill-sets.py --campaign tests/mutate_x.py` reports each mutant's kill set (duplicates, survivors,
+mutants that kill every row), grading each mutant on a fresh copy of the tree. By default it runs
+them one at a time; `--jobs N` (opt-in, default 1, never above 8) runs up to N at once, each worker
+on its own copy, so the temp directory holds N + 1 copies of the tree instead of two. Before the
+first mutant a parallel run checks that the suite can run concurrently, in a worker proof of 4
+rounds at 4 workers or 5 at 8, each costing about one copy plus one suite run on every worker.
+What the proof vouches for is narrow. It is a check for the common failures, not a proof of
+isolation: the canary exercises only the rows whose verdict changes when the subject is broken, so
+a read of another copy's subject by any other row is invisible to it. A parallel run that would
+have read `PASS` ends `RESULT: PARALLEL-PASS` instead, a lead and not a verdict of record: kill
+sets are read under concurrent load, and a row that fails only under load reads as a kill. Its
+findings, a pass included, are settled by a serial run unless the campaign has a measured parity
+entry (below).
+
+SIGTERM, SIGHUP or SIGINT make the tool kill every suite it started, remove its temp directory
+(kept under `--keep`, or when a worker did not stop in 20 s) and exit by the signal with no
+`RESULT:` line. Under `run-long.sh` SIGHUP and SIGINT arrive ignored, so only SIGTERM stops a
+`run-long.sh` job's tool, and the gate's SIGKILL about 10 s later can cut the removal short,
+leaving the directory but no suite. A SIGKILL that lands before the suites are killed leaves the
+directory and up to N suites running in their own sessions, each until it ends on its own, since
+nothing enforces a limit once the tool is gone. Before editing the tree or starting another run,
+find the directory with `ls -d "${TMPDIR:-/tmp}"/kill-sets.*` and the processes still using it
+with `lsof +D <that directory>` (read what it prints; it can exit 1 while listing them).
+`pgrep -fl kill-sets` is not enough on its own: it prints nothing for a suite whose arguments do
+not carry the copy path.
+
+All figures here were measured on 2026-11-14 on the tree at commit `34a71e5`, one run per figure.
+On `tests/mutate_memory_index_check.py` (28 mutants, a suite of about 4 s), `--jobs` 1, 2, 4 and 8
+took 191 s, 127 s, 110 s and 133 s. The recommended `--jobs` is the smallest N within 10 percent
+of the best, which is 4 on that campaign's suite; it is a figure for that suite, not a property
+of the tool. A campaign of about eight mutants or fewer gains nothing at 4 workers, because the
+worker proof's four rounds cost what the parallel mutant runs save. Serial took 267 s to 269 s
+and `--jobs 4` took 320 s and 322 s on `tests/mutate_suite_parallel.py` (8 mutants); serial took
+1,807 s to 1,831 s and `--jobs 4` 1,789 s and 1,804 s on `tests/mutate_hook_budget.py` (7 mutants).
+Those two campaigns hold the only parity entries, at width 4 on tree `34a71e5`: for each, two
+`--jobs 4` runs gave the same kill sets, counters and verdict class as the serial runs. An entry
+lapses when the suite its campaign grades (`tests/test_suite_parallel.sh` and
+`tests/test_hook_suite_guard.sh` respectively), or a file that suite sources, changes. No other
+campaign has an entry.
 `tests/mutate_audit_shellcheck_parallel.py` reports a false M7c survivor on a host with 8 or
 fewer cores, and the two campaigns whose suite is a `-c` wrapper are refused as opaque.

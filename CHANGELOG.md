@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.165.0 — 2026-11-14
+- feat(kill-sets): add --jobs N parallel mutant runs with a worker proof
+
 ## v0.164.0 — 2026-11-12
 - feat(feature): document the brick audit override and signing check
 

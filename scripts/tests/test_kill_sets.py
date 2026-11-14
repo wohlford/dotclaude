@@ -18,11 +18,18 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import math
 import os
 import re
+import secrets
+import select
 import shutil
+import signal
 import subprocess
 import sys
+import threading
+import time
+import types
 from pathlib import Path
 
 import pytest
@@ -30,9 +37,15 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 TOOL = REPO / "scripts" / "kill-sets.py"
 MUTATE = REPO / "scripts" / "lib" / "mutate.py"
+# The tool's own join bound, read from its source so a row never restates it.
+JOIN_SECONDS = int(re.search(r"^JOIN_SECONDS = (\d+)", TOOL.read_text(), re.M).group(1))
 
 EXPECT = (
     r"^RESULT: (PASS|FAIL|ERROR) rc=[0-9]+ mutants=[0-9]+ "
+    r"identical_pairs=[0-9]+ killed_all=[0-9]+"
+)
+EXPECT_PARALLEL = (
+    r"^RESULT: (PASS|PARALLEL-PASS|FAIL|ERROR) rc=[0-9]+ mutants=[0-9]+ "
     r"identical_pairs=[0-9]+ killed_all=[0-9]+"
 )
 FIELDS = [
@@ -47,6 +60,8 @@ FIELDS = [
     "incomplete",
     "single_row",
 ]
+FIELDS_PARALLEL = FIELDS + ["died", "jobs"]
+SERIAL_SENTENCE = "serial, one run per mutant: determinism NOT assessed"
 OPAQUE_REASON = "opaque -c body: pytest cannot be armed; increment 1 does not grade it"
 WATCHED = [
     "PYTEST_ADDOPTS",
@@ -90,7 +105,9 @@ PYTEST_ARGV = (
 # The generic shell suite. Each row N passes when the subject holds the line `okN`; the other
 # per-row spellings are the shapes the rows need: `silentN` fails the run with no FAIL line,
 # `twofailN` prints two FAIL lines for one row, `quietN` drops the row under exit 0, `skipN`
-# turns it into a skip under exit 0. Run-level directives follow the loop.
+# turns it into a skip under exit 0. Run-level directives follow the loop; `slow` holds the
+# run for two seconds after the rows, so mutants that carry it overlap on parallel workers,
+# and `hang` holds it for thirty, so a mutant that carries it runs into a short `--timeout`.
 GENERIC_SUITE = r"""#!/usr/bin/env bash
 subj="$(cd "$(dirname "$0")/.." && pwd)/subject.sh"
 has() { grep -qx -- "$1" "$subj"; }
@@ -106,6 +123,8 @@ for n in $(seq 1 @ROWS@); do
     if has stop; then exit 1; fi
   fi
 done
+if has slow; then sleep 2; fi
+if has hang; then sleep 30; fi
 if has dump; then
   echo "  --- output ---"; echo "PASS  row1"; echo "FAIL  inner row"; echo "  --------------"
 fi
@@ -730,6 +749,254 @@ def test_t14a_loader_and_prerun_errors(tmp_path):
     assert os.path.realpath(c.mutate_path) == os.path.realpath(
         root / "scripts" / "lib" / "mutate.py"
     )
+
+
+class _DoneEvent(threading.Event):
+    """A ticket's `done` flag that lets the ticket finish at a chosen read of it.
+
+    The first `is_set` call runs `finish` (which stores the ticket's error and sets the
+    flag). `report_finished` says whether that first read already sees the finished state
+    (the ticket completed just before the read) or the earlier one (it completed just after).
+    """
+
+    def __init__(self, finish, report_finished):
+        super().__init__()
+        self._finish, self._report, self._reads = finish, report_finished, 0
+
+    def is_set(self):
+        self._reads += 1
+        if self._reads == 1:
+            before = super().is_set()
+            self._finish()
+            return before or self._report
+        return super().is_set()
+
+
+def _failing_ticket(tool, error, report_finished):
+    ticket = tool.Ticket(lambda: None)
+
+    def finish():
+        ticket.error = error
+        threading.Event.set(ticket.done)
+
+    ticket.done = _DoneEvent(finish, report_finished)
+    return ticket
+
+
+def _grading_over(tool, count):
+    mutations = [(f"m{n}", "old", "new") for n in range(1, count + 1)]
+    worker = tool.Worker(0, Path("."), Path("."), [])
+    g = tool.Grading(
+        types.SimpleNamespace(mutations=mutations), None, None, "s", "", None, [worker]
+    )
+    g.preclassify = lambda n, label, old, new: (None, "mutated")
+    return g, worker
+
+
+class _OneTicketPool:
+    """Stands in for `Pool.submit` and `activity`: no thread, one ticket made by hand."""
+
+    def __init__(self, workers, ticket):
+        self.workers, self.activity, self._ticket = workers, threading.Event(), ticket
+
+    def submit(self, index, fn):
+        return self._ticket
+
+
+def test_t14c_poll_loops_keep_a_ticket_error():
+    tool = load_tool()
+    boom = ValueError("the original failure")
+
+    # (i) A drain ticket errors just after the poll loop read it as not done: the loop must
+    # raise that error, not the "no outcome" RuntimeError of the gap check behind it.
+    g, worker = _grading_over(tool, 2)
+    ticket = _failing_ticket(tool, boom, report_finished=False)
+    with pytest.raises(ValueError) as caught:
+        g.run_mutants(tool.State(), _OneTicketPool([worker], ticket))
+    assert caught.value is boom, (
+        f"raised {caught.value!r} in place of the ticket's error"
+    )
+
+    # (i) again with the first read already seeing the finished ticket: a loop that releases,
+    # scans, reads `finished` and only then breaks passes the setting above and fails this one.
+    g, worker = _grading_over(tool, 2)
+    ticket = _failing_ticket(tool, boom, report_finished=True)
+    with pytest.raises(ValueError) as caught:
+        g.run_mutants(tool.State(), _OneTicketPool([worker], ticket))
+    assert caught.value is boom, (
+        f"raised {caught.value!r} in place of the ticket's error (finished read)"
+    )
+
+    # (ii) The same window in `Pool.wait`: it must raise, never return a None result.
+    ticket = _failing_ticket(tool, boom, report_finished=False)
+    pool = tool.Pool([])
+    try:
+        pool.wait([ticket])
+    except ValueError as exc:
+        assert exc is boom
+    else:
+        pytest.fail("Pool.wait returned instead of raising the ticket's error")
+
+    # (iii) An outcome stored just before the failure was released before the exception
+    # propagated: blocks 1 to k-1 print, then the exception, as the serial tool did.
+    g, worker = _grading_over(tool, 2)
+    ticket = tool.Ticket(lambda: None)
+    released = []
+    g.release = lambda state, outcome: released.append(outcome.n)
+    real_release_ready = g._release_ready
+    calls = []
+
+    def release_then_finish(state):
+        real_release_ready(state)
+        calls.append(1)
+        if len(calls) == 1:
+            with g._results_lock:
+                g._results[1] = tool.Outcome(
+                    1, "KILLED", (), ("[1/2] KILLED",), (), None
+                )
+            ticket.error = boom
+            ticket.done.set()
+
+    g._release_ready = release_then_finish
+    with pytest.raises(ValueError) as caught:
+        g.run_mutants(tool.State(), _OneTicketPool([worker], ticket))
+    assert caught.value is boom
+    assert released == [1], f"blocks released before the exception: {released}"
+
+
+def test_t16b0_rebase_spellings(tmp_path):
+    tool = load_tool()
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    logical_tmp = link / "kill-sets.ab"
+    real_tmp = real / "kill-sets.ab"
+    canonical = logical_tmp / "work"
+    (real_tmp / "work" / "scripts").mkdir(parents=True)
+    (real_tmp / "pool" / "1").mkdir(parents=True)
+    # A sibling that shares the canonical text up to its last component and RESOLVES into the
+    # canonical copy: inside it by realpath, yet not below it on a path boundary as text.
+    (real_tmp / "workalias").symlink_to(real_tmp / "work")
+    assert os.path.realpath(canonical) == str(real_tmp / "work")
+    assert str(canonical) != os.path.realpath(canonical)
+    target = logical_tmp / "pool" / "1"
+    target_real = str(real_tmp / "pool" / "1")
+    assert os.path.realpath(target) == target_real
+
+    # The layout: worker 0 keeps `work`, worker k is `pool/k`.
+    assert tool.worker_copy_path(logical_tmp, 0) == logical_tmp / "work"
+    assert tool.worker_copy_path(logical_tmp, 3) == logical_tmp / "pool" / "3"
+    assert tool.worker_copy_path(str(logical_tmp), 1) == target
+
+    logical = str(canonical)
+    realtext = str(real_tmp / "work")
+    cases = [
+        (
+            "logical spelling",
+            f"{logical}/scripts/suite.sh",
+            f"{target}/scripts/suite.sh",
+        ),
+        (
+            "realpath spelling",
+            f"{realtext}/scripts/suite.sh",
+            f"{target_real}/scripts/suite.sh",
+        ),
+        (
+            "dotdot form",
+            f"{logical}/scripts/../scripts/x.sh",
+            f"{target_real}/scripts/x.sh",
+        ),
+        ("the copy root", logical, str(target)),
+        ("the copy root, real", realtext, target_real),
+        ("dotdot to the root", f"{logical}/scripts/..", target_real),
+        ("X= prefix, logical", f"SUITE={logical}/s.sh", f"SUITE={target}/s.sh"),
+        ("X= prefix, real", f"SUITE={realtext}/s.sh", f"SUITE={target_real}/s.sh"),
+        ("outside the copy", "/usr/bin/env", "/usr/bin/env"),
+        ("not a path", "-v", "-v"),
+        ("relative", "scripts/suite.sh", "scripts/suite.sh"),
+        ("sibling merely sharing the text", f"{logical}2/x", f"{logical}2/x"),
+        ("sibling, real", f"{realtext}2/x", f"{realtext}2/x"),
+        (
+            "a dotdot back out of the copy",
+            f"{logical}/../elsewhere/x",
+            f"{logical}/../elsewhere/x",
+        ),
+        (
+            "symlinked sibling sharing the text, logical",
+            f"{logical}alias/x",
+            f"{target_real}/x",
+        ),
+        (
+            "symlinked sibling sharing the text, real",
+            f"{realtext}alias/x",
+            f"{target_real}/x",
+        ),
+    ]
+    argv = [token for _, token, _ in cases]
+    rebased = tool.rebase_argv(argv, canonical, target)
+    assert isinstance(rebased, list) and rebased is not argv
+    assert argv == [token for _, token, _ in cases], "the input list was changed"
+    for (name, token, want), got in zip(cases, rebased, strict=True):
+        assert got == want, f"{name}: {token!r} re-based to {got!r}, expected {want!r}"
+
+    # The residue rule: a substring match on either spelling of the canonical copy.
+    tokens = [token for _, token, _ in cases]
+    flagged = {
+        token
+        for token in tokens
+        if any(
+            token in message for message in tool.residue_errors([token], canonical, 1)
+        )
+    }
+    assert flagged == {
+        logical,
+        realtext,
+        f"{logical}/scripts/suite.sh",
+        f"{realtext}/scripts/suite.sh",
+        f"{logical}/scripts/../scripts/x.sh",
+        f"{logical}/scripts/..",
+        f"SUITE={logical}/s.sh",
+        f"SUITE={realtext}/s.sh",
+        f"{logical}2/x",
+        f"{realtext}2/x",
+        f"{logical}/../elsewhere/x",
+        f"{logical}alias/x",
+        f"{realtext}alias/x",
+    }, f"un-re-based tokens flagged: {sorted(flagged)}"
+    good = [
+        got
+        for (name, _, _), got in zip(cases, rebased, strict=True)
+        if name
+        in (
+            "logical spelling",
+            "realpath spelling",
+            "dotdot form",
+            "the copy root",
+            "the copy root, real",
+            "dotdot to the root",
+            "X= prefix, logical",
+            "X= prefix, real",
+            "outside the copy",
+            "not a path",
+            "relative",
+            "symlinked sibling sharing the text, logical",
+            "symlinked sibling sharing the text, real",
+        )
+    ]
+    assert tool.residue_errors(good, canonical, 1) == [], (
+        "a correct re-base left residue"
+    )
+    under_worker = [f"{tool.worker_copy_path(logical_tmp, 1)}/scripts/tests/suite.sh"]
+    assert tool.residue_errors(under_worker, canonical, 1) == []
+
+    survivors = [f"-C{logical}/scripts", f"a:{realtext}/x:b"]
+    assert tool.rebase_argv(survivors, canonical, target) == survivors
+    messages = tool.residue_errors(["ok", *survivors], canonical, 2)
+    assert messages == [
+        f"copy unproven: worker 2: SUITE token {token!r} still names the canonical copy {canonical}"
+        for token in survivors
+    ], messages
 
 
 def load_mutate():
@@ -1746,6 +2013,23 @@ def test_t12_canary(tmp_path):
     assert run.status == "PASS", run
 
 
+def _anchor_line(stripped: str) -> tuple[str, str]:
+    """The one line of the tool whose stripped text is `stripped`: (line with its newline, indent)."""
+    hits = [
+        x for x in TOOL.read_text().splitlines(keepends=True) if x.strip() == stripped
+    ]
+    assert len(hits) == 1, f"{len(hits)} lines of the tool read {stripped!r}, need 1"
+    line = hits[0]
+    return line, line[: len(line) - len(line.lstrip())]
+
+
+def _injected(tmp_path: Path, name: str, stripped: str, code: str) -> Path:
+    """A tool copy whose anchor line `stripped` is preceded by `code` (same indentation)."""
+    line, indent = _anchor_line(stripped)
+    body = "".join(f"{indent}{x}\n" for x in code.splitlines())
+    return _tool_copy(tmp_path, name, None, edit=(line, body + line))
+
+
 T13_SUITE = r"""#!/usr/bin/env bash
 here="$(cd "$(dirname "$0")/.." && pwd)"
 subj="$here/subject.sh"
@@ -1754,6 +2038,7 @@ printf '%s\n' "${PYTHONDONTWRITEBYTECODE-unset}" >> "@SEEN@"
 fails=0
 if [ -e "$here/marker" ]; then echo "FAIL  no marker"; fails=1; else echo "PASS  no marker"; fi
 if has writemark; then : > "$here/marker"; fi
+if has leakother; then echo unrelated-text > "@LIVE@"; fi
 if has leakme; then cp "$subj" "@LIVE@"; fi
 if has lockme; then mkdir -p "$here/locked"; : > "$here/locked/f"; chmod 500 "$here/locked"; fi
 for n in 1 2 3; do
@@ -1883,21 +2168,49 @@ def test_t13a_isolation_leak_env(tmp_path):
         "leak" in x and "leaks into the live subject" in x for x in run.error_lines()
     ), f"the leak was not named\n{run!r}"
 
-    # The same leak, then an internal exception inside the mutant loop: the leak check runs
-    # on that ERROR path too, and does not mask the exception.
+    # The same leak, then a fault in the mutant's own grading (injected after the mutant write
+    # and its `applied` record): the mutant is DIED, and the leak check still attributes the
+    # leak to it by label, because the record was made at write time.
+    live_subject = tmp_path / "leakdied" / "scripts" / "subject.sh"
+    root = t13_root(
+        "leakdied",
+        [("leaks, then its grading raises", "ok3\n", "no3\nleakme\n")],
+        live_subject,
+    )
+    raising = _injected(
+        tmp_path,
+        "raising-grade",
+        "outcome = self.grade(n, label, old, run)",
+        'raise RuntimeError("kill-sets test: injected")',
+    )
+    run = run_tool(root, env=env, tool=raising)
+    assert run.blocks.get(1, {}).get("status") == "DIED", (
+        f"a fault in grading was not a DIED block\n{run!r}"
+    )
+    assert "kill-sets test: injected" in " ".join(run.blocks[1]["lines"]), run
+    assert run.result and run.result["died"] == 1, run
+    assert not run.has_line("ERROR  internal exception"), run
+    assert any(
+        "leak" in x and "leaks, then its grading raises" in x for x in run.error_lines()
+    ), f"a DIED mutant's leak was not attributed to it\n{run!r}"
+    assert run.status == "ERROR" and run.rc == 2, run
+
+    # The same leak, then an internal exception at the post-drain check, which no mutant owns:
+    # the leak check runs on that ERROR path too, and does not mask the exception.
     live_subject = tmp_path / "leakexc" / "scripts" / "subject.sh"
     root = t13_root(
         "leakexc",
         [("leaks, then the tool raises", "ok3\n", "no3\nleakme\n")],
         live_subject,
     )
+    line, indent = _anchor_line("self._check_all_graded()")
     raising = _tool_copy(
         tmp_path,
         "raising",
         None,
         edit=(
-            "            self._resolve(state, head, n, label, old, run)\n",
-            '            raise RuntimeError("kill-sets test: injected")\n',
+            line,
+            f'{indent}raise RuntimeError("kill-sets test: injected")\n',
         ),
     )
     run = run_tool(root, env=env, tool=raising)
@@ -2005,23 +2318,1746 @@ def test_t13a_isolation_leak_env(tmp_path):
         assert not (lib / "__pycache__").exists(), f"a run wrote {lib / '__pycache__'}"
 
 
-ENV_HELPERS = {"_child_env", "_env_header"}
+def test_t13d_leak_matching_no_mutant(tmp_path):
+    """A live subject changed to text no mutant wrote is reported as matching none."""
+    seen = tmp_path / "seen.txt"
+    seen.write_text("")
+    live_subject = tmp_path / "leakother" / "scripts" / "subject.sh"
+    root = make_root(
+        tmp_path,
+        name="leakother",
+        suite_text=T13_SUITE.replace("@SEEN@", str(seen)).replace(
+            "@LIVE@", str(live_subject)
+        ),
+        mutations=[
+            ("writes unrelated text to the live subject", "ok3\n", "no3\nleakother\n")
+        ],
+    )
+    run = run_tool(root)
+    assert run.has_line(
+        "leak: none (the live subject changed during the run, matching no mutant)"
+    ), run
+    assert not run.has_line("ERROR  leak"), run
 
 
-def test_t13b_env_reads_only_in_two_helpers():
+# --------------------------------------------------------------------------------------
+# `--jobs N`: the flag, the worker copies, the verdict word and the header.
+# --------------------------------------------------------------------------------------
+
+POOL_NAMES = (
+    "AUDIT_SHELL_JOBS",
+    "AUDIT_PYTEST_JOBS",
+    "AUDIT_SHELLCHECK_JOBS",
+    "AUDIT_TEST_JOBS",
+)
+JOBS_LINE = (
+    r"^jobs: 3 requested, 3 workers \(\d+ runnable mutants\); "
+    r"load average at launch [0-9.]+ [0-9.]+ [0-9.]+ on \d+ CPUs$"
+)
+KILL_THREE = [
+    ("kill row1", "ok1\n", "no1\n"),
+    ("kill row2", "ok2\n", "no2\n"),
+    ("kill row3", "ok3\n", "no3\n"),
+]
+
+
+def _env_without(*names: str) -> dict:
+    return {k: v for k, v in os.environ.items() if k not in names}
+
+
+def _line_index(run: Run, prefix: str) -> int:
+    hits = [i for i, line in enumerate(run.lines) if line.startswith(prefix)]
+    assert len(hits) == 1, f"{len(hits)} lines start {prefix!r}\n{run!r}"
+    return hits[0]
+
+
+def _parity_view(run: Run) -> list[str]:
+    """The run's lines as a serial and a parallel run of one tree must agree on them.
+
+    The lines only a parallel run prints, the copy paths, the two sentences that name the
+    mode, the timings and the status word with its tail are what a reader may not compare.
+    """
+    view = []
+    for line in _normalised(run):
+        if line.startswith(("copy:", "jobs:", "proof:", "nested pools:")):
+            continue
+        if line.startswith(
+            ("serial, one run per mutant", "parallel, one run per mutant")
+        ):
+            continue
+        view.append(
+            re.sub(r"^RESULT: \S+ (rc=\d+ .*?single_row=\d+).*$", r"RESULT: \1", line)
+        )
+    return view
+
+
+def test_t15a_jobs_flag_and_verdict_shape(tmp_path):
+    quoted = (
+        "RESULT: PARALLEL-PASS rc=0 mutants=9 identical_pairs=0 killed_all=0 (quoted)"
+    )
+    four = [
+        (quoted, "ok1\n", "no1\n"),
+        ("kill two", "ok2\n", "no2\n"),
+        ("kill three", "ok3\n", "no3\n"),
+        ("kill four", "ok4\n", "no4\n"),
+    ]
+
+    # (a) A value outside 1..8 is the tool's own refusal: before any copy, the serial form.
+    root = make_root(tmp_path, name="bad", mutations=[("m", "ok1\n", "no1\n")])
+    for text in ("0", "-1", "abc", "9"):
+        run = run_tool(root, "--jobs", text)
+        assert run.status == "ERROR" and run.rc == 2, f"--jobs {text}\n{run!r}"
+        assert run.result["mutants"] == 0 and run.order == FIELDS, (
+            f"--jobs {text}: the RESULT line is not the serial form\n{run!r}"
+        )
+        assert any(
+            f"--jobs {text}: expected an integer from 1 to 8" in line
+            for line in run.error_lines()
+        ), f"--jobs {text}: no ERROR line names the refusal\n{run!r}"
+        assert not any(line.startswith("copy:") for line in run.lines), (
+            f"--jobs {text}: a copy was made\n{run!r}"
+        )
+        assert not run.blocks, f"--jobs {text}: a mutant ran\n{run!r}"
+
+    # (b) `--jobs 1` is the default run, line for line, with today's sentence and fields.
+    root = make_root(
+        tmp_path,
+        name="ok",
+        suite_text=generic_suite(rows=4),
+        subject_text=tokens(4),
+        mutations=four,
+    )
+    default = run_tool(root)
+    one = run_tool(root, "--jobs", "1")
+    assert one.status == "PASS" and one.order == FIELDS, one
+    assert SERIAL_SENTENCE in one.lines, one
+    assert not any(line.startswith("parallel, one run") for line in one.lines), one
+    assert not any(line.startswith("jobs:") for line in one.lines), one
+    assert _normalised(one) == _normalised(default), "--jobs 1 differs from the default"
+
+    # (c) `--jobs 3`: the parallel sentence, the verdict word, the header and the tail.
+    run = run_tool(root, "--jobs", "3")
+    assert run.status == "PARALLEL-PASS" and run.rc == 0, run
+    assert run.order == FIELDS_PARALLEL, f"field order {run.order}\n{run!r}"
+    assert run.result["died"] == 0 and run.result["jobs"] == 3, run
+    assert re.search(r" single_row=\d+ died=0 jobs=3$", run.lines[-1]), run
+    sentence = next(
+        x for x in run.lines if x.startswith("parallel, one run per mutant")
+    )
+    assert "on its own copy, 3 workers:" in sentence, sentence
+    assert "determinism NOT assessed" in sentence, sentence
+    assert SERIAL_SENTENCE not in run.lines, run
+    jobs_line = next(x for x in run.lines if x.startswith("jobs: 3 requested"))
+    assert re.search(JOBS_LINE, jobs_line), (
+        f"the jobs line has the wrong shape\n{run!r}"
+    )
+    assert (
+        _line_index(run, "parse check:")
+        < _line_index(run, "jobs: 3 requested")
+        < _line_index(run, "BASELINE")
+    ), f"the jobs line is not between the parse check and the baseline\n{run!r}"
+    assert (
+        _line_index(run, "leak:")
+        < _line_index(run, "jobs: finished; load average ")
+        < _line_index(run, "copy: removed")
+    ), f"the closing jobs line is not between the leak check and the teardown\n{run!r}"
+    assert re.search(
+        r"^jobs: finished; load average [0-9.]+ [0-9.]+ [0-9.]+$",
+        run.lines[_line_index(run, "jobs: finished")],
+    ), run
+    label_lines = [x for x in run.lines if x.startswith("[1/4]")]
+    assert label_lines and re.search(EXPECT_PARALLEL[1:], label_lines[0]), (
+        f"the label does not quote the grammar, so the case proves nothing\n{run!r}"
+    )
+    anchored = [x for x in run.lines if re.search(EXPECT_PARALLEL, x)]
+    assert anchored == [run.lines[-1]], f"the anchored regex matched a label\n{run!r}"
+
+    # FAIL and ERROR keep their words, with the tail.
+    root_fail = make_root(
+        tmp_path,
+        name="fail",
+        mutations=[("silent", "ok1\n", "silent1\n"), ("kill two", "ok2\n", "no2\n")],
+    )
+    run = run_tool(root_fail, "--jobs", "3")
+    assert (run.status, run.rc) == ("FAIL", 1), run
+    assert run.order == FIELDS_PARALLEL and run.result["jobs"] == 3, run
+    root_error = make_root(
+        tmp_path,
+        name="error",
+        mutations=[("absent", "nope\n", "x\n"), ("kill one", "ok1\n", "no1\n")],
+    )
+    run = run_tool(root_error, "--jobs", "3")
+    assert (run.status, run.rc) == ("ERROR", 2), run
+    assert run.order == FIELDS_PARALLEL and run.result["jobs"] == 3, run
+
+    # (d) More workers than runnable mutants: the header counts the effective workers.
+    root_one = make_root(
+        tmp_path,
+        name="one",
+        mutations=[
+            ("kill one", "ok1\n", "no1\n"),
+            ("absent one", "nope1\n", "x\n"),
+            ("absent two", "nope2\n", "x\n"),
+        ],
+    )
+    run = run_tool(root_one, "--jobs", "4")
+    assert any(
+        x.startswith("jobs: 4 requested, 1 workers (1 runnable mutants);")
+        for x in run.lines
+    ), run
+    first_copy = next(x for x in run.lines if x.startswith("copy: "))
+    assert "working copies W0..W3 re-created per mutant" in first_copy, first_copy
+
+    # (e) The free-space gate refuses before anything is copied; `--jobs 1` has none.
+    huge = _tool_copy(
+        tmp_path,
+        "huge-factor",
+        None,
+        edit=("DISK_FACTOR = 2", "DISK_FACTOR = 1000000000"),
+    )
+    run = run_tool(root, "--jobs", "2", tool=huge)
+    assert any(
+        "MB free" in x and "nothing was copied" in x for x in run.error_lines()
+    ), f"no ERROR line names the shortfall\n{run!r}"
+    assert (run.status, run.rc) == ("ERROR", 2), run
+    assert not run.has_line("BASELINE") and not run.blocks, run
+    assert not run.has_line("copy: size"), f"a tree was copied\n{run!r}"
+    run = run_tool(root, "--jobs", "1", tool=huge)
+    assert run.status == "PASS", f"the gate refused a serial run\n{run!r}"
+
+    # (f) The nested-pools line names exactly the pools that are set, in a fixed order.
+    clean = _env_without(*POOL_NAMES)
+    run = run_tool(root, "--jobs", "3", env=dict(clean, AUDIT_SHELL_JOBS="4"))
+    want = "nested pools: AUDIT_SHELL_JOBS=4 (inherited by every suite)"
+    assert run.lines.count(want) == 1, f"no exact nested pools line\n{run!r}"
+    assert (
+        _line_index(run, "jobs: 3 requested") + 1
+        == run.lines.index(want)
+        < _line_index(run, "BASELINE")
+    ), run
+    run = run_tool(
+        root,
+        "--jobs",
+        "3",
+        env=dict(clean, AUDIT_TEST_JOBS="2", AUDIT_SHELL_JOBS="4"),
+    )
+    assert (
+        "nested pools: AUDIT_SHELL_JOBS=4 AUDIT_TEST_JOBS=2 (inherited by every suite)"
+        in run.lines
+    ), run
+    run = run_tool(root, "--jobs", "1", env=dict(clean, AUDIT_SHELL_JOBS="4"))
+    assert not any(x.startswith("nested pools:") for x in run.lines), run
+    run = run_tool(root, "--jobs", "3", env=clean)
+    assert not any(x.startswith("nested pools:") for x in run.lines), run
+
+    # (g) `--keep` names every copy, and every named copy exists. The mutants carry `slow`,
+    # so the three workers overlap and each one holds a copy on disk whatever the proof did.
+    root_keep = make_root(
+        tmp_path,
+        name="keepslow",
+        suite_text=generic_suite(rows=4),
+        subject_text=tokens(4),
+        mutations=[(label, old, new + "slow\n") for label, old, new in four],
+    )
+    private = tmp_path / "keep-tmp"
+    private.mkdir()
+    kept = None
+    try:
+        run = run_tool(
+            root_keep, "--jobs", "3", "--keep", env=dict(clean, TMPDIR=str(private))
+        )
+        assert run.status == "PARALLEL-PASS", run
+        first = next(x for x in run.lines if x.startswith("copy: "))
+        kept = first.split()[1]
+        line = next(x for x in run.lines if x.startswith("copy: kept "))
+        listed = line.split("working copies ", 1)[1].rstrip(")").split()
+        assert listed == [f"{kept}/work", f"{kept}/pool/1", f"{kept}/pool/2"], line
+        for path in listed:
+            assert Path(path).is_dir(), (
+                f"{path} was printed but does not exist\n{run!r}"
+            )
+    finally:
+        if kept is not None:
+            shutil.rmtree(kept, ignore_errors=True)
+
+
+@pytest.mark.serial_only
+def test_t15b_parity_and_order(tmp_path):
+    mutations = [
+        ("slow head kills row1", "ok1\n", "no1\nslow\n"),
+        ("kills row1 again", "ok1\n", "xx1\n"),
+        ("kills every row", "ok1\nok2\nok3\n", "zz\n"),
+        ("survives", "keep_me\n", "keep_you\n"),
+        ("anchor absent", "nope\n", "x\n"),
+        ("does not parse", "ok3\n", "ok3 (\n"),
+        ("rows vanish quietly", "ok2\n", "quiet2\n"),
+        ("kills row3", "ok3\n", "no3\n"),
+    ]
+    root = make_root(
+        tmp_path,
+        name="mix",
+        subject_text=tokens() + "keep_me\n",
+        mutations=mutations,
+    )
+    serial = run_tool(root, "--jobs", "1")
+    parallel = run_tool(root, "--jobs", "3")
+    kinds = {b["status"] for b in serial.blocks.values()}
+    assert kinds == {
+        "KILLED",
+        "KILLED-ALL",
+        "SURVIVED",
+        "NOT-APPLIED",
+        "INVALID",
+        "UNATTRIBUTED",
+    }, f"the fixture does not mix the statuses: {kinds}\n{serial!r}"
+    assert parallel.status == "ERROR" and parallel.result["jobs"] == 3, parallel
+    for run in (serial, parallel):
+        heads = [
+            int(m.group(1))
+            for m in (re.match(r"^\[(\d+)/\d+\] ", x) for x in run.lines)
+            if m
+        ]
+        assert heads == list(range(1, len(mutations) + 1)), (
+            f"the blocks are not in mutant order: {heads}\n{run!r}"
+        )
+        dups = [x for x in run.lines if x.startswith("DUPLICATE")]
+        assert dups == ["DUPLICATE [1] [2] (k=1)"], f"{dups}\n{run!r}"
+    left, right = _parity_view(serial), _parity_view(parallel)
+    assert left == right, (
+        "\n".join(
+            f"serial:   {a}\nparallel: {b}"
+            for a, b in zip(left, right, strict=False)
+            if a != b
+        )
+        or f"serial has {len(left)} lines, parallel {len(right)}"
+    )
+
+
+def test_t16b1_default_and_logical_spelling(tmp_path):
+    real = tmp_path / "realtmp"
+    real.mkdir()
+    link = tmp_path / "linktmp"
+    link.symlink_to(real)
+    env = dict(os.environ, TMPDIR=str(link))
+    for name, resolve in (("realspelling", True), ("logicalspelling", False)):
+        root = make_root(tmp_path, name=name, mutations=KILL_THREE, resolve=resolve)
+        run = run_tool(root, "--jobs", "3", env=env)
+        assert run.status == "PARALLEL-PASS", f"{name}\n{run!r}"
+        first = next(x for x in run.lines if x.startswith("copy: "))
+        assert first.startswith(f"copy: {link}{os.sep}kill-sets."), (
+            f"{name}: the logical spelling was not the one in play\n{run!r}"
+        )
+        assert {n: b["rows"] for n, b in run.blocks.items()} == {
+            1: ["row1"],
+            2: ["row2"],
+            3: ["row3"],
+        }, f"{name}: a worker did not read its own copy\n{run!r}"
+
+
+def test_t16b2_residue_refused(tmp_path):
+    flagged = (
+        '["bash", str(REPO / "scripts" / "tests" / "suite.sh"), '
+        '"-C" + str(REPO / "scripts")]'
+    )
+    root = make_root(tmp_path, name="residue", mutations=KILL_THREE, suite_argv=flagged)
+    run = run_tool(root, "--jobs", "3")
+    assert_refused_before_baseline(run, "a token the swap cannot reach")
+    for worker in (1, 2):
+        assert any(
+            f"worker {worker}: SUITE token '-C" in x
+            and "still names the canonical copy" in x
+            for x in run.error_lines()
+        ), f"no ERROR line names the token and worker {worker}\n{run!r}"
+    serial = run_tool(root, "--jobs", "1")
+    assert serial.status == "PASS" and not serial.error_lines(), serial
+
+
+def test_t16b3_cwd_relative_suite(tmp_path):
+    root = make_root(
+        tmp_path,
+        name="cwdrel",
+        mutations=[*KILL_THREE, ("survives", "keep_me\n", "keep_you\n")],
+        subject_text=tokens() + "keep_me\n",
+        suite_argv='["bash", "scripts/tests/suite_rel.sh"]',
+    )
+    absolute = 'subj="$(cd "$(dirname "$0")/.." && pwd)/subject.sh"'
+    text = generic_suite()
+    assert absolute in text
+    (root / "scripts" / "tests" / "suite_rel.sh").write_text(
+        text.replace(absolute, 'subj="scripts/subject.sh"')
+    )
+    serial = run_tool(root, "--jobs", "1")
+    parallel = run_tool(root, "--jobs", "3")
+    shape = {n: (b["status"], b["rows"]) for n, b in serial.blocks.items()}
+    assert shape[1] == ("KILLED", ["row1"]) and shape[4][0] == "SURVIVED", serial
+    assert {n: (b["status"], b["rows"]) for n, b in parallel.blocks.items()} == shape, (
+        f"a worker's suite did not read its own copy from its cwd\n{parallel!r}"
+    )
+
+
+def _three_workers(tmp_path, argv):
+    tool = load_tool()
+    tmp = tmp_path / "kill-sets.ab"
+    canonical = tmp / "work"
+    workers = tool.build_workers(tmp, canonical, "scripts/subject.sh", argv, 3)
+    return tmp, canonical, workers
+
+
+def test_t16b4_worker_copy_paths(tmp_path):
+    tmp, canonical, workers = _three_workers(
+        tmp_path, ["bash", "scripts/tests/suite_rel.sh"]
+    )
+    assert [w.work for w in workers] == [
+        tmp / "work",
+        tmp / "pool" / "1",
+        tmp / "pool" / "2",
+    ]
+    assert [w.index for w in workers] == [0, 1, 2]
+    for w in workers[1:]:
+        assert not str(w.work).startswith(str(canonical)), (
+            f"the canonical text is a prefix of {w.work}"
+        )
+
+
+def test_t16b5_worker_subjects(tmp_path):
+    tmp, canonical, workers = _three_workers(
+        tmp_path, ["bash", "scripts/tests/suite_rel.sh"]
+    )
+    subject_rel = "scripts/subject.sh"
+    assert [w.subject for w in workers] == [
+        tmp / "work" / subject_rel,
+        tmp / "pool" / "1" / subject_rel,
+        tmp / "pool" / "2" / subject_rel,
+    ]
+
+
+def test_t16b6_worker_argv(tmp_path):
+    tmp = tmp_path / "kill-sets.ab"
+    canonical = tmp / "work"
+    argv = [
+        "bash",
+        str(canonical / "scripts/tests/suite.sh"),
+        f"X={canonical}/scripts/tests/x.txt",
+        "-v",
+    ]
+    _tmp, _canonical, workers = _three_workers(tmp_path, argv)
+    assert workers[0].argv == argv
+    for k in (1, 2):
+        pool = f"{tmp}/pool/{k}"
+        assert workers[k].argv == [
+            "bash",
+            f"{pool}/scripts/tests/suite.sh",
+            f"X={pool}/scripts/tests/x.txt",
+            "-v",
+        ], workers[k].argv
+        assert not any(str(canonical) in token for token in workers[k].argv)
+    assert argv[1] == str(canonical / "scripts/tests/suite.sh"), "the input was changed"
+
+
+@pytest.mark.serial_only
+def test_t17_isolation_under_concurrency(tmp_path):
+    root = make_root(
+        tmp_path,
+        name="overlap",
+        mutations=[
+            ("slow, kills row1", "ok1\n", "no1\nslow\n"),
+            ("slow, kills row2", "ok2\n", "no2\nslow\n"),
+            ("slow, kills row3", "ok3\n", "no3\nslow\n"),
+        ],
+    )
+    serial = run_tool(root, "--jobs", "1")
+    parallel = run_tool(root, "--jobs", "3")
+    sets = {n: b["rows"] for n, b in serial.blocks.items()}
+    assert sets == {1: ["row1"], 2: ["row2"], 3: ["row3"]}, serial
+    assert parallel.status == "PARALLEL-PASS", parallel
+    assert {n: b["rows"] for n, b in parallel.blocks.items()} == sets, (
+        f"a concurrent run read another worker's copy\n{parallel!r}"
+    )
+
+
+# --------------------------------------------------------------------------------------
+# The staged worker proof (D5) and the timeout limit derived from it (D8).
+# --------------------------------------------------------------------------------------
+
+NOT_SAFE = (
+    "the suite is not safe to run concurrently here (a shared path or port, a label "
+    "that carries the copy path, or a suite that reads another copy); re-run with "
+    "--jobs 1"
+)
+KILL_TWO = KILL_THREE[:2]
+SUBJECT_OF_COPY = 'subj="$(cd "$(dirname "$0")/.." && pwd)/subject.sh"'
+
+# A PASS label that carries the name of the copy it runs in, and a row that needs `ok1`, so
+# the serial canary removes that row too and only the pristine comparison can see the label.
+LABEL_ROW = r"""
+here="$(cd "$(dirname "$0")/../.." && pwd)"
+if has ok1; then echo "PASS  where $(basename "$here")"
+else echo "FAIL  where (detail)"; fails=1; fi
+"""
+
+# Takes a fixed lock directory and, once the worker copies exist (the proof and the mutants,
+# never the serial runs), holds it for three seconds; a suite that finds it held fails.
+LOCK_ROW = r"""
+copies="$(ls -d "$TMPDIR"/kill-sets.*)"
+if mkdir "@LOCK@" 2>/dev/null; then
+  if [ -d "$copies/pool/1" ]; then sleep 3; fi
+  rmdir "@LOCK@"; echo "PASS  lock"
+else echo "FAIL  lock (held by another suite)"; fails=1; fi
+"""
+
+
+def _proof_errors(run: Run) -> list[str]:
+    return [x for x in run.lines if x.startswith("ERROR  proof: worker ")]
+
+
+def test_t16a1_label_carries_the_copy_path(tmp_path):
+    root = make_root(
+        tmp_path,
+        name="label",
+        suite_text=generic_suite(extra=LABEL_ROW),
+        mutations=KILL_TWO,
+    )
+    serial = run_tool(root, "--jobs", "1")
+    assert serial.status == "PASS" and not serial.error_lines(), serial
+    assert serial.blocks[1]["rows"] == ["row1", "where work"], serial
+    run = run_tool(root, "--jobs", "2")
+    assert (run.status, run.rc) == ("ERROR", 2), run
+    assert run.has_line("BASELINE green"), f"the serial baseline did not run\n{run!r}"
+    assert not run.blocks, f"a mutant was graded on an unproven pool\n{run!r}"
+    errors = _proof_errors(run)
+    assert len(errors) == 1, f"one difference expected\n{run!r}"
+    assert errors[0].startswith("ERROR  proof: worker 1, round 1/2 (pristine): "), (
+        errors
+    )
+    assert "where work" in errors[0] and "where 1" in errors[0], (
+        f"the error does not name the differing rows\n{run!r}"
+    )
+    assert f"ERROR  {NOT_SAFE}" in run.lines, run
+
+
+@pytest.mark.serial_only
+def test_t16a2_fixed_lock_collision(tmp_path):
+    lock = tmp_path / "shared.lock"
+    private = tmp_path / "ptmp"
+    private.mkdir()
+    env = dict(os.environ, TMPDIR=str(private))
+    root = make_root(
+        tmp_path,
+        name="lock",
+        suite_text=generic_suite(extra=LOCK_ROW.replace("@LOCK@", str(lock))),
+        mutations=KILL_THREE,
+    )
+    one = make_root(
+        tmp_path,
+        name="lockserial",
+        suite_text=generic_suite(extra=LOCK_ROW.replace("@LOCK@", str(lock))),
+        mutations=KILL_THREE[:1],
+    )
+    serial = run_tool(one, "--jobs", "1", env=env)
+    assert serial.status == "PASS" and not serial.error_lines(), serial
+    run = run_tool(root, "--jobs", "3", env=env)
+    assert (run.status, run.rc) == ("ERROR", 2), run
+    assert not run.blocks, f"a mutant was graded on an unproven pool\n{run!r}"
+    assert _proof_errors(run), f"no proof difference named a worker\n{run!r}"
+    assert f"ERROR  {NOT_SAFE}" in run.lines, run
+
+
+def test_t16a3_proof_lines_per_round(tmp_path):
+    def header(total, workers):
+        return (
+            rf"^proof: {total} rounds x {workers} workers, each about one suite run; "
+            r"nothing is judged until the last round ends$"
+        )
+
+    def ran(i, total):
+        return (
+            rf"^proof: ran round {i}/{total} in [0-9.]+s, judged after the last round$"
+        )
+
+    def judged(i, total, holders, pristine, rows, absent):
+        canary = f", canary absent={absent} equal" if holders != "none" else ""
+        return (
+            rf"^proof: round {i}/{total} canary in workers {holders} pristine in "
+            rf"workers {pristine}: green rows={rows} equal{canary} \([0-9.]+s\)$"
+        )
+
+    def coverage(exercised, rows, aborted=False):
+        if aborted:
+            return (
+                "^proof: the canary aborted collection, so no row is judged singly; "
+                "a read of another copy's subject is visible only where it turns a "
+                "pristine run red$"
+            )
+        if exercised == rows:
+            return f"^proof: the canary exercises {rows} of {rows} rows$"
+        return (
+            f"^proof: the canary exercises {exercised} of {rows} rows; a read of "
+            f"another copy's subject by the other {rows - exercised} rows is not "
+            "visible to this proof$"
+        )
+
+    def summary(total, workers):
+        return (
+            rf"^proof: {total} rounds x {workers} workers concurrent; slowest "
+            r"pristine run [0-9.]+s against serial [0-9.]+s; limit [0-9]+s"
+            r"( \(raised from [0-9]+s\))?$"
+        )
+
+    def check(run, spec, workers, rows, absent, aborted=False):
+        """Every `proof:` line, in order: header, progress, judged rounds, coverage, summary."""
+        total = len(spec)
+        want = [header(total, workers)]
+        want += [ran(i, total) for i in range(1, total + 1)]
+        want += [
+            judged(i, total, holders, pristine, rows, absent)
+            for i, (holders, pristine) in enumerate(spec, 1)
+        ]
+        want += [coverage(absent, rows, aborted), summary(total, workers)]
+        lines = [x for x in run.lines if x.startswith("proof: ")]
+        assert len(lines) == len(want), (
+            f"{len(lines)} proof lines, {len(want)} wanted\n{run!r}"
+        )
+        for n, (line, pattern) in enumerate(zip(lines, want, strict=True), 1):
+            assert re.search(pattern, line), f"proof line {n}: {line!r}\n{run!r}"
+        assert (
+            _line_index(run, "canary:")
+            < run.lines.index(lines[0])
+            < run.lines.index(lines[-1])
+            < _line_index(run, "[1/")
+        ), f"the proof lines are not between the canary and the first mutant\n{run!r}"
+
+    # One worker holds the canary per round: the three codes are the three one-round subsets.
+    three = [("0", "1,2"), ("1", "0,2"), ("2", "0,1")]
+    root = make_root(tmp_path, name="rounds", mutations=KILL_THREE)
+
+    # Every row changes its verdict under the canary: the short coverage form.
+    run = run_tool(root, "--jobs", "3")
+    assert run.status == "PARALLEL-PASS", run
+    check(run, three, 3, rows=3, absent=3)
+
+    # One row answers the same under the canary: the coverage line names the gap.
+    root_const = make_root(
+        tmp_path,
+        name="const",
+        suite_text=generic_suite(extra='echo "PASS  const"'),
+        mutations=KILL_THREE,
+    )
+    run = run_tool(root_const, "--jobs", "3")
+    assert run.status == "PARALLEL-PASS", run
+    check(run, three, 3, rows=4, absent=3)
+
+    # A pytest suite that imports its subject: the canary aborts collection, so no row is
+    # judged singly and the coverage line says that instead of counting rows.
+    imports = (
+        "import sys\n"
+        "from pathlib import Path\n\n"
+        "sys.path.insert(0, str(Path(__file__).resolve().parent.parent))\n"
+        "import subj  # noqa: E402\n"
+        + pytest_test("test_ok1", "assert 'ok1' in subj.OK")
+        + pytest_test("test_ok2", "assert 'ok2' in subj.OK")
+    )
+    root_abort = make_root(
+        tmp_path,
+        name="aborts",
+        family="pytest",
+        suite_text=imports,
+        mutations=[("kills one", "'ok1'", "'no1'"), ("kills two", "'ok2'", "'no2'")],
+    )
+    run = run_tool(root_abort, "--jobs", "2")
+    assert run.has_line("canary: collection aborted"), run
+    assert run.status == "PARALLEL-PASS", run
+    check(run, [("0", "1"), ("1", "0")], 2, rows=2, absent=2, aborted=True)
+
+    run = run_tool(root, "--jobs", "2")
+    assert run.status == "PARALLEL-PASS", run
+    check(run, [("0", "1"), ("1", "0")], 2, rows=3, absent=3)
+
+    # Fewer than two effective workers: no concurrent phase, so no proof run, and the line says
+    # which of the two cases it was.
+    root_one = make_root(
+        tmp_path,
+        name="one",
+        mutations=[
+            ("kill one", "ok1\n", "no1\n"),
+            ("absent one", "nope1\n", "x\n"),
+            ("absent two", "nope2\n", "x\n"),
+        ],
+    )
+    run = run_tool(root_one, "--jobs", "4")
+    assert "proof: skipped (one effective worker)" in run.lines, run
+    assert not any(x.startswith("proof: round") for x in run.lines), run
+    root_none = make_root(
+        tmp_path,
+        name="none",
+        mutations=[("absent one", "nope1\n", "x\n"), ("absent two", "nope2\n", "x\n")],
+    )
+    run = run_tool(root_none, "--jobs", "3")
+    assert any(
+        x.startswith("jobs: 3 requested, 0 workers (0 runnable mutants);")
+        for x in run.lines
+    ), run
+    assert "proof: skipped (no runnable mutants)" in run.lines, run
+    assert not any(x.startswith("proof: round") for x in run.lines), run
+
+    run = run_tool(root, "--jobs", "1")
+    assert not any(x.startswith("proof:") for x in run.lines), run
+
+
+def test_t16c_cross_read_visible(tmp_path):
+    private = tmp_path / "ptmp"
+    private.mkdir()
+    env = dict(os.environ, TMPDIR=str(private))
+    text = generic_suite()
+    own = 'subj="$(cd "$(dirname "$0")/.." && pwd)/subject.sh"'
+    canonical = 'subj="$(ls -d "$TMPDIR"/kill-sets.*/work)/scripts/subject.sh"'
+    assert own in text
+    root = make_root(
+        tmp_path,
+        name="crossread",
+        suite_text=text.replace(own, canonical),
+        mutations=KILL_THREE,
+    )
+    serial = run_tool(root, "--jobs", "1", env=env)
+    assert serial.status == "PASS" and not serial.error_lines(), serial
+    assert {n: b["rows"] for n, b in serial.blocks.items()} == {
+        1: ["row1"],
+        2: ["row2"],
+        3: ["row3"],
+    }, serial
+    run = run_tool(root, "--jobs", "3", env=env)
+    assert (run.status, run.rc) == ("ERROR", 2), run
+    assert not run.blocks, f"a mutant was graded on an unproven pool\n{run!r}"
+    errors = _proof_errors(run)
+    # Worker 0 always reads its own copy; every other worker reads copy 0. Worker 0 holds the
+    # canary in round 1 only, worker 1 in round 2 only, worker 2 in round 3 only. So workers 1
+    # and 2 read `{` while pristine in round 1, and worker 1 (round 2) and worker 2 (round 3)
+    # read copy 0 pristine while holding. No other round differs.
+    heads = {
+        "ERROR  proof: worker 1, round 1/3 (pristine): ",
+        "ERROR  proof: worker 2, round 1/3 (pristine): ",
+        "ERROR  proof: worker 1, round 2/3 (canary holder): ",
+        "ERROR  proof: worker 2, round 3/3 (canary holder): ",
+    }
+    seen = {m.group(0) for m in (re.match(r"^[^:]*: [^:]*: ", x) for x in errors) if m}
+    assert seen == heads, f"the differences named {sorted(seen)}\n{run!r}"
+    assert f"ERROR  {NOT_SAFE}" in run.lines, run
+
+
+PROBE_START = r"""
+here="$(cd "$(dirname "$0")/../.." && pwd)"
+tag="$(basename "$here")"
+copies="$(ls -d "$TMPDIR"/kill-sets.*)"
+state() {
+  f="$1/scripts/subject.sh"
+  if [ ! -f "$f" ]; then printf '?'
+  elif grep -qx -- '{' "$f"; then printf 'C'
+  elif grep -qx -- 'ok1' "$f"; then printf 'P'
+  else printf '?'; fi
+}
+vector() {
+  printf '%s%s%s' "$(state "$copies/work")" "$(state "$copies/pool/1")" \
+    "$(state "$copies/pool/2")"
+}
+echo "S $(vector) $tag" >> "@LOG@"
+proof_phase=0
+[ -d "$copies/pool/1" ] && proof_phase=1
+"""
+
+# Once the worker copies exist (the proof and the mutants, never the serial runs), a suite
+# running in `work` fills its own copy with 20000 empty files and holds three seconds, so the
+# next refresh of that copy takes about a second; a suite elsewhere holds 2.5 s.
+PROBE_END = r"""
+if [ "$proof_phase" = 1 ]; then
+  if [ "$tag" = work ]; then
+    mkdir -p "$here/junk"
+    (cd "$here/junk" && for i in $(seq 1 20000); do : > "f$i"; done)
+    sleep 3
+  else
+    sleep 2.5
+  fi
+fi
+echo "E $(vector) $tag" >> "@LOG@"
+"""
+
+PROBE_TARGETS = ["CPP", "PCP", "PPC"]
+
+
+def _probe_suite(log: Path) -> str:
+    text = generic_suite(extra=PROBE_END.replace("@LOG@", str(log)))
+    assert text.count("fails=0\n") == 1
+    return text.replace(
+        "fails=0\n", "fails=0\n" + PROBE_START.replace("@LOG@", str(log)), 1
+    )
+
+
+@pytest.fixture(scope="module")
+def probe_pairs(tmp_path_factory):
+    """One probe run at `--jobs 3`, shared by `t16d1` and `t16d2`.
+
+    Returns the run and, per proof round, each worker's START and END records. A worker's
+    records alternate S, E in its own order, so they are paired per worker: worker 0's first
+    three pairs are the serial baseline twice and the canary, the proof rounds follow.
+    """
+    base = tmp_path_factory.mktemp("probe")
+    private = base / "ptmp"
+    private.mkdir()
+    log = private / "probe.log"
+    root = make_root(
+        base,
+        name="probe",
+        suite_text=_probe_suite(log),
+        mutations=KILL_THREE,
+    )
+    run = run_tool(root, "--jobs", "3", env=dict(os.environ, TMPDIR=str(private)))
+    records: dict[str, list] = {"work": [], "1": [], "2": []}
+    for line in log.read_text().splitlines():
+        kind, vector, tag = line.split()
+        records[tag].append((kind, vector))
+    rounds = []
+    for tag, skip in (("work", 3), ("1", 0), ("2", 0)):
+        kinds = [k for k, _v in records[tag]]
+        assert kinds == ["S", "E"] * (len(kinds) // 2), (
+            f"worker {tag}: records do not alternate S, E: {kinds}"
+        )
+        pairs = [
+            (records[tag][i][1], records[tag][i + 1][1])
+            for i in range(0, len(kinds), 2)
+        ]
+        rounds.append(pairs[skip : skip + 3])
+    return run, rounds
+
+
+@pytest.mark.serial_only
+def test_t16d1_start_barrier(probe_pairs):
+    run, workers = probe_pairs
+    assert run.status == "PARALLEL-PASS", run
+    assert all(len(pairs) == 3 for pairs in workers), (
+        f"a worker ran fewer than three proof rounds: {workers}\n{run!r}"
+    )
+    for r in range(3):
+        starts = [pairs[r][0] for pairs in workers]
+        assert len(set(starts)) == 1, f"round {r + 1}: the starts disagree {starts}"
+        assert starts == [PROBE_TARGETS[r]] * 3, (
+            f"round {r + 1}: a copy was unwritten or mid-refresh when a suite started: "
+            f"{starts}, wanted {PROBE_TARGETS[r]}"
+        )
+
+
+@pytest.mark.serial_only
+def test_t16d2_end_barrier(probe_pairs):
+    run, workers = probe_pairs
+    assert run.status == "PARALLEL-PASS", run
+    assert all(len(pairs) == 3 for pairs in workers), (
+        f"a worker ran fewer than three proof rounds: {workers}\n{run!r}"
+    )
+    for tag, pairs in zip(("work", "1", "2"), workers, strict=True):
+        for r, (start, end) in enumerate(pairs):
+            assert start == end, (
+                f"worker {tag}, round {r + 1}: a copy changed while its suite ran "
+                f"({start} at the start, {end} at the end)"
+            )
+
+
+@pytest.mark.serial_only
+def test_t16e1_timeout_line_under_jobs(tmp_path):
+    root = make_root(
+        tmp_path,
+        name="timeout",
+        mutations=[
+            ("hangs", "ok1\n", "no1\nhang\n"),
+            ("kills row2", "ok2\n", "no2\n"),
+        ],
+    )
+    run = run_tool(root, "--jobs", "2", "--timeout", "10")
+    assert run.blocks[1]["status"] == "TIMEOUT", run
+    assert run.result["timedout"] == 1 and (run.status, run.rc) == ("ERROR", 2), run
+    line = next(
+        (
+            x
+            for x in run.blocks[1]["lines"]
+            if x.startswith("jobs=2: load average now ")
+        ),
+        None,
+    )
+    assert line is not None, f"the TIMEOUT block has no jobs line\n{run!r}"
+    assert re.fullmatch(
+        r"jobs=2: load average now [0-9.]+ [0-9.]+ [0-9.]+; a timeout under load is "
+        r"not a kill; re-run with a lower --jobs or a larger --timeout",
+        line,
+    ), line
+    serial = run_tool(root, "--jobs", "1", "--timeout", "10")
+    assert serial.blocks[1]["status"] == "TIMEOUT", serial
+    assert not any(x.startswith("jobs=") for x in serial.blocks[1]["lines"]), serial
+
+
+def test_t16e2_limit_follows_the_slowest_pristine_run():
+    tool = load_tool()
+    assert tool.derive_proof_limit(1.0, [0.5, 7.0], None) == 140.0
+    assert tool.derive_proof_limit(1.0, [0.5], None) == 60
+    assert tool.derive_proof_limit(1.0, [0.5, 7.0], 5.0) == 5.0
+    # Pinned values, written out by hand, so a silent change of the assignment is noticed.
+    assert [tool.proof_rounds(e) for e in (2, 3, 4, 6, 7, 8)] == [2, 3, 4, 4, 5, 5]
+    vectors = [
+        "".join("C" if tool.holds_canary(k, r, 3) else "P" for k in range(3))
+        for r in range(3)
+    ]
+    assert vectors == PROBE_TARGETS
+    four = [
+        "".join("C" if tool.holds_canary(k, r, 4) else "P" for k in range(4))
+        for r in range(4)
+    ]
+    assert four == ["CCCP", "CPPC", "PCPC", "PPCP"], four
+    # The properties, at every worker count up to 64: the round count is the smallest that has
+    # enough codes; every worker holds the canary in some round and is pristine in another;
+    # no two codes are equal; and for every ordered pair (a, b) some round has a pristine and
+    # b holding, which is what makes a read of b's copy by a visible whatever a's own copy holds.
+    for count in range(2, 65):
+        rounds = tool.proof_rounds(count)
+        assert math.comb(rounds, rounds // 2) >= count, (
+            f"E={count}: R={rounds} too small"
+        )
+        assert rounds == 1 or math.comb(rounds - 1, (rounds - 1) // 2) < count, (
+            f"E={count}: R={rounds} is not the smallest"
+        )
+        holds = [
+            [tool.holds_canary(k, r, rounds) for r in range(rounds)]
+            for k in range(count)
+        ]
+        for k, code in enumerate(holds):
+            assert any(code) and not all(code), f"E={count}: worker {k} {code}"
+        assert len({tuple(c) for c in holds}) == count, f"E={count}: a shared code"
+        for a in range(count):
+            for b in range(count):
+                if a != b:
+                    assert any(
+                        b_holds and not a_holds
+                        for a_holds, b_holds in zip(holds[a], holds[b], strict=True)
+                    ), f"E={count}: no round with {a} pristine and {b} holding"
+
+
+# --------------------------------------------------------------------------------------
+# A failed mutant costs one mutant; a failed refresh costs its worker (D9).
+# --------------------------------------------------------------------------------------
+
+GRADE_ANCHOR = "outcome = self.grade(n, label, old, run)"
+REFRESH_ANCHOR = "refresh_working_copy(self.master, worker.work)"
+REFRESH_ONCE = (
+    'if n == 2 and not globals().get("_FIRED"):\n'
+    '    globals()["_FIRED"] = True\n'
+    '    raise OSError("kill-sets test: refresh failed")'
+)
+REFRESH_ALWAYS = 'raise OSError("kill-sets test: refresh failed")'
+NO_WORKER = "no worker left: every worker retired after a failed refresh"
+FOUR_MARKED = [(f"kill row{i}", f"ok{i}\n", f"no{i}\nmark{i}\n") for i in range(1, 5)]
+MARK_LOG_ROW = (
+    'for i in 1 2 3 4; do if has "mark$i"; then echo "mark$i" >> "@LOG@"; fi; done'
+)
+
+
+def _marking_root(base: Path, name: str, log: Path, mutations=FOUR_MARKED) -> Path:
+    """Four-row fixture whose suite appends `markN` to `log` when the mutant carries it."""
+    return make_root(
+        base,
+        name=name,
+        suite_text=generic_suite(rows=4, extra=MARK_LOG_ROW.replace("@LOG@", str(log))),
+        subject_text=tokens(4),
+        mutations=mutations,
+    )
+
+
+def _died_view(run: Run) -> list[str]:
+    """The parity view with the worker number masked: which worker took a mutant is a schedule."""
+    return [re.sub(r"\(worker \d+", "(worker W", x) for x in _parity_view(run)]
+
+
+def test_t18a_died_injected(tmp_path):
+    # The fault is keyed to mutant number 2, never to a worker, so the same mutant dies at
+    # every `--jobs`; only the worker named in its block can differ.
+    tool = _injected(
+        tmp_path,
+        "died-tool",
+        GRADE_ANCHOR,
+        'if n == 2:\n    raise RuntimeError("kill-sets test: injected")',
+    )
+    root = make_root(tmp_path, name="died", mutations=KILL_THREE)
+    runs = {jobs: run_tool(root, "--jobs", jobs, tool=tool) for jobs in ("1", "3")}
+    for jobs, run in runs.items():
+        assert run.status == "ERROR" and run.rc == 2, f"--jobs {jobs}\n{run!r}"
+        assert run.result.get("died") == 1, f"--jobs {jobs}\n{run!r}"
+        assert not run.has_line("ERROR  internal exception"), f"--jobs {jobs}\n{run!r}"
+        assert [run.blocks[n]["status"] for n in (1, 2, 3)] == [
+            "KILLED",
+            "DIED",
+            "KILLED",
+        ], f"--jobs {jobs}\n{run!r}"
+        assert run.blocks[1]["rows"] == ["row1"] and run.blocks[3]["rows"] == ["row3"]
+        died = run.blocks[2]
+        assert died["k"] == 0 and died["label"] == "kill row2", died
+        assert re.fullmatch(
+            r"RuntimeError: kill-sets test: injected  \(worker \d\)", died["lines"][0]
+        ), died
+        tail = died["lines"][1:]
+        assert 1 <= len(tail) <= 3 and all(x.startswith("! ") for x in tail), died
+    left, right = _died_view(runs["1"]), _died_view(runs["3"])
+    assert left == right, (
+        "\n".join(
+            f"--jobs 1: {a}\n--jobs 3: {b}"
+            for a, b in zip(left, right, strict=False)
+            if a != b
+        )
+        or f"--jobs 1 has {len(left)} lines, --jobs 3 {len(right)}"
+    )
+
+
+@pytest.fixture(scope="module")
+def refresh_once(tmp_path_factory):
+    """One run: the refresh before mutant 2 fails ONCE (a second try would succeed), --jobs 1.
+
+    Returns the run and the `markN` lines the suites appended, in order. The fault is keyed
+    to mutant number 2 and there is one worker, so which mutant dies and which worker is
+    left are fixed by the fixture.
+    """
+    base = tmp_path_factory.mktemp("refresh-once")
+    log = base / "ran.log"
+    log.write_text("")
+    tool = _injected(base, "once-tool", REFRESH_ANCHOR, REFRESH_ONCE)
+    root = _marking_root(base, "once", log)
+    run = run_tool(root, "--jobs", "1", tool=tool, timeout=120)
+    return run, log.read_text().split()
+
+
+def test_t18b1a_blocks_after_a_transient_refresh_failure(refresh_once):
+    run, _marks = refresh_once
+    assert not run.has_line("ERROR  internal exception"), run
+    assert [run.blocks[n]["status"] for n in (1, 2, 3, 4)] == [
+        "KILLED",
+        "DIED",
+        "DIED",
+        "DIED",
+    ], run
+    assert run.blocks[1]["rows"] == ["row1"], run
+    assert run.blocks[2]["lines"][0] == (
+        "OSError: kill-sets test: refresh failed  (worker 0, refresh)"
+    ), run
+    for n in (3, 4):
+        assert run.blocks[n]["lines"] == [NO_WORKER], run
+        assert run.blocks[n]["k"] == 0, run
+    assert run.result["died"] == 3, run
+    assert run.status == "ERROR" and run.rc == 2, (
+        f"a run that lost three mutants must not end clean\n{run!r}"
+    )
+
+
+def test_t18b1b_a_retired_worker_takes_nothing_more(refresh_once):
+    run, marks = refresh_once
+    # Mutant 1's suite ran (the log works); mutant 2's refresh failed before its suite; the
+    # retired worker took neither mutant 3 nor mutant 4, though a second try would succeed.
+    assert marks == ["mark1"], f"the suites that ran: {marks}\n{run!r}"
+
+
+def test_t18b2_transient_refresh_failure_jobs3(tmp_path):
+    # The fault names mutant 2, so mutant 2 dies on whichever worker takes it; that worker
+    # retires and the other two take every remaining mutant (a worker leaves its loop only
+    # when the queue is empty or after its own failed refresh).
+    log = tmp_path / "ran.log"
+    log.write_text("")
+    tool = _injected(tmp_path, "once3-tool", REFRESH_ANCHOR, REFRESH_ONCE)
+    root = _marking_root(tmp_path, "once3", log)
+    run = run_tool(root, "--jobs", "3", tool=tool, timeout=120)
+    assert not run.has_line("ERROR  internal exception"), run
+    assert [run.blocks[n]["status"] for n in (1, 2, 3, 4)] == [
+        "KILLED",
+        "DIED",
+        "KILLED",
+        "KILLED",
+    ], run
+    assert [run.blocks[n]["rows"] for n in (1, 3, 4)] == [["row1"], ["row3"], ["row4"]]
+    assert re.fullmatch(
+        r"OSError: kill-sets test: refresh failed  \(worker \d, refresh\)",
+        run.blocks[2]["lines"][0],
+    ), run
+    assert run.result["died"] == 1 and run.result["jobs"] == 3, run
+    assert run.status == "ERROR" and run.rc == 2, run
+    assert sorted(log.read_text().split()) == ["mark1", "mark3", "mark4"]
+
+
+@pytest.mark.serial_only
+def test_t18b3_refresh_always_fails(tmp_path):
+    # Every refresh at the mutant step fails, so each of the three workers takes ONE mutant
+    # (the queue holds five, more than the workers) and retires: the first three mutants, in
+    # queue order, die on the refresh and the last two are filled as `no worker left`.
+    log = tmp_path / "ran.log"
+    log.write_text("")
+    five = FOUR_MARKED + [("kill row4 again", "ok4\n", "xx4\n")]
+    tool = _injected(tmp_path, "always-tool", REFRESH_ANCHOR, REFRESH_ALWAYS)
+    root = _marking_root(tmp_path, "always", log, mutations=five)
+    started = time.monotonic()
+    run = run_tool(root, "--jobs", "3", tool=tool, timeout=120)
+    elapsed = time.monotonic() - started
+    assert elapsed < 60, f"the run took {elapsed:.0f}s, a retired pool must not wait"
+    assert not run.has_line("ERROR  internal exception"), run
+    assert [run.blocks[n]["status"] for n in range(1, 6)] == ["DIED"] * 5, run
+    workers = set()
+    for n in (1, 2, 3):
+        m = re.fullmatch(
+            r"OSError: kill-sets test: refresh failed  \(worker (\d), refresh\)",
+            run.blocks[n]["lines"][0],
+        )
+        assert m, run.blocks[n]
+        workers.add(m.group(1))
+    assert workers == {"0", "1", "2"}, f"a worker died twice or not at all: {workers}"
+    for n in (4, 5):
+        assert run.blocks[n]["lines"] == [NO_WORKER], run
+    assert run.result["died"] == 5 == run.result["mutants"], run
+    assert run.status == "ERROR" and run.rc == 2, run
+    assert log.read_text() == "", "a suite ran for a mutant whose refresh failed"
+
+
+def test_t18b4_undeletable_copy(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root can delete a directory that has no write permission")
+    # Mutant 1's suite locks a directory inside its own copy, so the NEXT refresh (mutant
+    # 2's) cannot delete it: the real OSError, not an injected one. One worker.
+    lock = (
+        'if has lockme; then d="$(dirname "$subj")/locked"; mkdir -p "$d"; '
+        ': > "$d/f"; chmod 500 "$d"; fi'
+    )
+    root = make_root(
+        tmp_path,
+        name="undeletable",
+        suite_text=generic_suite(extra=lock),
+        mutations=[
+            ("locks its own copy", "ok1\n", "no1\nlockme\n"),
+            ("kill row2", "ok2\n", "no2\n"),
+            ("kill row3", "ok3\n", "no3\n"),
+        ],
+    )
+    private = tmp_path / "undeletable-tmp"
+    private.mkdir()
+    try:
+        run = run_tool(
+            root,
+            "--jobs",
+            "1",
+            env=dict(os.environ, TMPDIR=str(private)),
+            timeout=120,
+        )
+    finally:
+        # Restore the permissions the suite removed, then delete what this row created.
+        for p in private.rglob("*"):
+            if p.is_dir() and not p.is_symlink():
+                p.chmod(0o700)
+        shutil.rmtree(private, ignore_errors=True)
+        assert not private.exists(), f"the private directory was left behind: {private}"
+    assert not run.has_line("ERROR  internal exception"), run
+    assert [run.blocks[n]["status"] for n in (1, 2, 3)] == [
+        "KILLED",
+        "DIED",
+        "DIED",
+    ], run
+    assert re.fullmatch(
+        r"\w+Error: .*  \(worker 0, refresh\)", run.blocks[2]["lines"][0]
+    )
+    assert run.blocks[3]["lines"] == [NO_WORKER], run
+    assert run.result["died"] == 2, run
+    assert run.status == "ERROR" and run.rc == 2, run
+    # The ERROR verdict comes from the teardown, which could not remove the locked copy;
+    # D9 itself ends a run with died != 0 the same way, so the row names its own cause.
+    assert run.has_line("ERROR  copy: NOT removed "), (
+        f"the teardown did not report the undeletable copy\n{run!r}"
+    )
+
+
+# --------------------------------------------------------------------------------------
+# SIGTERM, SIGHUP and SIGINT stop a run cleanly and are not turned into a verdict (D10).
+# --------------------------------------------------------------------------------------
+
+# A suite whose `slow` subjects start a long marker process, log the start, signal that they
+# are in flight (the READY file) and then hold the suite LEADER for 60 s, far past the 20 s the
+# tool joins its workers: a run that does not kill them cannot see them end on their own.
+# `waitready` holds a run until some other run is in flight. The marker is unique per scenario,
+# and EVERY long-lived process of a scenario carries it (the background sleep, the 60 s hold
+# as `<marker>-hold`, the wait loop as `<marker>-wait`), so one `pkill -f <marker>` reaches
+# whatever a failed scenario leaves behind.
+T19_SUITE = r"""#!/usr/bin/env bash
+subj="$(cd "$(dirname "$0")/.." && pwd)/subject.sh"
+has() { grep -qx -- "$1" "$subj"; }
+if has slow; then
+  bash -c 'exec -a @MARK@ sleep 120' &
+  echo slow >> "@LOG@"
+  : > "@READY@"
+  bash -c 'exec -a @MARK@-hold sleep 60'
+fi
+if has waitready; then
+  bash -c 'for i in $(seq 1 300); do [ -e "$1" ] && break; sleep 0.1; done' \
+    @MARK@-wait "@READY@"
+fi
+if has waitgo; then
+  bash -c 'for i in $(seq 1 300); do [ -e "$1" ] && break; sleep 0.1; done' \
+    @MARK@-wait "@GO@"
+fi
+fails=0
+for n in 1 2 3; do
+  if has "ok$n"; then echo "PASS  row$n"; else echo "FAIL  row$n"; fails=1; fi
+done
+exit $fails
+"""
+
+# Mutants 1 to 3 add nothing slow (the first wave ends at once and block [1/6] prints);
+# mutants 4 to 6 carry `slow` (the second wave is in flight when the signal arrives).
+T19_MUTANTS = [
+    ("kill row1", "ok1\n", "no1\n"),
+    ("kill row2", "ok2\n", "no2\n"),
+    ("kill row3", "ok3\n", "no3\n"),
+    ("slow one", "ok1\n", "ok1\nslow\n"),
+    ("slow two", "ok2\n", "ok2\nslow\n"),
+    ("slow three", "ok3\n", "ok3\nslow\n"),
+]
+
+# Started through this shim because the test's own process may have inherited SIGINT and
+# SIGHUP as ignored, which the tool's handler (rightly) leaves alone: the shim makes both
+# default, then replaces itself by the tool, so the tool runs under the pid that is signalled.
+T19_SHIM = (
+    "import os, signal, sys\n"
+    "for s in (signal.SIGINT, signal.SIGHUP):\n"
+    "    signal.signal(s, signal.SIG_DFL)\n"
+    "os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
+)
+T19_PROBE = (
+    "import signal; "
+    "print([signal.getsignal(s) is signal.SIG_IGN "
+    "for s in (signal.SIGINT, signal.SIGHUP)])"
+)
+
+
+def _t19_read(proc, lines: list) -> threading.Thread:
+    """Pump the tool's stdout into `lines` from a thread.
+
+    Set the returned thread's `stop`, join it, then close `proc.stdout`, and the tool's
+    next write meets a pipe nobody reads.
+    """
+    fd = proc.stdout.fileno()
+    stop = threading.Event()
+
+    def pump():
+        pending = b""
+        while not stop.is_set():
+            if not select.select([fd], [], [], 0.1)[0]:
+                continue
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                return
+            *whole, pending = (pending + chunk).split(b"\n")
+            lines.extend(x.decode("utf-8", "replace") for x in whole)
+
+    thread = threading.Thread(target=pump, daemon=True)
+    thread.stop = stop
+    thread.start()
+    return thread
+
+
+def _t19_wait_for(proc, lines, ready, what: str, limit: float = 120.0) -> None:
+    """Poll until `ready()` holds; fail at once if the tool ends first or the limit passes."""
+    deadline = time.monotonic() + limit
+    while not ready():
+        if proc.poll() is not None:
+            pytest.fail(f"the tool ended before {what}\n" + "\n".join(lines))
+        if time.monotonic() > deadline:
+            pytest.fail(f"{what} did not happen in {limit:.0f}s\n" + "\n".join(lines))
+        time.sleep(0.05)
+
+
+def _t19_log_count(log: Path) -> int:
+    return len(log.read_text().split()) if log.exists() else 0
+
+
+def _t19_scenario(base, name, signum, phase, jobs, sends=1, closed=False) -> dict:
+    """One run of the tool, one signal sent at a moment the fixture observed.
+
+    `phase` is `baseline` (the pristine subject is slow, so the first baseline run is the
+    one in flight) or `mutants` (block [1/6] has printed and every worker of the second wave
+    is inside a slow suite). With `closed`, the read end of the tool's stdout is closed
+    after those observables and before the signal, as a hangup with a dead terminal leaves
+    it: nothing can read the interrupted line, and the result says so (`readable`).
+    Returns what the rows read. Anything this run started is removed in the `finally`, by
+    this scenario's own marker (which every process of the scenario carries) and its own
+    pid only.
+    """
+    marker = f"ksmark-{os.getpid()}-{name}-{secrets.token_hex(4)}"
+    private = base / f"{name}-tmp"
+    private.mkdir()
+    log, ready = private / "slow.log", private / "ready"
+    in_flight = 1 if phase == "baseline" or jobs == 1 else jobs
+    root = make_root(
+        base,
+        name=name,
+        suite_text=T19_SUITE.replace("@MARK@", marker)
+        .replace("@LOG@", str(log))
+        .replace("@READY@", str(ready)),
+        subject_text=tokens() + ("slow\n" if phase == "baseline" else ""),
+        mutations=T19_MUTANTS,
+    )
+    argv = [
+        sys.executable,
+        "-c",
+        T19_SHIM,
+        str(TOOL),
+        "--campaign",
+        str(root / "scripts" / "tests" / "mutate_fix.py"),
+        "--root",
+        str(root),
+        "--jobs",
+        str(jobs),
+    ]
+    lines: list = []
+    errors = (base / f"{name}.err").open("w")
+    proc = subprocess.Popen(
+        argv,
+        cwd=str(base),
+        env=dict(os.environ, TMPDIR=str(private)),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=errors,
+        text=True,
+        errors="replace",
+    )
+    reader = _t19_read(proc, lines)
+    try:
+        _t19_wait_for(
+            proc,
+            lines,
+            lambda: (
+                _t19_log_count(log) >= in_flight
+                and (phase == "baseline" or any(x.startswith("[1/6]") for x in lines))
+            ),
+            f"{in_flight} slow suite(s) were in flight",
+        )
+        if closed:
+            reader.stop.set()
+            reader.join(timeout=10)
+            proc.stdout.close()
+        for _ in range(sends):
+            os.kill(proc.pid, signum)
+        rc = proc.wait(timeout=90)
+        reader.join(timeout=30)
+        return {
+            "rc": rc,
+            "lines": list(lines),
+            "marker": _pgrep(marker),
+            "dirs": sorted(p.name for p in private.glob("kill-sets.*")),
+            "in_flight": in_flight,
+            "signum": signum,
+            "readable": not closed,
+        }
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        subprocess.run(["pkill", "-9", "-f", marker], capture_output=True)
+        errors.close()
+
+
+T19_SCENARIOS = [
+    ("baseline-term", signal.SIGTERM, "baseline", 1, 1),
+    ("mutants-term-3", signal.SIGTERM, "mutants", 3, 1),
+    ("mutants-term-twice", signal.SIGTERM, "mutants", 3, 2),
+    ("mutants-int-1", signal.SIGINT, "mutants", 1, 1),
+    ("mutants-hup-3", signal.SIGHUP, "mutants", 3, 1),
+    ("mutants-hup-3-closed", signal.SIGHUP, "mutants", 3, 1, True),
+]
+
+
+@pytest.fixture(scope="module")
+def signal_runs(tmp_path_factory):
+    """The six signal scenarios, run once each and shared by `t19a` and `t19b`.
+
+    First the shim is run, under a parent that ignores SIGINT and SIGHUP, on a probe that
+    reports whether either is still ignored: a shim that failed to reset them would make a
+    scenario's signal vanish into the tool's `SIG_IGN` skip instead of reaching its handler.
+    """
+    base = tmp_path_factory.mktemp("signals")
+    probe = subprocess.run(
+        ["sh", "-c", 'trap "" INT HUP; exec "$@"', "sh", sys.executable, "-c"]
+        + [T19_SHIM, "-c", T19_PROBE],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert probe.stdout.strip() == "[False, False]", (
+        f"the exec shim left SIGINT or SIGHUP ignored: {probe.stdout!r} {probe.stderr!r}"
+    )
+    return {spec[0]: _t19_scenario(base, *spec) for spec in T19_SCENARIOS}
+
+
+def _interrupted_lines(result: dict) -> list[str]:
+    return [x for x in result["lines"] if "interrupted by" in x]
+
+
+@pytest.mark.serial_only
+def test_t19a_signals_exit_by_the_signal(signal_runs):
+    for name, result in signal_runs.items():
+        shown = "\n".join(result["lines"])
+        assert result["rc"] == -result["signum"], (
+            f"{name}: exit {result['rc']}, wanted the signal's {-result['signum']}\n{shown}"
+        )
+        assert not any(x.startswith("RESULT:") for x in result["lines"]), (
+            f"{name}: a stopped run printed a RESULT line\n{shown}"
+        )
+        if not result["readable"]:
+            # The reader had gone: the interrupted line was written to a dead pipe, so the
+            # exit by the signal is the only thing this scenario can assert here.
+            assert not _interrupted_lines(result), shown
+            continue
+        released = [
+            int(m.group(1))
+            for x in result["lines"]
+            if (m := re.match(r"^\[(\d+)/6\] ", x))
+        ]
+        assert released == [n for n in (1, 2, 3) if n in released], (
+            f"{name}: a block of work still in flight was released: {released}\n{shown}"
+        )
+        said = _interrupted_lines(result)
+        name_of = signal.Signals(result["signum"]).name
+        assert len(said) == 1 and said[0].startswith(
+            f"ERROR  interrupted by {name_of}: "
+        ), f"{name}: the interrupted line must print exactly once\n{shown}"
+        # The early line names the signal and the copy, and precedes the final line.
+        stops = [i for i, x in enumerate(result["lines"]) if x.startswith("STOP   ")]
+        assert len(stops) == 1, (
+            f"{name}: the STOP line must print exactly once\n{shown}"
+        )
+        assert result["lines"][stops[0]].startswith(
+            f"STOP   {name_of} received, copy at "
+        ), f"{name}: the STOP line is wrong\n{shown}"
+        assert stops[0] < result["lines"].index(said[0]), (
+            f"{name}: the STOP line must come before the final line\n{shown}"
+        )
+
+
+@pytest.mark.serial_only
+def test_t19b_signals_leave_nothing_behind(signal_runs, tmp_path):
+    for name, result in signal_runs.items():
+        shown = "\n".join(result["lines"])
+        assert result["marker"] == "", (
+            f"{name}: a suite process outlived the run: {result['marker']}\n{shown}"
+        )
+        assert result["dirs"] == [], (
+            f"{name}: the temp directory was left behind: {result['dirs']}\n{shown}"
+        )
+        if not result["readable"]:
+            continue  # the line went to a pipe nobody reads: the two checks above stand
+        said = _interrupted_lines(result)
+        assert (
+            said
+            and f": {result['in_flight']} suite groups killed, copy removed"
+            in (said[0])
+        ), f"{name}: wanted {result['in_flight']} groups killed, copy removed\n{shown}"
+
+    # The same cleanup after an exit that is NOT a signal: the main thread fails while a
+    # sibling worker's suite is still running (block 1 is released only once mutant 2 is in
+    # flight, and the injected failure is raised when it is released). That suite's group
+    # must be killed and the copy removed, with no signal involved.
+    marker = f"ksmark-{os.getpid()}-sibling-{secrets.token_hex(4)}"
+    private = tmp_path / "sibling-tmp"
+    private.mkdir()
+    suite = (
+        T19_SUITE.replace("@MARK@", marker)
+        .replace("@LOG@", str(private / "slow.log"))
+        .replace("@READY@", str(private / "ready"))
+    )
+    root = make_root(
+        tmp_path,
+        name="sibling",
+        suite_text=suite,
+        mutations=[
+            ("waits for its sibling", "ok1\n", "no1\nwaitready\n"),
+            ("slow sibling", "ok2\n", "ok2\nslow\n"),
+        ],
+    )
+    tool = _injected(
+        tmp_path,
+        "sibling-tool",
+        "for line in outcome.lines:",
+        'if outcome.n == 1:\n    raise RuntimeError("kill-sets test: release failed")',
+    )
+    started = time.monotonic()
+    try:
+        run = run_tool(
+            root, "--jobs", "2", tool=tool, env=dict(os.environ, TMPDIR=str(private))
+        )
+        leftover = _pgrep(marker)
+    finally:
+        subprocess.run(["pkill", "-9", "-f", marker], capture_output=True)
+    elapsed = time.monotonic() - started
+    assert run.has_line("ERROR  internal exception"), run
+    assert any("kill-sets test: release failed" in x for x in run.lines), run
+    assert run.status == "ERROR" and run.rc == 2, run
+    assert not run.has_line("ERROR  worker thread(s)"), (
+        f"a worker was still inside its suite when the pool closed\n{run!r}"
+    )
+    assert elapsed < 40, (
+        f"the run took {elapsed:.0f}s: the sibling suite was not killed"
+    )
+    assert leftover == "", f"the sibling's suite outlived the run: {leftover}\n{run!r}"
+    assert not list(private.glob("kill-sets.*")), run
+
+
+@pytest.mark.serial_only
+def test_t19c_signal_after_result(tmp_path):
+    # The copy of the tool sleeps three seconds right after it prints the RESULT line. The
+    # signal is sent once that line has been READ on the pipe, so it lands inside the sleep.
+    line, indent = _anchor_line(
+        "emit(result_line(state.counts, status, rc, state.jobs))"
+    )
+    tool = _tool_copy(
+        tmp_path, "after-tool", None, edit=(line, line + f"{indent}time.sleep(3)\n")
+    )
+    root = make_root(tmp_path, name="after", mutations=KILL_THREE)
+    private = tmp_path / "after-tmp"
+    private.mkdir()
+    lines: list = []
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            T19_SHIM,
+            str(tool),
+            "--campaign",
+            str(root / "scripts" / "tests" / "mutate_fix.py"),
+            "--root",
+            str(root),
+        ],
+        cwd=str(tmp_path),
+        env=dict(os.environ, TMPDIR=str(private)),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        errors="replace",
+    )
+    reader = _t19_read(proc, lines)
+    try:
+        _t19_wait_for(
+            proc,
+            lines,
+            lambda: any(x.startswith("RESULT:") for x in lines),
+            "the RESULT line was printed",
+        )
+        os.kill(proc.pid, signal.SIGTERM)
+        rc = proc.wait(timeout=60)
+        reader.join(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    run = Run(subprocess.CompletedProcess([], rc, "\n".join(lines) + "\n", ""))
+    assert run.result is not None, run
+    assert rc == run.result["rc"] >= 0, (
+        f"exit {rc}: the verdict's own code was {run.result['rc']}\n{run!r}"
+    )
+    assert not any("interrupted by" in x for x in lines), (
+        f"a signal after the RESULT line changed the outcome\n{run!r}"
+    )
+    assert not list(private.glob("kill-sets.*")), run
+
+
+# A copy seam for tool copies. It wraps `shutil.copytree` so that, on a worker thread only:
+# while the HOLD file exists the copy does not start (a copy the tool cannot cut short:
+# nothing in it reads a stop flag); and, while the DELAY file exists, each directory visited
+# waits STEP seconds before the tool's own `ignore` callback is asked (a copy the tool CAN cut
+# short, only slowly). Either one writes the STARTED file first, so a row knows a worker is
+# inside it. The main thread's copies (the master, the first working copy) are never slowed.
+COPY_SEAM = """
+import os as _kos, threading as _kth, time as _kti
+_kreal_copytree = shutil.copytree
+
+
+def _kcopytree(src, dst, symlinks=False, ignore=None, *a, **kw):
+    if getattr(ignore, "_kwrapped", False):  # shutil's own recursion into a directory
+        return _kreal_copytree(src, dst, symlinks, ignore, *a, **kw)
+    worker = _kth.current_thread() is not _kth.main_thread()
+    if worker and _kos.path.exists(@HOLD@):
+        open(@STARTED@, "w").close()
+        while _kos.path.exists(@HOLD@):
+            _kti.sleep(0.05)
+
+    def slowed(d, names):
+        if worker and _kos.path.exists(@DELAY@):
+            open(@STARTED@, "w").close()
+            _kti.sleep(@STEP@)
+        return ignore(d, names) if ignore else ()
+
+    slowed._kwrapped = True
+    return _kreal_copytree(src, dst, symlinks, slowed, *a, **kw)
+
+
+shutil.copytree = _kcopytree
+"""
+
+
+def _seamed_tool(tmp_path, name, hold, started, delay, step) -> Path:
+    seam = (
+        COPY_SEAM.replace("@HOLD@", repr(str(hold)))
+        .replace("@STARTED@", repr(str(started)))
+        .replace("@DELAY@", repr(str(delay)))
+        .replace("@STEP@", repr(step))
+    )
+    line, _indent = _anchor_line("import shutil")
+    return _tool_copy(tmp_path, name, None, edit=(line, line + seam))
+
+
+def _launch(tool, root, private, *flags):
+    """The tool through the exec shim with a private TMPDIR; returns (proc, lines, reader)."""
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            T19_SHIM,
+            str(tool),
+            "--campaign",
+            str(root / "scripts" / "tests" / "mutate_fix.py"),
+            "--root",
+            str(root),
+            *flags,
+        ],
+        cwd=str(private.parent),
+        env=dict(os.environ, TMPDIR=str(private)),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        errors="replace",
+    )
+    lines: list = []
+    return proc, lines, _t19_read(proc, lines)
+
+
+@pytest.mark.serial_only
+def test_t19d_stop_line_before_a_hard_kill(tmp_path):
+    # A worker is held inside a copy the tool cannot cut short, so the join takes its whole
+    # bound; the gate's SIGKILL (emulated here) lands before the final line. What must
+    # already be on the artifact is the STOP line naming the signal and the copy, and no
+    # suite may be left running, since the groups are killed before that line prints.
+    marker = f"ksmark-{os.getpid()}-hard-{secrets.token_hex(4)}"
+    private = tmp_path / "hard-tmp"
+    private.mkdir()
+    log, ready, go = private / "slow.log", private / "ready", private / "go"
+    hold, started = private / "hold", private / "started"
+    suite = (
+        T19_SUITE.replace("@MARK@", marker)
+        .replace("@LOG@", str(log))
+        .replace("@READY@", str(ready))
+        .replace("@GO@", str(go))
+    )
+    root = make_root(
+        tmp_path,
+        name="hard",
+        suite_text=suite,
+        mutations=[
+            ("slow one", "ok1\n", "ok1\nslow\n"),
+            ("waits for go", "ok2\n", "no2\nwaitgo\n"),
+            ("kill row3", "ok3\n", "no3\n"),
+        ],
+    )
+    tool = _seamed_tool(tmp_path, "hard-tool", hold, started, private / "no-delay", 0.0)
+    proc, lines, reader = _launch(tool, root, private, "--jobs", "2")
+    try:
+        # Mutant 1's suite is in flight; mutant 2's suite is released only after the hold
+        # exists, so the copy for mutant 3 is the one that blocks on it.
+        _t19_wait_for(
+            proc, lines, lambda: _t19_log_count(log) >= 1, "a slow suite was in flight"
+        )
+        hold.write_text("x")
+        go.write_text("x")
+        _t19_wait_for(proc, lines, started.exists, "a worker was held inside a copy")
+        os.kill(proc.pid, signal.SIGTERM)
+        _t19_wait_for(
+            proc,
+            lines,
+            lambda: any(x.startswith("STOP   ") for x in lines),
+            "the STOP line was printed",
+        )
+        proc.kill()  # the gate's SIGKILL
+        proc.wait(timeout=30)
+        reader.join(timeout=30)
+        shown = "\n".join(lines)
+        stops = [x for x in lines if x.startswith("STOP   ")]
+        m = re.fullmatch(r"STOP   SIGTERM received, copy at (\S+)", stops[0])
+        assert len(stops) == 1 and m, f"the STOP line is wrong\n{shown}"
+        assert Path(m.group(1)).is_dir(), f"the STOP line names no copy: {m.group(1)}"
+        assert not _interrupted_lines({"lines": lines}), (
+            f"the final line printed before the kill\n{shown}"
+        )
+        assert not any(x.startswith("RESULT:") for x in lines), shown
+        deadline = time.monotonic() + 10
+        while _pgrep(marker) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert _pgrep(marker) == "", f"a suite outlived the stop\n{shown}"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        subprocess.run(["pkill", "-9", "-f", marker], capture_output=True)
+        shutil.rmtree(private, ignore_errors=True)
+
+
+@pytest.mark.serial_only
+def test_t19e_a_copy_in_flight_does_not_delay_the_stop(tmp_path):
+    # A worker is inside a copy of 150 directories at 0.4 s each (60 s in all, three times
+    # the join bound). The stop must cut the copy short: the STOP line, then the final line
+    # with the copy removed, and the exit comes in well under the bound (a coarse limit by
+    # design: a copy that is not cut short makes the join alone take JOIN_SECONDS).
+    private = tmp_path / "copies-tmp"
+    private.mkdir()
+    started, delay = private / "started", private / "delay"
+    root = make_root(tmp_path, name="copies", mutations=KILL_THREE)
+    for i in range(150):
+        (root / "scripts" / f"d{i:03d}").mkdir()
+    tool = _seamed_tool(
+        tmp_path, "copies-tool", private / "no-hold", started, delay, 0.4
+    )
+    delay.write_text("x")
+    proc, lines, reader = _launch(tool, root, private)
+    try:
+        _t19_wait_for(proc, lines, started.exists, "a worker was inside a copy")
+        sent = time.monotonic()
+        os.kill(proc.pid, signal.SIGTERM)
+        rc = proc.wait(timeout=90)
+        took = time.monotonic() - sent
+        reader.join(timeout=30)
+        shown = "\n".join(lines)
+        assert rc == -signal.SIGTERM, f"exit {rc}\n{shown}"
+        stops = [i for i, x in enumerate(lines) if x.startswith("STOP   SIGTERM ")]
+        said = [i for i, x in enumerate(lines) if "interrupted by" in x]
+        assert len(stops) == 1 and len(said) == 1 and stops[0] < said[0], (
+            f"want one STOP line before one interrupted line\n{shown}"
+        )
+        assert lines[said[0]].endswith("0 suite groups killed, copy removed"), shown
+        assert not any(x.startswith("RESULT:") for x in lines), shown
+        assert not list(private.glob("kill-sets.*")), f"the copy was left\n{shown}"
+        assert took < JOIN_SECONDS, (
+            f"the stop took {took:.0f}s: a copy in flight held up the join\n{shown}"
+        )
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        shutil.rmtree(private, ignore_errors=True)
+
+
+ENV_HELPERS = {"_child_env", "_env_header", "_nested_pools_header"}
+
+
+def test_t13b_env_reads_only_in_the_named_helpers():
     source = TOOL.read_text()
     tree = ast.parse(source)
     allowed: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name in ENV_HELPERS:
             allowed.update(range(node.lineno, node.end_lineno + 1))
-    assert (
-        len(
-            {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
-            & ENV_HELPERS
-        )
-        == 2
-    ), "a named env helper is missing"
+    assert len(
+        {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)} & ENV_HELPERS
+    ) == len(ENV_HELPERS), "a named env helper is missing"
 
     # Every spelling of the os module: `import os`, `import os as x`.
     os_names = {"os"}
