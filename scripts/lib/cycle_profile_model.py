@@ -196,7 +196,7 @@ MISSING_LINKS: Tuple[str, ...] = (
 
 #: The closed values of a `tool_result` token's `b` (besides `None`).
 TOOL_RESULT_VALUES: FrozenSet[str] = frozenset(
-    {"PASS", "FAIL", "ERROR", "INCOMPLETE", "INDETERMINATE", "DONE"}
+    {"PASS", "FAIL", "ERROR", "INCOMPLETE", "INDETERMINATE", "DONE", "NO-TURN"}
 )
 
 #: Every `Tok.kind` the reader emits, and no other (the binding contract of the reader).

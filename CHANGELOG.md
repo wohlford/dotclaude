@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.161.0 — 2026-11-10
+- feat(cycle-profile): accept NO-TURN in the verdict vocabularies
+
 ## v0.160.0 — 2026-11-10
 - feat(audit): take a heavy-gate turn for --tests, refuse on none
 

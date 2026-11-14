@@ -156,7 +156,16 @@ def test_t00_events_carry_no_text():
         | set(m.STAGE_KEYWORDS)
         | set(m.INVOCATION_NAMES)
         | {"wrapper", "skill", "launch", "wait", "status", "check", "other"}
-        | {"fast", "full", "PASS", "FAIL", "ERROR", "INCOMPLETE", "INDETERMINATE"}
+        | {
+            "fast",
+            "full",
+            "PASS",
+            "FAIL",
+            "ERROR",
+            "INCOMPLETE",
+            "INDETERMINATE",
+            "NO-TURN",
+        }
     )
     for data in (h.kitchen_sink_transcript(), h.k1_transcript("skill")):
         assert b"lorem" in data  # the fixture really holds text to leak
@@ -304,6 +313,7 @@ def test_t00_human_prompts_are_unchanged_by_the_auto_continuation_rule():
         ("RESULT: PASS rc=0 DONE", "PASS"),
         ("DONE\nRESULT: FAIL rc=1", "FAIL"),
         ("RESULT: PARALLEL-PASS rc=0 DONE", "PASS"),
+        ("RESULT: NO-TURN rc=75 artifact=/x", "NO-TURN"),
         ("UNDONE", None),
         ("DONEX", None),
         ("RUN_LONG_DONE", None),
@@ -330,9 +340,21 @@ def test_t00_tool_result_done_is_read_from_nested_content_and_stays_closed():
     }
     parsed = r.parse_bytes(json.dumps(rec).encode() + b"\n")
     assert [t.b for t in _toks(parsed, "tool_result")] == ["DONE"]
-    for word in ("PASS", "FAIL", "ERROR", "INCOMPLETE", "INDETERMINATE", "DONE"):
+    for word in (
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "INCOMPLETE",
+        "INDETERMINATE",
+        "DONE",
+        "NO-TURN",
+    ):
         assert word in m.TOOL_RESULT_VALUES
-    assert m.TOOL_RESULT_VALUES <= set(m.VERDICTS) | {"INDETERMINATE", "DONE"}
+    assert m.TOOL_RESULT_VALUES <= set(m.VERDICTS) | {
+        "INDETERMINATE",
+        "DONE",
+        "NO-TURN",
+    }
 
 
 def _ack(at, tool_id, result):

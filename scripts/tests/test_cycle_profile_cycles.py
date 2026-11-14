@@ -672,6 +672,15 @@ def test_t36_artifact_end_check(tmp_path):
     res = c.artifact_end_check(cs, [par])
     first = [row for row in res.rows if row.check_class == "suite-feature-tip"][0]
     assert first.verdict == "PASS"
+    # a NO-TURN verdict line (run-long exit 6) is read as a verdict, never dropped
+    nt = tmp / "noturn"
+    nt.mkdir()
+    _artifact(
+        nt, "art1", 1500, "RESULT: NO-TURN rc=75 artifact=/x\nRUN_LONG_EXIT_STATUS=6\n"
+    )
+    res = c.artifact_end_check(cs, [nt])
+    first = [row for row in res.rows if row.check_class == "suite-feature-tip"][0]
+    assert first.verdict == "NO-TURN"
     # a file whose name differs from the key by one character is no match
     near = tmp / "near"
     near.mkdir()

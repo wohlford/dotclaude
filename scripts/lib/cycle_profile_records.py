@@ -112,7 +112,7 @@ _NOTIF_RE = {
     "duration_ms": re.compile(r"<duration_ms>([0-9]{1,15})"),
 }
 _RESULT_RE = re.compile(
-    r"RESULT: (PARALLEL-PASS|PASS|FAIL|ERROR|INCOMPLETE|INDETERMINATE)"
+    r"RESULT: (PARALLEL-PASS|PASS|FAIL|ERROR|INCOMPLETE|INDETERMINATE|NO-TURN)"
 )
 _DONE_RE = re.compile(r"\bDONE\b")
 _RUNNING_RE = re.compile(r"\bRUNNING\b")

@@ -4,6 +4,9 @@ Built on the reader's tokens only (`cycle_profile_records`): the roster of `/fea
 invocations, each invocation's window (D2.5), the lane, the run-long pairs, the artifact
 table, and two optional read-only cross-checks (`artifact_end_check`, `commit_time_lower_bound`).
 
+**Queued runs.** A queued run's wall time includes the gate wait; the
+`RUN_LONG_GATE_TURN epoch=` line (run-long) or `NOTE gate: turn taken` (audit) marks its start.
+
 **Integer milliseconds.** Every comparison is on integer `t_ms`, so the three boundary
 comparisons of the closing rule are exact: a re-run launched `<=` 900 s after the verdict
 extends the chain, a closing marker `<=` 1800 s after it extends the end (and `>` the
@@ -102,7 +105,7 @@ ARTIFACT_END_TOLERANCE_S = 60
 
 _EXIT_RE = re.compile(r"^RUN_LONG_EXIT_STATUS=([0-9]{1,3})\s*$", re.M)
 _VERDICT_RE = re.compile(
-    r"^RESULT: (PARALLEL-PASS|PASS|FAIL|ERROR|INCOMPLETE|INDETERMINATE)\b", re.M
+    r"^RESULT: (PARALLEL-PASS|PASS|FAIL|ERROR|INCOMPLETE|INDETERMINATE|NO-TURN)\b", re.M
 )
 _SHA_FULL_RE = re.compile(r"[0-9a-f]{7,40}")
 _TAIL_BYTES = 1 << 16
