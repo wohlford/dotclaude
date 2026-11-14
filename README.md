@@ -24,6 +24,35 @@ Restart Claude Code after installing (or after pulling updates) to reload the co
 
 Wondering how the pieces fit — what takes effect where, and what owns what? See [ARCHITECTURE.md](ARCHITECTURE.md).
 
+### Running Claude Code in another clone
+
+In a clone that the global `CLAUDE.md` link does not point to, such as a development clone kept beside the checkout that `install.sh` linked, the same `CLAUDE.md` text can load twice: once as the global `CLAUDE.md`, the link `install.sh` created, and once as the clone's own `CLAUDE.md`, which Claude Code finds by walking up from the working directory. Sessions at the root and in a subdirectory of such a clone were both measured. Excluding the clone's copy cut the session's startup load by about one third, and the global copy still loaded once.
+
+In the checkout the global link points to, one run listed the file once, and naming it in the exclusion changed nothing, so no key is needed there.
+
+To exclude the clone's copy, add a `claudeMdExcludes` key to the clone's `.claude/settings.local.json`. That file is gitignored, so the setting never ships. Merge the key into the existing JSON rather than replacing the file, which may hold other settings:
+
+```json
+{ "claudeMdExcludes": ["/path/to/clone/CLAUDE.md"] }
+```
+
+The value is the absolute path of the clone's `CLAUDE.md`. The safe spelling is the clone's directory as `pwd -P` prints it, followed by `/CLAUDE.md`. In one test, the same file named through a symlinked directory matched as well.
+
+The exclusion does not apply in these cases, and nothing reports it:
+
+- Another clone or a second checkout does not match the path, so it loads both copies again.
+- A fresh clone has no local settings file at all.
+
+A settings file copied from another clone is harmless: its key names a path that does not exist in the new clone, so it matches nothing.
+
+While the global `CLAUDE.md` link resolves, these failures cost only startup load: the global copy still loads, so no instructions are lost. If that link is missing or dangling, the exclusion leaves a session in the clone with no `CLAUDE.md` at all, silently. That follows from how the exclusion works; it was not run. `install.sh --check` reports a drifted farm, and the `farm-drift-check.py` SessionStart hook listed under Hooks warns when the farm has drifted from its source clone.
+
+With the key applied, a session in the clone runs under the text the global `CLAUDE.md` link resolves to, and so do the delegates (subagents) it dispatches; in one measurement, with one agent type, a delegate inherited the exclusion. So an edit to the clone's `CLAUDE.md` does not reach those sessions or delegates until the checkout the global link points to has that edit. That follows from how the exclusion works and is not a measurement. In one test, a delegate dispatched with worktree isolation from a throwaway clone that had its own key carried only the global copy; no run without the key was made for that case, so this shows what it carried, not why. To test an edit to `CLAUDE.md` live, remove the key and start a new session.
+
+Applying or removing the key changes only new sessions. Whether a settings reload re-reads `CLAUDE.md` in a running session was not measured, so assume it does not.
+
+To check the exclusion, start a fresh session in the clone and ask it to list the headers of the form `Contents of <path>` that its instructions carry. The clone's own `CLAUDE.md` should not be among them. The global `CLAUDE.md` should be. If the project has a memory index, it is listed too; it is not a copy of `CLAUDE.md`. This list is a convenience, since a model describing its own context can be wrong; the sturdier check is to compare the session's startup load with and without the key.
+
 ## What's Included
 
 ### Documentation

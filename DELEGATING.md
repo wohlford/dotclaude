@@ -26,6 +26,14 @@ dispatches as well. And around the block, never inside it, cite this file's path
 so a delegate that wants to contest a constraint has a route to its reasoning; the last block item
 invites exactly that, and an invitation with no reachable rationale is decorative.
 
+One measured note on what a delegate inherits. With a per-clone `claudeMdExcludes` entry naming a
+clone's own `CLAUDE.md`, a general-purpose delegate dispatched from a development clone's root
+carried the global `CLAUDE.md` and the memory index but not the clone's copy; one dispatched with
+worktree isolation from a throwaway clone carried only the global `CLAUDE.md`, and no run without
+the entry was made for that case, so it shows what, not why. A delegate dispatched under such an
+exclusion does not see an edit to `CLAUDE.md` that the checkout the global link points to does not
+yet have; that follows from how the exclusion works and was not itself measured.
+
 ## The block
 
 ```text

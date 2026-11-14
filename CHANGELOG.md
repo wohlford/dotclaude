@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.161.2 — 2026-11-10
+- docs(readme,delegating): note the per-clone CLAUDE.md exclusion
+
 ## v0.161.1 — 2026-11-10
 - docs(heavy-gate): document the self-gating heavy-work turn
 
