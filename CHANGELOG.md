@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.165.2 — 2026-11-14
+- docs(kill-sets): fix --jobs trust and stop wording in the docstring
+
 ## v0.165.1 — 2026-11-14
 - docs(CLAUDE.md): describe kill-sets --jobs and PARALLEL-PASS
 

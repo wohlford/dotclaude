@@ -97,10 +97,17 @@ in all for the worker threads, removes the temp directory (it is kept under `--k
 thread did not stop in that time, and the `interrupted by` line then names that worker),
 prints `ERROR  interrupted by {SIGNAME}: {N} suite groups killed, copy removed` (or `copy
 kept at {path}`) in place of the `RESULT:` line, and dies of the signal, so the exit status is
-the signal's. The first check point comes after the temp directory is created, so a stop
-that first shows up as an error from a child the signal also killed (the discovery child
-under `run-long.sh`, where the gate signals the whole process group), or as a refusal before
-the directory exists, ends in the `interrupted by` line with no `STOP` line before it. A copy
+the signal's. The first check point comes after the temp directory is created and after the
+overlap checks and, above 1 job, the free-space check. A `STOP` line comes only from a check
+point that acts on the recorded signal, so a stop has none when no check point runs between the
+signal being recorded and the end of the run, and the `interrupted by` line stands alone. That
+covers an error from a child the signal also killed (the discovery child under `run-long.sh`,
+where the gate signals the whole process group); a refusal or error raised before the first
+check point, whether before the directory exists or after it; one raised between two later
+check points (the campaign's refusals, which go straight to the end of the run, or an ERROR
+from the baseline, the canary or the proof, which first go through the pool's join and the leak
+check, neither of which holds a check point); and a signal that arrives after the last check
+point, up to the run's one final read of the recorded signal. A copy
 in flight is cut short at its next directory (the main thread's own copies too): the check
 runs once per directory, so a worker mid-copy first copies the files of the directory it is
 in, and the deletion of the old copy that precedes each copy is not cut short; the discovery of the campaign is a helper
@@ -114,12 +121,17 @@ the copies, and keeps them when a worker thread did not stop.
 Under `run-long.sh` the gate sends SIGTERM to the job's process group and SIGKILL about 10 s
 later. The tool prints the `STOP` line as soon as the suites are killed, before it joins its
 workers or removes anything (a stop with no `STOP` line, described above, has none here
-either). If the removal outlasts that time, the SIGKILL ends the tool
-mid-removal: the artifact then holds the `STOP` line (the `leak:` and `jobs: finished` lines
-may follow it) and no `interrupted by` line, `run-long.sh --status` reads DIED, and the
+either). What follows that line has no short bound: the wait for the worker threads, up to 20 s
+in all (`JOIN_SECONDS`), and then the removal, which has none. The SIGKILL comes a fixed time
+after the SIGTERM, and only if the job's process group is still alive then, so it is the total
+from the SIGTERM that counts (reaching a check point, the wait and the removal together), and no
+one step has to outlast that time. A stop that finishes inside it ends in the `interrupted by`
+line. A SIGKILL that lands after the `STOP` line ends the tool in the wait or in the removal:
+the artifact then holds the `STOP` line (the `leak:` and `jobs: finished` lines may follow it,
+once the join has ended) and no `interrupted by` line, `run-long.sh --status` reads DIED, and the
 directory the `copy:` and `STOP` lines name is left behind, possibly partly removed. No suite
-survives. Remove it with the leftover recipe below. A wide `--jobs` or a large tree makes
-this more likely; no removal time is guaranteed.
+survives. Remove it with the leftover recipe below. A wide `--jobs` or a large tree makes this
+more likely; no time is guaranteed.
 
 **What a stop leaves.** A clean finish, ERROR or FAIL included, leaves no suite running and
 removes the `kill-sets.` temp directory; one that cannot be removed is kept, and the run ends
@@ -159,9 +171,12 @@ interpreter that fails to start under load can make a suite lose rows with no FA
 as `incomplete`) or die whole (read as `killed_all`). What load cannot touch is the pre-pass:
 NOT-APPLIED and INVALID-by-parse are decided in the main thread and are the same at every
 `--jobs`; `died` and `timedout` say a mutant could not be read, not what it read. So a
-parallel finding, a pass included, is settled by a serial run, unless parity with serial was
-measured for that campaign, at that width, on that tree. A measured parity run is a sample,
-not a proof of isolation: whether one copy's read of another's state changes a result depends
+`PARALLEL-PASS` stands for its `identical_pairs=0` and `survivors=0` claims only where
+`scripts/README.md` records a measured parity entry for that campaign, at that width, with its
+graded suite unchanged; otherwise a serial run settles it. A parallel FAIL, ERROR, `incomplete`
+or `killed_all` finding is settled by a serial run before it is acted on, parity entry or not,
+since load can make a mutant read wrongly or not at all. A measured parity run is a sample, not
+a proof of isolation: whether one copy's read of another's state changes a result depends
 on what the other copy held at that instant. The `determinism NOT assessed` line of the header
 stays true at every `--jobs` value, since each mutant is read once.
 
