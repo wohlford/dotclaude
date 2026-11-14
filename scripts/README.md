@@ -32,6 +32,7 @@ for how the index below stays in sync.
 | `guard-parity.py`                | Replay every distinct transcript Bash command through two pinned guard builds and list each verdict difference             |
 | `guard-secrets-test.sh`          | PostToolUse hook — run the guard-secrets test suite when the guard changes                                                 |
 | `guard-secrets.sh`               | Global PreToolUse hook — deny reading/editing secret files (.env*, keys, pem)                                              |
+| `heavy-gate.sh`                  | Global turn-taking and thermal-throttle gate so concurrent Claude sessions start heavy work one at a time                  |
 | `hook-machinery-test.sh`         | PostToolUse hook — run the hook tests when a test-runner hook or the machinery around it changes                           |
 | `install-git-hooks.sh`           | Install this repo's tracked ../git-hooks/pre-push into the resolved git hooks directory, copying it rather than symlinking |
 | `kill-sets.py`                   | Run a mutation campaign's mutants one at a time on a fresh copy of the tree and report each mutant's kill set              |

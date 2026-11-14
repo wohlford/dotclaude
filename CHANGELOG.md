@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.157.0 — 2026-11-06
+- feat(heavy-gate): add the heavy-work gate script
+
 ## v0.156.4 — 2026-11-04
 - docs(style-check): document the note ratchet in the hook guide
 
