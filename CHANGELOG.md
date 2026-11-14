@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.165.4 — 2026-11-14
+- docs(claude-md): fix kill-sets --jobs trust and --expect wording
+
 ## v0.165.3 — 2026-11-14
 - docs(scripts): fix kill-sets --jobs trust and figure notes in README
 

@@ -136,11 +136,16 @@ by hand, then the tool to use instead.
   the tree its own file lives in, and that path resolves into the production checkout. By
   default it runs each mutant serially on a fresh copy of the tree and ends in one `RESULT:`
   line, clean only at `RESULT: PASS`; `identical_pairs=` above 0 names mutants that kill
-  exactly the same rows. `--jobs N` (opt-in; default 1, at most 8) runs N mutants at once, each
-  on its own copy, and its clean verdict is `RESULT: PARALLEL-PASS`. That verdict is for
-  iteration only: a row that fails only under load reads as a kill, so a serial run settles its
-  findings, a pass included, unless `scripts/README.md` records a measured parity entry for
-  that campaign. Measured at 4 workers: a 28-mutant campaign fell from 191 s to 110 s, while
+  exactly the same rows. `--jobs N` (opt-in; default 1, at most 8) runs up to N mutants at once,
+  each on its own copy, and its clean verdict is `RESULT: PARALLEL-PASS`. That verdict is for
+  iteration only: a row that fails only under load reads as a kill. A `PARALLEL-PASS` stands for
+  its `identical_pairs=0` and `survivors=0` claims only where `scripts/README.md` records a
+  measured parity entry for that campaign, at that width, with its graded suite unchanged;
+  otherwise a serial run settles it. A parallel FAIL, ERROR, `incomplete` or `killed_all` finding
+  is settled by a serial run before it is acted on, parity entry or not, since load can make a
+  mutant read wrongly or not at all. The general `--expect` below does not match a clean parallel
+  run (it reads INDETERMINATE): use the `--expect` pattern in the tool's docstring that includes
+  `PARALLEL-PASS`. Measured at 4 workers: a 28-mutant campaign fell from 191 s to 110 s, while
   campaigns of 7 and 8 mutants gained nothing, since the worker proof spends four suite rounds
   before the first mutant.
   Measured: its first real runs, about 3 minutes each, found duplicate pairs in two campaigns
