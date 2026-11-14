@@ -193,6 +193,13 @@ by hand, then the tool to use instead.
     `--expect 'RESULT: PASS rc=0'` over a run that reached a genuine `RESULT: FAIL rc=1` reported
     INDETERMINATE, and the FAIL stayed invisible until the artifact was read by hand;
     `RESULT: (PASS|FAIL|ERROR|INCOMPLETE) rc=[0-9]+` is the form that reports it.
+- **Before a CPU-heavy stage (suite, docker, mutation campaign, build, VM):** run it as
+  `~/.claude/scripts/heavy-gate.sh run <unique-name> -- <cmd>`, so sessions take turns and wait
+  while the Mac is thermally throttled. To background it, put the gate INSIDE the launcher:
+  `run-long.sh --out <p> --expect '^HEAVY_GATE_DONE' -- ~/.claude/scripts/heavy-gate.sh run
+  <name> -- <cmd>`. Never the reverse: the launcher returns at once, so an outer gate would
+  release its turn. A delegate adds `--max-wait <secs>` and reports exit 75 (no turn in time)
+  to the controller. A convention, not enforcement.
 
 > Hooks (indexed in README.md) fire per-edit: a multi-step change that passes through an invalid
 > intermediate state (e.g. resolving conflict markers with two Edits) trips transient PostToolUse
