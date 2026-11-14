@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.165.3 — 2026-11-14
+- docs(scripts): fix kill-sets --jobs trust and figure notes in README
+
 ## v0.165.2 — 2026-11-14
 - docs(kill-sets): fix --jobs trust and stop wording in the docstring
 

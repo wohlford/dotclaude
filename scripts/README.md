@@ -92,22 +92,27 @@ signature, derived from `run`'s own parameters rather than restated by hand.
 `kill-sets.py --campaign tests/mutate_x.py` reports each mutant's kill set (duplicates, survivors,
 mutants that kill every row), grading each mutant on a fresh copy of the tree. By default it runs
 them one at a time; `--jobs N` (opt-in, default 1, never above 8) runs up to N at once, each worker
-on its own copy, so the temp directory holds N + 1 copies of the tree instead of two. Before the
+on its own copy, so the temp directory holds up to N + 1 copies of the tree instead of two (the
+worker count is capped by the mutants that can run). Before the
 first mutant a parallel run checks that the suite can run concurrently, in a worker proof of 4
 rounds at 4 workers or 5 at 8, each costing about one copy plus one suite run on every worker.
 What the proof vouches for is narrow. It is a check for the common failures, not a proof of
 isolation: the canary exercises only the rows whose verdict changes when the subject is broken, so
 a read of another copy's subject by any other row is invisible to it. A parallel run that would
 have read `PASS` ends `RESULT: PARALLEL-PASS` instead, a lead and not a verdict of record: kill
-sets are read under concurrent load, and a row that fails only under load reads as a kill. Its
-findings, a pass included, are settled by a serial run unless the campaign has a measured parity
-entry (below).
+sets are read under concurrent load, and a row that fails only under load reads as a kill. That
+verdict is for iteration only. A `PARALLEL-PASS` stands for its `identical_pairs=0` and
+`survivors=0` claims only where this file records a measured parity entry for that campaign, at
+that width, with its graded suite unchanged (below); otherwise a serial run settles it. A
+parallel FAIL, ERROR, `incomplete` or `killed_all` finding is settled by a serial run before it
+is acted on, parity entry or not, since load can make a mutant read wrongly or not at all.
 
 SIGTERM, SIGHUP or SIGINT make the tool kill every suite it started, remove its temp directory
 (kept under `--keep`, or when a worker did not stop in 20 s) and exit by the signal with no
 `RESULT:` line. Under `run-long.sh` SIGHUP and SIGINT arrive ignored, so only SIGTERM stops a
-`run-long.sh` job's tool, and the gate's SIGKILL about 10 s later can cut the removal short,
-leaving the directory but no suite. A SIGKILL that lands before the suites are killed leaves the
+`run-long.sh` job's tool, and the gate's SIGKILL about 10 s later can land in the wait for the
+worker threads (up to 20 s) or in the removal, leaving the directory but no suite. A SIGKILL that
+lands before the suites are killed leaves the
 directory and up to N suites running in their own sessions, each until it ends on its own, since
 nothing enforces a limit once the tool is gone. Before editing the tree or starting another run,
 find the directory with `ls -d "${TMPDIR:-/tmp}"/kill-sets.*` and the processes still using it
@@ -115,14 +120,18 @@ with `lsof +D <that directory>` (read what it prints; it can exit 1 while listin
 `pgrep -fl kill-sets` is not enough on its own: it prints nothing for a suite whose arguments do
 not carry the copy path.
 
-All figures here were measured on 2026-11-14 on the tree at commit `34a71e5`, one run per figure.
+All figures here were measured on 2026-11-14 on the tree at commit `34a71e5`, one run per figure
+except the serial ranges, which span three runs each (below).
 On `tests/mutate_memory_index_check.py` (28 mutants, a suite of about 4 s), `--jobs` 1, 2, 4 and 8
 took 191 s, 127 s, 110 s and 133 s. The recommended `--jobs` is the smallest N within 10 percent
 of the best, which is 4 on that campaign's suite; it is a figure for that suite, not a property
-of the tool. A campaign of about eight mutants or fewer gains nothing at 4 workers, because the
+of the tool. Do not launch above the physical core count, and read `uptime` first. A campaign of
+about eight mutants or fewer gains nothing at 4 workers, because the
 worker proof's four rounds cost what the parallel mutant runs save. Serial took 267 s to 269 s
 and `--jobs 4` took 320 s and 322 s on `tests/mutate_suite_parallel.py` (8 mutants); serial took
 1,807 s to 1,831 s and `--jobs 4` 1,789 s and 1,804 s on `tests/mutate_hook_budget.py` (7 mutants).
+Each serial range spans three runs of its campaign: two made with the base branch's tool, from
+before `--jobs`, against the same `34a71e5` tree, and one with the new tool at `--jobs 1`.
 Those two campaigns hold the only parity entries, at width 4 on tree `34a71e5`: for each, two
 `--jobs 4` runs gave the same kill sets, counters and verdict class as the serial runs. An entry
 lapses when the suite its campaign grades (`tests/test_suite_parallel.sh` and
