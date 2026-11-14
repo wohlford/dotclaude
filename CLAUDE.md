@@ -53,7 +53,7 @@ Universal instructions for all projects.
 going — a wrong-but-stated assumption is cheap to correct; a stalled turn is not.
 
 **When a question does feel genuinely open, put it to a Fable subagent before putting it to the
-user** (Agent tool, `model: fable` — a diverse model when you are Opus). Ask it both halves: to
+user** (Agent tool, `model: fable, effort: medium` — the level and its reason are in [agents/README.md](./agents/README.md) under Model and effort policy; a diverse model when you are Opus). Ask it both halves: to
 answer the question on the merits, *and* to judge whether this is really the user's call. Bring back
 the conclusion and its reasoning — never a menu of options for the user to arbitrate.
 
@@ -78,7 +78,7 @@ ceiling is the DEPENDENCY GRAPH (disjoint file sets parallelize; two tasks rewri
 not), which is checkable, where "low on context" is not.
 
 **Standalone documents a reader opens to learn how the project works go to the `prose-writer` agent
-(Opus) — dispatch it with no `model` override, which would defeat its pin.** That means a README,
+(Opus) — dispatch it with no `model` or `effort` override, either of which would defeat the definition's setting (an `effort` parameter overrides the definition's level, measured).** That means a README,
 architecture and reference docs, the policy guides and CLAUDE.md, but only when you compose the text
 rather than transcribe text already written. Choose the mode by where the facts live. When every
 fact is in the tree, brief it to *author*: name the file, what changed and pointers, and include any

@@ -2,6 +2,7 @@
 name: prose-writer
 description: Write or rewrite standalone documents a reader opens to learn how the project works — README, architecture and reference docs, policy guides, release notes; author mode reads the tree, revise mode rewrites a supplied draft
 model: opus
+effort: medium
 tools: Read, Grep, Glob, Write, Edit
 ---
 

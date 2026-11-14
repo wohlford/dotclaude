@@ -2,6 +2,7 @@
 name: style-reviewer
 description: Review code files for compliance with the global STYLE.md standards
 model: sonnet
+effort: high
 tools: Read, Grep, Glob
 ---
 

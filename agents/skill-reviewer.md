@@ -2,6 +2,7 @@
 name: skill-reviewer
 description: Review SKILL.md files for compliance with the repo's canonical skill structure
 model: haiku
+effort: medium
 tools: Read, Grep, Glob
 ---
 

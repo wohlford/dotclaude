@@ -2,6 +2,7 @@
 name: agent-reviewer
 description: Review agent definition files for compliance with the canonical agent frontmatter and structure
 model: haiku
+effort: medium
 tools: Read, Grep, Glob
 ---
 
@@ -30,6 +31,7 @@ Read an existing well-formed agent first (e.g. `agents/skill-reviewer.md` or
 - `name:` present, in `kebab-case`, and **matches the file's basename** (`agents/<name>.md`)
 - `description:` present, a single line, no trailing period
 - `model:` present and one of the known tiers (`haiku`, `sonnet`, `opus`, `fable`)
+- `effort:` present and one of the known levels (`low`, `medium`, `high`, `xhigh`, `max`)
 - `tools:` present — a comma-separated list (e.g. `Read, Grep, Glob`); flag an empty or
   missing list on a reviewer/analysis agent
 

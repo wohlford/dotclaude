@@ -45,16 +45,16 @@ so the pipeline's independence never depends on remembering it:
   ignored when the prompt typed the command, and the harness docs scope any such override to the current turn — so
   it could only downgrade an Opus controller's verification turn and never pin an author. State your own model id
   (from your system prompt) in Step 0's announcement.
-- **Author: a pinned Sonnet subagent** — the Agent tool's `model: sonnet`, which does hold. It drafts the spec, the
+- **Author: a pinned Sonnet subagent** — the Agent tool's `model: sonnet, effort: high`, which does hold. It drafts the spec, the
   plan and every fold, through **Authoring dispatch**. Step 0 announces the REQUESTED author model; the actual one
   is the model id on line 1 of each return, and the presentation reports it. Every rule below keys on the
   **author set** — the models that actually wrote the artifact — never on the controller's model or on the alias
-  this section requests.
-- **Reviewer: Opus**, on the spec and on the plan of a full-lane run — see **Diverse-model review**, which also
-  names the arbiter when author and reviewer disagree.
+  this section requests. The author's level is `effort: high` (agents/README.md, Model and effort policy).
+- **Reviewer: Opus** (`model: opus, effort: medium`; agents/README.md, Model and effort policy), on the spec and on the plan of a full-lane run — see **Diverse-model review**, which also
+  names the arbiter when author and reviewer disagree. The arbiter normally runs `model: fable, effort: medium`; a fallback takes the level that policy gives its model.
 - **Open questions: Fable first.** Any genuinely open question that arises — a design fork, an ambiguity,
   and the clarifying questions `superpowers:brainstorming` would put to the user — goes to a Fable subagent
-  (`model: fable`) before it reaches the user — a fold's own questions are the one exception, ruled by the controller
+  (`model: fable, effort: medium`; agents/README.md, Model and effort policy) before it reaches the user — a fold's own questions are the one exception, ruled by the controller
   under **Authoring dispatch** — per the global CLAUDE.md's "Asking Questions": ask it to
   answer on the merits **and** to judge whether the question is really the user's, and bring back a
   conclusion, not a menu, and send the questions brainstorming would ask at one checkpoint in a single
@@ -65,7 +65,7 @@ so the pipeline's independence never depends on remembering it:
   pauses named under **Design approval** (Step 0.5's branch confirmation among them): those ask the user
   directly. Risk appetite and scope still go to Fable first, which judges whether they are the user's. This
   section changes who answers a design question, never *may I?*. If Fable is unavailable, ask an Opus
-  subagent instead (a Sonnet one if Opus is in the author set) and say so; if that is unavailable too, ask the user.
+  subagent (`model: opus, effort: medium`) instead (a Sonnet one, `model: sonnet, effort: high`, if Opus is in the author set) and say so; if that is unavailable too, ask the user.
 
 ### Process
 
@@ -220,7 +220,7 @@ still stop and report, and nothing here licenses continuing past one.
 
 #### Authoring dispatch (how every draft and every fold is made)
 
-The spec, the plan and every fold are drafted by a **pinned Sonnet subagent** (Agent tool, `model: sonnet`), never
+The spec, the plan and every fold are drafted by a **pinned Sonnet subagent** (Agent tool, `model: sonnet, effort: high`), never
 by the controller, which dispatches, verifies, commits and asks. A frontmatter pin does not hold (**Models**); the
 Agent tool's parameter does.
 
@@ -261,7 +261,7 @@ Agent tool's parameter does.
   named, counted inside that artifact's budget; failing again stops and reports.
 - **One question round per artifact version.** Send the `OPEN QUESTIONS` to Fable in one dispatch (the merits, and
   whether each is really the user's — **Models**); batch the survivors to the user once. The rulings go back to the
-  same author (SendMessage), or to a fresh Sonnet handed the artifact path and the rulings; recommit once they are
+  same author (SendMessage), or to a fresh Sonnet (`model: sonnet, effort: high`) handed the artifact path and the rulings; recommit once they are
   applied. A fold's own `OPEN QUESTIONS` form a second batch, which you rule yourself and list in the presentation —
   an exception to Fable-first that keeps the user's own: authorization and anything only the user can answer (scope, a
   fact only they hold) go to the user.
@@ -473,7 +473,7 @@ The value is a **different model than the author** catching blind spots same-mod
   and Fable still differs from every author. **If no such model is available**, review with Sonnet
   anyway; when Sonnet wrote the artifact, announce that pass as same-model, not diverse, and do not count
   it as the diverse review. State which model actually reviewed. Announce the choice.
-- Spawn it with the **Agent tool**, `model:` = the chosen **alias** — `fable`, `sonnet`, or `opus`.
+- Spawn it with the **Agent tool**, writing the chosen alias and its level in ONE span: `model: opus, effort: medium`, `model: fable, effort: medium`, or `model: sonnet, effort: high`. The level is the one [agents/README.md](../../agents/README.md), Model and effort policy gives that model, and the second turn, the fold check and the arbiter run at the level of the model they reuse or dispatch.
   **Never `haiku`:** critiquing a plan is design judgment, the top of the tier ladder
   ([agents/README.md](../../agents/README.md)), and a cheap reviewer here buys a cheap review of
   the one artifact the whole pipeline rests on. Use a skeptical critical-review prompt asking for
@@ -550,7 +550,7 @@ The value is a **different model than the author** catching blind spots same-mod
   controller finding confirmed at BLOCKER or MAJOR or raised to one of them by the severity floor, and a finding kept
   over a dismissal and rated BLOCKER or MAJOR, included),
   returns `ADDRESSED` or `NOT ADDRESSED` for each, and names any NEW breakage the fold introduced. One per artifact
-  version, on both lanes wherever a review ran, by the model the chain picked for that review. It is not SDD's
+  version, on both lanes wherever a review ran, by the model the chain picked for that review, at that model's level from agents/README.md, Model and effort policy. It is not SDD's
   "re-review", which judges task code. New BLOCKER or MAJOR breakage counts as a contested finding below.
 - **Arbitration (design half only, both lanes).** A disagreement exists iff the author marks a BLOCKER or MAJOR
   `DECLINED`, or the fold check returns `NOT ADDRESSED` on one or names new BLOCKER or MAJOR breakage; declare it
@@ -558,7 +558,7 @@ The value is a **different model than the author** catching blind spots same-mod
   either party's say-so. A MINOR the author declines you rule and record. Send every contested finding, with the
   author's reason and the fold-check verdict, to ONE arbiter dispatch per artifact version, chosen by the same chain
   as the reviewer — a model that differs from every author **and** from the reviewer (Fable in the normal case of a
-  Sonnet author and an Opus reviewer). Its ruling decides, over an Opus BLOCKER too. If the chain yields none, you
+  Sonnet author and an Opus reviewer, at `model: fable, effort: medium`). Its ruling decides, over an Opus BLOCKER too. If the chain yields none, you
   rule and the presentation says the arbitration was not diverse. A Fable that already ruled a fork the reviewer is
   now contesting is named in the dissent line and dispatched without its earlier ruling's reasoning.
   **It ends there.** The author gets exactly one post-ruling fold dispatch. Its content check is the usual one plus:
@@ -628,11 +628,12 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
    whole-branch review ask different questions of the same code (did this task build what its brief
    demanded, vs. does the branch hold together), and SDD names skipping either a hard *never* — even
    on a single-task plan, where they read the same diff through different rubrics. Honor its contract:
-   the model tier changes *what you pay per pass*, never *how many gates the code clears*.
+   the model tier and its effort level change *what you pay per pass*, never *how many gates the code clears*.
    - **Always pass the model explicitly.** SDD inherits *your session's* model when none is given, so
      every implementer and reviewer silently runs at the session tier — usually the most capable and
      most expensive. That one omission costs more than every review in this pipeline combined, and it
      is invisible: nothing reports it.
+   - **Pass the level in the same call.** Write the alias and the level in one span per dispatch, as the lines below do, because a dispatch with nothing set takes the session's level on the session's own model and the model's default on another (measured). The levels and their evidence are in [agents/README.md](../../agents/README.md), Model and effort policy. A named agent (`/vet`'s reviewers, `prose-writer`) carries its level in its definition, so dispatch it with no `effort` parameter: the parameter overrides the definition (measured).
    - **Deliver [`DELEGATING.md`](../../DELEGATING.md)'s constraint block into every implementer
      dispatch, the way that file prescribes** — pasted verbatim and positioned **last**, plus the two
      companion steps it names (copy it into the plan's `## Global Constraints`; cite the file's path
@@ -642,13 +643,13 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
      load-bearing, so trimming it to what a given dispatch appears to need silently drops them.
    - Dispatch per the tier ladder in [agents/README.md](../../agents/README.md): **implementers** at
      the cheapest tier that fits (a task whose plan text carries the complete code is transcription →
-     `haiku`; multi-file integration or judgment → `sonnet`); **task reviewers** at `sonnet`; the
-     **final whole-branch review** at `opus` on **both** lanes: implementers and task reviewers are
+     `model: haiku, effort: medium`; multi-file integration or judgment → `model: sonnet, effort: high`); **task reviewers** at `model: sonnet, effort: high`; the
+     **final whole-branch review** at `model: opus, effort: high` on **both** lanes: implementers and task reviewers are
      normally Sonnet and this ladder never dispatches an implementer at `opus`, so this is the pass that
      gives the code a different model's read, the same reason **Diverse-model review** exists for the plan.
-     If Opus is unavailable, use Fable; if neither, review at Sonnet and announce it as same-model when
+     If Opus is unavailable, use Fable (`model: fable, effort: medium`); if neither, review at Sonnet (`model: sonnet, effort: high`) and announce it as same-model when
      Sonnet wrote the code.
-   - **Escalation ceiling.** SDD's fix rounds 1–3 resume the implementer and rounds 4–5 use a fresh **Sonnet**: a
+   - **Escalation ceiling.** SDD's fix rounds 1–3 resume the implementer and rounds 4–5 use a fresh **Sonnet** (`model: sonnet, effort: high`): a
      task that began at haiku reaches Sonnet there, and this overrides SDD's "a tier above the stuck implementer"
      for a Sonnet one, since this ladder never dispatches an implementer at Opus. SDD's round-5 breaker is the
      controller's adjudication — park the task or rule — and a plan defect it finds takes the fold route above.

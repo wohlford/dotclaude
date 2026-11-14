@@ -2,6 +2,7 @@
 name: skill-content-reviewer
 description: Review SKILL.md files for prose and content quality — clarity, completeness, consistency, and actionability
 model: sonnet
+effort: high
 tools: Read, Grep, Glob
 ---
 

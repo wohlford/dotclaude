@@ -71,7 +71,7 @@ this table ↔ declaration. Neither side is a hand-checked copy.
 | Handler | Discovery | Default fields | Default rendering |
 | :--- | :--- | :--- | :--- |
 | `skills` | `.claude/skills/*/SKILL.md`, `skills/*/SKILL.md` | `name`, `description`, `category`, `disable-model-invocation` | Table: `Command` (=`/<name>`), `Purpose` (=`description`) |
-| `agents` | `.claude/agents/*.md`, `agents/*.md` (excludes `README.md`, `index.md`) | `name`, `description`, `model`, `tools`, `category` | Table: `Agent`, `Purpose` |
+| `agents` | `.claude/agents/*.md`, `agents/*.md` (excludes `README.md`, `index.md`) | `name`, `description`, `model`, `effort`, `tools`, `category` | Table: `Agent`, `Purpose` |
 | `plugins` | `settings.json` → `enabledPlugins` | plugin id | Table: `Plugin`, `Purpose` (Purpose always manual; rows-list is sync) |
 | `hooks` | `settings.json` → `hooks` + each script's header | event, matcher, command path, purpose | Table: `Event`, `Matcher`, `Script`, `Purpose` |
 | `scripts` | `scripts/*.sh`, `scripts/*.py` | filename, purpose | Table: `Script`, `Purpose` |
