@@ -605,7 +605,8 @@ else in this section depends on it: does `.publication.toml` exist at the repo r
    check above, these are dev-side commits — go through `/commit --no-tag` (no tag, no `CHANGELOG`
    entry; versioning is `main`-only). **Never bare `git commit` either way** (the re-derivation bricks
    in **Adopted-repo finish** are the one exception: the brick engine commits them, enforcing the
-   subject and signing itself) — where a tag applies it skips the tag and corrupts the release
+   subject itself and asserting `commit.gpgsign` is true before it commits unless told
+   `--allow-unsigned`) — where a tag applies it skips the tag and corrupts the release
    sequence, and in every case it skips `/commit`'s foreground-signing discipline.
 
    **The controller writes no task code either.** A throwaway spike probe and the scratch edits in step 5's rehearsal
@@ -809,8 +810,8 @@ history never had to be.
    working tree may predate the branch's own:
 
    ```bash
-   ~/.claude/scripts/publish-brick.sh --dev [--final] --scope <repo> \
-     [--artifact-dir <dir outside the repo>] <feature-tip-SHA> '<subject>' <file>...
+   ~/.claude/scripts/publish-brick.sh --dev [--final] [--allow-unsigned] [--audit <path>] \
+     --scope <repo> [--artifact-dir <dir outside the repo>] <feature-tip-SHA> '<subject>' <file>...
    ```
 
    Point `--artifact-dir` outside the repo — an artifact written inside it would fail the *next*
@@ -820,12 +821,24 @@ history never had to be.
    conventional and under the repo's `.commit-conventions.toml` advise threshold
    (`ALLOW_LONG_SUBJECT=1` overrides, as for `/commit`), and every path `dev` has changed since it
    last met the oracle already equals the oracle — this finish's "`dev` must not have moved"
-   precondition, re-checked at every brick. **A repo with no
-   `skills/audit/audit.sh` of its own is re-derived entirely by hand** — the engine refuses before
-   committing, since a dev brick cannot be proven with nothing to prove it against. It then checks the
-   files out of the oracle, asserts they match it and that nothing else moved, commits, and runs
-   **`/audit`** on the live repo at that commit, reading the verdict as an allowlist. This per-brick
-   `/audit` is the **authoritative** mechanical gate on the adopted path — the branch-level run in step
+   precondition, re-checked at every brick. **Signing:** before it writes anything the engine asserts
+   the repo's effective `commit.gpgsign` is true, and it prints each brick's `%G?`; `--allow-unsigned`
+   is the explicit opt-out for a repo that deliberately does not sign, and it waives only that
+   assertion, never the read-back of a configured signature. **A repo with no
+   `skills/audit/audit.sh` of its own** passes `--audit "$HOME/.claude/skills/audit/audit.sh"` (the
+   installed audit, named explicitly on every brick; the engine refuses the flag in a repo that has
+   its own audit, and without the flag it refuses before committing). It also refuses the flag (exit 2,
+   naming the reason) when the repo's index could hide a missing audit from `git status`: any
+   skip-worktree or assume-unchanged entry anywhere in the index, sparse checkout on, an fsmonitor
+   whose status disagrees with a status that does not trust it, or a submodule that is the `skills` or
+   `skills/audit` directory under another spelling or has no directory on disk. Clear the first kind
+   (`git update-index --no-skip-worktree` or `--no-assume-unchanged` on the named paths, or
+   `git sparse-checkout disable`) and re-run. A brick that lands the repo's
+   own `skills/audit/audit.sh` flips the next brick to that audit, so the next brick must drop
+   `--audit`. The engine then checks the files out of the oracle, asserts they match it and that
+   nothing else moved, commits, and runs the repo's own audit, or the one named by `--audit`, on the
+   live repo at that commit, reading the verdict as an allowlist. This per-brick
+   audit is the **authoritative** mechanical gate on the adopted path — the branch-level run in step
    2 above is fail-fast only and does not stand in for it. **Proceed only on its last line,
    `RESULT: PASS rc=0 brick=dev`.** **The engine partitions by whole file.** A re-derivation that
    needs any brick holding part of a file is built **entirely by hand**, re-deriving the same
