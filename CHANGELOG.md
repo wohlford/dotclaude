@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.163.1 — 2026-11-12
+- test(publish-brick): add mutants for the override and signing paths
+
 ## v0.163.0 — 2026-11-12
 - feat(publish-brick): add --audit and a signing assertion to dev mode
 
