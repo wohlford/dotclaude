@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.159.0 — 2026-11-10
+- feat(run-long): take a heavy-gate turn inside the job
+
 ## v0.158.0 — 2026-11-10
 - feat(heavy-gate): add held, nesting and pmset-keyed throttle
 

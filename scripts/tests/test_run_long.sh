@@ -27,6 +27,11 @@ status_prefix="$(sed -n "s/^readonly STATUS_PREFIX='\\(.*\\)'\$/\\1/p" "$engine"
 tmp="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 
+# Keep every row off the operator's real heavy-gate state.
+# shellcheck source=../lib/hermetic_gate.sh
+. "$here/../lib/hermetic_gate.sh"
+hermetic_gate_env "$tmp" || exit 2
+
 pass=0
 fail=0
 
@@ -1261,6 +1266,612 @@ if [[ "$ub_rc" -eq 0 && -n "$ub_a" && "$ub_a" != "$ub_b" ]]; then
 else
   fail_line "rS24: an unborn branch failed to stamp or did not move (rc=$ub_rc a=[$ub_a] b=[$ub_b])"
 fi
+
+# ---------------------------------------------------------------- the launch-side gate (g rows)
+#
+# shellcheck disable=SC2016 # the quoted code runs in child shells
+#
+# These rows run with the wiring ON: gl() unsets the suite's GATE_WIRING=off seam for the launch and
+# points GATE_DIR at a private directory per row, so a queued job never meets another row's lock.
+gate_real="$here/../heavy-gate.sh"
+gd=""
+gl() { env -u GATE_WIRING GATE_DIR="$gd" "$@"; }
+gnew() { gd="$tmp/gate-$1"; mkdir -p "$gd"; }
+gsec() { sed -n '/^----- output -----$/,$p' "$1"; }
+ghdr() { sed -n '1,/^----- output -----$/p' "$1"; }
+gpid_of() { sed -n 's/^RUN_LONG_BEGIN pid=\([0-9][0-9]*\).*/\1/p' "$1" | head -n 1; }
+gname_of() { sed -n 's/^RUN_LONG_GATE_NAME=//p' "$1" | head -n 1; }
+gturn_of() { sed -n 's/^RUN_LONG_GATE_TURN epoch=//p' "$1" | head -n 1; }
+# gwait_for FILE PATTERN [tries] -- bounded poll for a line in FILE
+gwait_for() {
+  local i=0
+  while [[ $i -lt ${3:-200} ]]; do
+    if [[ -f "$1" ]] && grep -q -e "$2" "$1" 2> /dev/null; then return 0; fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+# gwait_path PATH [tries] -- bounded poll for a path to exist
+gwait_path() {
+  local i=0
+  while [[ $i -lt ${2:-200} ]]; do
+    [[ -e "$1" ]] && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+gfree() { # no pipe: grep -q would SIGPIPE the producer, and pipefail would read that as "not free"
+  local st
+  st="$(env GATE_DIR="$gd" bash "$gate_real" status 2> /dev/null)"
+  case "$st" in *$'\nlock: free'*) return 0 ;; *) return 1 ;; esac
+}
+# gticket NAME -- succeeds while the queue directory holds a ticket for NAME
+gticket() { [[ -n "$(find "$gd/queue" -maxdepth 1 -name "*-$1" 2> /dev/null)" ]]; }
+# ghold ART SENTINEL -- a job that holds the turn until SENTINEL exists (bounded at 120 s)
+ghold() {
+  gl "$engine" --out "$1" --label hold -- bash -c \
+    'i=0; while [ ! -e "$1" ] && [ "$i" -lt 600 ]; do sleep 0.2; i=$((i + 1)); done' _ "$2" > /dev/null
+  gwait_for "$1" '^RUN_LONG_GATE_TURN epoch=' 300
+}
+
+# g1: the header carries the turn fields, the name is slugged, and two launches never share a name.
+gnew g1
+g1a="$(art g1a)"
+g1b="$(art g1b)"
+gl "$engine" --out "$g1a" --label 'a b/c' -- true > /dev/null
+gl "$engine" --out "$g1b" --label 'a b/c' -- true > /dev/null
+wait_done "$g1a" 600
+wait_done "$g1b" 600
+g1h="$(ghdr "$g1a")"
+check_contains "$g1h" 'RUN_LONG_GATE=turn' 'g1/header-turn-fields: RUN_LONG_GATE=turn'
+check_contains "$g1h" 'RUN_LONG_GATE_NAME=run-long-a-b-c-' 'g1/header-turn-fields: the label is slugged into the name'
+check_eq "$(gname_of "$g1a" | grep -cE '^run-long-[A-Za-z0-9._-]+-[0-9]+$')" 1 'g1/header-turn-fields: the name matches the documented shape'
+check_eq "$(grep -cE '^RUN_LONG_GATE_LAUNCH_EPOCH=[0-9]+$' "$g1a")" 1 'g1/header-turn-fields: the launch epoch is recorded'
+if [[ -n "$(gname_of "$g1a")" && "$(gname_of "$g1a")" != "$(gname_of "$g1b")" ]]; then
+  pass_line 'g1/header-turn-fields: two launches with one label get different names'
+else
+  fail_line "g1/header-turn-fields: names [$(gname_of "$g1a")] [$(gname_of "$g1b")] are empty or equal"
+fi
+
+# g1b: the gate's lines land in the output section, the trailer stays last.
+g1bs="$(gsec "$g1a")"
+check_contains "$g1bs" 'RUN_LONG_GATE_TURN epoch=' 'g1b/gate-lines-appear-in-output: the turn epoch'
+check_contains "$g1bs" 'RUN_LONG_SUBJECT_AT_TURN=' 'g1b/gate-lines-appear-in-output: the subject at the turn'
+check_eq "$(printf '%s\n' "$g1bs" | grep -cE '^HEAVY_GATE_DONE run-long-.* rc=0$')" 1 'g1b/gate-lines-appear-in-output: exactly one verdict line'
+check_eq "$(tail -1 "$g1a")" 'RUN_LONG_EXIT_STATUS=0' 'g1b/gate-lines-appear-in-output: the trailer is last'
+
+# g2: a second job queues behind the first and takes its turn only after the first is released.
+gnew g2
+g2s="$tmp/g2.sentinel"
+g2a="$(art g2a)"
+g2b="$(art g2b)"
+ghold "$g2a" "$g2s"
+gl "$engine" --out "$g2b" --label second -- true > /dev/null
+sleep 3
+g2_status="$("$engine" --status "$g2b" 2>&1)"
+check_contains "$g2_status" 'RESULT: RUNNING' 'g2/two-jobs-queue: the second job reads RUNNING while the first holds the turn'
+check_eq "$(grep -c '^RUN_LONG_GATE_TURN' "$g2b")" 0 'g2/two-jobs-queue: the second job has no turn yet'
+g2_release="$(date +%s)"
+: > "$g2s"
+wait_done "$g2a" 600
+wait_done "$g2b" 600
+check_eq "$(tail -1 "$g2a")|$(tail -1 "$g2b")" 'RUN_LONG_EXIT_STATUS=0|RUN_LONG_EXIT_STATUS=0' 'g2/two-jobs-queue: both finish with trailer 0'
+g2_turn="$(gturn_of "$g2b")"
+if [[ -n "$g2_turn" && "$g2_turn" -ge "$g2_release" ]]; then
+  pass_line 'g2/two-jobs-queue: the second turn is not earlier than the first release'
+else
+  fail_line "g2/two-jobs-queue: second turn [$g2_turn] earlier than release [$g2_release]"
+fi
+
+# g3: a bounded wait that gives up records the no-turn verdict, trailer 75, and never runs the command.
+gnew g3
+g3s="$tmp/g3.sentinel"
+g3absent="$tmp/g3.absent"
+g3h="$(art g3h)"
+g3="$(art g3)"
+ghold "$g3h" "$g3s"
+gl "$engine" --out "$g3" --label nt --gate-max-wait 2 -- bash -c ': > "$1"' _ "$g3absent" > /dev/null
+wait_done "$g3" 600
+g3_name="$(gname_of "$g3")"
+g3_sec="$(gsec "$g3")"
+check_contains "$g3_sec" "HEAVY_GATE_DONE $g3_name rc=75" 'g3/no-turn-record: the gate verdict line is in the output'
+check_eq "$(tail -2 "$g3" | head -1)|$(tail -1 "$g3")" 'RUN_LONG_GATE=no-turn|RUN_LONG_EXIT_STATUS=75' 'g3/no-turn-record: no-turn then trailer 75 are the last two lines'
+g3_done_line="$(grep -n '^HEAVY_GATE_DONE' "$g3" | cut -d: -f1 | head -n 1)"
+g3_nt_line="$(grep -n '^RUN_LONG_GATE=no-turn$' "$g3" | cut -d: -f1 | tail -n 1)"
+if [[ -n "$g3_done_line" && -n "$g3_nt_line" && "$g3_done_line" -lt "$g3_nt_line" ]]; then
+  pass_line 'g3/no-turn-record: the verdict line precedes the no-turn record'
+else
+  fail_line "g3/no-turn-record: verdict line [$g3_done_line] no-turn line [$g3_nt_line]"
+fi
+check_eq "$([[ -e "$g3absent" ]] && echo made || echo absent)" absent 'g3/no-turn-record: the command never ran'
+check_contains "$(grep '^RUN_LONG_GATE_MAX_WAIT=' "$g3")" 'RUN_LONG_GATE_MAX_WAIT=2' 'g3/no-turn-record: the header records the wait bound'
+: > "$g3s"
+wait_done "$g3h" 600
+
+# g4: CONTROL -- a stage that itself exits 75 is a finished stage, never "no turn".
+gnew g4
+g4="$(art g4)"
+gl "$engine" --out "$g4" -- sh -c 'exit 75' > /dev/null
+wait_done "$g4" 600
+check_eq "$(tail -1 "$g4")" 'RUN_LONG_EXIT_STATUS=75' 'g4/stage-exiting-75-is-done: trailer 75'
+check_eq "$(tail -2 "$g4" | head -1 | grep -c 'RUN_LONG_GATE=no-turn')" 0 'g4/stage-exiting-75-is-done: not recorded as no-turn'
+
+# g5: --no-gate, and the usage errors of the two new options.
+gnew g5
+g5="$(art g5)"
+gl "$engine" --out "$g5" --no-gate -- true > /dev/null
+wait_done "$g5" 600
+check_contains "$(ghdr "$g5")" 'RUN_LONG_GATE=off' 'g5/no-gate-flag: the header says off'
+check_absent "$(gsec "$g5")" 'HEAVY_GATE_DONE' 'g5/no-gate-flag: no verdict line'
+check_absent "$(gsec "$g5")" 'RUN_LONG_GATE_TURN' 'g5/no-gate-flag: no turn line'
+run --out "$(art g5b)" --no-gate --gate-max-wait 5 -- true
+check_eq "$RC" 2 'g5/no-gate-flag: --no-gate with --gate-max-wait is a usage error'
+check_contains "$OUT" 'cannot be combined' 'g5/no-gate-flag: the refusal names the combination'
+check_contains "$OUT" 'Usage:' 'g5/no-gate-flag: the refusal shows usage'
+run --out "$(art g5c)" --gate-max-wait abc -- true
+check_eq "$RC" 2 'g5/no-gate-flag: a non-numeric --gate-max-wait is a usage error'
+check_contains "$OUT" 'positive whole number' 'g5/no-gate-flag: the refusal names the value rule'
+run --gate-max-wait 5 --wait "$tmp/g5-none.log"
+check_eq "$RC" 2 'g5/no-gate-flag: --gate-max-wait outside launch mode is a usage error'
+check_contains "$OUT" 'launch mode only' 'g5/no-gate-flag: the refusal says launch mode only'
+run --help
+check_contains "$OUT" '  --no-gate ' 'g5/no-gate-flag: --help documents --no-gate'
+check_contains "$OUT" '  --gate-max-wait <seconds>' 'g5/no-gate-flag: --help documents --gate-max-wait'
+
+# g6: CONTROL -- with the seam (GATE_WIRING=off and GATE_DIR) nothing about the gate is written.
+g6="$(art g6)"
+run --out "$g6" -- sh -c 'echo only-output'
+wait_done "$g6" 600
+check_eq "$(ghdr "$g6" | grep -c 'RUN_LONG_GATE')" 0 'g6/seam-off-is-byte-identical: no gate header line'
+check_eq "$(gsec "$g6" | sed '1d;$d')" 'only-output' 'g6/seam-off-is-byte-identical: the output section is exactly the command output'
+
+# g7/g8/g8b run a COPY of run-long.sh beside a STUB gate, so the launcher's gate decisions are visible.
+mk_stub_tree() { # DIR MODE(argv|exit2|none|noexec)
+  mkdir -p "$1"
+  cp "$engine" "$1/run-long.sh"
+  chmod +x "$1/run-long.sh"
+  rm -f "$1/heavy-gate.sh" "$1/argv.log"
+  case "$2" in
+    argv)
+      cat > "$1/heavy-gate.sh" << STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$1/argv.log"
+if [ "\$1" = held ]; then exit 1; fi
+while [ "\$1" != -- ]; do shift; done
+shift
+exec "\$@"
+STUB
+      chmod +x "$1/heavy-gate.sh"
+      ;;
+    exit2)
+      cat > "$1/heavy-gate.sh" << 'STUB'
+#!/usr/bin/env bash
+if [ "$1" = held ]; then exit 1; fi
+printf 'HEAVY_GATE_DONE %s rc=2\n' "$2" >&2
+exit 2
+STUB
+      chmod +x "$1/heavy-gate.sh"
+      ;;
+    noexec)
+      printf '#!/usr/bin/env bash\nexit 0\n' > "$1/heavy-gate.sh"
+      chmod -x "$1/heavy-gate.sh"
+      ;;
+  esac
+}
+
+# g7: the seam needs GATE_DIR. GATE_WIRING=off alone must never switch the gate off.
+mk_stub_tree "$tmp/stubtree" argv
+g7a="$(art g7a)"
+env -u GATE_DIR GATE_WIRING=off "$tmp/stubtree/run-long.sh" --out "$g7a" -- true > /dev/null
+wait_done "$g7a" 600
+check_contains "$(cat "$tmp/stubtree/argv.log" 2> /dev/null)" 'run run-long-' 'g7/stub-gate-leak-rows: GATE_WIRING=off without GATE_DIR still takes a turn'
+rm -f "$tmp/stubtree/argv.log"
+g7b="$(art g7b)"
+env GATE_DIR="$tmp/gate-g7" GATE_WIRING=off "$tmp/stubtree/run-long.sh" --out "$g7b" -- true > /dev/null
+wait_done "$g7b" 600
+check_eq "$(cat "$tmp/stubtree/argv.log" 2> /dev/null | wc -l | tr -d ' ')" 0 'g7/stub-gate-leak-rows: with both set the gate is never called'
+
+# g8: no gate, or one that is not executable, is announced and the job still runs.
+for g8m in none noexec; do
+  mk_stub_tree "$tmp/stub-$g8m" "$g8m"
+  g8a="$(art "g8-$g8m")"
+  g8out="$(env -u GATE_WIRING "$tmp/stub-$g8m/run-long.sh" --out "$g8a" -- sh -c 'echo ran-ungated; exit 3' 2>&1)"
+  wait_done "$g8a" 600
+  check_contains "$g8out" 'WARNING: heavy-gate unavailable' "g8/gate-absent-or-not-executable: $g8m warns at launch"
+  check_contains "$(ghdr "$g8a")" 'RUN_LONG_GATE=unavailable' "g8/gate-absent-or-not-executable: $g8m header"
+  check_eq "$(gsec "$g8a" | sed '1d')" $'ran-ungated\nRUN_LONG_EXIT_STATUS=3' "g8/gate-absent-or-not-executable: $g8m job ran and wrote its own trailer"
+done
+
+# g8b: a gate that exits 2 before running the stage fails open: the command then runs without a turn.
+# The gate's own verdict line is already in the artifact when the job learns the gate failed, so it
+# comes first; the job then appends RUN_LONG_GATE=unavailable, and the command's output follows both.
+mk_stub_tree "$tmp/stub-exit2" exit2
+g8b="$(art g8b)"
+env -u GATE_WIRING "$tmp/stub-exit2/run-long.sh" --out "$g8b" -- sh -c 'echo cmd-output; exit 4' > /dev/null
+wait_done "$g8b" 600
+g8b_order="$(gsec "$g8b" | grep -e '^HEAVY_GATE_DONE' -e '^RUN_LONG_GATE=unavailable$' -e '^cmd-output$' | tr '\n' ' ')"
+check_eq "$g8b_order" "HEAVY_GATE_DONE $(gname_of "$g8b") rc=2 RUN_LONG_GATE=unavailable cmd-output " 'g8b/gate-exit-2-runs-ungated: gate line, the unavailable record, then the command output'
+check_eq "$(tail -1 "$g8b")" 'RUN_LONG_EXIT_STATUS=4' 'g8b/gate-exit-2-runs-ungated: the trailer is the command status'
+
+# g9: a stage that launches run-long inside the held turn gets no second turn (and no deadlock).
+gnew g9
+g9="$(art g9)"
+g9i="$(art g9i)"
+gl "$engine" --out "$g9" -- bash -c '"$1" --out "$2" -- true > /dev/null; i=0; while ! grep -q "^RUN_LONG_EXIT_STATUS=" "$2" 2> /dev/null && [ "$i" -lt 150 ]; do sleep 0.1; i=$((i + 1)); done' _ "$engine" "$g9i" > /dev/null
+if wait_done "$g9" 400; then
+  pass_line 'g9/nested-launch: the outer job finished within 20 s'
+else
+  fail_line 'g9/nested-launch: the outer job did not finish within 20 s'
+fi
+check_contains "$(ghdr "$g9i" 2> /dev/null)" 'RUN_LONG_GATE=nested' 'g9/nested-launch: the inner header says nested'
+check_absent "$(cat "$g9i" 2> /dev/null)" 'HEAVY_GATE_DONE' 'g9/nested-launch: the inner artifact has no gate verdict line'
+
+# g9c: --status on that nested artifact names the shared turn instead of printing nothing.
+g9c_out="$(env GATE_DIR="$gd" "$engine" --status "$g9i" 2>&1)"
+if case $'\n'"$g9c_out" in *$'\nGATE: nested'*) true ;; *) false ;; esac; then
+  pass_line 'g9c/nested-status-prints-a-GATE-line: --status prints a GATE: nested line'
+else
+  fail_line "g9c/nested-status-prints-a-GATE-line: no GATE: nested line (got [$g9c_out])"
+fi
+
+# g9b: CONTROL -- the legacy manual form (a launch whose command is a gate run) still finishes.
+gnew g9b
+g9b="$(art g9b)"
+gl "$engine" --out "$g9b" -- bash "$gate_real" run legacy -- true > /dev/null
+if wait_done "$g9b" 400; then
+  check_eq "$(tail -1 "$g9b")" 'RUN_LONG_EXIT_STATUS=0' 'g9b/legacy-manual-form: finishes within 20 s with trailer 0'
+else
+  fail_line 'g9b/legacy-manual-form: did not finish within 20 s'
+fi
+
+# g10: the gate runs from the per-job COPY. hold1 holds the turn; the job QUEUES; the gate beside the
+# launcher is then replaced by a working gate whose __beat touches a sentinel; hold1 is released.
+gnew g10
+g10dir="$tmp/stub-g10"
+mkdir -p "$g10dir"
+cp "$engine" "$g10dir/run-long.sh"
+cp "$gate_real" "$g10dir/heavy-gate.sh"
+chmod +x "$g10dir/run-long.sh" "$g10dir/heavy-gate.sh"
+g10s="$tmp/g10.sentinel"
+g10beat="$tmp/g10.beat"
+g10owner="$tmp/g10.owner"
+g10="$(art g10)"
+env GATE_DIR="$gd" bash "$gate_real" run hold1 -- bash -c 'i=0; while [ ! -e "$1" ] && [ "$i" -lt 600 ]; do sleep 0.2; i=$((i + 1)); done' _ "$g10s" > /dev/null 2>&1 &
+g10hp=$!
+gwait_path "$gd/lock/owner" 100
+env -u GATE_WIRING GATE_DIR="$gd" "$g10dir/run-long.sh" --out "$g10" --label g10 -- \
+  bash -c 'cp "$1/lock/owner" "$2"' _ "$gd" "$g10owner" > /dev/null
+g10q=0
+for _ in $(seq 1 100); do
+  if [[ -n "$(find "$gd/queue" -maxdepth 1 -name '*-run-long-g10-*' 2> /dev/null)" ]]; then
+    g10q=1
+    break
+  fi
+  sleep 0.1
+done
+check_eq "$g10q" 1 'g10/frozen-copy: the job is QUEUED (its ticket is visible) before the replacement'
+sed 's|^    beat_main "\$@"$|    : > "'"$g10beat"'"; exit 0|' "$gate_real" > "$g10dir/heavy-gate.sh"
+check_eq "$(grep -c -F ": > \"$g10beat\"; exit 0" "$g10dir/heavy-gate.sh")" 1 'g10/frozen-copy: the replacement gate carries the __beat sentinel'
+sleep 1
+g10_release="$(date +%s)"
+: > "$g10s"
+wait "$g10hp" 2> /dev/null
+wait_done "$g10" 600
+check_eq "$([[ -e "$g10beat" ]] && echo present || echo absent)" absent 'g10/frozen-copy: the replacement __beat never ran (the job ran its launch-time copy)'
+if gfree; then pass_line 'g10/frozen-copy: the lock is free after the job'; else fail_line 'g10/frozen-copy: the lock is not free after the job'; fi
+check_eq "$(cut -d' ' -f1 "$g10owner" 2> /dev/null | cut -c1-9)" 'run-long-' 'g10/frozen-copy: the lock was owned by a run-long-* name while the stage ran'
+g10_turn="$(gturn_of "$g10")"
+if [[ -n "$g10_turn" && "$g10_turn" -ge "$g10_release" ]]; then
+  pass_line 'g10/frozen-copy: the job took its turn only after hold1 was released'
+else
+  fail_line "g10/frozen-copy: turn [$g10_turn] before release [$g10_release]"
+fi
+
+# g11: killing the job after it has the turn takes the stage down and frees the lock.
+gnew g11
+g11="$(art g11)"
+g11pid="$tmp/g11.stagepid"
+gl "$engine" --out "$g11" --label k -- bash -c 'echo $$ > "$1"; exec sleep 300' _ "$g11pid" > /dev/null
+gwait_path "$g11pid" 300
+g11sp="$(cat "$g11pid" 2> /dev/null)"
+g11jp="$(gpid_of "$g11")"
+kill "$g11jp" 2> /dev/null
+g11gone=0
+for _ in $(seq 1 200); do
+  if [[ -n "$g11sp" ]] && ! kill -0 "$g11sp" 2> /dev/null; then
+    g11gone=1
+    break
+  fi
+  sleep 0.1
+done
+check_eq "$g11gone" 1 'g11/kill-job-after-turn: the stage process is gone within 20 s'
+if [[ "$g11gone" -ne 1 && -n "$g11sp" ]]; then kill "$g11sp" 2> /dev/null; fi
+g11free=0
+for _ in $(seq 1 50); do
+  if gfree; then
+    g11free=1
+    break
+  fi
+  sleep 0.1
+done
+check_eq "$g11free" 1 'g11/kill-job-after-turn: the lock is free'
+check_eq "$(grep -c '^RUN_LONG_EXIT_STATUS=' "$g11")" 0 'g11/kill-job-after-turn: a killed job leaves no trailer (it reads DIED)'
+
+# g11b: killing the job while it is queued removes its ticket and never runs the command.
+gnew g11b
+g11bs="$tmp/g11b.sentinel"
+g11babsent="$tmp/g11b.absent"
+g11bh="$(art g11bh)"
+g11b="$(art g11b)"
+ghold "$g11bh" "$g11bs"
+gl "$engine" --out "$g11b" --label q -- bash -c ': > "$1"' _ "$g11babsent" > /dev/null
+g11bname="$(gname_of "$g11b")"
+g11bq=0
+for _ in $(seq 1 100); do
+  if gticket "$g11bname"; then
+    g11bq=1
+    break
+  fi
+  sleep 0.1
+done
+check_eq "$g11bq" 1 'g11b/kill-job-while-queued: the job is queued first'
+kill "$(gpid_of "$g11b")" 2> /dev/null
+g11bgone=0
+for _ in $(seq 1 50); do
+  if ! gticket "$g11bname"; then
+    g11bgone=1
+    break
+  fi
+  sleep 0.1
+done
+check_eq "$g11bgone" 1 'g11b/kill-job-while-queued: the ticket is gone within 5 s'
+: > "$g11bs"
+wait_done "$g11bh" 600
+check_eq "$([[ -e "$g11babsent" ]] && echo made || echo absent)" absent 'g11b/kill-job-while-queued: the command never ran'
+
+# g12: the subject is stamped again when the turn starts, so an edit made while queued shows.
+gnew g12
+g12s="$tmp/g12.sentinel"
+g12h="$(art g12h)"
+g12="$(art g12)"
+w2_repo "$tmp/g12repo" t.txt before
+ghold "$g12h" "$g12s"
+(cd "$tmp/g12repo" && gl "$engine" --out "$g12" -- true > /dev/null)
+sleep 2
+printf 'after\n' > "$tmp/g12repo/t.txt"
+: > "$g12s"
+wait_done "$g12h" 600
+wait_done "$g12" 600
+g12_launch="$(sed -n 's/^RUN_LONG_SUBJECT=//p' "$g12" | head -n 1)"
+g12_turn="$(sed -n 's/^RUN_LONG_SUBJECT_AT_TURN=//p' "$g12" | head -n 1)"
+if [[ "$g12_launch" =~ ^[0-9a-f]{20,}$ && "$g12_turn" =~ ^[0-9a-f]{20,}$ && "$g12_launch" != "$g12_turn" ]]; then
+  pass_line 'g12/subject-stamp-at-turn: the launch and turn stamps are digests and differ'
+else
+  fail_line "g12/subject-stamp-at-turn: launch [$g12_launch] turn [$g12_turn]"
+fi
+
+# g13: CONTROL (trailer part) -- in turn mode the trailer is last and no blank line is added.
+gnew g13
+g13="$(art g13)"
+gl "$engine" --out "$g13" -- sh -c 'echo line-one' > /dev/null
+wait_done "$g13" 600
+check_eq "$(tail -1 "$g13")" 'RUN_LONG_EXIT_STATUS=0' 'g13/trailer-last-and-no-blank-line-in-turn-mode: the trailer is last'
+check_eq "$(grep -c '^$' "$g13")" 0 'g13/trailer-last-and-no-blank-line-in-turn-mode: no blank line in the artifact'
+
+# ---------------------------------------------------------------- the read side (n rows)
+
+# n1: a gate that gave up reads NO-TURN (exit 6), is terminal for --wait, and beats --expect.
+run --status "$g3"
+check_contains "$OUT" 'RESULT: NO-TURN rc=75' 'n1a/no-turn-verdict-text-and-exit: the verdict text'
+check_eq "$RC" 6 'n1a/no-turn-verdict-text-and-exit: exit 6'
+run_bounded 20 --wait "$g3" --interval 1
+check_eq "$RC" 6 'n1b/no-turn-wait-is-terminal: --wait exits 6 within 20 s'
+run --status "$g3" --expect '^RESULT: (PASS|FAIL)'
+check_contains "$OUT" 'RESULT: NO-TURN rc=75' 'n1c/no-turn-beats-expect: still NO-TURN'
+check_absent "$OUT" 'INDETERMINATE' 'n1c/no-turn-beats-expect: never INDETERMINATE'
+check_eq "$RC" 6 'n1c/no-turn-beats-expect: exit 6, never DONE'
+
+# n2: CONTROL -- a stage that prints the no-turn line itself and exits 75 is a finished stage.
+gnew n2
+n2="$(art n2)"
+gl "$engine" --out "$n2" -- sh -c 'echo RUN_LONG_GATE=no-turn; exit 75' > /dev/null
+wait_done "$n2" 600
+run --status "$n2"
+check_contains "$OUT" 'RESULT: DONE rc=75' 'n2/forged-line-is-not-no-turn: DONE rc=75'
+check_absent "$OUT" 'NO-TURN' 'n2/forged-line-is-not-no-turn: not NO-TURN'
+
+# n2b: the membership tests read a LARGE artifact whole. Under pipefail a `sed | grep -q` pipeline
+# reads as no-match once the producer is still writing when grep exits on the early turn line.
+# A real turn-mode artifact always has the gate's verdict line between a stage's last line and the
+# trailer, so the fourth NO-TURN condition (a turn record exists) is reached only by a hand-built
+# artifact whose last two lines are the no-turn record and the trailer. Build exactly that.
+n2b="$(art n2b)"
+{
+  printf 'RUN_LONG_BEGIN pid=1 label=\nRUN_LONG_SUBJECT_ROOT=\nRUN_LONG_SUBJECT=none\nRUN_LONG_GATE=turn\n'
+  printf 'RUN_LONG_GATE_NAME=n2b\nRUN_LONG_COMMAND: t\n----- output -----\nRUN_LONG_GATE_TURN epoch=1\n'
+  yes x | head -n 100000
+  printf 'RUN_LONG_GATE=no-turn\nRUN_LONG_EXIT_STATUS=75\n'
+} > "$n2b"
+run --status "$n2b"
+check_contains "$OUT" 'RESULT: DONE rc=75' 'n2b/forged-no-turn-with-big-output: DONE rc=75 over a 200 KB artifact'
+check_absent "$OUT" 'NO-TURN' 'n2b/forged-no-turn-with-big-output: not NO-TURN'
+
+# n3: the gate's own lines never satisfy --expect; the stage's own lines still do.
+gnew n3a
+n3a="$(art n3a)"
+gl "$engine" --out "$n3a" --expect '^HEAVY_GATE_DONE' -- true > /dev/null
+wait_done "$n3a" 600
+run --status "$n3a"
+check_contains "$OUT" 'RESULT: INDETERMINATE' 'n3a/gate-line-does-not-satisfy-expect: a silent stage is INDETERMINATE'
+n3b="$(art n3b)"
+env -u GATE_WIRING "$tmp/stub-exit2/run-long.sh" --out "$n3b" --expect '^HEAVY_GATE_DONE' -- sh -c 'echo cmd-output; exit 4' > /dev/null
+wait_done "$n3b" 600
+run --status "$n3b"
+check_contains "$OUT" 'RESULT: INDETERMINATE' 'n3b/fail-open-gate-line-does-not-satisfy-expect: the failed gate line ahead of the output is not the stage'"'"'s'
+gnew n3c
+n3c="$(art n3c)"
+n3ci="$(art n3ci)"
+gl "$engine" --out "$n3c" -- bash -c '"$1" --out "$2" --expect "^HEAVY_GATE_DONE" -- sh -c "echo HEAVY_GATE_DONE inner rc=0" > /dev/null; i=0; while ! grep -q "^RUN_LONG_EXIT_STATUS=" "$2" 2> /dev/null && [ "$i" -lt 150 ]; do sleep 0.1; i=$((i + 1)); done' _ "$engine" "$n3ci" > /dev/null
+wait_done "$n3c" 600
+wait_done "$n3ci" 100
+run --status "$n3ci"
+check_contains "$OUT" 'RESULT: DONE rc=0' 'n3c/nested-stage-line-still-satisfies: a nested stage printing its own verdict-shaped line is DONE'
+n3d_stage="$(art n3d_s)"
+n3d_inert="$(art n3d_i)"
+gl "$engine" --out "$n3d_stage" --expect '^RESULT:' -- sh -c 'echo "RESULT: PASS"' > /dev/null
+gl "$engine" --out "$n3d_inert" --expect '^RESULT:' -- true > /dev/null
+wait_done "$n3d_stage" 600
+wait_done "$n3d_inert" 600
+run --status "$n3d_stage"
+check_contains "$OUT" 'RESULT: DONE rc=0' 'n3d/result-pattern-still-requires-stage-line: a stage that printed one is DONE'
+run --status "$n3d_inert"
+check_contains "$OUT" 'RESULT: INDETERMINATE' 'n3d/result-pattern-still-requires-stage-line: an inert stage stays INDETERMINATE'
+
+# n4: RUNNING says where the job is in the queue.
+gnew n4
+n4s="$tmp/n4.sentinel"
+n4s2="$tmp/n4.sentinel2"
+n4h="$(art n4h)"
+n4="$(art n4)"
+ghold "$n4h" "$n4s"
+gl "$engine" --out "$n4" --label q -- bash -c 'i=0; while [ ! -e "$1" ] && [ "$i" -lt 600 ]; do sleep 0.2; i=$((i + 1)); done' _ "$n4s2" > /dev/null
+n4name="$(gname_of "$n4")"
+for _ in $(seq 1 100); do gticket "$n4name" && break; sleep 0.1; done
+n4_out="$(env GATE_DIR="$gd" "$engine" --status "$n4" 2>&1)"
+n4_rc=$?
+check_contains "$n4_out" $'GATE: waiting for a turn, queue position 1 of 1, throttle: ' 'n4/running-gate-line: the waiting line names position, count and throttle'
+check_eq "$n4_rc" 3 'n4/running-gate-line: exit 3 while waiting'
+check_contains "$n4_out" ' s since launch)' 'n4/running-gate-line: the line carries the seconds since launch'
+: > "$n4s"
+if gwait_for "$n4" '^RUN_LONG_GATE_TURN epoch=' 300; then
+  pass_line 'n4/running-gate-line: the queued job took its turn after the hold was released'
+else
+  fail_line 'n4/running-gate-line: the queued job never took its turn'
+fi
+n4_out="$(env GATE_DIR="$gd" "$engine" --status "$n4" 2>&1)"
+n4_rc=$?
+check_contains "$n4_out" 'GATE: turn taken' 'n4/running-gate-line: after the turn the line says so'
+check_eq "$n4_rc" 3 'n4/running-gate-line: exit 3 while running'
+: > "$n4s2"
+wait_done "$n4h" 600
+wait_done "$n4" 600
+# throttle transient: a THROTTLED reading holds the job; flipping the file to 0 lets it start.
+gnew n4t
+n4tf="$tmp/n4t.throttle"
+n4ts="$tmp/n4t.sentinel"
+n4t="$(art n4t)"
+printf '1\n' > "$n4tf"
+gl env GATE_FAKE_THROTTLE_FILE="$n4tf" "$engine" --out "$n4t" --label thr -- bash -c 'i=0; while [ ! -e "$1" ] && [ "$i" -lt 600 ]; do sleep 0.2; i=$((i + 1)); done' _ "$n4ts" > /dev/null
+n4tname="$(gname_of "$n4t")"
+for _ in $(seq 1 100); do gticket "$n4tname" && break; sleep 0.1; done
+n4t_out="$(env GATE_DIR="$gd" GATE_FAKE_THROTTLE_FILE="$n4tf" "$engine" --status "$n4t" 2>&1)"
+check_contains "$n4t_out" 'throttle: THROTTLED' 'n4/running-gate-line: a THROTTLED reading is named'
+check_contains "$n4t_out" 'GATE: waiting for a turn' 'n4/running-gate-line: and the job is still waiting'
+printf '0\n' > "$n4tf"
+if gwait_for "$n4t" '^RUN_LONG_GATE_TURN epoch=' 150; then
+  pass_line 'n4/running-gate-line: setting the throttle file to 0 lets the job start'
+else
+  fail_line 'n4/running-gate-line: the job did not start after the throttle cleared'
+fi
+: > "$n4ts"
+wait_done "$n4t" 600
+run --status "$n4t"
+check_contains "$OUT" 'RESULT: DONE rc=0' 'n4/running-gate-line: the job finished DONE'
+
+# n4b: a RUNNING job with a big output after its turn line still reads "turn taken".
+gnew n4b
+n4bs="$tmp/n4b.sentinel"
+n4b="$(art n4b)"
+gl "$engine" --out "$n4b" -- bash -c 'yes x | head -n 100000; i=0; while [ ! -e "$1" ] && [ "$i" -lt 600 ]; do sleep 0.2; i=$((i + 1)); done' _ "$n4bs" > /dev/null
+gwait_for "$n4b" '^RUN_LONG_GATE_TURN epoch=' 300
+sleep 1
+run --status "$n4b"
+check_contains "$OUT" 'RESULT: RUNNING' 'n4b/turn-taken-with-big-output: the job is RUNNING'
+check_contains "$OUT" 'GATE: turn taken' 'n4b/turn-taken-with-big-output: the line says turn taken'
+: > "$n4bs"
+wait_done "$n4b" 1200
+
+# n5: --no-gate and an unavailable gate are named; a fail-open job that is still RUNNING is not "waiting".
+run --status "$g5"
+check_contains "$OUT" 'GATE: off (--no-gate)' 'n5/gate-off-and-unavailable-lines: --no-gate'
+run --status "$g8a"
+check_contains "$OUT" 'GATE: unavailable' 'n5/gate-off-and-unavailable-lines: no usable gate'
+n5bs="$tmp/n5b.sentinel"
+n5b="$(art n5b)"
+env -u GATE_WIRING "$tmp/stub-exit2/run-long.sh" --out "$n5b" -- sh -c 'i=0; while [ ! -e "$1" ] && [ "$i" -lt 600 ]; do sleep 0.2; i=$((i + 1)); done' _ "$n5bs" > /dev/null
+gwait_for "$n5b" '^RUN_LONG_GATE=unavailable$' 300
+run --status "$n5b"
+check_contains "$OUT" 'RESULT: RUNNING' 'n5b/fail-open-running-line: the job is RUNNING'
+check_contains "$OUT" 'GATE: unavailable' 'n5b/fail-open-running-line: the fail-open record is named'
+check_absent "$OUT" 'waiting for a turn' 'n5b/fail-open-running-line: never "waiting for a turn"'
+: > "$n5bs"
+wait_done "$n5b" 600
+
+# n5c: a fail-open job with a big output still reads "GATE: unavailable".
+n5c="$(art n5c)"
+env -u GATE_WIRING "$tmp/stub-exit2/run-long.sh" --out "$n5c" -- sh -c 'yes x | head -n 100000; exit 0' > /dev/null
+wait_done "$n5c" 1200
+run --status "$n5c"
+check_contains "$OUT" 'GATE: unavailable' 'n5c/fail-open-with-big-output: GATE: unavailable over a 200 KB artifact'
+
+# n6: the SUBJECT report is anchored at the turn.
+run --status "$g12"
+check_contains "$OUT" 'SUBJECT: MOVED while queued - launched ' 'n6/subject-moved-while-queued: an edit made while queued is named'
+check_contains "$OUT" 'SUBJECT: unchanged since launch' 'n6/subject-moved-while-queued: the verdict covers the turn tree, which has not moved since'
+gnew n6
+n6s="$tmp/n6.sentinel"
+n6h="$(art n6h)"
+n6="$(art n6)"
+w2_repo "$tmp/n6repo" t.txt before
+ghold "$n6h" "$n6s"
+(cd "$tmp/n6repo" && gl "$engine" --out "$n6" -- true > /dev/null)
+: > "$n6s"
+wait_done "$n6h" 600
+wait_done "$n6" 600
+run --status "$n6"
+check_contains "$OUT" 'SUBJECT: unchanged since launch' 'n6/subject-moved-while-queued: with no edit the report is unchanged'
+check_absent "$OUT" 'MOVED while queued' 'n6/subject-moved-while-queued: and says nothing about moving'
+
+# n6b: on a fail-open run (header turn, no real turn stamp) a stage-printed look-alike is not a baseline.
+w2_repo "$tmp/n6brepo" t.txt before
+n6b="$(art n6b)"
+(cd "$tmp/n6brepo" && env -u GATE_WIRING "$tmp/stub-exit2/run-long.sh" --out "$n6b" -- sh -c 'echo RUN_LONG_SUBJECT_AT_TURN=0123456789abcdef0123456789abcdef01234567' > /dev/null)
+wait_done "$n6b" 600
+run --status "$n6b"
+check_contains "$OUT" 'SUBJECT: unchanged since launch' 'n6b/look-alike-turn-stamp-is-ignored: the launch stamp is the baseline'
+check_absent "$OUT" 'MOVED while queued' 'n6b/look-alike-turn-stamp-is-ignored: no MOVED while queued'
+
+# n7: the usage names the new verdict.
+run --help
+check_contains "$OUT" 'NO-TURN' 'n7/usage-lists-no-turn: NO-TURN'
+check_contains "$OUT" 'exit 6' 'n7/usage-lists-no-turn: exit 6'
+
+# h0: the shared hermetic helper (scripts/lib/hermetic_gate.sh). Each row sources it in a subshell,
+# so nothing it exports leaks into later rows. HEAVY_GATE_HELD is exported beforehand to prove the
+# helper unsets it rather than merely finding it absent.
+helper="$here/../lib/hermetic_gate.sh"
+mkdir -p "$tmp/h0"
+h0_got="$(
+  export HEAVY_GATE_HELD=stale-token
+  # shellcheck disable=SC1090
+  . "$helper" 2>/dev/null && hermetic_gate_env "$tmp/h0" 2>/dev/null
+  printf '%s|%s|%s|%s|%s' "${GATE_DIR-unset}" "${GATE_WIRING-unset}" "${GATE_FAKE_THROTTLE-unset}" \
+    "${GATE_POLL-unset}" "${HEAVY_GATE_HELD-unset}"
+)"
+check_eq "$h0_got" "$tmp/h0/gate|off|0|1|unset" 'h0/helper-exports-five-settings'
+if [[ -d "$tmp/h0/gate" ]]; then
+  pass_line 'h0/helper-creates-gate-dir'
+else
+  fail_line 'h0/helper-creates-gate-dir (no gate directory)'
+fi
+h0_rc="$(
+  # shellcheck disable=SC1090
+  . "$helper" 2>/dev/null && hermetic_gate_env '' 2>/dev/null
+  printf '%s' "$?"
+)"
+check_eq "$h0_rc" "2" 'h0/helper-refuses-empty-dir'
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

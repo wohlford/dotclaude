@@ -3,7 +3,8 @@ set -uo pipefail
 
 # Script: run-long.sh
 # Purpose: Launch a long job in the background and record its real exit status inside the artifact
-# Usage: run-long.sh --out <path> [--label <text>] [--expect <ere>] [--force] -- <command> [args...]
+# Usage: run-long.sh --out <path> [--label <text>] [--expect <ere>] [--force]
+#                    [--no-gate | --gate-max-wait <seconds>] -- <command> [args...]
 #        run-long.sh --status <path> [--expect <ere>]
 #        run-long.sh --wait <path> [--interval <seconds>] [--expect <ere>]
 #        run-long.sh --stamp
@@ -38,6 +39,28 @@ set -uo pipefail
 # reading a verdict and then continuing to edit is normal, and the warning's only job is to say
 # that this verdict does not cover the tree you have now.
 #
+# The launch also takes a heavy-gate turn by itself, INSIDE the detached job, so a launcher that
+# returns at once still queues behind other CPU-heavy sessions: the job runs the command as
+# `heavy-gate.sh run <name> -- <command>`. The gate is run from a per-job COPY made at launch, so
+# a heavy-gate.sh replaced on disk while the job is still queued cannot change what the job runs.
+# The mode is decided at launch and recorded as a header line:
+#   RUN_LONG_GATE=turn         the job queues for a turn (also RUN_LONG_GATE_NAME,
+#                              RUN_LONG_GATE_LAUNCH_EPOCH and, when given, RUN_LONG_GATE_MAX_WAIT);
+#                              the output section then carries RUN_LONG_GATE_TURN epoch=<n> and
+#                              RUN_LONG_SUBJECT_AT_TURN=<digest|unavailable|none> once it starts
+#   RUN_LONG_GATE=nested       the launch is already inside a held turn: no second turn
+#   RUN_LONG_GATE=unavailable  no usable gate: the command runs without a turn (a warning is printed)
+#   RUN_LONG_GATE=off          --no-gate
+# With GATE_WIRING=off AND a non-empty GATE_DIR (the test seam) nothing about the gate is written
+# at all. A gate that gives up (exit 75) before the stage starts records RUN_LONG_GATE=no-turn
+# and trailer 75; a gate that cannot run (exit 2, 126, 127) before the stage starts records
+# RUN_LONG_GATE=unavailable and the command then runs without a turn. A launcher that waits
+# is still a launcher that exits 0: the wait happens in the job.
+# The read modes understand those records: a run whose last two lines are RUN_LONG_GATE=no-turn
+# and the trailer 75 (and which never started its stage) reads RESULT: NO-TURN, exit 6, decided
+# before --expect; the gate's own lines are not the stage's output and never satisfy --expect;
+# the GATE: lines (off, unavailable and nested in every state, the queue lines only while RUNNING); and the SUBJECT report is anchored at the turn, not the launch.
+#
 # There is deliberately NO default for --out. A default output path makes every run of a tool a
 # writer of real state, which this repo has measured biting in both directions (synthetic records
 # accumulating in a real log; an artifact landing where the next step's clean-tree check trips
@@ -54,7 +77,8 @@ readonly DEFAULT_INTERVAL=15
 
 usage() {
   cat <<'EOF'
-Usage: run-long.sh --out <path> [--label <text>] [--expect <ere>] [--force] -- <command> [args...]
+Usage: run-long.sh --out <path> [--label <text>] [--expect <ere>] [--force]
+                   [--no-gate | --gate-max-wait <seconds>] -- <command> [args...]
        run-long.sh --status <path> [--expect <ere>]
        run-long.sh --wait <path> [--interval <seconds>] [--expect <ere>]
        run-long.sh --stamp
@@ -70,6 +94,13 @@ Launch mode:
                    never '^RESULT: PASS'. This answers "did the run reach a verdict", never
                    "was the verdict good".
   --force          replace an existing artifact instead of refusing
+  --no-gate        do not take a heavy-gate turn (records RUN_LONG_GATE=off). By default the
+                   job queues for a turn inside the detached job; the launcher still returns
+                   at once, and a launch already inside a held turn does not take a second one.
+  --gate-max-wait <seconds>
+                   give up waiting for the turn after this many seconds (a positive whole
+                   number): the job records RUN_LONG_GATE=no-turn and trailer 75 without
+                   running the command. Cannot be combined with --no-gate.
   --               everything after this is the command to run
 
   Exits 0 as soon as the job is launched. That status describes the LAUNCH, never the work.
@@ -86,13 +117,26 @@ Status mode:
   RESULT: DIED            exit 4 — killed before it recorded a status; NOT a pass
   RESULT: INDETERMINATE   exit 5 — the run FINISHED but produced no matching line. NOT a pass,
                           and NOT a failure of the work: it means nothing verified the work.
+  RESULT: NO-TURN rc=75   exit 6 — the gate gave up (--gate-max-wait) before the command ever
+                          started. NOT a pass and NOT a failure of the work: nothing ran.
+                          Decided before --expect.
+
+  GATE: lines (the queue lines only while RUNNING; off, unavailable and nested in every state) say
+  where the job is in the queue:
+    GATE: waiting for a turn, queue position <n> of <m>, throttle: <word> (<n> s since launch)
+    GATE: turn taken
+    GATE: off (--no-gate)
+    GATE: unavailable            (no usable gate; the command ran without a turn)
+    GATE: nested                 (the job shares the launching heavy-gate turn)
+  A job queued behind others reports the tree the TURN began on: when that differs from the
+  launch stamp, SUBJECT: MOVED while queued names both and the verdict covers the turn's tree.
 
 Wait mode:
   --wait <path>        block until the run reaches a TERMINAL state, then report
   --interval <secs>    poll cadence, a positive whole number (default 15)
 
-  Exits with the status codes above MINUS RUNNING: 0, 1, 4 or 5. It breaks on DIED and
-  INDETERMINATE as well as on DONE — a hand-rolled `until [ $? -eq 0 ]` hangs forever on a job
+  Exits with the status codes above MINUS RUNNING: 0, 1, 4, 5 or 6. It breaks on DIED,
+  INDETERMINATE and NO-TURN as well as on DONE — a hand-rolled `until [ $? -eq 0 ]` hangs forever on a job
   that was killed.
 
 Stamp mode:
@@ -132,6 +176,9 @@ mode="launch"
 interval="$DEFAULT_INTERVAL"
 interval_set=0
 stamp_set=0
+no_gate=0
+gate_max_wait=""
+gate_max_wait_set=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -177,6 +224,16 @@ while [[ $# -gt 0 ]]; do
       interval_set=1
       shift 2
       ;;
+    --no-gate)
+      no_gate=1
+      shift
+      ;;
+    --gate-max-wait)
+      [[ $# -ge 2 ]] || die '--gate-max-wait needs a value'
+      gate_max_wait="$2"
+      gate_max_wait_set=1
+      shift 2
+      ;;
     --stamp)
       mode="stamp"
       stamp_set=1
@@ -196,6 +253,17 @@ if [[ "$interval_set" -eq 1 ]]; then
   [[ "$mode" == "wait" ]] || die '--interval applies to --wait only'
   [[ "$interval" =~ ^[1-9][0-9]*$ ]] ||
     die "--interval needs a positive whole number of seconds: $interval"
+fi
+
+if [[ "$no_gate" -eq 1 || "$gate_max_wait_set" -eq 1 ]]; then
+  [[ "$mode" == "launch" && "$stamp_set" -eq 0 ]] ||
+    die '--no-gate and --gate-max-wait apply to launch mode only'
+  [[ "$no_gate" -eq 0 || "$gate_max_wait_set" -eq 0 ]] ||
+    die '--no-gate and --gate-max-wait cannot be combined: there is no turn to wait for'
+fi
+if [[ "$gate_max_wait_set" -eq 1 ]]; then
+  [[ "$gate_max_wait" =~ ^[1-9][0-9]*$ ]] ||
+    die "--gate-max-wait needs a positive whole number of seconds: $gate_max_wait"
 fi
 
 # --stamp is checked by presence (stamp_set), never by `$mode == stamp`: whichever mode flag is
@@ -349,6 +417,35 @@ outside_git_repo() { # [dir]
   [[ "$err" == *'not a git repository (or any of the parent directories)'* ]]
 }
 
+# hdr_field ARTIFACT PREFIX -- the first line above the output marker that starts with PREFIX,
+# PREFIX removed. Header-only: the job's own output may carry look-alike lines. No pipe, so there
+# is no producer for an early-exiting reader to SIGPIPE under pipefail.
+hdr_field() {
+  sed -n -e "/^$2/{s///;p;q;}" -e '/^----- output -----$/q' "$1"
+}
+
+# section_has ARTIFACT ERE -- succeeds when a line BELOW the output marker matches ERE. One awk
+# reader and no pipe: a `sed | grep -q` pipeline under pipefail reads as NO MATCH on a large
+# artifact (grep exits at the first match, sed dies of SIGPIPE, the pipeline reports 141).
+section_has() {
+  awk -v re="$2" '
+    found { next }
+    /^----- output -----$/ { inside = 1; next }
+    inside && $0 ~ re { found = 1 }
+    END { exit found ? 0 : 1 }' "$1"
+}
+
+# turn_stamp ARTIFACT -- the first RUN_LONG_SUBJECT_AT_TURN= value that follows a
+# RUN_LONG_GATE_TURN record in the output section. The stamp is only genuine behind the turn
+# record the prelude writes just before it, so a look-alike on a run that never took a turn
+# (the fail-open path) is not a baseline.
+turn_stamp() {
+  awk '
+    /^----- output -----$/ { inside = 1; next }
+    inside && /^RUN_LONG_GATE_TURN / { turn = 1; next }
+    inside && turn && /^RUN_LONG_SUBJECT_AT_TURN=/ { sub(/^RUN_LONG_SUBJECT_AT_TURN=/, ""); print; exit }' "$1"
+}
+
 # Every branch prints SOMETHING. Silence would be indistinguishable from "checked, and unchanged",
 # which is the false-clean this whole feature exists to remove — so "no subject was recorded" and
 # "the subject cannot be re-read" are stated out loud rather than left to an absent line.
@@ -356,6 +453,12 @@ subject_report() { # artifact
   local art="$1" recorded root now
   recorded="$(sed -n "s/^${SUBJECT_PREFIX}//p" "$art" | head -1)"
   root="$(sed -n "s/^${SUBJECT_ROOT_PREFIX}//p" "$art" | head -1)"
+  local at_turn=""
+  # The turn stamp is written by the job after the marker, so only a header that says `turn`
+  # makes it a baseline; first-wins keeps the harness's line ahead of any look-alike in the output.
+  if [[ "$(hdr_field "$art" 'RUN_LONG_GATE=')" == turn ]]; then
+    at_turn="$(turn_stamp "$art")"
+  fi
 
   if [[ -z "$recorded" || "$recorded" == "none" ]]; then
     printf 'SUBJECT: not recorded — the launch was outside a git repo, so drift cannot be judged\n'
@@ -368,6 +471,17 @@ subject_report() { # artifact
       "${root:-?}"
     return 0
   fi
+
+  if [[ "$at_turn" == "$SUBJECT_UNAVAILABLE" ]]; then
+    printf 'SUBJECT: UNAVAILABLE at turn start — the stamp could not be computed when the turn began in %s, so drift cannot be judged\n' \
+      "${root:-?}"
+    return 0
+  fi
+  if [[ -n "$at_turn" && "$at_turn" != "none" && "$at_turn" != "$recorded" ]]; then
+    printf 'SUBJECT: MOVED while queued - launched %s, the turn began on %s; the verdict covers %s\n' \
+      "${recorded:0:12}" "${at_turn:0:12}" "${at_turn:0:12}"
+  fi
+  if [[ -n "$at_turn" && "$at_turn" != "none" ]]; then recorded="$at_turn"; fi
 
   now=""
   if [[ -n "$root" && -d "$root" ]]; then
@@ -440,8 +554,19 @@ expect_satisfied() { # artifact pattern
   # down. Measured on an inert artifact: `--expect 'STATUS=0'` and `--expect 'output'` BOTH
   # cleared a run that produced nothing, and `STATUS=0` is a natural way to try to assert success.
   # `1d` drops the marker; the trailer goes by pattern.
+  # The gate's own records are harness-authored too: the turn and subject-at-turn lines, any
+  # RUN_LONG_GATE= record, and the gate's verdict line for THIS job's name (fixed-string compare:
+  # a nested stage printing another name's line still counts as the stage's output). Lines are
+  # removed wherever they sit -- on a fail-open run the unavailable record is not at either end.
+  local gname
+  gname="$(hdr_field "$1" 'RUN_LONG_GATE_NAME=')"
   section="$(sed -n '/^----- output -----$/,$p' "$1" |
-    sed -e '1d' -e '/^RUN_LONG_EXIT_STATUS=[0-9][0-9]*$/d')"
+    sed -e '1d' -e '/^RUN_LONG_EXIT_STATUS=[0-9][0-9]*$/d' \
+      -e '/^RUN_LONG_GATE_TURN /d' -e '/^RUN_LONG_SUBJECT_AT_TURN=/d' -e '/^RUN_LONG_GATE=/d' |
+    RL_GNAME="$gname" awk '
+      BEGIN { pre = (ENVIRON["RL_GNAME"] == "") ? "" : "HEAVY_GATE_DONE " ENVIRON["RL_GNAME"] " rc=" }
+      pre != "" && index($0, pre) == 1 && substr($0, length(pre) + 1) ~ /^[0-9]+$/ { next }
+      { print }')"
 
   # An EMPTY section must be unmatched BY CONSTRUCTION, never by trusting the matcher. A
   # here-string built from "" feeds it ONE EMPTY LINE, which '^', '$' and '^$' all match — so
@@ -498,6 +623,19 @@ classify() { # artifact -> sets CLASS to done | running | died
   if grep -q "^${STATUS_PREFIX}" "$art"; then
     JOB_RC="$(sed -n "s/^${STATUS_PREFIX}\\([0-9][0-9]*\\)\$/\\1/p" "$art" | tail -1)"
     CLASS="done"
+    # NO-TURN is positional: the trailer is 75, the line right before it is the job-written
+    # RUN_LONG_GATE=no-turn, the header says `turn`, and no turn record exists (a stage that ran
+    # has one, written by the prelude ahead of anything the stage prints). A stage that merely
+    # prints the line and exits 75 therefore reads DONE. Decided BEFORE any --expect check.
+    local last prev
+    last="$(tail -n 1 "$art")"
+    prev="$(tail -n 2 "$art" | head -n 1)"
+    if [[ "$last" == "${STATUS_PREFIX}75" && "$prev" == "RUN_LONG_GATE=no-turn" &&
+      "$(hdr_field "$art" 'RUN_LONG_GATE=')" == turn ]] &&
+      ! section_has "$art" '^RUN_LONG_GATE_TURN '; then
+      CLASS="noturn"
+      return 0
+    fi
     local pat
     # Process substitution, NOT `expect_patterns "$art" | while read`. A pipe runs the loop body
     # in a SUBSHELL, so every assignment below — CLASS included — would be discarded silently and
@@ -521,11 +659,80 @@ classify() { # artifact -> sets CLASS to done | running | died
   fi
 }
 
+# gate_report ARTIFACT -- the GATE: line. off and unavailable are printed in every state; the
+# queue lines only while RUNNING (the caller decides). A nested run prints its own line in every
+# state; seam-off runs print nothing.
+gate_report() { # artifact running(0|1)
+  local art="$1" running="$2" mode
+  mode="$(hdr_field "$art" 'RUN_LONG_GATE=')"
+  case "$mode" in
+    off) printf 'GATE: off (--no-gate)\n' ;;
+    unavailable) printf 'GATE: unavailable\n' ;;
+    nested) printf 'GATE: nested (shares the launching heavy-gate turn; ungated once that turn ends)\n' ;;
+    turn)
+      # The fail-open path: the header still says turn, the job then wrote its own record.
+      if section_has "$art" '^RUN_LONG_GATE=unavailable$'; then
+        printf 'GATE: unavailable\n'
+      elif [[ "$running" -eq 1 ]]; then
+        if section_has "$art" '^RUN_LONG_GATE_TURN '; then
+          printf 'GATE: turn taken\n'
+        else
+          gate_waiting_line "$art"
+        fi
+      fi
+      ;;
+  esac
+  return 0
+}
+
+gate_waiting_line() { # artifact
+  local art="$1" gname launch st word="" holder="" n=0 pos="" line since="" tname
+  gname="$(hdr_field "$art" 'RUN_LONG_GATE_NAME=')"
+  launch="$(hdr_field "$art" 'RUN_LONG_GATE_LAUNCH_EPOCH=')"
+  if st="$("$(dirname "$0")/heavy-gate.sh" status 2> /dev/null)" && [[ -n "$gname" ]]; then
+    # The lock holder keeps its own ticket in the queue while it runs, so it is not ahead of anyone
+    # waiting: the owner's name is read first and its ticket is left out of position and count.
+    while IFS= read -r line; do
+      case "$line" in
+        'lock: '*)
+          holder="${line#lock: }"
+          holder="${holder%% *}"
+          ;;
+        'throttle: '*) word="${line#throttle: }" ;;
+      esac
+    done <<< "$st"
+    while IFS= read -r line; do
+      case "$line" in
+        '  '*)
+          # a ticket is <epoch>-<name>; one prefix strip leaves the name, dashes and all
+          tname="${line#  *-}"
+          [[ "$tname" == "$holder" ]] && continue
+          n=$((n + 1))
+          [[ "$tname" == "$gname" ]] && pos="$n"
+          ;;
+      esac
+    done <<< "$st"
+  fi
+  if [[ -n "$launch" && "$launch" =~ ^[0-9]+$ ]]; then since=" ($(($(date +%s) - launch)) s since launch)"; fi
+  if [[ -n "$pos" && -n "$word" ]]; then
+    printf 'GATE: waiting for a turn, queue position %s of %s, throttle: %s%s\n' "$pos" "$n" "$word" "$since"
+  else
+    printf 'GATE: waiting for a turn (queue state unreadable)\n'
+  fi
+}
+
 report() { # artifact -> prints the verdict, returns its exit code
   local art="$1"
   case "$CLASS" in
+    noturn)
+      printf 'RESULT: NO-TURN rc=75 artifact=%s\n' "$art"
+      printf '        The gate gave up waiting for a heavy-gate turn, so the command NEVER STARTED.\n'
+      printf '        Nothing ran: this is neither a pass nor a failure of the work. Launch it again.\n'
+      return 6
+      ;;
     done)
       printf 'RESULT: DONE rc=%s artifact=%s\n' "${JOB_RC:-?}" "$art"
+      gate_report "$art" 0
       if [[ "$EXPECT_ACTIVE" -eq 1 ]]; then
         printf 'EXPECT: satisfied — the output carries the line this run was required to produce\n'
       fi
@@ -535,6 +742,7 @@ report() { # artifact -> prints the verdict, returns its exit code
       ;;
     indeterminate)
       printf 'RESULT: INDETERMINATE rc=%s artifact=%s\n' "${JOB_RC:-?}" "$art"
+      gate_report "$art" 0
       printf '        The job FINISHED and recorded that status, but its output contains no line\n'
       printf '        matching: %s\n' "$EXPECT_UNMATCHED"
       printf '        A finished run that produced no verdict has not been verified. This is the\n'
@@ -546,11 +754,13 @@ report() { # artifact -> prints the verdict, returns its exit code
       ;;
     running)
       printf 'RESULT: RUNNING pid=%s artifact=%s\n' "$JOB_PID" "$art"
+      gate_report "$art" 1
       subject_report "$art"
       return 3
       ;;
     *)
       printf 'RESULT: DIED pid=%s artifact=%s\n' "${JOB_PID:-unknown}" "$art"
+      gate_report "$art" 0
       printf '        the job recorded no exit status, so it was killed before finishing.\n'
       printf '        Whatever it printed is a PREFIX — absence of FAIL is not a pass.\n'
       subject_report "$art"
@@ -634,6 +844,52 @@ subject_block="$(printf '%s%s\n%s%s' \
   "$SUBJECT_ROOT_PREFIX" "$subject_root" \
   "$SUBJECT_PREFIX" "${subject_hash:-none}")"
 
+# ---------- the gate: decide the mode BEFORE the job starts ----------
+#
+# off          --no-gate, or the test seam (GATE_WIRING=off with a non-empty GATE_DIR)
+# unavailable  no executable heavy-gate.sh beside this script, or no per-job copy could be made
+# nested       the launch is already inside a held turn (`heavy-gate.sh held` exits 0)
+# turn         the job queues for a turn
+# The seam needs GATE_DIR: GATE_WIRING=off alone would let an exported test variable switch the
+# gate off for a real launch against the operator's real state. The gate runs from a COPY made
+# here, in a per-job directory under the per-user temp root, so a replacement of the source file
+# while the job is queued is never what runs.
+gate_mode=turn
+gate_seam=0
+gate_copy=""
+gate_reason=""
+if [[ "$no_gate" -eq 1 ]]; then
+  gate_mode=off
+elif [[ "${GATE_WIRING:-}" == off && -n "${GATE_DIR:-}" ]]; then
+  gate_mode=off
+  gate_seam=1
+else
+  gate_src="$(dirname "$0")/heavy-gate.sh"
+  if [[ ! -f "$gate_src" || ! -x "$gate_src" ]]; then
+    gate_mode=unavailable
+    gate_reason="no executable $gate_src"
+  elif ! gate_tmp="$(mktemp -d "${TMPDIR:-/tmp}/run-long-gate.XXXXXX" 2> /dev/null)"; then
+    gate_mode=unavailable
+    gate_reason="cannot create a temp directory under ${TMPDIR:-/tmp}"
+  elif ! cp "$gate_src" "$gate_tmp/heavy-gate.sh" 2> /dev/null || ! chmod +x "$gate_tmp/heavy-gate.sh"; then
+    rm -rf "$gate_tmp"
+    gate_mode=unavailable
+    gate_reason="cannot copy $gate_src"
+  else
+    gate_copy="$gate_tmp/heavy-gate.sh"
+    if "$gate_copy" held > /dev/null 2>&1; then
+      gate_mode=nested
+      rm -rf "$gate_tmp"
+      gate_copy=""
+    fi
+  fi
+fi
+
+# <slug>: the label with bytes outside [A-Za-z0-9._-] replaced by '-', leading dots and dashes
+# stripped, cut to 40 bytes, `job` when nothing is left.
+gate_slug="$(printf '%s' "$label" | LC_ALL=C tr -c 'A-Za-z0-9._-' '-' | LC_ALL=C sed 's/^[.-]*//' | LC_ALL=C cut -b 1-40)"
+[[ -n "$gate_slug" ]] || gate_slug=job
+
 # The pattern rides inside the SAME header block rather than travelling as another child
 # argument. Passing it separately would mean the child unconditionally printf'ing a value that is
 # empty on almost every launch, and `printf "%s\n" ""` emits a BLANK LINE — silently breaking the
@@ -642,6 +898,37 @@ header_block="$subject_block"
 if [[ -n "$expect" ]]; then
   header_block="$(printf '%s\n%s%s' "$header_block" "$EXPECT_PREFIX" "$expect")"
 fi
+if [[ "$gate_seam" -eq 0 ]]; then
+  header_block="$(printf '%s\nRUN_LONG_GATE=%s' "$header_block" "$gate_mode")"
+fi
+if [[ "$gate_mode" == "turn" ]]; then
+  header_block="$(printf '%s\nRUN_LONG_GATE_LAUNCH_EPOCH=%s' "$header_block" "$(date +%s)")"
+  if [[ -n "$gate_max_wait" ]]; then
+    header_block="$(printf '%s\nRUN_LONG_GATE_MAX_WAIT=%s' "$header_block" "$gate_max_wait")"
+  fi
+fi
+
+# The prelude the gate's stage runs before the command (bash -c, so it lives in its own literal:
+# the job body below is itself one single-quoted literal). Arguments: marker, artifact, this
+# script, then the command. It creates the marker the job reads afterwards to tell "the stage
+# started" from "the gate never ran it", records the turn and the subject at the turn, and execs.
+# shellcheck disable=SC2016
+readonly GATE_PRELUDE='
+  marker=$1
+  art=$2
+  self=$3
+  shift 3
+  : > "$marker" || exit 125
+  printf "RUN_LONG_GATE_TURN epoch=%s\n" "$(date +%s)" >> "$art"
+  if st="$("$self" --stamp 2> /dev/null)"; then
+    printf "RUN_LONG_SUBJECT_AT_TURN=%s\n" "${st:-none}" >> "$art"
+  else
+    printf "RUN_LONG_SUBJECT_AT_TURN=unavailable\n" >> "$art"
+  fi
+  exec "$@"
+'
+
+self_path="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
 # The job writes its own header so the pid in the artifact is authoritative, and appends the
 # status trailer as its last act. Nothing else may write to the artifact, or the trailer stops
@@ -654,23 +941,89 @@ nohup bash -c '
   begin=$3
   trailer=$4
   header=$5
-  shift 5
+  gmode=$6
+  gcopy=$7
+  gmax=$8
+  gslug=$9
+  shift 9
+  self=$1
+  prelude=$2
+  shift 2
+  name="run-long-$gslug-$$"
   {
     printf "%s pid=%d label=%s\n" "$begin" "$$" "$tag"
     printf "%s\n" "$header"
+    if [ "$gmode" = turn ]; then printf "RUN_LONG_GATE_NAME=%s\n" "$name"; fi
     printf "RUN_LONG_COMMAND:"
     for a in "$@"; do printf " %q" "$a"; done
     printf "\n----- output -----\n"
   } >> "$art"
 
-  "$@" >> "$art" 2>&1
-  rc=$?
+  ran=0
+  if [ "$gmode" = turn ]; then
+    gtmp=$(dirname "$gcopy")
+    marker="$gtmp/marker"
+    sig=0
+    gpid=""
+    # The trap goes in BEFORE the gate is forked, so no signal can reach a job that has no handler
+    # yet. It forwards to the gate only once the gate exists; a signal that lands earlier is
+    # replayed right after the fork. The job leaves NO trailer after a signal, as before. TERM is
+    # the only signal ever forwarded: nohup makes the job ignore HUP and a non-interactive
+    # background start ignores INT, so the INT and HUP traps are inert and kept only as harmless.
+    trap "sig=1; if [ -n \"\$gpid\" ]; then kill -TERM \"\$gpid\" 2>/dev/null; fi" TERM INT HUP
+    # Run the gate in the background so a TERM sent to this job can be forwarded to it: the gate
+    # then kills its stage and frees the turn.
+    if [ -n "$gmax" ]; then
+      "$gcopy" run "$name" --max-wait "$gmax" -- bash -c "$prelude" _ "$marker" "$art" "$self" "$@" >> "$art" 2>&1 &
+    else
+      "$gcopy" run "$name" -- bash -c "$prelude" _ "$marker" "$art" "$self" "$@" >> "$art" 2>&1 &
+    fi
+    gpid=$!
+    if [ "$sig" = 1 ]; then kill -TERM "$gpid" 2>/dev/null; fi
+    wait "$gpid"
+    grc=$?
+    while kill -0 "$gpid" 2>/dev/null; do
+      wait "$gpid"
+      grc=$?
+    done
+    if [ "$sig" = 1 ]; then
+      rm -rf "$gtmp"
+      exit 143
+    fi
+    rc=$grc
+    started=0
+    if [ -e "$marker" ]; then started=1; fi
+    # The temp directory goes BEFORE the handlers are cleared, so a signal in the gap can no
+    # longer leak it; one that lands before the clear is caught by the sig test after it.
+    rm -rf "$gtmp"
+    trap - TERM INT HUP
+    if [ "$sig" = 1 ]; then exit 143; fi
+    if [ "$started" = 0 ]; then
+      case "$grc" in
+        75)
+          printf "RUN_LONG_GATE=no-turn\n" >> "$art"
+          ran=1
+          ;;
+        2 | 126 | 127)
+          printf "RUN_LONG_GATE=unavailable\n" >> "$art"
+          ;;
+        *) ran=1 ;;
+      esac
+    else
+      ran=1
+    fi
+  fi
+  if [ "$ran" = 0 ]; then
+    "$@" >> "$art" 2>&1
+    rc=$?
+  fi
 
   # A command whose output lacks a trailing newline would otherwise swallow the trailer onto its
   # last line, and the trailer has to stand alone to be greppable and to be `tail -1`.
   if [ -n "$(tail -c 1 "$art")" ]; then printf "\n" >> "$art"; fi
   printf "%s%d\n" "$trailer" "$rc" >> "$art"
-' _ "$out" "$label" "$BEGIN_PREFIX" "$STATUS_PREFIX" "$header_block" "$@" > /dev/null 2>&1 &
+' _ "$out" "$label" "$BEGIN_PREFIX" "$STATUS_PREFIX" "$header_block" \
+  "$gate_mode" "$gate_copy" "$gate_max_wait" "$gate_slug" "$self_path" "$GATE_PRELUDE" "$@" > /dev/null 2>&1 &
 pid=$!
 
 # Return only once the header is on disk, so a caller that immediately runs --status cannot race
@@ -689,6 +1042,9 @@ while [[ $tries -lt 250 ]]; do
   tries=$((tries + 1))
 done
 
+if [[ "$gate_mode" == "unavailable" ]]; then
+  printf 'WARNING: heavy-gate unavailable (%s); running without a turn\n' "$gate_reason"
+fi
 printf 'launched pid=%s\n' "$pid"
 printf 'artifact: %s\n' "$out"
 printf 'NOTE: this exit status describes the LAUNCH only.\n'

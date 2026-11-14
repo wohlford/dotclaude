@@ -84,8 +84,8 @@ MUTATIONS = [
     ),
     mutate.Mutation(
         "stderr is no longer captured into the artifact",
-        '"$@" >> "$art" 2>&1',
-        '"$@" >> "$art"',
+        'if [ "$ran" = 0 ]; then\n    "$@" >> "$art" 2>&1',
+        'if [ "$ran" = 0 ]; then\n    "$@" >> "$art"',
     ),
     # A row for the launch/artifact race guard was here and has been REMOVED, not silenced.
     # It survived, and probing said the guard is nonetheless load-bearing: instrumenting the
@@ -241,14 +241,13 @@ MUTATIONS = [
     # false clear surviving at each one in turn.
     mutate.Mutation(
         "the expect match widens to the WHOLE artifact, so the header's own text clears an inert run",
-        '  section="$(sed -n \'/^----- output -----$/,$p\' "$1" |\n'
-        "    sed -e '1d' -e '/^RUN_LONG_EXIT_STATUS=[0-9][0-9]*$/d')\"",
-        '  section="$(cat "$1")"',
+        '  section="$(sed -n \'/^----- output -----$/,$p\' "$1" |',
+        '  section="$(cat "$1" |',
     ),
     mutate.Mutation(
         "the harness's own marker and trailer stay in scope, so 'EXIT_STATUS=0' clears an inert run",
-        "    sed -e '1d' -e '/^RUN_LONG_EXIT_STATUS=[0-9][0-9]*$/d')\"",
-        '    cat)"',
+        "    sed -e '1d' -e '/^RUN_LONG_EXIT_STATUS=[0-9][0-9]*$/d' \\",
+        "    sed -e 's/^$//' \\",
     ),
     mutate.Mutation(
         "INDETERMINATE returns 0 — inertness starts reading as success",
@@ -314,6 +313,124 @@ MUTATIONS = [
         "  esac",
         ":",
     ),
+    mutate.Mutation(
+        "the marker check is removed (a stage's own exit 75 reads as no-turn)  [kills g4]",
+        '    if [ "$started" = 0 ]; then',
+        "    if true; then",
+    ),
+    mutate.Mutation(
+        "the gate is placed outside the job (the launcher itself waits for a turn)  [kills g2]",
+        'self_path="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"\n',
+        'self_path="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"\nif [[ "$gate_mode" == turn ]]; then "$gate_copy" run "run-long-$gate_slug-$$" -- true > /dev/null 2>&1; fi\n',
+    ),
+    mutate.Mutation(
+        "the gate runs from the source file instead of the copy  [kills g10 through the __beat sentinel of a queued job]",
+        '      "$gcopy" run "$name" -- bash -c',
+        '      "$(dirname "$self")/heavy-gate.sh" run "$name" -- bash -c',
+    ),
+    mutate.Mutation(
+        "the no-turn trailer records 0 instead of 75  [kills g3]",
+        '          printf "RUN_LONG_GATE=no-turn\\n" >> "$art"\n          ran=1\n',
+        '          printf "RUN_LONG_GATE=no-turn\\n" >> "$art"\n          ran=1\n          rc=0\n',
+    ),
+    mutate.Mutation(
+        "the turn stamp is not recorded (always unavailable)  [kills g12]",
+        '  if st="$("$self" --stamp 2> /dev/null)"; then',
+        "  if false; then",
+    ),
+    mutate.Mutation(
+        "the seam is honoured without GATE_DIR  [kills g7]",
+        'elif [[ "${GATE_WIRING:-}" == off && -n "${GATE_DIR:-}" ]]; then',
+        'elif [[ "${GATE_WIRING:-}" == off ]]; then',
+    ),
+    mutate.Mutation(
+        "mode off still writes header lines under the seam  [kills g6]",
+        'if [[ "$gate_seam" -eq 0 ]]; then\n  header_block',
+        "if true; then\n  header_block",
+    ),
+    mutate.Mutation(
+        "the label is not slugged into the gate name  [kills g1]",
+        '[[ -n "$gate_slug" ]] || gate_slug=job',
+        'gate_slug="${label:-job}"',
+    ),
+    mutate.Mutation(
+        "the fail-open path does not append RUN_LONG_GATE=unavailable  [kills g8b]",
+        '          printf "RUN_LONG_GATE=unavailable\\n" >> "$art"\n          ;;',
+        "          :\n          ;;",
+    ),
+    # --- the read side of the gate: NO-TURN, the gate's own lines, the turn-anchored subject ------
+    mutate.Mutation(
+        "noturn is decided after --expect, so an expect pattern turns NO-TURN into INDETERMINATE  [kills n1c]",
+        '      CLASS="noturn"\n      return 0',
+        '      CLASS="noturn"\n      [[ -n "$(expect_patterns "$art")" ]] && CLASS="indeterminate"\n      return 0',
+    ),
+    mutate.Mutation(
+        "NO-TURN returns 0, so nothing-ran reads as success  [kills n1a]",
+        "      return 6\n",
+        "      return 0\n",
+    ),
+    mutate.Mutation(
+        "--wait does not break on noturn, so a gate that gave up hangs the waiter  [kills n1b]",
+        '    while [[ "$CLASS" == "running" ]]; do',
+        '    while [[ "$CLASS" == "running" || "$CLASS" == "noturn" ]]; do',
+    ),
+    mutate.Mutation(
+        "noturn is decided by the trailer alone, so a stage that exits 75 reads NO-TURN  [kills n2]",
+        '    if [[ "$last" == "${STATUS_PREFIX}75" && "$prev" == "RUN_LONG_GATE=no-turn" &&\n'
+        '      "$(hdr_field "$art" \'RUN_LONG_GATE=\')" == turn ]] &&\n'
+        "      ! section_has \"$art\" '^RUN_LONG_GATE_TURN '; then",
+        '    if [[ "$last" == "${STATUS_PREFIX}75" ]]; then',
+    ),
+    mutate.Mutation(
+        "the job's gate line is not stripped, so the gate's own verdict satisfies --expect  [kills n3a]",
+        '      pre != "" && index($0, pre) == 1 && substr($0, length(pre) + 1) ~ /^[0-9]+$/ { next }',
+        '      pre != "" && 0 { next }',
+    ),
+    mutate.Mutation(
+        "the job's gate line is stripped only at the end of the section, so a fail-open run's leading gate line satisfies --expect  [kills n3b]",
+        '      pre != "" && index($0, pre) == 1 && substr($0, length(pre) + 1) ~ /^[0-9]+$/ { next }\n'
+        "      { print }')\"",
+        "      { buf[NR] = $0; next }\n"
+        "      END {\n"
+        "        for (i = 1; i < NR; i++) print buf[i]\n"
+        '        if (!(pre != "" && index(buf[NR], pre) == 1 && substr(buf[NR], length(pre) + 1) ~ /^[0-9]+$/)) print buf[NR]\n'
+        "      }')\"",
+    ),
+    mutate.Mutation(
+        "every HEAVY_GATE_DONE line is stripped, so a nested stage's own verdict line no longer counts  [kills n3c]",
+        '      pre != "" && index($0, pre) == 1 && substr($0, length(pre) + 1) ~ /^[0-9]+$/ { next }',
+        "      /^HEAVY_GATE_DONE / { next }",
+    ),
+    mutate.Mutation(
+        "the baseline stays the launch stamp, so an edit made while queued reads as moved since launch  [kills n6]",
+        '  if [[ -n "$at_turn" && "$at_turn" != "none" ]]; then recorded="$at_turn"; fi',
+        "  :",
+    ),
+    mutate.Mutation(
+        "the fail-open line is not read by --status, so a job running without a turn reads as waiting for one  [kills n5b]",
+        "      if section_has \"$art\" '^RUN_LONG_GATE=unavailable$'; then",
+        "      if false; then",
+    ),
+    mutate.Mutation(
+        "the NO-TURN turn-record test is a sed|grep -q pipe again, so a large artifact reads as having no turn record  [kills n2b]",
+        "      ! section_has \"$art\" '^RUN_LONG_GATE_TURN '; then",
+        "      ! sed -n '/^----- output -----$/,$p' \"$art\" | grep -q '^RUN_LONG_GATE_TURN '; then",
+    ),
+    mutate.Mutation(
+        "the turn-taken test is a sed|grep -q pipe again, so a RUNNING job with big output reads as waiting  [kills n4b]",
+        "        if section_has \"$art\" '^RUN_LONG_GATE_TURN '; then",
+        "        if sed -n '/^----- output -----$/,$p' \"$art\" | grep -q '^RUN_LONG_GATE_TURN '; then",
+    ),
+    mutate.Mutation(
+        "the fail-open test is a sed|grep -q pipe again, so big output hides GATE: unavailable  [kills n5c]",
+        "      if section_has \"$art\" '^RUN_LONG_GATE=unavailable$'; then",
+        "      if sed -n '/^----- output -----$/,$p' \"$art\" | grep -q '^RUN_LONG_GATE=unavailable$'; then",
+    ),
+    mutate.Mutation(
+        "a turn stamp is accepted without a turn record before it, so a look-alike becomes the baseline  [kills n6b]",
+        "    inside && turn && /^RUN_LONG_SUBJECT_AT_TURN=/ {",
+        "    inside && /^RUN_LONG_SUBJECT_AT_TURN=/ {",
+    ),
 ]
 
 
@@ -343,13 +460,29 @@ MUTATIONS = [
 SUITE_TIMEOUT_SECONDS = 3600
 
 
-def main() -> int:
+_USAGE = "usage: mutate_run_long.py [--only LABEL-SUBSTRING]"
+
+
+def main(argv: list[str]) -> int:
+    chosen = MUTATIONS
+    if argv[:1] == ["--only"] and len(argv) == 2 and argv[1]:
+        chosen = [m for m in MUTATIONS if argv[1] in m.label]
+        if not chosen:
+            print(
+                f"mutate_run_long.py: --only {argv[1]!r} matches no mutant label",
+                file=sys.stderr,
+            )
+            print(_USAGE, file=sys.stderr)
+            return 2
+    elif argv:
+        print(_USAGE, file=sys.stderr)
+        return 2
     report = mutate.run(
-        SUBJECT, SUITE, MUTATIONS, cwd=str(REPO), timeout=SUITE_TIMEOUT_SECONDS
+        SUBJECT, SUITE, chosen, cwd=str(REPO), timeout=SUITE_TIMEOUT_SECONDS
     )
     print(report.text)
     return report.rc
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
