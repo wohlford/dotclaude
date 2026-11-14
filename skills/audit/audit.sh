@@ -17,7 +17,7 @@ set -uo pipefail
 #   `timing-guard-conf`, which is not repo-scoped at all: it reads a MACHINE-GLOBAL path
 #   ($HOME/.claude/.git-timing-guard.conf) that no repo's tracked/untracked split can describe,
 #   so "tracked-only" is simply not a claim that check can make.
-# Usage: audit.sh [--scope <path>] [--tests]
+# Usage: audit.sh [--scope <path>] [--tests [--no-gate] [--gate-max-wait <secs>]]
 #
 # A `.auditignore` at the scope root (opt-in, one glob pathspec per line, `#` comments and
 # blank lines ignored) excludes matching paths from the five text-content checks
@@ -30,7 +30,12 @@ set -uo pipefail
 # Exit codes:
 #   0 — sweep completed, zero FAILs
 #   1 — sweep completed, at least one FAIL
-#   2 — usage error (bad/missing --scope, unknown flag)
+#   2 — usage error (bad/missing --scope, unknown flag, --no-gate or --gate-max-wait without --tests)
+#   75 — --tests only: the heavy gate gave no turn within --gate-max-wait; nothing was run
+#   1 with `RESULT: INCOMPLETE rc=1` — --tests only: the gate returned 0 without ever running the sweep. It is
+#     not rc=0 because a verdict of INCOMPLETE with exit 0 would read as success.
+#   A second RESULT line can follow a signal, or a stage that ended with status >= 128 (the child prints its own,
+#   then the parent adds INCOMPLETE): the LAST line is the verdict.
 #   129/130/143 — died on a trapped signal (HUP/INT/TERM); 128+n for any other
 #     catchable fatal signal, though those are not trapped and the EXIT trap then
 #     reads `$?` as 0 (see audit_on_exit).
@@ -39,7 +44,8 @@ set -uo pipefail
 # line of stdout, `RESULT: <STATUS> rc=<n> checks=<pass>/<fail>/<skip>` where STATUS is
 # PASS (completed, zero FAILs) | PARALLEL-PASS (completed, zero FAILs, opt-in parallel pytest and/or
 # shell-suite pool iteration run; see below) | FAIL (completed, >=1 FAIL) | ERROR (usage error, no
-# sweep ran) | INCOMPLETE (died mid-sweep on a catchable signal). Clean is EXACTLY
+# sweep ran) | INCOMPLETE (died mid-sweep on a catchable signal, or --tests got no heavy-gate turn: then
+# `RESULT: INCOMPLETE rc=75 checks=0/0/0` and nothing ran). Clean is EXACTLY
 # `RESULT: PASS` — an allowlist, so any value not anticipated here reads as not-clean.
 # The line CANNOT be emitted on SIGKILL, so its ABSENCE never means clean: it means
 # the run did not complete.
@@ -51,6 +57,14 @@ set -uo pipefail
 # it. A consumer accepts it by NAME and only when it launched the run itself with both variables on its own
 # command line: a PARALLEL-PASS from an inherited or leaked variable is never a gate result. Which profile ran
 # is read from the NOTE lines of the run, not from this line.
+#
+# --tests takes its own heavy-gate turn (scripts/heavy-gate.sh run) so concurrent sessions run the suites one at a
+# time: the parent re-executes itself inside the gate as `--no-gate --gate-marker <path> --tests --scope <abs>` and
+# relays the child's verdict. --no-gate skips that; --gate-max-wait <secs> bounds the wait for a turn and is parent-only:
+# the parent consumes it and re-emits ONLY --tests and the absolute --scope, never its raw argv. A caller already inside a
+# held turn (HEAVY_GATE_HELD, or a run-long.sh launch) takes no second turn. A gate that cannot run (missing, or
+# exit 2/126/127 before the sweep) is announced with a NOTE and the sweep runs without a turn. GATE_WIRING=off together
+# with a non-empty GATE_DIR is the test seam that skips the gate.
 #
 # NOTE: no `-e` — sweep-runner exemption (STYLE.md): one failing check or tool invocation
 # must not abort the whole sweep, so every check below guards its own commands explicitly
@@ -74,6 +88,11 @@ skip_count=0
 # on the normal path rather than emitting a second one.
 audit_phase=init
 audit_reported=no
+# The --tests heavy-gate wrapper's state, read by audit_on_exit() and the signal forwarder: the pid of the gate process
+# the parent is waiting on, and the per-run directory holding the gate's copy and the child's marker. Global for the
+# same reason as the handles above.
+audit_gate_pid=""
+audit_gate_tmp=""
 
 # Also read by audit_on_exit(), and global for the same reason as the two above: a `local` in
 # main() would be invisible to the trap. This one is a cleanup handle rather than sweep state —
@@ -146,7 +165,7 @@ pytest_red=false
 audit_scope=""
 
 usage() {
-  printf 'Usage: audit.sh [--scope <path>] [--tests]\n' >&2
+  printf 'Usage: audit.sh [--scope <path>] [--tests [--no-gate] [--gate-max-wait <secs>]]\n' >&2
 }
 
 # ---------- verdict helpers ----------
@@ -193,6 +212,10 @@ audit_on_exit() { # exit-status
   # already cleaned up, and never on the interrupted ones it exists for. main() disowns the
   # handle when it removes the file itself, so this is a backstop and not a second owner.
   [[ -n "$hermetic_marker" ]] && rm -f "$hermetic_marker"
+  case "$audit_gate_tmp" in
+    */audit-gate.*) rm -rf "$audit_gate_tmp" ;;
+  esac
+  audit_gate_tmp=""
   shellcheck_remove_tmp   # exit-trap backstop
   pytest_remove_tmp   # exit-trap backstop
   if [[ "$audit_reported" == yes ]]; then
@@ -1299,14 +1322,26 @@ check_markdownlint() {
   local path_prefix="" versions ver nodebin
   if ! command -v markdownlint-cli2 >/dev/null 2>&1; then
     nodebin=""
-    versions="$(ls "$HOME/.nvm/versions/node" 2>/dev/null)"
+    # Version roots, in tie-break order: $NVM_DIR, $HOME/.local/nvm, $HOME/.nvm (deduped by
+    # physical path). Only some per-version dirs hold the tool: take the newest version, across
+    # ALL roots, that does; an equal version name goes to the earlier root.
+    local roots="" root
+    for root in "${NVM_DIR:+$NVM_DIR/versions/node}" "$HOME/.local/nvm/versions/node" "$HOME/.nvm/versions/node"; do
+      [[ -n "$root" && -d "$root" ]] || continue
+      root="$(cd "$root" && pwd -P)" || continue
+      case $'\n'"$roots" in *$'\n'"$root"$'\n'*) continue ;; esac
+      roots+="$root"$'\n'
+    done
+    versions="$(while IFS= read -r root; do [[ -n "$root" ]] && ls "$root" 2>/dev/null; done <<< "$roots" | sort -u)"
     if [[ -n "$versions" ]]; then
-      # Only some per-version dirs hold the tool: take the newest one that does.
       while IFS= read -r ver; do
-        if [[ -f "$HOME/.nvm/versions/node/$ver/bin/markdownlint-cli2" && -x "$HOME/.nvm/versions/node/$ver/bin/markdownlint-cli2" ]]; then
-          nodebin="$HOME/.nvm/versions/node/$ver/bin"
-          break
-        fi
+        while IFS= read -r root; do
+          [[ -n "$root" ]] || continue
+          if [[ -f "$root/$ver/bin/markdownlint-cli2" && -x "$root/$ver/bin/markdownlint-cli2" ]]; then
+            nodebin="$root/$ver/bin"
+            break 2
+          fi
+        done <<< "$roots"
       done < <(printf '%s\n' "$versions" | sort_versions_newest_first)
     fi
     if [[ -z "$nodebin" ]]; then
@@ -2724,10 +2759,117 @@ EOF
   fi
 }
 
+# ---------- the --tests heavy-gate wrapper ----------
+
+# Forward a trapped signal to the gate process the parent is waiting on, wait for it to end (it stops its stage and
+# frees the turn), then exit with the signal's status so audit_on_exit prints INCOMPLETE.
+audit_gate_forward() { # exit-status
+  local pid="$audit_gate_pid"
+  if [[ -n "$pid" ]]; then
+    audit_gate_pid=""
+    kill -TERM "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+  fi
+  exit "$1"
+}
+
+# Called by main() after scope validation, for --tests only. It reads main()'s locals no_gate, gate_max_wait and
+# gate_marker (bash dynamic scope). Returns 0 to continue the sweep in THIS process, or exits.
+#
+# Continue in this process when: this is the gate's own child (a marker was given: it prints the turn note), --no-gate,
+# the test seam (GATE_WIRING=off AND a non-empty GATE_DIR), no usable gate (announced), a caller already nested in a held
+# turn, or the gate failed before the sweep started (exit 2, 126 or 127: announced). Otherwise the whole run is
+# re-executed inside the gate from a per-run COPY of heavy-gate.sh, so a replacement of the source while this run is queued
+# is never what runs. The child is given ONLY --tests and the absolute scope: never the parent's raw argv.
+audit_gate_wrap() { # scope
+  local scope="$1" src="$script_dir/../../scripts/heavy-gate.sh" reason="" gtmp="" copy marker grc started=0
+  if [[ -n "$gate_marker" ]]; then
+    printf 'NOTE gate: turn taken %s\n' "$(date +%s)"
+    return 0
+  fi
+  [[ "$no_gate" == true ]] && return 0
+  [[ "${GATE_WIRING:-}" == off && -n "${GATE_DIR:-}" ]] && return 0
+
+  if [[ ! -f "$src" || ! -x "$src" ]]; then
+    reason="no executable $src"
+  elif ! gtmp="$(mktemp -d "${TMPDIR:-/tmp}/audit-gate.XXXXXX" 2>/dev/null)"; then
+    gtmp=""
+    reason="cannot create a temp directory under ${TMPDIR:-/tmp}"
+  elif audit_gate_tmp="$gtmp"; ! cp "$src" "$gtmp/heavy-gate.sh" 2>/dev/null || ! chmod +x "$gtmp/heavy-gate.sh" 2>/dev/null; then
+    rm -rf "$gtmp"
+    audit_gate_tmp=""
+    gtmp=""
+    reason="cannot copy $src"
+  fi
+  if [[ -n "$reason" ]]; then
+    printf 'NOTE gate: heavy-gate.sh unavailable (%s); running without a turn\n' "$reason"
+    return 0
+  fi
+  copy="$gtmp/heavy-gate.sh"
+  if "$copy" held >/dev/null 2>&1; then
+    rm -rf "$gtmp"
+    audit_gate_tmp=""
+    return 0
+  fi
+
+  marker="$gtmp/marker"
+  if [[ -n "$gate_max_wait" ]]; then
+    "$copy" run "audit-tests-$$" --max-wait "$gate_max_wait" -- "${BASH:-bash}" "$0" \
+      --no-gate --gate-marker "$marker" --tests --scope "$scope" &
+  else
+    "$copy" run "audit-tests-$$" -- "${BASH:-bash}" "$0" \
+      --no-gate --gate-marker "$marker" --tests --scope "$scope" &
+  fi
+  audit_gate_pid=$!
+  wait "$audit_gate_pid"
+  grc=$?
+  while kill -0 "$audit_gate_pid" 2>/dev/null; do
+    wait "$audit_gate_pid"
+    grc=$?
+  done
+  audit_gate_pid=""
+  [[ -e "$marker" ]] && started=1
+  rm -rf "$gtmp"
+  audit_gate_tmp=""
+
+  if [[ "$started" -eq 1 ]]; then
+    if [[ "$grc" -ge 128 ]]; then
+      audit_result_line INCOMPLETE "$grc"
+    else
+      # The child ran and printed its own last RESULT line, its own ERROR included.
+      audit_reported=yes
+    fi
+    exit "$grc"
+  fi
+  case "$grc" in
+    75)
+      if [[ -n "$gate_max_wait" ]]; then
+        printf 'NOTE gate: no turn within %s s (heavy-gate exit 75); nothing was run\n' "$gate_max_wait"
+      else
+        printf 'NOTE gate: no turn (heavy-gate exit 75); nothing was run\n'
+      fi
+      audit_result_line INCOMPLETE 75
+      exit 75
+      ;;
+    2 | 126 | 127)
+      printf 'NOTE gate: heavy-gate failed (rc=%s) before the sweep started; running without a turn\n' "$grc"
+      return 0
+      ;;
+    *)
+      printf 'NOTE gate: heavy-gate ended (rc=%s) before the sweep started\n' "$grc"
+      # A gate that returned 0 without running the sweep must never read as success.
+      [[ "$grc" -eq 0 ]] && grc=1
+      audit_result_line INCOMPLETE "$grc"
+      exit "$grc"
+      ;;
+  esac
+}
+
 # ---------- main ----------
 
 main() {
   local scope="" run_tests=false auditignore="" ignore="" invalid_detail="" ignore_count=0 g
+  local no_gate=false gate_max_wait="" gate_marker=""
   local hermetic_before="" hermetic_status=0
   local hermetic_root="" hermetic_out_before="" hermetic_out_status=1
 
@@ -2745,12 +2887,47 @@ main() {
         run_tests=true
         shift
         ;;
+      --no-gate)
+        no_gate=true
+        shift
+        ;;
+      --gate-max-wait)
+        case "${2:-}" in
+          '' | *[!0-9]*)
+            usage
+            exit 2
+            ;;
+        esac
+        gate_max_wait="$2"
+        shift 2
+        ;;
+      --gate-marker)
+        # Internal: the parent's gate wrapper passes it to the child it runs inside the gate. The
+        # marker is created the moment it parses, before any other validation, so the parent can tell
+        # "the child started" from "the gate never ran it". Deliberately absent from usage().
+        if [[ $# -lt 2 ]] || ! : >"$2" 2>/dev/null; then
+          usage
+          exit 2
+        fi
+        gate_marker="$2"
+        shift 2
+        ;;
       *)
         usage
         exit 2
         ;;
     esac
   done
+
+  # The gate options mean something only with --tests, and the marker only for the gate's own child.
+  if [[ "$run_tests" != true ]] && { [[ "$no_gate" == true ]] || [[ -n "$gate_max_wait" ]]; }; then
+    usage
+    exit 2
+  fi
+  if [[ -n "$gate_marker" && "$no_gate" != true ]]; then
+    usage
+    exit 2
+  fi
 
   if [[ -z "$scope" ]]; then
     scope="$(git rev-parse --show-toplevel 2>/dev/null)"
@@ -2762,6 +2939,9 @@ main() {
   fi
   scope="$(cd "$scope" && pwd)"
   audit_scope="$scope"
+  # Not an `if`: scripts/tests/test_audit_name_parity.sh finds the --tests-gated checks from the FIRST
+  # `if [[ "$run_tests" == true ]]` line in main().
+  [[ "$run_tests" == true ]] && audit_gate_wrap "$scope"
   audit_phase=sweeping
 
   [[ -f "$scope/.auditignore" ]] && auditignore="$(cat "$scope/.auditignore")"
@@ -2869,8 +3049,8 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   # Single quotes: `$?` must expand when the trap RUNS, not when it is defined, and
   # passing it as an argument captures it before anything else can clobber it.
   trap 'audit_on_exit "$?"' EXIT
-  trap 'exit 143' TERM
-  trap 'exit 130' INT
-  trap 'exit 129' HUP
+  trap 'audit_gate_forward 143' TERM
+  trap 'audit_gate_forward 130' INT
+  trap 'audit_gate_forward 129' HUP
   main "$@"
 fi

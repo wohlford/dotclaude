@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.160.0 — 2026-11-10
+- feat(audit): take a heavy-gate turn for --tests, refuse on none
+
 ## v0.159.0 — 2026-11-10
 - feat(run-long): take a heavy-gate turn inside the job
 

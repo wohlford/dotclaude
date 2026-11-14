@@ -26,7 +26,7 @@ if [[ ! -r "$sp_lib" ]]; then
 fi
 # shellcheck source=../lib/suite_parallel.sh
 . "$sp_lib"
-sp_init "${BASH_SOURCE[0]}" "rML rPT rSJ cases1-14 case15 rAM rN rO rMA rPP rQ rTGC rSC"
+sp_init "${BASH_SOURCE[0]}" "rML rGW rPT rSJ cases1-14 case15 rAM rN rO rMA rPP rQ rTGC rSC"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -40,6 +40,13 @@ trap 'rm -rf "$tmp"' EXIT
 # directory, so the outside-the-scope assertion in 15g still means something.
 export TMPDIR="$tmp/enginetmp"
 mkdir -p "$TMPDIR"
+
+# Keep every fixture row that runs the engine with --tests (or launches run-long.sh) off the operator's
+# real heavy-gate state. Top level, so each parallel unit's child, which re-executes this file from
+# line 1, reaches it too.
+# shellcheck source=../lib/hermetic_gate.sh
+. "$here/../lib/hermetic_gate.sh"
+hermetic_gate_env "$tmp" || exit 2
 
 # An exported AUDIT_PYTEST_JOBS would reach every row that runs the engine with --tests and turn the
 # terminal status word of a passing run into PARALLEL-PASS. The rPT rows set it explicitly.
@@ -214,7 +221,7 @@ printf '# Doc\n\nText.\n' > "$r/good.md"
 commit_all "$r" seed
 
 : > "$rml/log"
-OUT="$(HOME="$fh" PATH="$(rml_cleanpath)" STUB_LOG="$rml/log" "$engine" --scope "$r" 2>&1)"
+OUT="$(HOME="$fh" NVM_DIR="" PATH="$(rml_cleanpath)" STUB_LOG="$rml/log" "$engine" --scope "$r" 2>&1)"
 RC=$?
 assert_has 'PASS markdownlint' 'rML1: a stub in an older version dir is found -> PASS markdownlint'
 assert_not_has 'SKIP markdownlint' 'rML2: the verdict is not SKIP markdownlint'
@@ -224,7 +231,7 @@ check_eq "$(cat "$rml/log" 2>/dev/null)" 'v10.2.1' \
 fe="$rml/emptyhome"
 mkdir -p "$fe/.nvm/versions/node/v9.1.0/bin" "$fe/.nvm/versions/node/v26.12.0/bin"
 : > "$rml/log"
-OUT="$(HOME="$fe" PATH="$(rml_cleanpath)" STUB_LOG="$rml/log" "$engine" --scope "$r" 2>&1)"
+OUT="$(HOME="$fe" NVM_DIR="" PATH="$(rml_cleanpath)" STUB_LOG="$rml/log" "$engine" --scope "$r" 2>&1)"
 RC=$?
 assert_has 'SKIP markdownlint' 'rML4: no dir holds the tool -> SKIP markdownlint'
 assert_has 'markdownlint-cli2 not found' 'rML5: the SKIP names the old reason'
@@ -232,16 +239,401 @@ assert_has 'markdownlint-cli2 not found' 'rML5: the SKIP names the old reason'
 pb="$rml/pathbin"
 rml_stub "$pb" pathstub 0
 : > "$rml/log"
-OUT="$(HOME="$fh" PATH="$pb:$(rml_cleanpath)" STUB_LOG="$rml/log" "$engine" --scope "$r" 2>&1)"
+OUT="$(HOME="$fh" NVM_DIR="" PATH="$pb:$(rml_cleanpath)" STUB_LOG="$rml/log" "$engine" --scope "$r" 2>&1)"
 RC=$?
 check_eq "$(cat "$rml/log" 2>/dev/null)" pathstub \
   'rML6: a markdownlint-cli2 already on PATH wins over every nvm dir'
 
 got="$(bash -c 'source "$1"; printf "v9.1.0\nv26.3.0\nv10.2.1\n" | sort_versions_newest_first | tr "\n" " "' _ "$engine" 2>/dev/null)"
 check_eq "$got" 'v26.3.0 v10.2.1 v9.1.0 ' 'rML7: sort_versions_newest_first orders numerically, newest first'
+
+# rML8-rML12: the version roots are NVM_DIR/versions/node, $HOME/.local/nvm, $HOME/.nvm (in that
+# tie-break order); the newest HOLDER wins across all of them.
+rml_pick() { # home nvmdir -> run the engine, leave the stub id that ran in $rml/log
+  : > "$rml/log"
+  OUT="$(HOME="$1" NVM_DIR="$2" PATH="$(rml_cleanpath)" STUB_LOG="$rml/log" "$engine" --scope "$r" 2>&1)"
+  RC=$?
+}
+h1="$rml/h-local"
+rml_stub "$h1/.local/nvm/versions/node/v11.4.2/bin" local-v11.4.2 0
+rml_pick "$h1" ""
+assert_has 'PASS markdownlint' 'rML8: a launcher only under HOME/.local/nvm is found -> PASS markdownlint'
+check_eq "$(cat "$rml/log" 2>/dev/null)" local-v11.4.2 'rML9: the HOME/.local/nvm launcher ran'
+h2="$rml/h-both"
+rml_stub "$h2/.local/nvm/versions/node/v11.4.2/bin" local-v11.4.2 0
+rml_stub "$h2/.nvm/versions/node/v13.5.0/bin" nvm-v13.5.0 0
+rml_pick "$h2" ""
+check_eq "$(cat "$rml/log" 2>/dev/null)" nvm-v13.5.0 'rML10: the newest version wins ACROSS roots'
+h3="$rml/h-tie"
+rml_stub "$h3/.local/nvm/versions/node/v12.3.4/bin" local-v12.3.4 0
+rml_stub "$h3/.nvm/versions/node/v12.3.4/bin" nvm-v12.3.4 0
+rml_pick "$h3" ""
+check_eq "$(cat "$rml/log" 2>/dev/null)" local-v12.3.4 'rML11: an equal version goes to the earlier root'
+rml_stub "$rml/thirdroot/versions/node/v12.3.4/bin" nvmdir-v12.3.4 0
+rml_pick "$h3" "$rml/thirdroot"
+check_eq "$(cat "$rml/log" 2>/dev/null)" nvmdir-v12.3.4 'rML12: NVM_DIR/versions/node is a root and wins an equal version'
 # rML-END
 fi # unit-end
 if [[ "${AUDIT_TEST_ONLY:-}" == rML ]]; then printf '\n%d passed, %d failed\n' "$pass" "$fail"; [[ "$fail" -eq 0 ]]; exit; fi
+
+if unit_run rGW 90; then
+# rGW-BEGIN
+# ============================================================================
+# rGW. audit.sh --tests takes its own heavy-gate turn (the gate wrapper in main)
+#
+# Layout A runs the REAL engine with the REAL gate in a private GATE_DIR. Layout B is a copied tree
+# whose scripts/heavy-gate.sh is a STUB that logs its argv, so the argv the parent builds, and what it
+# does with each gate exit status, are visible. Every row sets GATE_DIR to its own directory and removes
+# GATE_WIRING, so nothing here reaches the operator's real gate state.
+# ============================================================================
+gw_root="$(cd "$tmp" && pwd -P)/rGW"
+mkdir -p "$gw_root"
+gw_real_root="$(cd "$here/../.." && pwd -P)"
+gw_gate="$gw_real_root/scripts/heavy-gate.sh"
+
+gw_repo() { # repo [extra-suite-name] -> a clean fixture whose shell suite records the gate owner line
+  mk_clean_repo "$1"
+  mkdir -p "$1/scripts/tests"
+  cat > "$1/scripts/tests/test_ok.sh" << 'GWSUITE'
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Script: test_ok.sh
+# Purpose: fixture suite
+# Usage: ./test_ok.sh
+if [[ -n "${RPT_SENTINEL:-}" ]]; then
+  cp "${GATE_DIR:-/nonexistent}/lock/owner" "$RPT_SENTINEL" 2> /dev/null || : > "$RPT_SENTINEL"
+fi
+if [[ -n "${GW_HOLD:-}" ]]; then
+  printf '%s\n' "$$" > "$GW_HOLD.pid"
+  i=0
+  while [[ ! -e "$GW_HOLD" && "$i" -lt 300 ]]; do
+    sleep 0.2
+    i=$((i + 1))
+  done
+fi
+exit 0
+GWSUITE
+  chmod +x "$1/scripts/tests/test_ok.sh"
+  if [[ -n "${2:-}" ]]; then
+    sed "s/test_ok.sh/$2/g" "$1/scripts/tests/test_ok.sh" > "$1/scripts/tests/$2"
+    chmod +x "$1/scripts/tests/$2"
+  fi
+  commit_all "$1" suites
+}
+
+gw_row() { # name [extra-suite] -> the row directory (repo, tmp, gate), printed
+  local d="$gw_root/$1"
+  rm -rf "$d"
+  mkdir -p "$d/tmp" "$d/gate"
+  gw_repo "$d/repo" "${2:-}"
+  printf '%s' "$d"
+}
+
+gw_run() { # row-dir [NAME=value...] -- command... -> OUT = stdout, RC; stderr to row/err
+  local d="$1" a=()
+  shift
+  while [[ "$1" != -- ]]; do
+    a+=("$1")
+    shift
+  done
+  shift
+  OUT="$(env -u GATE_WIRING -u HEAVY_GATE_HELD -u AUDIT_PYTEST_JOBS -u AUDIT_SHELL_JOBS -u PYTEST_ADDOPTS \
+    GATE_DIR="$d/gate" TMPDIR="$d/tmp" RPT_SENTINEL="$d/sentinel" ${a[@]+"${a[@]}"} "$@" 2> "$d/err")"
+  RC=$?
+}
+
+gw_hold_start() { # row-dir -> a real gate holder in the row's private GATE_DIR; GW_HOLDER_PID
+  local d="$1" i=0
+  env -u GATE_WIRING -u HEAVY_GATE_HELD GATE_DIR="$d/gate" "$gw_gate" run gw-holder -- sleep 120 > /dev/null 2>&1 &
+  GW_HOLDER_PID=$!
+  while [[ ! -s "$d/gate/lock/owner" && "$i" -lt 150 ]]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+
+gw_hold_stop() {
+  kill -TERM "$GW_HOLDER_PID" 2> /dev/null
+  wait "$GW_HOLDER_PID" 2> /dev/null
+}
+
+gw_sentinel() { # row-dir -> yes when the fixture suite ran
+  if [[ -e "$1/sentinel" ]]; then printf yes; else printf no; fi
+}
+
+gw_stub_tree() { # dir with|without -> a copied engine tree; its gate is a logging stub or is absent
+  local b="$1" f n
+  rm -rf "$b"
+  mkdir -p "$b/skills/audit" "$b/scripts"
+  cp "$engine" "$b/skills/audit/audit.sh"
+  chmod +x "$b/skills/audit/audit.sh"
+  for f in "$gw_real_root/skills/"*; do
+    n="$(basename "$f")"
+    [[ "$n" == audit ]] || ln -s "$f" "$b/skills/$n"
+  done
+  for f in "$gw_real_root/scripts/"*; do
+    n="$(basename "$f")"
+    [[ "$n" == heavy-gate.sh ]] || ln -s "$f" "$b/scripts/$n"
+  done
+  [[ "$2" == with ]] || return 0
+  cat > "$b/scripts/heavy-gate.sh" << 'GWSTUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "__LOG__"
+if [ "${1:-}" = held ]; then exit 1; fi
+name=$2
+mode="${STUB_MODE:-ok}"
+done_line() { printf 'HEAVY_GATE_DONE %s rc=%s\n' "$name" "$1" >&2; }
+case "$mode" in
+  exit2) done_line 2; exit 2 ;;
+  exit126) done_line 126; exit 126 ;;
+  exit143) done_line 143; exit 143 ;;
+  noturn) done_line 75; exit 75 ;;
+esac
+shift
+while [ "$1" != -- ]; do shift; done
+shift
+if [ "$mode" = badscope ]; then
+  prev=""
+  new=()
+  for a in "$@"; do
+    if [ "$prev" = --scope ]; then new+=(/nonexistent); else new+=("$a"); fi
+    prev=$a
+  done
+  exec "${new[@]}"
+fi
+if [ "$mode" = okexit143 ]; then "$@"; exit 143; fi
+exec "$@"
+GWSTUB
+  sed -i "s|__LOG__|$b/argv.log|" "$b/scripts/heavy-gate.sh"
+  chmod +x "$b/scripts/heavy-gate.sh"
+  : > "$b/argv.log"
+}
+
+gw_match() { # extended-regex text -> succeeds when the text matches
+  grep -Eq -- "$1" <<< "$2"
+}
+
+gw_tickets() { # row-dir pid -> the number of queue tickets named audit-tests-<pid>
+  local n=0 f
+  for f in "$1/gate/queue/"*"-audit-tests-$2"; do
+    [[ -e "$f" ]] && n=$((n + 1))
+  done
+  printf '%d' "$n"
+}
+
+gw_check_match() { # regex text label -> pass when the text matches
+  if gw_match "$1" "$2"; then pass_line "$3"; else fail_line "$3"; printf '  --- text ---\n%s\n  -------------\n' "$2"; fi
+}
+
+gw_last() { printf '%s\n' "$OUT" | tail -1; }
+gw_results() { printf '%s\n' "$OUT" | grep -c '^RESULT:' | tr -d ' '; }
+
+gw_b="$gw_root/treeB"
+gw_stub_tree "$gw_b" with
+gw_beng="$gw_b/skills/audit/audit.sh"
+
+# ---- rGW1: no turn within --gate-max-wait refuses, and nothing runs ------------------------------
+d="$(gw_row rGW1)"
+gw_hold_start "$d"
+gw_run "$d" -- "$engine" --tests --gate-max-wait 2 --scope "$d/repo"
+gw_hold_stop
+check_eq "$(gw_last)" 'RESULT: INCOMPLETE rc=75 checks=0/0/0' 'rGW1/refused-no-turn: the last line is INCOMPLETE rc=75 checks=0/0/0'
+check_eq "$RC" 75 'rGW1/refused-no-turn: exit 75'
+check_eq "$(gw_sentinel "$d")" no 'rGW1/refused-no-turn: the fixture suite never ran'
+check_eq "$(gw_results)" 1 'rGW1/refused-no-turn: exactly one RESULT line'
+assert_has 'NOTE gate: no turn within 2 s (heavy-gate exit 75); nothing was run' 'rGW1/refused-no-turn: the NOTE names the wait and the gate exit'
+
+# ---- rGW2: uncontended -------------------------------------------------------------------------
+d="$(gw_row rGW2)"
+gw_run "$d" -- "$engine" --tests --scope "$d/repo"
+check_eq "$RC" 0 'rGW2/uncontended: exit 0'
+check_eq "$(gw_results)" 1 'rGW2/uncontended: exactly one RESULT line'
+assert_last_line_prefix 'RESULT: PASS rc=0' 'rGW2/uncontended: it is PASS'
+assert_has 'NOTE gate: turn taken' 'rGW2/uncontended: the child reports the turn on stdout'
+assert_has 'PASS hermetic' 'rGW2/uncontended: the hermetic rows ran and passed'
+assert_has 'PASS hermetic-outside' 'rGW2/uncontended: ...and the outside-the-scope row'
+case "$OUT" in *HEAVY_GATE_DONE*) fail_line 'rGW2/uncontended: HEAVY_GATE_DONE is on stderr only' ;; *) pass_line 'rGW2/uncontended: HEAVY_GATE_DONE is not on stdout' ;; esac
+check_eq "$(grep -c '^HEAVY_GATE_DONE audit-tests-[0-9]* rc=0$' "$d/err")" 1 'rGW2/uncontended: the gate verdict line is on stderr'
+
+# ---- rGW3: uncontended with --gate-max-wait; the lock owner is observed while the child runs -----
+d="$(gw_row rGW3)"
+gw_run "$d" -- "$engine" --tests --gate-max-wait 2 --scope "$d/repo"
+check_eq "$RC" 0 'rGW3/uncontended-with-gate-max-wait: exit 0 (a parent forwarding raw argv makes the child exit 2)'
+check_eq "$(gw_results)" 1 'rGW3/uncontended-with-gate-max-wait: exactly one RESULT line'
+assert_last_line_prefix 'RESULT: PASS rc=0' 'rGW3/uncontended-with-gate-max-wait: it is PASS'
+assert_not_has 'running without a turn' 'rGW3/uncontended-with-gate-max-wait: no fail-open note'
+gw_check_match '^audit-tests-[0-9]+ [0-9]+ [0-9]+ run$' "$(cat "$d/sentinel" 2> /dev/null)" 'rGW3/uncontended-with-gate-max-wait: the owner line seen by the suite is audit-tests-<pid> <epoch> <pid> run'
+
+# ---- rGW4: the child's argv is exactly the re-emitted --tests and absolute scope -----------------
+d="$(gw_row rGW4)"
+: > "$gw_b/argv.log"
+gw_run "$d" STUB_MODE=ok -- "$gw_beng" --tests --gate-max-wait 7 --scope "$d/repo"
+gw_log="$(cat "$gw_b/argv.log")"
+gw_runline="$(printf '%s\n' "$gw_log" | grep '^run ')"
+gw_check_match "^run audit-tests-[0-9]+ --max-wait 7 -- [^ ]*bash[^ ]* $gw_b/skills/audit/audit.sh --no-gate --gate-marker [^ ]+ --tests --scope $d/repo\$" "$gw_runline" 'rGW4/child-argv-exact: the stub run got --max-wait 7 and the child argv is exactly --no-gate --gate-marker M --tests --scope <abs>'
+case "$gw_runline" in *' -- '*--gate-max-wait*) fail_line 'rGW4/child-argv-exact: --gate-max-wait never reaches the child' ;; *) pass_line 'rGW4/child-argv-exact: --gate-max-wait never reaches the child' ;; esac
+check_eq "$RC" 0 'rGW4/child-argv-exact: the sweep passed through the stub'
+
+# ---- rGW5: the child's own error is not read as a gate failure -----------------------------------
+d="$(gw_row rGW5)"
+: > "$gw_b/argv.log"
+gw_run "$d" STUB_MODE=badscope -- "$gw_beng" --tests --scope "$d/repo"
+check_eq "$RC" 2 'rGW5/child-own-error-not-fail-open: exit 2 (the child ERROR, not a fall-through sweep)'
+assert_last_line_prefix 'RESULT: ERROR rc=2' 'rGW5/child-own-error-not-fail-open: the child ERROR is the last line'
+assert_not_has 'running without a turn' 'rGW5/child-own-error-not-fail-open: no fail-open NOTE'
+check_eq "$(gw_results)" 1 'rGW5/child-own-error-not-fail-open: exactly one RESULT line'
+check_eq "$(gw_sentinel "$d")" no 'rGW5/child-own-error-not-fail-open: no sweep ran'
+
+# ---- rGW6: a gate that fails before the stage fails open -----------------------------------------
+for gw_rc in 2 126; do
+  d="$(gw_row "rGW6-$gw_rc")"
+  : > "$gw_b/argv.log"
+  gw_run "$d" "STUB_MODE=exit$gw_rc" -- "$gw_beng" --tests --scope "$d/repo"
+  assert_has "NOTE gate: heavy-gate failed (rc=$gw_rc) before the sweep started; running without a turn" "rGW6/gate-failed-fails-open: rc=$gw_rc is announced"
+  check_eq "$RC" 0 "rGW6/gate-failed-fails-open: rc=$gw_rc, the sweep ran in the parent and exit is 0"
+  check_eq "$(gw_results)" 1 "rGW6/gate-failed-fails-open: rc=$gw_rc, exactly one RESULT line"
+  assert_last_line_prefix 'RESULT: PASS rc=0' "rGW6/gate-failed-fails-open: rc=$gw_rc, it is PASS"
+  check_eq "$(gw_sentinel "$d")" yes "rGW6/gate-failed-fails-open: rc=$gw_rc, the fixture suite ran"
+done
+
+# ---- rGW7: any other gate status before the stage is INCOMPLETE and nothing runs ------------------
+d="$(gw_row rGW7)"
+gw_run "$d" STUB_MODE=exit143 -- "$gw_beng" --tests --scope "$d/repo"
+check_eq "$(gw_last)" 'RESULT: INCOMPLETE rc=143 checks=0/0/0' 'rGW7/gate-ended-default-arm: the last line is INCOMPLETE rc=143 checks=0/0/0'
+check_eq "$RC" 143 'rGW7/gate-ended-default-arm: exit 143'
+assert_has 'NOTE gate: heavy-gate ended (rc=143) before the sweep started' 'rGW7/gate-ended-default-arm: the NOTE names the status'
+check_eq "$(gw_sentinel "$d")" no 'rGW7/gate-ended-default-arm: no sweep ran'
+check_eq "$(gw_results)" 1 'rGW7/gate-ended-default-arm: exactly one RESULT line'
+
+# rGW7b: the stub's no-turn status without the real gate, and a stage that started and then ended >= 128.
+d="$(gw_row rGW7b)"
+gw_run "$d" STUB_MODE=noturn -- "$gw_beng" --tests --scope "$d/repo"
+check_eq "$RC|$(gw_last)|$(gw_sentinel "$d")" '75|RESULT: INCOMPLETE rc=75 checks=0/0/0|no' 'rGW7b/stub-noturn: exit 75, INCOMPLETE, nothing ran'
+d="$(gw_row rGW7c)"
+gw_run "$d" STUB_MODE=okexit143 -- "$gw_beng" --tests --scope "$d/repo"
+check_eq "$RC|$(gw_last)|$(gw_sentinel "$d")" '143|RESULT: INCOMPLETE rc=143 checks=0/0/0|yes' 'rGW7c/started-then-143: the stage ran, and the parent ends INCOMPLETE rc=143'
+check_eq "$(gw_results)" 2 'rGW7c/started-then-143: the child PASS line and the parent INCOMPLETE line'
+
+# ---- rGW8: nested in a held turn, and the opt-outs -----------------------------------------------
+d="$(gw_row rGW8a)"
+gw_run "$d" -- "$gw_gate" run gw-outer -- "$engine" --tests --scope "$d/repo"
+check_eq "$RC" 0 'rGW8/nested: exit 0'
+gw_check_match '^gw-outer [0-9]+ [0-9]+ run$' "$(cat "$d/sentinel" 2> /dev/null)" 'rGW8/nested: the owner line stayed the outer holder (no second turn)'
+assert_not_has 'NOTE gate: turn taken' 'rGW8/nested: no second turn was taken'
+assert_last_line_prefix 'RESULT: PASS rc=0' 'rGW8/nested: the sweep ran in the held process and is PASS'
+
+d="$(gw_row rGW8b)"
+: > "$gw_b/argv.log"
+gw_run "$d" STUB_MODE=ok -- "$gw_beng" --tests --no-gate --scope "$d/repo"
+check_eq "$RC|$(wc -c < "$gw_b/argv.log" | tr -d ' ')" '0|0' 'rGW8/no-gate: the sweep ran and the stub was never called'
+d="$(gw_row rGW8c)"
+: > "$gw_b/argv.log"
+gw_run "$d" STUB_MODE=ok GATE_WIRING=off -- "$gw_beng" --tests --scope "$d/repo"
+check_eq "$RC|$(wc -c < "$gw_b/argv.log" | tr -d ' ')" '0|0' 'rGW8/wiring-off-with-gate-dir: the sweep ran and the stub was never called'
+d="$(gw_row rGW8d)"
+: > "$gw_b/argv.log"
+gw_run "$d" STUB_MODE=ok GATE_WIRING=off GATE_DIR= -- "$gw_beng" --tests --scope "$d/repo"
+check_eq "$(grep -c '^run audit-tests-' "$gw_b/argv.log")" 1 'rGW8/wiring-off-without-gate-dir: GATE_WIRING=off alone still takes a turn'
+
+# ---- rGW9: flag validation (a CONTROL: the strict parser already refuses each on the old engine) ---
+d="$(gw_row rGW9)"
+for gw_case in '--gate-max-wait 2' '--no-gate' '--gate-max-wait abc --tests' "--gate-marker $d/tmp/m --tests" '--tests --gate-max-wait'; do
+  # shellcheck disable=SC2086  # the case is a word list on purpose
+  gw_run "$d" -- "$engine" $gw_case --scope "$d/repo"
+  check_eq "$RC|$(gw_last)" '2|RESULT: ERROR rc=2 checks=0/0/0' "rGW9/flag-validation: [$gw_case] is refused with RESULT: ERROR rc=2"
+done
+d="$(gw_row rGW9b)"
+: > "$gw_b/argv.log"
+gw_run "$d" STUB_MODE=ok -- "$gw_beng" --tests --no-gate --scope "$d/repo"
+check_eq "$RC|$(gw_results)|$(wc -c < "$gw_b/argv.log" | tr -d ' ')" '0|1|0' 'rGW9b/no-gate-accepted-with-tests: the sweep runs, one RESULT line, the gate stub never called'
+assert_last_line_prefix 'RESULT: PASS rc=0' 'rGW9b/no-gate-accepted-with-tests: it is PASS'
+
+# ---- rGW10: signals -----------------------------------------------------------------------------
+d="$(gw_row rGW10a)"
+env -u GATE_WIRING -u HEAVY_GATE_HELD GATE_DIR="$d/gate" TMPDIR="$d/tmp" RPT_SENTINEL="$d/sentinel" GW_HOLD="$d/hold" \
+  "$engine" --tests --scope "$d/repo" > "$d/out" 2> "$d/err" &
+gw_pid=$!
+gw_i=0
+while [[ ! -s "$d/hold.pid" && "$gw_i" -lt 300 ]]; do
+  sleep 0.2
+  gw_i=$((gw_i + 1))
+done
+gw_suite_pid="$(cat "$d/hold.pid" 2> /dev/null)"
+kill -TERM "$gw_pid" 2> /dev/null
+wait "$gw_pid" 2> /dev/null
+gw_rc=$?
+gw_i=0
+while [[ -n "$gw_suite_pid" ]] && kill -0 "$gw_suite_pid" 2> /dev/null && [[ "$gw_i" -lt 50 ]]; do
+  sleep 0.1
+  gw_i=$((gw_i + 1))
+done
+gw_alive=no
+if [[ -n "$gw_suite_pid" ]] && kill -0 "$gw_suite_pid" 2> /dev/null; then gw_alive=yes; fi
+check_eq "$gw_rc" 143 'rGW10/signals: TERM to the parent exits 143'
+check_eq "$gw_alive" no 'rGW10/signals: the fixture suite (the child) ended with it'
+check_eq "$(grep -c '^RESULT: PASS' "$d/out")" 0 'rGW10/signals: the child was stopped by the forwarded TERM, not left to finish its sweep (no RESULT: PASS)'
+check_eq "$(env GATE_DIR="$d/gate" "$gw_gate" status 2> /dev/null | grep -c '^lock: free$')" 1 'rGW10/signals: the private gate reports lock: free'
+case "$(tail -1 "$d/out")" in
+  'RESULT: INCOMPLETE'*) pass_line 'rGW10/signals: the last stdout line is RESULT: INCOMPLETE' ;;
+  *) fail_line 'rGW10/signals: the last stdout line is RESULT: INCOMPLETE'; tail -3 "$d/out" ;;
+esac
+check_eq "$(pgrep -f "$d/tmp/audit-gate" | wc -l | tr -d ' ')" 0 'rGW10/signals: no gate process of this row survives (its argv names the per-run copy under the row TMPDIR)'
+
+d="$(gw_row rGW10b)"
+gw_hold_start "$d"
+env -u GATE_WIRING -u HEAVY_GATE_HELD GATE_DIR="$d/gate" TMPDIR="$d/tmp" RPT_SENTINEL="$d/sentinel" \
+  "$engine" --tests --scope "$d/repo" > "$d/out" 2> "$d/err" &
+gw_pid=$!
+gw_i=0
+while [[ "$(gw_tickets "$d" "$gw_pid")" -eq 0 && "$gw_i" -lt 100 ]]; do
+  sleep 0.1
+  gw_i=$((gw_i + 1))
+done
+gw_queued="$(gw_tickets "$d" "$gw_pid")"
+kill -KILL "$gw_pid" 2> /dev/null
+wait "$gw_pid" 2> /dev/null
+gw_i=0
+while [[ "$(gw_tickets "$d" "$gw_pid")" -gt 0 && "$gw_i" -lt 50 ]]; do
+  sleep 0.1
+  gw_i=$((gw_i + 1))
+done
+gw_left="$(gw_tickets "$d" "$gw_pid")"
+gw_hold_stop
+check_eq "$gw_queued" 1 'rGW10/signals: the parent was queued before the SIGKILL (the row reached its subject)'
+check_eq "$gw_left" 0 'rGW10/signals: after SIGKILL of the queued parent the ticket is gone within 5 s'
+check_eq "$(gw_sentinel "$d")" no 'rGW10/signals: the fixture sentinel is absent after the SIGKILL'
+
+# ---- rGW11: a child PARALLEL-PASS stays the last line ----------------------------------------------
+d="$(gw_row rGW11 test_two.sh)"
+gw_run "$d" AUDIT_SHELL_JOBS=2 -- "$engine" --tests --scope "$d/repo"
+assert_last_line_prefix 'RESULT: PARALLEL-PASS rc=0' 'rGW11/parallel-pass-stays-last: the child PARALLEL-PASS is the last line'
+check_eq "$(gw_results)" 1 'rGW11/parallel-pass-stays-last: the parent adds no second RESULT line'
+
+# ---- rGW12: no gate beside the engine ---------------------------------------------------------------
+gw_b2="$gw_root/treeNoGate"
+gw_stub_tree "$gw_b2" without
+d="$(gw_row rGW12)"
+gw_run "$d" -- "$gw_b2/skills/audit/audit.sh" --tests --scope "$d/repo"
+case "$(printf '%s\n' "$OUT" | head -1)" in
+  'NOTE gate: heavy-gate.sh unavailable ('*) pass_line 'rGW12/gate-absent: the first stdout line is the unavailable NOTE' ;;
+  *) fail_line 'rGW12/gate-absent: the first stdout line is the unavailable NOTE'; printf '%s\n' "$OUT" | head -3 ;;
+esac
+check_eq "$RC|$(gw_results)" '0|1' 'rGW12/gate-absent: the sweep ran in this process, one RESULT line'
+assert_last_line_prefix 'RESULT: PASS rc=0' 'rGW12/gate-absent: the sweep own verdict follows'
+
+# ---- rGW13: launched under run-long.sh, one turn -----------------------------------------------------
+d="$(gw_row rGW13)"
+gw_art="$d/artifact.txt"
+env -u GATE_WIRING -u HEAVY_GATE_HELD GATE_DIR="$d/gate" TMPDIR="$d/tmp" RPT_SENTINEL="$d/sentinel" \
+  "$gw_real_root/scripts/run-long.sh" --out "$gw_art" -- "$engine" --tests --scope "$d/repo" > /dev/null 2>&1
+env GATE_DIR="$d/gate" "$gw_real_root/scripts/run-long.sh" --wait "$gw_art" > /dev/null 2>&1
+gw_check_match '^run-long-[A-Za-z0-9._-]+ [0-9]+ [0-9]+ run$' "$(cat "$d/sentinel" 2> /dev/null)" 'rGW13/launched-under-run-long-one-turn: the owner name starts run-long- (not audit-tests-)'
+check_eq "$(grep -c '^HEAVY_GATE_DONE' "$gw_art")" 1 'rGW13/launched-under-run-long-one-turn: the artifact has exactly one HEAVY_GATE_DONE'
+check_eq "$(grep -c '^RESULT: PASS rc=0' "$gw_art")" 1 'rGW13/launched-under-run-long-one-turn: the sweep passed inside the single turn'
+# rGW-END
+fi # unit-end
+if [[ "${AUDIT_TEST_ONLY:-}" == rGW ]]; then printf '\n%d passed, %d failed\n' "$pass" "$fail"; [[ "$fail" -eq 0 ]]; exit; fi
 
 if unit_run rPT 146; then
 # rPT-BEGIN

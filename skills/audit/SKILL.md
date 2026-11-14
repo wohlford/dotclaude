@@ -11,9 +11,11 @@ also see UNTRACKED, unignored files: `hermetic` and `mutation-anchors` deliberat
 and `script-headers` incidentally, because the tools behind them discover by filesystem glob
 rather than from the index (`audit.sh`'s own header gives the reason for each). So a `FAIL` can
 name a file you have not staged yet. Each check is reported as
-`PASS`/`FAIL`/`SKIP`, exiting 0 clean, 1 on any finding, 2 on usage error. Every run it exits
-from itself ends with a machine-readable `RESULT:` line carrying its own exit code. Read-only
-and advisory — it never edits and never blocks. Complements `/vet` (dispatched model reviewers,
+`PASS`/`FAIL`/`SKIP`. Every run it exits
+from itself ends with a machine-readable `RESULT:` line carrying its own exit code; the status
+table under Process lists every verdict and exit code. Read-only
+and advisory — it never edits and never blocks, except that `--tests` runs the repo's suites and
+takes a heavy-work turn first, so it can wait and can refuse with `RESULT: INCOMPLETE rc=75`. Complements `/vet` (dispatched model reviewers,
 the judgment half of an audit); the two together cover a full repo audit.
 
 ## Instructions
@@ -33,10 +35,20 @@ The user may optionally provide:
   except under the PARALLEL-PASS rule in Rules; an invalid value FAILs the tests check.
   AUDIT_SHELL_JOBS likewise runs the shell suites through a bounded pool (same validation, same
   rule). Both are read from the environment the audit inherits, not passed as flags. See the pytest and shell-suite bullets under Rules at the end of this file.
+- `--gate-max-wait <secs>` — whole seconds to wait for the heavy-work turn that `--tests` takes
+  first; with no turn in that time nothing runs and the verdict is `RESULT: INCOMPLETE rc=75`. It
+  is parent-only: the parent bounds its own wait and does not forward it to the gated child. Valid
+  only with `--tests`; anywhere else it is a usage error (exit 2).
+- `--no-gate` — skip the heavy-work turn. It is for a caller that already holds a turn or a
+  hermetic fixture, never a way to avoid waiting. Valid only with `--tests`; anywhere else it is a
+  usage error (exit 2).
 
 ### Process
 
-1. Run `~/.claude/skills/audit/audit.sh`, forwarding `--scope`/`--tests` as given.
+1. Run `~/.claude/skills/audit/audit.sh`, forwarding `--scope`/`--tests` as given. `--tests`
+   takes its own heavy-work turn first (`scripts/heavy-gate.sh`), so concurrent sessions run the
+   suites one at a time; `--no-gate` skips the turn, and `--gate-max-wait <secs>` (parent-only,
+   `--tests` only) bounds the wait for it.
 2. Surface its stdout verbatim — on a normal run the per-check verdict lines, the summary
    line, and the final `RESULT:` line; on a usage error, stdout is the `RESULT:` line
    alone (no per-check lines, no summary), with the synopsis on stderr.
@@ -52,7 +64,7 @@ The user may optionally provide:
    | `RESULT: PARALLEL-PASS rc=0 …` | Completed, zero FAILs, but pytest ran under the opt-in parallel mode (AUDIT_PYTEST_JOBS) or the shell suites ran through the opt-in pool (AUDIT_SHELL_JOBS). An iteration result, **never a clean verdict for /audit itself**; see the PARALLEL-PASS rule under Rules for the one condition under which a consumer may accept it, otherwise the caller re-runs with the variables unset or set to 1 (step 5). |
    | `RESULT: FAIL rc=1 …` | Completed, at least one FAIL. |
    | `RESULT: ERROR rc=2 …` | Usage error — no sweep ran. Relay stderr; on exit 2 say which flags were actually passed, since the stderr synopsis alone does not identify the cause. |
-   | `RESULT: INCOMPLETE rc=<n> …` | The run began but did not finish — a catchable signal, or any other abnormal exit once the sweep had started. The counts are a prefix, not a result. |
+   | `RESULT: INCOMPLETE rc=<n> …` | The run began but did not finish — a catchable signal, or any other abnormal exit once the sweep had started. The counts are a prefix, not a result. Also `RESULT: INCOMPLETE rc=75 checks=0/0/0` under `--tests`: no turn (a `NOTE gate:` line names it) and nothing ran. Re-run to completion, reading `heavy-gate.sh status` first. |
    | *(no line at all)* | The run did not complete — killed uncatchably, or the output was lost. |
 
    **Match the whole `RESULT: PASS rc=0` prefix, never the bare word `PASS`.** Every
@@ -96,7 +108,8 @@ suite wrote nothing under the Claude config root). The last three run only with 
 
 `--tests` is the only part of the sweep that executes repo code, so it is the only part that can
 write. Two checks bracket it, because a suite can pollute in two directions and each is invisible
-to the other's instrument:
+to the other's instrument. Both snapshots are taken after the heavy-work turn is held, inside the
+gated child, so time spent queued for a turn never counts as the suite's window:
 
 - **`hermetic`** compares `git status --porcelain -uall` either side of the run. It *compares*
   rather than demanding a clean tree, so a tree you had already dirtied is not a finding — only
