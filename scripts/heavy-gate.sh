@@ -10,12 +10,23 @@ set -uo pipefail
 #        heavy-gate.sh release NAME
 #        heavy-gate.sh renew NAME
 #        heavy-gate.sh status
+#        heavy-gate.sh held
 #        heavy-gate.sh --help
 #
 # State lives in one directory shared by every session on the host, on purpose: per-session state
 # would give no turn-taking. Seams (GATE_POLL, GATE_FAKE_THROTTLE and the other GATE_* names listed
 # in --help) are honoured only when GATE_DIR is also set, so an exported seam can never leak into a
 # real session and turn the gate against the shared queue into a no-op.
+#
+# Throttle predicate: the machine is THROTTLED when pmset's CPU_Speed_Limit or CPU_Scheduler_Limit
+# reads below 100. The machdep.xcpm thermal levels are informational only (status prints them on a
+# levels: line): on some hosts they read 41-96 while pmset reports no limit, so no level threshold
+# is applied. A machine with no pmset reading is unmeasurable and counts as not throttled.
+#
+# Nesting: run exports HEAVY_GATE_HELD (the owner line it wrote) to its stage. held_by_env says a
+# caller is nested inside the turn when that token equals the live run-mode owner line byte for byte,
+# or when the owner line's wrapper pid is a live ancestor of the caller whose command line names
+# heavy-gate.sh. A nested run takes no second turn; a nested wait or join is refused.
 
 usage_text() {
   cat <<'EOF'
@@ -26,6 +37,7 @@ Usage: heavy-gate.sh throttled
        heavy-gate.sh release NAME
        heavy-gate.sh renew NAME
        heavy-gate.sh status
+       heavy-gate.sh held
        heavy-gate.sh --help
 EOF
 }
@@ -38,13 +50,14 @@ A global turn-taking and thermal-throttle gate for heavy work started by concurr
 Exactly one session holds the turn at a time, and nothing starts while the machine is throttled.
 
 Subcommands:
-  throttled   exit 0 only when the machine reports thermal throttling; prints nothing
+  throttled   exit 0 only when the machine reports thermal throttling by its pmset speed limits; prints nothing
   join        take an empty ticket in the queue (no duplicate-name refusal)
   wait        wait for a turn, take the lock in mode wait and print GO NAME; the caller must then release
   release     free the lock when NAME holds it and remove NAME's tickets
   renew       touch the lock's owner file (when NAME holds it) and NAME's ticket, to outlast the lock TTL
-  status      read-only report: queue, lock, throttle word, source, seam, params; never prunes, never blocks
+  status      read-only report: queue, lock, throttle word, source, thermal levels (informational), seam, params; never prunes, never blocks
   run         wait for a turn, run CMD as the stage, release the turn, exit with the stage's status
+  held        exit 0 and print the holder's NAME when the caller is nested inside a run's turn; exit 1 and print nothing otherwise; read-only
 
 Names:
   A NAME matches [A-Za-z0-9._-]+ and does not start with a dot.
@@ -55,10 +68,12 @@ Exit codes:
   2 usage, validation or state-directory problem
   75 no turn within --max-wait
   75 means this session did not get a turn: report it, do not work around it
+  129 the waiting process's parent exited while it was queued: it left the queue and started nothing
   128+signal when the stage was ended by a signal
 
 Verdict line:
-  once its arguments parse, run always prints, as the last line on stderr and after its release, HEAVY_GATE_DONE <NAME> rc=<n>
+  once its arguments parse, run prints, as the last line on stderr and after its release, HEAVY_GATE_DONE <NAME> rc=<n>
+  wait prints the same line (rc=129) only when it leaves the queue because its parent is gone
   a malformed call (an unparsable --max-wait, say) exits 2 with no verdict line
 
 Liveness bounds:
@@ -75,7 +90,7 @@ Long stages:
   wait, release and renew are for a stage that cannot use run; it must call renew inside that TTL or the lock is judged stale and handed on
 
 Limits of run:
-  a run started from inside another gated stage waits for its own parent forever (the outer run's heartbeat keeps the lock live and run mode is exempt from the lock TTL), so give every nested run --max-wait
+  a stage that detaches from its wrapper (setsid, a daemon) and scrubs its environment is not recognised as nested, and a run it starts queues behind its own parent, so give such a run --max-wait
   --max-wait is checked once per poll, so its resolution is one GATE_POLL (default 20 s); a poll that finds a stale run-mode lock first spends the re-check (GATE_BEAT_TICK plus one second, 6 s at the defaults) and any stage kill (up to GATE_GRACE, 10 s at the defaults), so a wait can end later than SECS by that much
   a signal during that re-check or kill is still handled within about 0.2 s, and a SIGKILL landing between a stage's launch and the record of its process group leaves a stage nothing stops
   the tty fallback is unverified: when stdin is a terminal the stage gets /dev/null and one stderr note, and no row has run that path
@@ -84,12 +99,20 @@ Limits of run:
   a run started directly by pid 1 (a launchd agent, or a container whose init runs the gate) reads as orphaned and is stopped
   the heartbeat is this script re-executed from the file on disk, with its output discarded: a broken call shows nothing of its own: with a waiter queued the stage is stopped by rule 1(b) after GATE_RUN_STALE plus the re-check (about 86 s before the hand-on, plus up to 11 s if the stage ignores TERM), and with none nothing stops it, and a script replaced on disk while a run is queued gives that run's heartbeat the new version
 
+Nesting:
+  run exports HEAVY_GATE_HELD, the owner line it wrote, to its stage; a caller is nested while that line is still the lock's run-mode owner line, or while the lock's wrapper process is an ancestor of the caller
+  a nested run takes no second turn: it prints "heavy-gate: nested inside <holder>; running without a second turn" on stderr, runs CMD in the foreground and exits with its status
+  a nested wait or join exits 2 naming the holder, since a wait there would wait for its own parent
+  held reports it: exit 0 and the holder's NAME when nested, exit 1 and no output otherwise, exit 2 on stray arguments; it never writes state
+
 Scope:
-  the gate is a convention, not enforcement: a session that does not call it is not stopped
+  run-long.sh and audit.sh --tests take a turn by themselves; for every other caller the gate is a convention, not enforcement: a session that does not call it is not stopped
+  the token is a courtesy among cooperating sessions
 
 Seams (honoured only with GATE_DIR set):
   GATE_POLL GATE_FAKE_THROTTLE GATE_FAKE_THROTTLE_FILE GATE_BEAT_TICK GATE_GRACE
   GATE_RUN_STALE GATE_TICKET_TTL GATE_LOCK_TTL GATE_ORPHAN_LOCK_TTL GATE_LIB_ONLY
+  GATE_SYSCTL_CMD GATE_PMSET_CMD (a path to an executable replacing sysctl / pmset; a set path that is not executable exits 2)
 EOF
 }
 
@@ -135,11 +158,27 @@ P_TICKET_TTL=$(seam_value GATE_TICKET_TTL 600) || exit 2
 P_LOCK_TTL=$(seam_value GATE_LOCK_TTL 2700) || exit 2
 P_ORPHAN_LOCK_TTL=$(seam_value GATE_ORPHAN_LOCK_TTL 120) || exit 2
 
+seam_cmd() { # SEAM-NAME DEFAULT -- the seam's executable path when honoured, else DEFAULT
+  local v=""
+  if [ "$seam_on" = 1 ]; then v="${!1:-}"; fi
+  if [ -z "$v" ]; then
+    printf '%s\n' "$2"
+    return 0
+  fi
+  [ -f "$v" ] && [ -x "$v" ] || die "$1 is not an executable file: [$v]"
+  printf '%s\n' "$v"
+}
+
+# Validated here, at top level: a die inside the $(throttle_reading) subshell would exit only that subshell.
+P_SYSCTL_CMD=$(seam_cmd GATE_SYSCTL_CMD sysctl) || exit 2
+P_PMSET_CMD=$(seam_cmd GATE_PMSET_CMD pmset) || exit 2
+
 seam_active() { # succeeds when GATE_DIR is set and at least one seam is set
   local v
   [ "$seam_on" = 1 ] || return 1
   for v in GATE_POLL GATE_FAKE_THROTTLE GATE_FAKE_THROTTLE_FILE GATE_BEAT_TICK GATE_GRACE \
-    GATE_RUN_STALE GATE_TICKET_TTL GATE_LOCK_TTL GATE_ORPHAN_LOCK_TTL GATE_LIB_ONLY; do
+    GATE_RUN_STALE GATE_TICKET_TTL GATE_LOCK_TTL GATE_ORPHAN_LOCK_TTL GATE_LIB_ONLY \
+    GATE_SYSCTL_CMD GATE_PMSET_CMD; do
     if [ -n "${!v:-}" ]; then return 0; fi
   done
   return 1
@@ -169,6 +208,7 @@ STAGE_RESULT=none
 VERDICT_DONE=0
 STAGE_LAUNCHING=0
 LOCK_LINE=""
+HELD_NAME=""
 RUN_NAME=""
 NAP_PID=""
 BEAT_PID=""
@@ -223,9 +263,10 @@ fake_value() {
 }
 
 # throttle_reading prints two lines: the word (THROTTLED, not throttled, unmeasurable (<why>)),
-# then the source that answered (sysctl, pmset-only, fake, none).
+# then the source that answered (pmset, fake, none). The word comes from pmset's CPU_Speed_Limit and
+# CPU_Scheduler_Limit only; the xcpm thermal levels never reach it (see thermal_levels).
 throttle_reading() {
-  local fv u lvl_cpu lvl_gpu lvl_io pm lv word src n=0 hot=0
+  local fv u out lim sched n=0 hot=0 v word src
   if fv=$(fake_value); then
     if [ "$fv" = 1 ]; then printf 'THROTTLED\nfake\n'; else printf 'not throttled\nfake\n'; fi
     return 0
@@ -235,28 +276,38 @@ throttle_reading() {
     printf 'unmeasurable (no probe for %s)\nnone\n' "$u"
     return 0
   fi
-  lvl_cpu=$(sysctl -n machdep.xcpm.cpu_thermal_level 2>/dev/null)
-  lvl_gpu=$(sysctl -n machdep.xcpm.gpu_thermal_level 2>/dev/null)
-  lvl_io=$(sysctl -n machdep.xcpm.io_thermal_level 2>/dev/null)
-  for lv in "$lvl_cpu" "$lvl_gpu" "$lvl_io"; do
-    if is_num "$lv"; then
+  out=$("$P_PMSET_CMD" -g therm 2>/dev/null)
+  lim=$(printf '%s\n' "$out" | sed -n 's/.*CPU_Speed_Limit[^0-9]*\([0-9][0-9]*\).*/\1/p' | tail -n 1)
+  sched=$(printf '%s\n' "$out" | sed -n 's/.*CPU_Scheduler_Limit[^0-9]*\([0-9][0-9]*\).*/\1/p' | tail -n 1)
+  for v in "$lim" "$sched"; do
+    if is_num "$v"; then
       n=$((n + 1))
-      if [ "$lv" -gt 0 ]; then hot=1; fi
+      if [ "$v" -lt 100 ]; then hot=1; fi
     fi
   done
-  pm=$(pmset -g therm 2>/dev/null | sed -n 's/.*CPU_Speed_Limit[^0-9]*\([0-9][0-9]*\).*/\1/p' | tail -n 1)
-  if [ "$n" -gt 0 ]; then src=sysctl; else src=pmset-only; fi
   if [ "$hot" = 1 ]; then
     word=THROTTLED
-  elif is_num "$pm" && [ "$pm" -lt 100 ]; then
-    word=THROTTLED
-  elif [ "$n" -gt 0 ] || is_num "$pm"; then
+    src=pmset
+  elif [ "$n" -gt 0 ]; then
     word="not throttled"
+    src=pmset
   else
-    word="unmeasurable (no machdep.xcpm level and no pmset reading)"
+    word="unmeasurable (no pmset speed limit reading)"
     src=none
   fi
   printf '%s\n%s\n' "$word" "$src"
+}
+
+# thermal_levels prints the informational levels: line body; used only by cmd_status.
+thermal_levels() {
+  local cpu gpu io
+  cpu=$("$P_SYSCTL_CMD" -n machdep.xcpm.cpu_thermal_level 2>/dev/null)
+  gpu=$("$P_SYSCTL_CMD" -n machdep.xcpm.gpu_thermal_level 2>/dev/null)
+  io=$("$P_SYSCTL_CMD" -n machdep.xcpm.io_thermal_level 2>/dev/null)
+  is_num "$cpu" || cpu=-
+  is_num "$gpu" || gpu=-
+  is_num "$io" || io=-
+  printf 'cpu=%s gpu=%s io=%s\n' "$cpu" "$gpu" "$io"
 }
 
 # throttled succeeds only for THROTTLED; unmeasurable counts as not throttled.
@@ -343,6 +394,48 @@ owner_line() { # the first line of lock/owner (empty when there is none)
 
 owner_field() { # N -- field N of the owner line
   owner_line | awk -v n="$1" 'NR == 1 { print $n }'
+}
+
+# held_by_ancestry WPID -- succeeds when WPID is a live process whose command line names heavy-gate.sh
+# (the basename, never the substring heavy-gate: a checkout path may contain that) and an ancestor of
+# this process within 64 parent steps. Read-only.
+held_by_ancestry() {
+  local wpid=${1:-} cmdline p i=0
+  is_num "$wpid" || return 1
+  [ "$((10#$wpid))" -gt 1 ] || return 1
+  wpid=$((10#$wpid))
+  cmdline=$(ps -ww -o command= -p "$wpid" 2>/dev/null)
+  case "$cmdline" in *heavy-gate.sh*) ;; *) return 1 ;; esac
+  p=$$
+  while [ "$i" -lt 64 ]; do
+    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+    is_num "$p" || return 1
+    [ "$((10#$p))" -gt 1 ] || return 1
+    if [ "$((10#$p))" = "$wpid" ]; then return 0; fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# held_by_env succeeds, and sets HELD_NAME (call it directly, never inside $( )), when the caller is
+# nested inside a live run-mode turn: the token equals the owner line, or the owner's wrapper is an
+# ancestor. Both sides of the token comparison must be non-empty. Read-only.
+held_by_env() {
+  local o
+  HELD_NAME=""
+  [ -d "$L" ] || return 1
+  o=$(owner_line)
+  [ -n "$o" ] || return 1
+  [ "$(owner_field 4)" = run ] || return 1
+  if [ -n "${HEAVY_GATE_HELD:-}" ] && [ "$HEAVY_GATE_HELD" = "$o" ]; then
+    HELD_NAME=${o%% *}
+    return 0
+  fi
+  if held_by_ancestry "$(owner_field 3)"; then
+    HELD_NAME=${o%% *}
+    return 0
+  fi
+  return 1
 }
 
 # shellcheck disable=SC2329 # called by the run lifecycle and by the suite through GATE_LIB_ONLY
@@ -514,9 +607,24 @@ head_name() { # the NAME of the oldest ticket
 }
 
 wait_turn() { # NAME MODE [MAXWAIT] -- block until NAME holds the lock in MODE; fails when MAXWAIT seconds pass first
-  local name=$1 mode=$2 maxwait=${3:-} started nap left
+  local name=$1 mode=$2 maxwait=${3:-} started nap left entry_ppid="" now_ppid tries=0
+  # the entry reading must be numeric (a failed ps under load would read every later ppid as changed), as in beat_main
+  while ! is_num "$entry_ppid" && [ "$tries" -lt 20 ]; do
+    entry_ppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
+    tries=$((tries + 1))
+    if ! is_num "$entry_ppid"; then sleep 0.1; fi
+  done
+  is_num "$entry_ppid" || die "wait_turn could not read its parent pid"
   started=$(now)
   while :; do
+    # a waiter whose parent is gone (pid 1, or changed since entry) leaves the queue and never starts anything
+    now_ppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
+    if is_num "$now_ppid" && { [ "$now_ppid" = 1 ] || [ "$now_ppid" != "$entry_ppid" ]; }; then
+      drop_holder_ticket "$name" "$$"
+      printf 'heavy-gate: parent gone while queued; leaving the queue\n' >&2
+      emit_verdict "$name" 129
+      exit 129
+    fi
     if [ -z "$(ticket_of "$name")" ]; then
       printf '%s\n' "$$" >"$Q/$(now)-$name"
     else
@@ -598,6 +706,9 @@ need_name() { # NAME -- exit 2 unless NAME passes the allowlist
 cmd_join() { # NAME -- take a ticket; an empty one, with no duplicate-name refusal
   local t
   need_name "$1"
+  if held_by_env; then
+    die "$1 is nested inside $HELD_NAME; a wait here would wait for its own parent"
+  fi
   ensure_state_dir
   t=$(ticket_of "$1")
   if [ -n "$t" ]; then
@@ -609,6 +720,9 @@ cmd_join() { # NAME -- take a ticket; an empty one, with no duplicate-name refus
 
 cmd_wait() { # NAME -- take the lock in mode wait and print GO NAME; the caller must release
   need_name "$1"
+  if held_by_env; then
+    die "$1 is nested inside $HELD_NAME; a wait here would wait for its own parent"
+  fi
   claim_ticket "$1"
   wait_turn "$1" wait
   printf 'GO %s\n' "$1"
@@ -683,6 +797,14 @@ cmd_run() { # NAME [--max-wait SECS] -- CMD... -- wait for the turn, run CMD as 
     exit 2
   fi
   shift
+  if held_by_env; then
+    # nested inside a live turn: no ticket, no lock, no heartbeat (LOCK_LINE stays empty, so nothing is released)
+    printf 'heavy-gate: nested inside %s; running without a second turn\n' "$HELD_NAME" >&2
+    "$@"
+    rc=$?
+    emit_verdict "$name" "$rc"
+    exit "$rc"
+  fi
   RUN_NAME=$name
   trap 'run_abort 15' TERM
   trap 'run_abort 2' INT
@@ -694,6 +816,7 @@ cmd_run() { # NAME [--max-wait SECS] -- CMD... -- wait for the turn, run CMD as 
     emit_verdict "$name" 75
     exit 75
   fi
+  export HEAVY_GATE_HELD="$LOCK_LINE"
   set +u
   PRE_BG=$!
   set -u
@@ -769,6 +892,7 @@ cmd_status() {
   src=${r#*$'\n'}
   printf 'throttle: %s\n' "$word"
   printf 'source: %s\n' "$src"
+  printf 'levels: %s\n' "$(thermal_levels)"
   if seam_active; then printf 'seam: fake\n'; fi
   printf 'params: tick=%s grace=%s run_stale=%s ticket_ttl=%s lock_ttl=%s orphan_lock_ttl=%s poll=%s\n' \
     "$P_TICK" "$P_GRACE" "$P_RUN_STALE" "$P_TICKET_TTL" "$P_LOCK_TTL" "$P_ORPHAN_LOCK_TTL" "$P_POLL"
@@ -790,6 +914,17 @@ case "$cmd" in
   --help | -h)
     help_text
     exit 0
+    ;;
+  held)
+    if [ "$#" -ne 1 ]; then
+      usage_text >&2
+      exit 2
+    fi
+    if held_by_env; then
+      printf '%s\n' "$HELD_NAME"
+      exit 0
+    fi
+    exit 1
     ;;
   join | wait | release | renew)
     if [ "$#" -ne 2 ]; then

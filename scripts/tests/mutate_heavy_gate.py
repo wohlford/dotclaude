@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Script: mutate_heavy_gate.py
 # Purpose: Mutation campaign for scripts/heavy-gate.sh, driven by scripts/lib/mutate.py
-# Usage: ./scripts/tests/mutate_heavy_gate.py [--r3-rate N]
+# Usage: ./scripts/tests/mutate_heavy_gate.py [--r3-rate N | --only LABEL-SUBSTRING]
 """Mutation campaign for scripts/heavy-gate.sh, driven by scripts/lib/mutate.py.
 
 Deliberately NOT named `test_*`: it mutates a tracked file in place, so pytest must not collect
@@ -79,46 +79,83 @@ MUTATIONS = [
         r'[ "$word" = THROTTLED ]',
         r'[ "$word" != THROTTLED ]',
     ),
-    # One mutant per sysctl source; each source has its own label (R2/cpu-alone, R2/gpu-alone, R2/io-alone).
+    # One mutant per informational level; each has its own label (D0/levels-cpu, D0/levels-gpu, D0/levels-io).
     mutate.Mutation(
         "the cpu thermal level is never read",
-        r"lvl_cpu=$(sysctl -n machdep.xcpm.cpu_thermal_level 2>/dev/null)",
-        r'lvl_cpu=""',
+        r'cpu=$("$P_SYSCTL_CMD" -n machdep.xcpm.cpu_thermal_level 2>/dev/null)',
+        r'cpu=""',
     ),
     mutate.Mutation(
         "the gpu thermal level is never read",
-        r"lvl_gpu=$(sysctl -n machdep.xcpm.gpu_thermal_level 2>/dev/null)",
-        r'lvl_gpu=""',
+        r'gpu=$("$P_SYSCTL_CMD" -n machdep.xcpm.gpu_thermal_level 2>/dev/null)',
+        r'gpu=""',
     ),
     mutate.Mutation(
         "the io thermal level is never read",
-        r"lvl_io=$(sysctl -n machdep.xcpm.io_thermal_level 2>/dev/null)",
-        r'lvl_io=""',
+        r'io=$("$P_SYSCTL_CMD" -n machdep.xcpm.io_thermal_level 2>/dev/null)',
+        r'io=""',
     ),
-    # Kills R2/pmset-80 only: every other row has pmset at 100 or absent.
+    # Kills R2/pmset-80 and D0/pmset-speed-99: every other row has the limits at 100 or absent.
     mutate.Mutation(
-        "the pmset CPU_Speed_Limit fallback never throttles",
-        r'elif is_num "$pm" && [ "$pm" -lt 100 ]; then',
-        r"elif false; then",
+        "a pmset speed limit below 100 never throttles",
+        r'if [ "$v" -lt 100 ]; then hot=1; fi',
+        r":",
     ),
     # Kills R2/nonnumeric-level and R2/all-missing-unmeasurable (both read the unmeasurable word); R2b/none-source stays green.
     mutate.Mutation(
         "an unmeasurable machine is reported as 'not throttled' (the word, not the verdict)",
-        r'word="unmeasurable (no machdep.xcpm level and no pmset reading)"',
+        r'word="unmeasurable (no pmset speed limit reading)"',
         r'word="not throttled"',
     ),
-    # Removes the field: kills R2b/sysctl-source, R2b/pmset-only-source, R2b/pmset-only-word-differs, R2b/none-source,
-    # R2b/fake-source and R14e/fake-ignored-without-gate-dir (the real source is read from this line).
+    # Removes the field: kills 7 rows (D0/pmset-both-100, R14e/fake-ignored-without-gate-dir, R2b/fake-source,
+    # R2b/levels-line-differs, R2b/none-source, R2b/pmset-source, R2b/pmset-source-without-levels) (the real source is
+    # read from this line).
     mutate.Mutation(
         "status stops printing the source: line",
         r'''printf 'source: %s\n' "$src"''',
         r":",
     ),
-    # Field present, wrong in one case: kills R2b/pmset-only-source and R2b/pmset-only-word-differs, leaves R2b/sysctl-source green.
+    # Kills D0/high-level-pmset-100-not-throttled: a high level with pmset at 100 must read not throttled.
     mutate.Mutation(
-        "a pmset-only reading is labelled sysctl",
-        r'if [ "$n" -gt 0 ]; then src=sysctl; else src=pmset-only; fi',
-        r"src=sysctl",
+        "levels re-added to the predicate",
+        r'if [ "$v" -lt 100 ]; then hot=1; fi',
+        r'if [ "$v" -lt 100 ] || [ "$(thermal_levels)" != "cpu=0 gpu=0 io=0" ]; then hot=1; fi',
+    ),
+    # Kills D0/pmset-scheduler-99: only the scheduler limit is below 100 there.
+    mutate.Mutation(
+        "CPU_Scheduler_Limit is ignored",
+        r'for v in "$lim" "$sched"; do',
+        r'for v in "$lim"; do',
+    ),
+    # Kills D0/seam-ignored-without-gate-dir: the stub pmset at 99 would throttle a gate with no GATE_DIR.
+    mutate.Mutation(
+        "the command seam is honoured without GATE_DIR",
+        r"""if [ "$seam_on" = 1 ]; then v="${!1:-}"; fi
+  if [ -z "$v" ]; then
+    printf '%s\n' "$2"
+    return 0
+  fi
+  [ -f""",
+        r"""v="${!1:-}"
+  if [ -z "$v" ]; then
+    printf '%s\n' "$2"
+    return 0
+  fi
+  [ -f""",
+    ),
+    # Kills D0/seam-nonexecutable-exits-2 and D0/seam-nonexecutable-message.
+    mutate.Mutation(
+        "a non-executable seam path is accepted",
+        r'[ -f "$v" ] && [ -x "$v" ] || die "$1 is not an executable file: [$v]"',
+        r":",
+    ),
+    # Kills D0/pmset-both-100: a parsed reading must carry the pmset source.
+    mutate.Mutation(
+        "a pmset reading is labelled none",
+        r"""    word="not throttled"
+    src=pmset""",
+        r"""    word="not throttled"
+    src=none""",
     ),
     # --- turn-taking: lock, head and order (rows R3, R4, R4h, R12) ---
     # RATE mutant (the -d/mkdir window is narrow): kills R3/one-winner-per-round (and R3/all-rounds-ran only if a loser errors);
@@ -143,8 +180,8 @@ MUTATIONS = [
         r'if [ "$(head_name)" = "$name" ] && ! throttled; then',
         r'if [ "$(head_name)" = "$name" ]; then',
     ),
-    # Newest ticket first: kills R4/start-order-equals-join-order, R4h/non-head-does-not-take-lock,
-    # R4h/oldest-takes-lock-despite-newer-tickets, and R8f1/* (the newer 'other' ticket becomes the head).
+    # Newest ticket first: kills 6 rows (R15/proto-ticket-honoured, R4/no-overlap, R4/start-order-equals-join-order,
+    # R4h/non-head-does-not-take-lock, R4h/oldest-takes-lock-despite-newer-tickets, R8f1/lock-removed).
     # HANGS: R4 waiters (bg_finish 30 each), R8f1 (run_bounded 9).
     mutate.Mutation(
         "the ticket order is reversed (newest ticket is the head)",
@@ -153,7 +190,9 @@ MUTATIONS = [
     ),
     # --- the run lifecycle: signals, group, verdict (rows R5, R6, R7, R13) ---
     # TERM is only handled once the stage ends (an external foreground poll defers the trap, as a foreground stage would):
-    # kills R5/exit-143-promptly (bg_finish 12 reports 124) and the other R5 rows that read the TERM path.
+    # kills 7 rows (R5/exit-143-promptly, R5/last-line-verdict-143, R5/state-clean, R7/ii-lock-ticket-gone,
+    # R7/ii-plain-term-no-survivors, R7/iii-orphan-ignoring-stage-lock-ticket-gone,
+    # R7/iii-orphan-ignoring-stage-no-survivors); R5/exit-143-promptly reports 124 (bg_finish 12).
     # BOUND: R5's bg_finish 12 (the row then kills the wrapper and reap_row clears the stage).
     mutate.Mutation(
         "the wait for the stage is a foreground poll, so a TERM is deferred until the stage ends",
@@ -161,8 +200,14 @@ MUTATIONS = [
         r"""sh -c 'while kill -0 "$1" 2>/dev/null; do sleep 0.2; done' _ "$stage_pid" </dev/null
   wait "$stage_pid" || rc=$?""",
     ),
-    # The stage shares the wrapper's group, so the group kill no longer reaches it: kills R5/no-survivors and the R7 / R8
-    # rows that count survivors. BOUND: wait_for 3 / 6 / 8 / 10 in those rows.
+    # The stage shares the wrapper's group, so the group kill no longer reaches it: kills 27 rows (R5/no-survivors,
+    # R7/ii-plain-term-no-survivors, R7/iii-orphan-ignoring-stage-no-survivors, R8/stage-gone, R8b/holder-ticket-gone,
+    # R8b/lock-kept-at-half-stale, R8b/lock-removed-after-stale, R8b/second-go-within-bound, R8b/term-seen-lock-present,
+    # R8d3/alive-at-grace-minus-slack, R8d3/gone-by-bound, R8e/first-wrapper-143, R8e/first-wrapper-verdict-line,
+    # R8e/lock-handed-on, R8e/no-overlap-in-log, R8e/stage-killed, R8h/i-holder-ticket-gone, R8h/i-lock-gone-after-bound,
+    # R8h/i-no-survivors, R8h/i-no-trash, R8h/i-not-before-run-stale, R8h/i-second-go, R8h/ii-lock-gone,
+    # R8h/ii-no-survivors, R8h/ii-no-trash, R8h/ii-second-go, R8h/kill-stage-found-nothing-logged). BOUND: wait_for 3 / 6
+    # / 8 / 10 in those rows.
     mutate.Mutation(
         "the stage is launched without job control (no group of its own)",
         r"set -m",
@@ -175,14 +220,18 @@ MUTATIONS = [
         r"""printf 'HEAVY_GATE_DONE %s rc=%s\n' "$1" "$2" >&2""",
         r":",
     ),
-    # The heartbeat no longer TERMs the wrapper when the wrapper's parent changes: kills R7/ii-* and R7/iii-*.
+    # The heartbeat no longer TERMs the wrapper when the wrapper's parent changes: kills 4 rows (R7/ii-lock-ticket-gone,
+    # R7/ii-plain-term-no-survivors, R7/iii-orphan-ignoring-stage-lock-ticket-gone,
+    # R7/iii-orphan-ignoring-stage-no-survivors); R7/ii-no-trailer stays green.
     # BOUND: wait_for 6 (case ii) and wait_for 10 (case iii).
     mutate.Mutation(
         "the heartbeat does not watch the wrapper's parent (check 2)",
         r'if [ "$w_cur" = 1 ] || [ "$w_cur" != "$w_start" ]; then kill -TERM "$my_ppid" 2>/dev/null; fi',
         r":",
     ),
-    # A TERM kills the wrapper with no cleanup and no verdict: kills R5/last-line-verdict-143 and R5/term-during-prune-prompt.
+    # A TERM kills the wrapper with no cleanup and no verdict: kills 8 rows (R5/last-line-verdict-143, R5/no-survivors,
+    # R5/term-during-prune-prompt, R7/i-group-term-no-survivors, R7/ii-plain-term-no-survivors,
+    # R7/iii-orphan-ignoring-stage-no-survivors, R8h/ii-lock-gone, R8h/ii-no-trash).
     # (The INT and HUP trap lines are NOT mutated: no row sends either signal, so a mutant there would survive.)
     mutate.Mutation(
         "the TERM trap is gone (the wrapper dies without release or verdict)",
@@ -190,15 +239,18 @@ MUTATIONS = [
         r":",
     ),
     # --- the heartbeat B (rows R8, R8c, R8d3, R8o) ---
-    # B never notices the wrapper's death and never exits: kills R8/stage-gone, R8/heartbeat-gone, R8/second-run-holds-lock,
-    # R8c/iii-*, R8d3/*, R8e/* and R7/iii-*. BOUND: wait_for 8 in R8 and R8c; reap_row stops the leaked B.
+    # B never notices the wrapper's death and never exits: kills 7 rows (R8/heartbeat-gone, R8/second-run-holds-lock,
+    # R8/stage-gone, R8c/iii-parent-killed-passed-live-cleanup, R8d3/alive-at-grace-minus-slack, R8d3/gone-by-bound,
+    # R8o/beat-ticket-before-lock). R8e/* and R7/iii-* stay green. BOUND: wait_for 8 in R8 and R8c; reap_row stops the
+    # leaked B.
     mutate.Mutation(
         "the heartbeat never tests its own parent (no orphan detection)",
         r'if is_num "$cur_ppid" && { [ "$cur_ppid" = 1 ] || [ "$cur_ppid" != "$my_ppid" ]; }; then',
         r"if false; then",
     ),
-    # The stage dies but the lock stays: kills R8/second-run-holds-lock, R8c/iii-parent-killed-passed-live-cleanup,
-    # R8o/beat-ticket-before-lock (the probe never runs), R7/iii-orphan-ignoring-stage-lock-ticket-gone.
+    # The stage dies but the lock stays: kills 3 rows (R8/second-run-holds-lock,
+    # R8c/iii-parent-killed-passed-live-cleanup, R8o/beat-ticket-before-lock); R8o/beat-ticket-before-lock dies because
+    # the probe never runs.
     mutate.Mutation(
         "the heartbeat's own cleanup does not remove the lock",
         r'remove_lock "$mine"',
@@ -231,8 +283,15 @@ MUTATIONS = [
         r":",
     ),
     # --- stale locks, rule b (rows R8b, R8e, R8f*, R8g, R8h) ---
-    # The whole of rule 1(b): kills every row that needs a run-mode lock handed on (R8b/*, R8e/*, R8f1/*, R8f2, R8f3/*, R8g/*,
-    # R8h/*, R14f/reports-stale-1b, R5/term-during-prune-prompt). BOUND: each row's run_bounded / wait_for.
+    # The whole of rule 1(b): kills 32 rows (R14f/fresh-lock-not-reported-stale, R14f/reports-stale-1b,
+    # R14f/sentinel-alive, R5/term-during-prune-prompt, R8b/holder-ticket-gone, R8b/lock-kept-at-half-stale,
+    # R8b/lock-removed-after-stale, R8b/second-go-within-bound, R8b/stage-gone-before-go, R8b/term-seen-lock-present,
+    # R8e/first-wrapper-143, R8e/first-wrapper-verdict-line, R8e/late-tick-keeps-lock, R8e/lock-handed-on,
+    # R8e/no-overlap-in-log, R8e/stage-killed, R8f1/lock-removed, R8f1/ticket-kept-when-name-differs,
+    # R8f1/unrelated-not-killed, R8f2/group-killed, R8f3/killed-before-lock-removed, R8g/live-waiter-reaches-go,
+    # R8g/live-waiter-ticket-present, R8h/i-holder-ticket-gone, R8h/i-lock-gone-after-bound, R8h/i-no-trash,
+    # R8h/i-not-before-run-stale, R8h/i-second-go, R8h/ii-lock-gone, R8h/ii-no-trash, R8h/ii-second-go,
+    # R8h/kill-stage-found-nothing-logged). BOUND: each row's run_bounded / wait_for.
     mutate.Mutation(
         "rule 1(b) is removed: a run-mode lock is never stale",
         r'if [ "$age" -gt "$((10#$P_RUN_STALE))" ]; then',
@@ -252,8 +311,9 @@ MUTATIONS = [
   remove_lock ""
   kill_stage "$stale_pgid" "$stale_lstart"''',
     ),
-    # Deletion of the call: kills R8e/no-overlap-in-log, R8e/stage-killed, R8e/first-wrapper-143, R8e/first-wrapper-verdict-line,
-    # R8b/stage-gone-before-go, R8b/term-seen-lock-present, R8f1/unrelated-not-killed, R8f2/group-killed,
+    # Deletion of the call: kills 10 rows (R8b/stage-gone-before-go, R8b/term-seen-lock-present, R8e/first-wrapper-143,
+    # R8e/first-wrapper-verdict-line, R8e/lock-handed-on, R8e/no-overlap-in-log, R8e/stage-killed,
+    # R8f1/unrelated-not-killed, R8f2/group-killed, R8f3/killed-before-lock-removed). BOUND: R8e bg_finish 20.
     # R8f3/killed-before-lock-removed. BOUND: R8e bg_finish 20.
     mutate.Mutation(
         "rule 1(b) never stops the stage it removes the lock of",
@@ -267,14 +327,17 @@ MUTATIONS = [
         r"mode=$(owner_field 4)",
         r"mode=run",
     ),
-    # An absent mode (the prototype's two-field owner) reads as run: kills R15/two-field-owner-not-run-mode only.
+    # An absent mode (the prototype's two-field owner) reads as run: kills 2 rows (R15/two-field-owner-not-run-mode,
+    # R5/term-during-prune-prompt).
     mutate.Mutation(
         "an owner line with no mode field is treated as run mode",
         r'if [ "$mode" = run ]; then',
         r'if [ "$mode" != wait ]; then',
     ),
-    # The holder's ticket stays: kills R8b/holder-ticket-gone, R8b/second-go-within-bound, R8f1/lock-removed,
-    # R8f1/ticket-kept-when-name-differs, R8h/i-holder-ticket-gone, R8h/i-second-go, R8h/ii-lock-gone, R8h/ii-second-go.
+    # The holder's ticket stays: kills 11 rows (R8b/holder-ticket-gone, R8b/second-go-within-bound,
+    # R8b/stage-gone-before-go, R8f1/lock-removed, R8f1/ticket-kept-when-name-differs, R8h/i-holder-ticket-gone,
+    # R8h/i-no-trash, R8h/i-second-go, R8h/ii-lock-gone, R8h/ii-no-trash, R8h/ii-second-go). BOUND: R8b wait_for 14, R8h
+    # wait_for 14 and 8.
     # BOUND: R8b wait_for 14, R8h wait_for 14 and 8.
     mutate.Mutation(
         "rule 1(b) leaves the dead holder's ticket in the queue",
@@ -327,14 +390,15 @@ MUTATIONS = [
         r'kill -KILL -- "-$pgid" 2>/dev/null',
         r":",
     ),
-    # The grace is one second whatever GATE_GRACE says: kills R8d3/alive-at-grace-minus-slack only.
+    # The grace is one second whatever GATE_GRACE says: kills 3 rows (R8d3/alive-at-grace-minus-slack, R8h/ii-lock-gone,
+    # R8h/ii-no-trash).
     mutate.Mutation(
         "the kill_stage grace deadline ignores GATE_GRACE",
         r"deadline=$(($(now) + 10#$P_GRACE + 1))",
         r"deadline=$(($(now) + 1))",
     ),
-    # The shipped default drifts from the help text: kills R8d2/params-defaults, R8d2/help-tick-grace-equal-params and (when the
-    # detection is early enough) R8d3/alive-at-grace-minus-slack.
+    # The shipped default drifts from the help text: kills 2 rows (R8d2/help-tick-grace-equal-params,
+    # R8d2/params-defaults); R8d3/alive-at-grace-minus-slack stays green.
     mutate.Mutation(
         "the GATE_GRACE default is shortened and the help text still says 10",
         r"P_GRACE=$(seam_value GATE_GRACE 10) || exit 2",
@@ -371,7 +435,18 @@ MUTATIONS = [
         r'if [ "$tr_age" -gt "$((10#$P_TICKET_TTL))" ]; then rm -rf "$e"; fi',
         r'if [ "$tr_age" -gt "$((10#$P_TICKET_TTL * 10))" ]; then rm -rf "$e"; fi',
     ),
-    # Age in minutes: kills R9a/age-30s-within-1 and, because nothing ever looks stale, every stale-rule label.
+    # Age in minutes: nothing ever looks stale, so it kills 44 rows (R10/ownerless-taken-after-ttl,
+    # R11/replaced-lock-restored, R11/restored-event-logged, R14f/fresh-lock-not-reported-stale, R14f/reports-stale-1b,
+    # R14f/sentinel-alive, R15/two-field-owner-not-run-mode, R5/term-during-prune-prompt, R8b/holder-ticket-gone,
+    # R8b/lock-kept-at-half-stale, R8b/lock-removed-after-stale, R8b/second-go-within-bound, R8b/stage-gone-before-go,
+    # R8b/term-seen-lock-present, R8e/first-wrapper-143, R8e/first-wrapper-verdict-line, R8e/late-tick-keeps-lock,
+    # R8e/lock-handed-on, R8e/no-overlap-in-log, R8e/stage-killed, R8f1/lock-removed, R8f1/ticket-kept-when-name-differs,
+    # R8f1/unrelated-not-killed, R8f2/group-killed, R8f3/killed-before-lock-removed, R8g/live-waiter-reaches-go,
+    # R8g/live-waiter-ticket-present, R8h/i-holder-ticket-gone, R8h/i-lock-gone-after-bound, R8h/i-no-trash,
+    # R8h/i-not-before-run-stale, R8h/i-second-go, R8h/ii-lock-gone, R8h/ii-no-trash, R8h/ii-second-go,
+    # R8h/kill-stage-found-nothing-logged, R9/non-trash-old-entries-kept, R9/ticket-fresh-kept, R9/ticket-stale-removed,
+    # R9/trash-fresh-kept, R9/trash-stale-swept, R9/wait-lock-fresh-kept, R9/wait-lock-stale-removed,
+    # R9a/age-30s-within-1).
     # The slowest mutant after the throttle inversion. BOUND: every stale-rule row's own run_bounded / wait_for.
     mutate.Mutation(
         "the age primitive returns minutes, not seconds",
@@ -435,10 +510,12 @@ MUTATIONS = [
         r'if ! wait_turn "$name" run "$maxwait"; then',
         r'if ! wait_turn "$name" run ""; then',
     ),
-    # run_release leaves the ticket behind: kills R4/state-dir-clean, R5/state-clean, R7 lock-ticket-gone rows,
-    # R8o/release-ticket-before-lock. R13/ticket-removed stays green (the separate removal before `exit 75` still runs; neither
-    # ticket removal is pinned on its own). HANGS: the leftover ticket of run a keeps R4's runs b, c and d waiting behind it, each
-    # bounded by `bg_finish 30`.
+    # run_release leaves the ticket behind: kills 11 rows (R4/all-rc-equal-stage-rc, R4/no-overlap,
+    # R4/start-order-equals-join-order, R4/state-dir-clean, R5/state-clean, R7/i-lock-ticket-gone, R7/ii-lock-ticket-gone,
+    # R7/iii-orphan-ignoring-stage-lock-ticket-gone, R8g/live-waiter-reaches-go, R8o/release-ticket-before-lock,
+    # W1/live-parent-run-executes-and-exits-0). R13/ticket-removed stays green (the separate removal before `exit 75`
+    # still runs; neither ticket removal is pinned on its own). HANGS: the leftover ticket of run a keeps R4's runs b, c
+    # and d waiting behind it, each bounded by `bg_finish 30`.
     mutate.Mutation(
         "run_release does not remove its own ticket",
         r'drop_holder_ticket "$RUN_NAME" "$$"',
@@ -559,6 +636,170 @@ MUTATIONS = [
         r'LOCK_LINE="$1 $(now) $$ $2"',
         r'LOCK_LINE="$(now) $1 $$ $2"',
     ),
+    # --- the queued waiter's parent check (row W1) ---
+    # The check is removed: kills W1/queued-waiter-leaves-when-parent-killed, W1/orphan-exit-code-and-verdict-line,
+    # W1/orphan-says-why and W1/orphan-never-starts-command (the orphan keeps its place and runs the command once the
+    # holder ends). BOUND: wait_for 5 / wait_for 3 / bg_finish 15 in the row.
+    mutate.Mutation(
+        "the wait_turn parent check is removed",
+        r'''    if is_num "$now_ppid" && { [ "$now_ppid" = 1 ] || [ "$now_ppid" != "$entry_ppid" ]; }; then
+      drop_holder_ticket "$name" "$$"''',
+        r'''    if false; then
+      drop_holder_ticket "$name" "$$"''',
+    ),
+    # Every waiter reads as orphaned: kills 96 rows (H1/run-exports-held-token, H2/held-false-after-release,
+    # H2/held-true-by-ancestry-with-scrubbed-env, H2/held-true-inside, H3/nested-join-refused,
+    # H3/nested-release-does-not-free-outer-lock, H3/nested-run-passes-through, H3/nested-run-prints-one-verdict-line,
+    # H3/nested-run-propagates-rc, H3/nested-run-takes-no-ticket, H3/nested-wait-refused-naming-holder,
+    # H3/stale-token-gated, R10/ownerless-not-taken-before-ttl, R10/ownerless-taken-after-ttl,
+    # R10/seam-above-constant-not-taken, R11/collision-no-effect, R11/foreign-lock-inode-stable,
+    # R11/release-other-leaves-lock, R12/flip-to-0-go-within-2-polls, R12/running-stage-unaffected-by-flip,
+    # R12/throttled-head-waits, R13/cmd-never-ran, R13/exit-75, R13/holder-lock-untouched, R13/last-line-75,
+    # R13/ticket-removed, R13/within-bound, R14b/dead-pid-taken-over, R14b/empty-ticket-taken-over,
+    # R14b/join-only-ticket-taken-over, R14c/stdin-passes-through, R15/new-owner-field1-intact,
+    # R15/proto-release-frees-new-lock, R15/proto-ticket-honoured, R16/launcher-line-runs-done-rc0,
+    # R4/all-rc-equal-stage-rc, R4/no-overlap, R4/start-order-equals-join-order, R4/state-dir-clean,
+    # R4h/non-head-does-not-take-lock, R4h/oldest-takes-lock-despite-newer-tickets, R5/exit-143-promptly,
+    # R5/last-line-verdict-143, R5/no-survivors, R5/state-clean, R5/term-during-prune-prompt, R6/expect-satisfied,
+    # R6/lock-held-during-stage, R6/reverse-form-lock-free, R6/trailer-stage-rc, R7/i-group-term-no-survivors,
+    # R7/i-lock-ticket-gone, R7/i-no-trailer, R7/ii-lock-ticket-gone, R7/ii-no-trailer, R7/ii-plain-term-no-survivors,
+    # R7/iii-orphan-ignoring-stage-lock-ticket-gone, R7/iii-orphan-ignoring-stage-no-survivors, R8/heartbeat-gone,
+    # R8/second-run-holds-lock, R8/stage-gone, R8/stage-ran-before-kill, R8b/holder-ticket-gone,
+    # R8b/lock-kept-at-half-stale, R8b/lock-removed-after-stale, R8b/second-go-within-bound, R8b/stage-gone-before-go,
+    # R8b/term-seen-lock-present, R8b/wait-mode-owner-not-removed, R8d3/alive-at-grace-minus-slack, R8e/first-wrapper-143,
+    # R8e/first-wrapper-verdict-line, R8e/late-tick-keeps-lock, R8e/lock-handed-on, R8e/no-overlap-in-log,
+    # R8e/stage-killed, R8f1/lock-removed, R8f1/ticket-kept-when-name-differs, R8f1/unrelated-not-killed,
+    # R8f2/group-killed, R8f3/killed-before-lock-removed, R8g/live-waiter-reaches-go, R8g/live-waiter-ticket-present,
+    # R8h/i-holder-ticket-gone, R8h/i-lock-gone-after-bound, R8h/i-no-survivors, R8h/i-no-trash,
+    # R8h/i-not-before-run-stale, R8h/i-second-go, R8h/ii-lock-gone, R8h/ii-no-survivors, R8h/ii-no-trash,
+    # R8h/ii-second-go, R8h/kill-stage-found-nothing-logged, W1/live-parent-run-executes-and-exits-0,
+    # W1/queued-waiter-keeps-place-with-live-parent). (the live waiter leaves at once and its command never runs).
+    mutate.Mutation(
+        "the wait_turn parent check is always true",
+        r'''    if is_num "$now_ppid" && { [ "$now_ppid" = 1 ] || [ "$now_ppid" != "$entry_ppid" ]; }; then
+      drop_holder_ticket "$name" "$$"''',
+        r'''    if :; then
+      drop_holder_ticket "$name" "$$"''',
+    ),
+    # The orphan exits 75 (the no-turn code): kills W1/orphan-exit-code-and-verdict-line only.
+    mutate.Mutation(
+        "the orphan exits 75 instead of 129",
+        r"""emit_verdict "$name" 129
+      exit 129""",
+        r"""emit_verdict "$name" 75
+      exit 75""",
+    ),
+    # --- nested turns: the token, `held`, the reentrant run and the wait/join refusal (rows H1-H3) ---
+    # The export is removed: kills 3 rows (H1/run-exports-held-token, H2/held-false-after-release, H3/stale-token-gated).
+    # (the stage still sees an ancestor-recognised nesting).
+    mutate.Mutation(
+        "the run does not export HEAVY_GATE_HELD",
+        r"""  export HEAVY_GATE_HELD="$LOCK_LINE"
+""",
+        r"""  :
+""",
+    ),
+    # The token comparison reads only the NAME field: kills H2/held-false-fabricated-line.
+    mutate.Mutation(
+        "the held predicate compares only the NAME field of the token",
+        r"""[ "$HEAVY_GATE_HELD" = "$o" ]""",
+        r"""[ "${HEAVY_GATE_HELD%% *}" = "${o%% *}" ]""",
+    ),
+    # The mode field is ignored: kills H2/held-false-wait-mode-lock.
+    mutate.Mutation(
+        "the held predicate ignores the mode field",
+        r"""  [ "$(owner_field 4)" = run ] || return 1
+""",
+        r"""  :
+""",
+    ),
+    # The ancestor walk accepts the first parent: kills 26 rows (H2/held-false-ancestry-pid-not-an-ancestor,
+    # H3/stale-token-gated, R4/no-overlap, R8/second-run-holds-lock, R8b/holder-ticket-gone, R8b/lock-kept-at-half-stale,
+    # R8b/lock-removed-after-stale, R8b/stage-gone-before-go, R8b/term-seen-lock-present, R8e/first-wrapper-143,
+    # R8e/first-wrapper-verdict-line, R8e/late-tick-keeps-lock, R8e/lock-handed-on, R8e/no-overlap-in-log,
+    # R8e/stage-killed, R8h/i-holder-ticket-gone, R8h/i-lock-gone-after-bound, R8h/i-no-trash, R8h/i-not-before-run-stale,
+    # R8h/ii-lock-gone, R8h/ii-no-trash, R8h/kill-stage-found-nothing-logged, W1/orphan-exit-code-and-verdict-line,
+    # W1/orphan-never-starts-command, W1/orphan-says-why, W1/queued-waiter-keeps-place-with-live-parent).
+    mutate.Mutation(
+        "the ancestry branch accepts a non-ancestor",
+        r"""    if [ "$((10#$p))" = "$wpid" ]; then return 0; fi""",
+        r"""    if :; then return 0; fi""",
+    ),
+    # The ancestry branch is dropped: kills H2/held-true-by-ancestry-with-scrubbed-env.
+    mutate.Mutation(
+        "the ancestry branch is dropped",
+        r"""  if held_by_ancestry "$(owner_field 3)"; then""",
+        r"""  if false; then""",
+    ),
+    # The command-line check is skipped: kills H2/held-false-ancestor-not-a-gate-process.
+    mutate.Mutation(
+        "the ancestry branch skips the command-line check",
+        r"""  case "$cmdline" in *heavy-gate.sh*) ;; *) return 1 ;; esac
+""",
+        r"""  : "$cmdline"
+""",
+    ),
+    # held rewrites the owner file's mtime: kills H2/held-writes-nothing.
+    mutate.Mutation(
+        "held touches state",
+        r"""      printf '%s\n' "$HELD_NAME"
+      exit 0""",
+        r"""      touch "$L/owner"
+      printf '%s\n' "$HELD_NAME"
+      exit 0""",
+    ),
+    # The pass-through claims a ticket (left behind, as it has no release): kills H3/nested-run-takes-no-ticket only.
+    mutate.Mutation(
+        "the nested run claims a ticket",
+        r"""running without a second turn\n' "$HELD_NAME" >&2
+""",
+        r"""running without a second turn\n' "$HELD_NAME" >&2
+    claim_ticket "$name"
+""",
+    ),
+    # The pass-through prints no verdict line: kills H3/nested-run-prints-one-verdict-line only.
+    mutate.Mutation(
+        "the nested run omits the verdict line",
+        r"""    emit_verdict "$name" "$rc"
+    exit "$rc"
+  fi""",
+        r"""    exit "$rc"
+  fi""",
+    ),
+    # The pass-through exits 0 whatever the command returned: kills H3/nested-run-propagates-rc only.
+    mutate.Mutation(
+        "the nested run discards the command's status",
+        r"""    exit "$rc"
+  fi
+  RUN_NAME=$name""",
+        r"""    exit 0
+  fi
+  RUN_NAME=$name""",
+    ),
+    # The pass-through frees the outer lock: kills 2 rows (H3/nested-release-does-not-free-outer-lock,
+    # H3/nested-run-passes-through).
+    mutate.Mutation(
+        "the nested run releases the outer lock",
+        r"""    "$@"
+    rc=$?
+""",
+        r"""    "$@"
+    rc=$?
+    remove_lock "name=$HELD_NAME"
+""",
+    ),
+    # A nested wait is not refused: kills H3/nested-wait-refused-naming-holder (BOUND: run_bounded 8).
+    mutate.Mutation(
+        "a nested wait is not refused",
+        r'''  if held_by_env; then
+    die "$1 is nested inside $HELD_NAME; a wait here would wait for its own parent"
+  fi
+  claim_ticket "$1"''',
+        r'''  if false; then
+    die "$1 is nested inside $HELD_NAME; a wait here would wait for its own parent"
+  fi
+  claim_ticket "$1"''',
+    ),
     # --- --help and the parameter table (rows R8d1, R8d2) ---
     # One sentence of the help text, reworded so the cost figure survives: kills R8d1/hand-on-cost-sentence only.
     mutate.Mutation(
@@ -612,6 +853,9 @@ def _r3_rate(n: int) -> int:
     return 2 if errors else 0
 
 
+_USAGE = "usage: mutate_heavy_gate.py [--r3-rate N | --only LABEL-SUBSTRING]"
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] in (["--help"], ["-h"]):
         print(__doc__)
@@ -623,11 +867,21 @@ def main(argv: list[str]) -> int:
         and int(argv[1]) > 0
     ):
         return _r3_rate(int(argv[1]))
-    if argv:
-        print("usage: mutate_heavy_gate.py [--r3-rate N]", file=sys.stderr)
+    chosen = MUTATIONS
+    if argv[:1] == ["--only"] and len(argv) == 2 and argv[1]:
+        chosen = [m for m in MUTATIONS if argv[1] in m.label]
+        if not chosen:
+            print(
+                f"mutate_heavy_gate.py: --only {argv[1]!r} matches no mutant label",
+                file=sys.stderr,
+            )
+            print(_USAGE, file=sys.stderr)
+            return 2
+    elif argv:
+        print(_USAGE, file=sys.stderr)
         return 2
     report = mutate.run(
-        SUBJECT, SUITE, MUTATIONS, cwd=str(REPO), timeout=SUITE_TIMEOUT_SECONDS
+        SUBJECT, SUITE, chosen, cwd=str(REPO), timeout=SUITE_TIMEOUT_SECONDS
     )
     print(report.text)
     return report.rc

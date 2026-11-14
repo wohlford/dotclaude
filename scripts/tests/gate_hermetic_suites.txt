@@ -1,0 +1,37 @@
+# Suites that execute run-long.sh in launch mode or audit.sh --tests, and how each stays off the
+# operator's real heavy-gate state. scripts/tests/test_gate_hermetic_suites.py reads this file:
+# every test_*.sh / test_*.py under scripts/tests that names either tool must appear in a section.
+# [helper]: sources scripts/lib/hermetic_gate.sh and calls hermetic_gate_env.
+# [self-hermetic]: drives private GATE_DIRs per row and unsets the wiring seams itself.
+# [mentions-only]: names the tools without launching run-long.sh or running audit.sh --tests;
+#   each entry carries the reason after the hash.
+
+[helper]
+scripts/tests/test_audit.sh
+scripts/tests/test_run_long.sh
+
+[self-hermetic]
+scripts/tests/test_heavy_gate.sh
+
+[mentions-only]
+scripts/tests/test_audit_name_parity.sh  # parses audit.sh text; never runs the engine with --tests
+scripts/tests/test_pre_push_hook.sh  # runs audit.sh against a throwaway --scope, explicitly never with --tests
+scripts/tests/test_hook_suite_guard.sh  # writes stub audit.sh / test_audit.sh files; runs no real engine
+scripts/tests/test_install.sh  # comment only: says its row output mirrors test_audit.sh's conventions
+scripts/tests/test_flake_sweep.sh  # run-long.sh appears via --stamp (not launch mode) and in comments
+scripts/tests/test_publish_preflight.sh  # comment only: names audit.sh as a precedent for a main guard
+scripts/tests/test_style_check.sh  # copies audit.sh and test_audit.sh as style-hook fixtures; never executes them
+scripts/tests/test_publication_push_guard.sh  # comment only: says audit.sh runs shellcheck over this file
+scripts/tests/test_propagate_postcheck.sh  # comments only: compares postcheck behaviour with audit.sh
+scripts/tests/test_publish_brick.sh  # writes a stub audit.sh whose verdict shape the row selects; no real engine
+scripts/tests/test_suite_parallel.sh  # runs the REAL test_audit.sh only in usage-error and listing modes; it also passes the new top-level hermetic call (creates only $tmp/gate)
+scripts/tests/test_cycle_profile_classes.py  # classifies the text "audit.sh --tests" in a transcript fixture
+scripts/tests/test_guard_corpus.py  # docstring only: points at check_hermetic_outside in audit.sh
+scripts/tests/test_cycle_profile_run.py  # asserts needle strings inside profiler output; launches nothing
+scripts/tests/test_mutate.py  # comments and a docstring name run-long.sh; no launch
+scripts/tests/test_serial_shell_suites.py  # sources audit.sh for a manifest helper function only; runs no check
+scripts/tests/test_git_command_bash_differential.py  # docstrings advise running under run-long.sh; no launch
+scripts/tests/test_serial_only_list.py  # comment only: names what audit.sh scrubs from the environment
+scripts/tests/test_plan_rehearse.py  # a command string inside a fixture plan; never executed here
+scripts/tests/test_publish_rehearse.py  # comment only: mirrors audit.sh's interpreter floor
+scripts/tests/test_gate_hermetic_suites.py  # this floor test: names the tools in its own text only

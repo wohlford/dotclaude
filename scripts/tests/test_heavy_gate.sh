@@ -34,7 +34,7 @@ mkdir -p "$TMPDIR"
 
 # An inherited seam must never reach a row: rows set exactly the seams they mean to test.
 unset GATE_DIR GATE_POLL GATE_FAKE_THROTTLE GATE_FAKE_THROTTLE_FILE GATE_BEAT_TICK GATE_GRACE \
-  GATE_RUN_STALE GATE_TICKET_TTL GATE_LOCK_TTL GATE_ORPHAN_LOCK_TTL GATE_LIB_ONLY STUB_LOG
+  GATE_RUN_STALE GATE_TICKET_TTL GATE_LOCK_TTL GATE_ORPHAN_LOCK_TTL GATE_LIB_ONLY GATE_SYSCTL_CMD GATE_PMSET_CMD GATE_WIRING STUB_LOG HEAVY_GATE_HELD
 
 # R0b starts an inner run and marks it with the outer run directory; a stray exported HG_INNER names
 # no such directory, so it cannot make a full run skip R0b. Read the marker once, then drop it.
@@ -123,9 +123,10 @@ pval() {
   printf '%s\n' "$2" | awk -v k="$1" '/^params:/ { for (i = 2; i <= NF; i++) { split($i, a, "="); if (a[1] == k) print a[2] } }'
 }
 
-# mk_probe_stubs DIR CPU GPU IO PMLIMIT -- stub sysctl and pmset; "-" means no reading from that source.
+# mk_probe_stubs DIR CPU GPU IO PMLIMIT [SCHED] -- stub sysctl and pmset; "-" means no reading from that source.
+# SCHED is the stub's CPU_Scheduler_Limit and defaults to 100 (not throttled).
 mk_probe_stubs() {
-  local d=$1 cpu=$2 gpu=$3 io=$4 pm=$5
+  local d=$1 cpu=$2 gpu=$3 io=$4 pm=$5 sched=${6:-100}
   mkdir -p "$d"
   cat >"$d/sysctl" <<EOF
 #!/bin/sh
@@ -143,18 +144,18 @@ EOF
 #!/bin/sh
 [ '$pm' = - ] && exit 1
 echo "Note: No thermal warning level has been recorded"
-echo "CPU_Scheduler_Limit = 50"
+echo "CPU_Scheduler_Limit = $sched"
 echo "CPU_Available_CPUs = 16"
 echo "CPU_Speed_Limit = $pm"
 EOF
   chmod +x "$d/sysctl" "$d/pmset"
 }
 
-# probe_status NAME CPU GPU IO PMLIMIT -- run `status` through those stubs; sets G_OUT.
+# probe_status NAME CPU GPU IO PMLIMIT [SCHED] -- run `status` through those stubs; sets G_OUT.
 probe_status() {
   local name=$1 oldpath=$PATH
   new_state "$name"
-  mk_probe_stubs "$tmp/stubs-$name" "$2" "$3" "$4" "$5"
+  mk_probe_stubs "$tmp/stubs-$name" "$2" "$3" "$4" "$5" "${6:-100}"
   PATH="$tmp/stubs-$name:$oldpath"
   g status
   PATH=$oldpath
@@ -541,11 +542,11 @@ row_R1() {
 
 row_R2() {
   probe_status r2-cpu 12 0 0 100
-  check_eq "$(field throttle)" "THROTTLED" "R2/cpu-alone"
+  check_eq "$(field throttle)" "not throttled" "R2/cpu-alone"
   probe_status r2-gpu 0 12 0 100
-  check_eq "$(field throttle)" "THROTTLED" "R2/gpu-alone"
+  check_eq "$(field throttle)" "not throttled" "R2/gpu-alone"
   probe_status r2-io 0 0 12 100
-  check_eq "$(field throttle)" "THROTTLED" "R2/io-alone"
+  check_eq "$(field throttle)" "not throttled" "R2/io-alone"
   probe_status r2-pm80 0 0 0 80
   check_eq "$(field throttle)" "THROTTLED" "R2/pmset-80"
   probe_status r2-pm100 0 0 0 100
@@ -557,22 +558,80 @@ row_R2() {
 }
 
 row_R2b() {
-  local a b sa sb res
-  probe_status r2b-sysctl 0 0 0 100
-  a=$G_OUT
+  local sa sb res
+  local la lb
+  probe_status r2b-pmset 0 0 0 100
   sa=$(field source)
-  check_eq "$sa" "sysctl" "R2b/sysctl-source"
-  probe_status r2b-pmset - - - 100
-  b=$G_OUT
+  la=$(field levels)
+  check_eq "$sa" "pmset" "R2b/pmset-source"
+  probe_status r2b-nolevels - - - 100
   sb=$(field source)
-  check_eq "$(field throttle)|$sb" "not throttled|pmset-only" "R2b/pmset-only-source"
-  if [ -n "$sa" ] && [ -n "$sb" ] && [ "$sa" != "$sb" ] && [ "$a" != "$b" ]; then res=differ; else res="same-or-empty"; fi
-  check_eq "$res" "differ" "R2b/pmset-only-word-differs"
+  lb=$(field levels)
+  check_eq "$(field throttle)|$sb" "not throttled|pmset" "R2b/pmset-source-without-levels"
+  if [ "$sa" = pmset ] && [ "$sb" = pmset ] && [ -n "$la" ] && [ -n "$lb" ] && [ "$la" != "$lb" ]; then res=differ; else res="same-or-empty"; fi
+  check_eq "$res" "differ" "R2b/levels-line-differs"
   probe_status r2b-none - - - -
   check_eq "$(field source)" "none" "R2b/none-source"
   new_state r2b-fake
   GATE_FAKE_THROTTLE=0 g status
   check_eq "$(field source)|$(field seam)" "fake|fake" "R2b/fake-source"
+}
+
+# lvl KEY -- the KEY value from the levels: line of G_OUT.
+lvl() {
+  field levels | tr ' ' '\n' | awk -F= -v k="$1" '$1 == k { print $2 }'
+}
+
+row_D0() {
+  local sd="$tmp/stubs-d0" oldpath=$PATH
+  probe_status d0-hi 93 0 0 100
+  check_eq "$(field throttle)" "not throttled" "D0/high-level-pmset-100-not-throttled"
+  probe_status d0-s99 0 0 0 99 100
+  check_eq "$(field throttle)" "THROTTLED" "D0/pmset-speed-99"
+  probe_status d0-c99 0 0 0 100 99
+  check_eq "$(field throttle)" "THROTTLED" "D0/pmset-scheduler-99"
+  probe_status d0-both 0 0 0 100 100
+  check_eq "$(field throttle)|$(field source)" "not throttled|pmset" "D0/pmset-both-100"
+  probe_status d0-def 0 0 0 100
+  check_eq "$(field throttle)" "not throttled" "D0/stub-scheduler-100-default"
+  probe_status d0-un 93 - - -
+  check_contains "$(field throttle)" "unmeasurable (" "D0/unmeasurable-not-throttled"
+  local oldp=$PATH
+  PATH="$tmp/stubs-d0-un:$oldp"
+  g throttled
+  PATH=$oldp
+  check_eq "rc=$G_RC" "rc=1" "D0/unmeasurable-throttled-exits-1"
+  probe_status d0-lv 11 22 33 100
+  check_eq "$(lvl cpu)" "11" "D0/levels-cpu"
+  check_eq "$(lvl gpu)" "22" "D0/levels-gpu"
+  check_eq "$(lvl io)" "33" "D0/levels-io"
+  probe_status d0-lvx - - - 100
+  check_eq "$(field levels)" "cpu=- gpu=- io=-" "D0/levels-absent-dash"
+
+  # The command seams, honoured with GATE_DIR set: a stub pmset reading 99 beats the PATH pmset at 100.
+  mkdir -p "$sd"
+  printf '#!/bin/sh\necho "CPU_Scheduler_Limit = 100"\necho "CPU_Speed_Limit = 99"\n' >"$sd/pmset99"
+  printf '#!/bin/sh\necho 7\n' >"$sd/sysctl7"
+  printf '#!/bin/sh\necho 99999\n' >"$sd/id"
+  chmod +x "$sd/pmset99" "$sd/sysctl7" "$sd/id"
+  probe_status d0-seam-base 0 0 0 100
+  new_state d0-seam
+  PATH="$tmp/stubs-d0-seam-base:$oldpath"
+  GATE_PMSET_CMD="$sd/pmset99" GATE_SYSCTL_CMD="$sd/sysctl7" g status
+  PATH=$oldpath
+  check_eq "$(field throttle)|$(lvl cpu)" "THROTTLED|7" "D0/seam-honoured-with-gate-dir"
+
+  # Without GATE_DIR the seam is ignored: the PATH pmset (100) answers; the stub id keeps the default path at claude-99999.
+  mk_probe_stubs "$sd" 0 0 0 100
+  PATH="$sd:$oldpath"
+  GATE_PMSET_CMD="$sd/pmset99" g_default status
+  PATH=$oldpath
+  check_eq "$(field throttle)" "not throttled" "D0/seam-ignored-without-gate-dir"
+
+  new_state d0-nonexec
+  GATE_PMSET_CMD=/nonexistent g status
+  check_eq "rc=$G_RC" "rc=2" "D0/seam-nonexecutable-exits-2"
+  check_contains "$G_ERR" "GATE_PMSET_CMD is not an executable file" "D0/seam-nonexecutable-message"
 }
 
 row_R9a() {
@@ -590,7 +649,7 @@ row_R9a() {
 
 row_R14e() {
   local sd="$tmp/stubs-r14e" log="$tmp/r14e.log" oldpath=$PATH pos absent never="$tmp/r14e-never" res
-  mk_probe_stubs "$sd" 0 0 0 -
+  mk_probe_stubs "$sd" 0 0 0 100
   printf '#!/bin/sh\necho 99999\n' >"$sd/id"
   chmod +x "$sd/id"
   : >"$log"
@@ -611,7 +670,7 @@ row_R14e() {
   GATE_FAKE_THROTTLE=1 g_default status
   case "$G_OUT" in *'queue: (no state directory)'*) res=status-text ;; *) res=status-text-missing ;; esac
   if [ -s "$log" ]; then res="$res+probe-ran"; else res="$res+probe-silent"; fi
-  case "$(field source)" in sysctl) res="$res+real-source" ;; *) res="$res+source=$(field source)" ;; esac
+  case "$(field source)" in pmset) res="$res+real-source" ;; *) res="$res+source=$(field source)" ;; esac
   check_eq "$res" "status-text+probe-ran+real-source" "R14e/fake-ignored-without-gate-dir"
 
   GATE_DIR="$never" g status
@@ -1332,7 +1391,7 @@ row_R6() {
   fi
   new_state r6
   art="$tmp/r6.art"
-  env "${STD_SEAMS[@]}" GATE_RUN_STALE=600 bash "$rl" --out "$art" --expect '^HEAVY_GATE_DONE' -- \
+  env "${STD_SEAMS[@]}" GATE_WIRING=off GATE_RUN_STALE=600 bash "$rl" --out "$art" --expect '^HEAVY_GATE_DONE' -- \
     bash "$HG" run "$n" -- bash -c 'sleep 3; exit 3' "$token" >"$tmp/r6.launch" 2>&1
   sleep 1
   gate status
@@ -1571,7 +1630,7 @@ row_R7() {
   art="$tmp/r7i.art"
   # shellcheck disable=SC2016 # the code runs in the child shell
   start_leader bash -c 'o=$1; shift; exec "$@" >"$o" 2>&1' _ "$tmp/r7i.launch" \
-    env "${STD_SEAMS[@]}" GATE_RUN_STALE=600 bash "$rl" --out "$art" -- bash "$HG" run "$n" -- bash "$tmp/mark-stage.sh" "$tmp/r7i.mark" "$tok" 30
+    env "${STD_SEAMS[@]}" GATE_WIRING=off GATE_RUN_STALE=600 bash "$rl" --out "$art" -- bash "$HG" run "$n" -- bash "$tmp/mark-stage.sh" "$tmp/r7i.mark" "$tok" 30
   lp=$leader
   wait "$lp" 2>/dev/null
   wait_for 6 test -e "$tmp/r7i.mark"
@@ -1605,7 +1664,7 @@ row_R7() {
   tok="${token}-r7ii"
   new_state r7ii
   art="$tmp/r7ii.art"
-  env "${STD_SEAMS[@]}" GATE_RUN_STALE=600 bash "$rl" --out "$art" -- bash "$HG" run "$n" -- bash "$tmp/mark-stage.sh" "$tmp/r7ii.mark" "$tok" 30 >"$tmp/r7ii.launch" 2>&1
+  env "${STD_SEAMS[@]}" GATE_WIRING=off GATE_RUN_STALE=600 bash "$rl" --out "$art" -- bash "$HG" run "$n" -- bash "$tmp/mark-stage.sh" "$tmp/r7ii.mark" "$tok" 30 >"$tmp/r7ii.launch" 2>&1
   wait_for 6 test -e "$tmp/r7ii.mark"
   sleep 1
   jobpid=$(sed -n 's/.* pid=\([0-9][0-9]*\).*/\1/p' "$art" | head -n 1)
@@ -1690,6 +1749,8 @@ row_R8() {
   hb_after=$(hb_count "$w1")
   wait_for 8 owner_is "$d" "$w2"
   held=$(owner_name_of "$d")
+  # the second stage writes its marker after it starts, so wait for it (bounded) rather than read it at the owner flip
+  wait_for 8 test -e "$tmp/r8.m2"
   check_eq "before=$([ "$s_before" -ge 2 ] && echo yes || echo no) after=$gone" "before=yes after=0" "R8/stage-gone"
   check_eq "hb-before=$([ "$hb_before" -ge 1 ] && echo yes || echo no) hb-after=$hb_after" "hb-before=yes hb-after=0" "R8/heartbeat-gone"
   check_eq "owner=$([ "$held" = "$w2" ] && echo second || echo "other:$held") stage2=$(exists_word "$tmp/r8.m2")" "owner=second stage2=present" "R8/second-run-holds-lock"
@@ -2186,66 +2247,297 @@ r16_check() {
   fi
 }
 
-# row_R16 [FILE] -- the CLAUDE.md bullet is present, small, names the launcher form, and its launcher line runs as
-# written with this clone's own scripts substituted by absolute path. FILE (default: this clone's CLAUDE.md, found
-# from the suite's own location) is an optional override that nothing passes: the dispatcher calls it bare.
+# row_R16 [FILE] -- the CLAUDE.md bullet is present, small, says run-long.sh and audit.sh --tests take their turn
+# themselves, names --gate-max-wait, NO-TURN and exit 75, carries the --expect result-shape launcher example, and that
+# example runs as written with this clone's run-long.sh substituted by absolute path. FILE (default: this clone's
+# CLAUDE.md, found from the suite's own location) is an optional override that nothing passes: the dispatcher calls it
+# bare.
 row_R16() {
-  local src=${1:-"$here/../../CLAUDE.md"} size ok span cmd art nm16 root_abs hg_abs rl_abs tilde_pat after_launcher
-  local gate_pat bare_pat launch_rc
+  local src=${1:-"$here/../../CLAUDE.md"} size ok span cmd art root_abs rl_abs after_launcher launch_rc
+  local bare_pat self_pat n_done
   R16_BULLET=$(r16_bullet "$src")
   size=$(printf '%s' "$R16_BULLET" | LC_ALL=C wc -c | tr -d ' ')
   r16_check "R16/bullet-found" yes ""
   ok=no
-  if [ "$size" -le 600 ]; then ok=yes; fi
-  r16_check "R16/size-le-600" "$ok" "joined bytes $size"
-  ok=$(has_text "$R16_BULLET" "--expect")
-  r16_check "R16/has-expect" "$ok" "no --expect in the bullet"
-  gate_pat='run-long\.sh.*~/\.claude/scripts/heavy-gate\.sh run '
+  if [ "$size" -le 1000 ]; then ok=yes; fi
+  r16_check "R16/size-bound" "$ok" "joined bytes $size, bound 1000"
+  self_pat='run-long\.sh` and `audit\.sh --tests` take (their|its) turn themselves'
   ok=no
-  if [[ "$R16_BULLET" =~ $gate_pat ]]; then ok=yes; fi
-  r16_check "R16/abs-gate-path-inside-launcher" "$ok" "gate path not after run-long.sh and before run"
-  ok=$(has_text "$R16_BULLET" "convention, not enforcement")
-  r16_check "R16/convention-not-enforcement" "$ok" "phrase missing"
-  ok=$(has_text "$R16_BULLET" "exit 75")
-  r16_check "R16/mentions-75" "$ok" "no exit 75"
+  if [[ "$R16_BULLET" =~ $self_pat ]]; then ok=yes; fi
+  r16_check "R16/names-self-gating" "$ok" "no statement that run-long.sh and audit.sh --tests take their turn themselves"
+  ok=$(has_text "$R16_BULLET" "--gate-max-wait")
+  r16_check "R16/names-gate-max-wait" "$ok" "no --gate-max-wait"
+  ok=no
+  if [[ "$R16_BULLET" == *"NO-TURN"* && "$R16_BULLET" == *"75"* ]]; then ok=yes; fi
+  r16_check "R16/names-no-turn-and-75" "$ok" "NO-TURN or 75 missing"
+  ok=$(has_text "$R16_BULLET" "rc=75")
+  r16_check "R16/mentions-75" "$ok" "no rc=75"
+  ok=$(has_text "$R16_BULLET" "--expect '^RESULT: (PASS|FAIL|ERROR|INCOMPLETE) rc=[0-9]+'")
+  r16_check "R16/has-expect-result-shape" "$ok" "no --expect with the RESULT shape"
+  ok=no
+  # shellcheck disable=SC2016 # the backticks are literal bullet text
+  if [[ "$R16_BULLET" == *'never a `run-long.sh` launch'* && "$R16_BULLET" == *"nested"* ]]; then ok=yes; fi
+  r16_check "R16/names-never-wrap-a-launcher" "$ok" "no statement that a run-long.sh launch is never wrapped, or no nested"
+  # shellcheck disable=SC2088 # the tilde is literal bullet text
+  ok=$(has_text "$R16_BULLET" "~/.claude/scripts/heavy-gate.sh run")
+  r16_check "R16/names-heavy-gate-path" "$ok" "no ~/.claude/scripts/heavy-gate.sh run"
 
-  # the run half: the backticked span holding the launcher form, with the placeholders and the two path
-  # prefixes substituted by this clone's own scripts (absolute, physical paths)
+  # the run half: the backticked span holding the launcher example, with <p> replaced by a temp artifact and <cmd> by
+  # a printf of a verdict line, and run-long.sh by this clone's own (absolute, physical path); run-long takes its
+  # own gate turn, under a private state dir with the fake-throttle seams and GATE_WIRING unset
   span=$(printf '%s\n' "$R16_BULLET" | awk -F'`' '{ for (i = 2; i <= NF; i += 2) if (index($i, "run-long.sh --out")) { print $i; exit } }')
   root_abs=$(cd "$here/.." && pwd -P)
-  hg_abs="$root_abs/heavy-gate.sh"
   rl_abs="$root_abs/run-long.sh"
   art="$tmp/r16.art"
-  nm16="r16-$token"
-  # shellcheck disable=SC2088 # a literal pattern: the tilde is the text the bullet carries, never expanded
-  tilde_pat='~/.claude/scripts/heavy-gate.sh'
   cmd=${span//"<p>"/$art}
-  cmd=${cmd//"<name>"/$nm16}
-  cmd=${cmd//"<cmd>"/true}
-  cmd=${cmd//"$tilde_pat"/$hg_abs}
-  cmd=$(printf '%s\n' "$cmd" | sed -e "s|^run-long\\.sh|$rl_abs|" -e "s| run-long\\.sh| $rl_abs|g")
+  cmd=${cmd//"<cmd>"/"printf 'RESULT: PASS rc=0\\n'"}
+  cmd=$(printf '%s\n' "$cmd" | sed -e "s|^run-long\\.sh|$rl_abs|")
   bare_pat='(^|[^/])run-long\.sh'
   ok=no
-  if [ -n "$cmd" ]; then
-    ok=yes
-    case "$cmd" in *"~"*) ok=no ;; esac
-    if [[ "$cmd" =~ $bare_pat ]]; then ok=no; fi
-  fi
-  r16_check "R16/substituted-command-has-no-tilde-or-bare-name" "$ok" "the substituted launcher line still names ~ or a bare run-long.sh"
+  if [ -n "$span" ] && [[ "$cmd" != *"<"* ]] && ! [[ "$cmd" =~ $bare_pat ]]; then ok=yes; fi
+  r16_check "R16/substituted-command-is-absolute-and-complete" "$ok" "the launcher example still has a placeholder or a bare run-long.sh: [$cmd]"
   after_launcher=""
   launch_rc="skipped"
   if [ "$ok" = yes ]; then
     new_state r16-state
-    run_bounded 20 env GATE_FAKE_THROTTLE=0 GATE_POLL=1 GATE_BEAT_TICK=1 GATE_GRACE=2 GATE_RUN_STALE=4 bash -c "$cmd"
+    run_bounded 30 env -u GATE_WIRING GATE_FAKE_THROTTLE=0 GATE_POLL=1 GATE_BEAT_TICK=1 GATE_GRACE=2 GATE_RUN_STALE=4 bash -c "$cmd"
     launch_rc=$RB_RC
     run_bounded 60 bash "$rl_abs" --wait "$art" --interval 1
     after_launcher="rc=$RB_RC $RB_OUT"
   fi
+  n_done=$(grep -c '^HEAVY_GATE_DONE run-long-.* rc=0$' "$art" 2>/dev/null)
   ok=no
-  if [ "$launch_rc" = 0 ] && [[ "$after_launcher" == *"RESULT: DONE rc=0"* ]] && grep -q "^HEAVY_GATE_DONE $nm16 rc=0\$" "$art" 2>/dev/null; then ok=yes; fi
-  r16_check "R16/launcher-line-runs-done-rc0" "$ok" "launch rc=$launch_rc, wait output [$after_launcher]"
+  if [ "$launch_rc" = 0 ] && [[ "$after_launcher" == *"RESULT: DONE rc=0"* ]] && [ "${n_done:-0}" = 1 ]; then ok=yes; fi
+  r16_check "R16/launcher-line-runs-done-rc0" "$ok" "launch rc=$launch_rc, done-lines=${n_done:-0}, wait output [$after_launcher]"
   ok=$(has_text "$after_launcher" "EXPECT: satisfied")
   r16_check "R16/launcher-expect-satisfied" "$ok" "wait output [$after_launcher]"
+}
+
+# --- W1: a queued waiter whose parent is gone leaves the queue ---
+
+# shellcheck disable=SC2329 # invoked by wait_for
+w1_has_ticket() { compgen -G "$GATE_DIR/queue/*-$1" >/dev/null; }
+# shellcheck disable=SC2329 # invoked by wait_for
+w1_no_ticket() { ! compgen -G "$GATE_DIR/queue/*-$1" >/dev/null; }
+# shellcheck disable=SC2329 # invoked by wait_for
+w1_verdict() { [[ "$(tail -n 1 "$2" 2>/dev/null)" == "HEAVY_GATE_DONE $1 rc="* ]]; }
+# shellcheck disable=SC2329 # invoked by wait_for
+w1_exists() { [ -e "$1" ]; }
+
+# w1_holder LABEL SECS -- a run holding the lock for SECS seconds under the current GATE_DIR; $bg_pid is its wrapper
+w1_holder() {
+  bg_gate "$tmp/$1.out" "$tmp/$1.err" run "$(nm "$1")" -- bash -c 'touch "$1"; sleep "$2"; :' _ "$tmp/$1.held" "$2"
+  wait_for 10 w1_exists "$tmp/$1.held"
+}
+
+# w1_launcher QNAME SENT RCF ERR -- a launcher bash queues a `run` behind the holder; the trailing commands keep bash from
+# exec-optimising the launcher away, so its own pid ($w1_pid) is the waiter's parent
+w1_pid=""
+w1_launcher() {
+  env "${STD_SEAMS[@]}" GATE_RUN_STALE=600 HG="$HG" bash -c 'bash "$HG" run "$1" -- touch "$2"; echo "$?" >"$3"; :' _ "$1" "$2" "$3" >/dev/null 2>"$4" </dev/null &
+  w1_pid=$!
+}
+
+row_W1() {
+  local q hpid sent rcf lerr lock_name settle
+  # the parent is killed while its waiter is queued
+  new_state w1a
+  q=$(nm q1)
+  sent="$tmp/w1a.sentinel"
+  rcf="$tmp/w1a.rc"
+  lerr="$tmp/w1a.lerr"
+  w1_holder w1ah 30
+  hpid=$bg_pid
+  w1_launcher "$q" "$sent" "$rcf" "$lerr"
+  wait_for 10 w1_has_ticket "$q" || true
+  kill -KILL "$w1_pid" 2>/dev/null
+  wait "$w1_pid" 2>/dev/null
+  if wait_for 5 w1_no_ticket "$q"; then settle=gone; else settle=kept; fi
+  check_eq "$settle" gone "W1/queued-waiter-leaves-when-parent-killed"
+  wait_for 3 w1_verdict "$q" "$lerr" || true
+  check_eq "$(tail -n 1 "$lerr" 2>/dev/null)" "HEAVY_GATE_DONE $q rc=129" "W1/orphan-exit-code-and-verdict-line"
+  check_eq "$(has_text "$(cat "$lerr" 2>/dev/null)" 'heavy-gate: parent gone while queued; leaving the queue')" yes "W1/orphan-says-why"
+  lock_name=$(awk 'NR == 1 { print $1 }' "$GATE_DIR/lock/owner" 2>/dev/null)
+  check_eq "$([ "$lock_name" = "$q" ] && echo owned || echo not-owned)" not-owned "W1/orphan-owns-no-lock"
+  kill -TERM "$hpid" 2>/dev/null
+  bg_finish "$hpid" 15
+  sleep 3
+  check_eq "$(exists_word "$sent")" gone "W1/orphan-never-starts-command"
+  reap_row
+  # CONTROL (the old code passes it): a live parent keeps its place and the run goes on to execute
+  new_state w1b
+  sent="$tmp/w1b.sentinel"
+  rcf="$tmp/w1b.rc"
+  lerr="$tmp/w1b.lerr"
+  w1_holder w1bh 8
+  hpid=$bg_pid
+  w1_launcher "$q" "$sent" "$rcf" "$lerr"
+  wait_for 10 w1_has_ticket "$q" || true
+  sleep 4
+  check_eq "$(if w1_has_ticket "$q"; then echo kept; else echo gone; fi)" kept "W1/queued-waiter-keeps-place-with-live-parent"
+  wait_for 25 w1_exists "$rcf" || true
+  check_eq "sentinel=$(exists_word "$sent") rc=$(cat "$rcf" 2>/dev/null)" "sentinel=present rc=0" "W1/live-parent-run-executes-and-exits-0"
+  bg_finish "$hpid" 15
+  reap_row
+}
+
+# --- H1-H4: the nested-turn token, `held`, the reentrant run and the wait/join refusal ---
+
+# h_snap -- every path under $GATE_DIR with its mtime, sorted
+h_snap() {
+  local f
+  find "$GATE_DIR" -print | LC_ALL=C sort | while IFS= read -r f; do
+    printf '%s %s\n' "$f" "$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f")"
+  done
+}
+
+# h_lock LINE -- write a hand-made lock whose owner line is LINE, under the current GATE_DIR
+h_lock() {
+  mkdir -p "$GATE_DIR/lock"
+  printf '%s\n' "$1" >"$GATE_DIR/lock/owner"
+}
+
+# shellcheck disable=SC2016 # the stage scripts are single-quoted on purpose: the stage's shell expands them
+row_H1() {
+  local tok own
+  new_state h1
+  mkdir -p "$tmp/h1x"
+  gate run hold1 -- bash -c 'printf %s "$HEAVY_GATE_HELD" >"$1/tok"; cp "$GATE_DIR/lock/owner" "$1/own"' _ "$tmp/h1x"
+  tok=$(cat "$tmp/h1x/tok" 2>/dev/null)
+  own=$(head -n 1 "$tmp/h1x/own" 2>/dev/null)
+  check_eq "$([ -n "$tok" ] && [ "$tok" = "$own" ] && echo same || echo "differ [$tok] [$own]")" same "H1/run-exports-held-token"
+}
+
+# shellcheck disable=SC2329 # invoked by wait_for
+h_decoy_ready() { case "$(ps -ww -o command= -p "$1" 2>/dev/null)" in *heavy-gate.sh*) return 0 ;; esac; return 1; }
+
+# shellcheck disable=SC2016 # the stage scripts are single-quoted on purpose: the stage's shell expands them
+row_H2() {
+  local tok real snap1 snap2 decoy
+  mkdir -p "$tmp/h2x"
+  real="hold1 1700000000 999999 run"
+  # inside a stage: the token is the owner line
+  new_state h2a
+  gate run hold1 -- bash -c 'printf %s "$HEAVY_GATE_HELD" >"$2/tok"; bash "$1" held' _ "$HG" "$tmp/h2x"
+  check_eq "$G_RC:$G_OUT" "0:hold1" "H2/held-true-inside"
+  tok=$(cat "$tmp/h2x/tok" 2>/dev/null)
+  # outside any turn
+  new_state h2b
+  gate held
+  check_eq "$G_RC:$G_OUT" "1:" "H2/held-false-outside"
+  # a token captured from a finished stage, no lock any more
+  new_state h2c
+  HEAVY_GATE_HELD="$tok" gate held
+  check_eq "$G_RC:$G_OUT:tok=$([ -n "$tok" ] && echo set)" "1::tok=set" "H2/held-false-after-release"
+  # the real holder's NAME with a different epoch and pid: a NAME-only comparison would pass this
+  new_state h2d
+  h_lock "$real"
+  HEAVY_GATE_HELD="hold1 1 2 run" gate held
+  check_eq "$G_RC:$G_OUT" "1:" "H2/held-false-fabricated-line"
+  # fixture reach: the same hand-made lock IS held by its own exact line
+  HEAVY_GATE_HELD="$real" gate held
+  check_eq "$G_RC:$G_OUT" "0:hold1" "H2/held-true-token-equals-hand-made-line"
+  # CONTROL (passes on any sane code): an empty token and no lock directory
+  new_state h2e
+  HEAVY_GATE_HELD="" gate held
+  check_eq "$G_RC:$G_OUT" "1:" "H2/held-false-empty-token-no-lock"
+  # a wait-mode lock whose exact line is the token
+  new_state h2f
+  h_lock "hold1 1700000000 999999 wait"
+  HEAVY_GATE_HELD="hold1 1700000000 999999 wait" gate held
+  check_eq "$G_RC:$G_OUT" "1:" "H2/held-false-wait-mode-lock"
+  # held writes nothing
+  new_state h2g
+  h_lock "$real"
+  touch_ago "$GATE_DIR/lock/owner" 100
+  touch_ago "$GATE_DIR/lock" 100
+  touch_ago "$GATE_DIR" 100
+  snap1=$(h_snap)
+  HEAVY_GATE_HELD="$real" gate held
+  snap2=$(h_snap)
+  check_eq "$([ -n "$snap1" ] && [ "$snap1" = "$snap2" ] && echo same || echo differ):$G_RC" "same:0" "H2/held-writes-nothing"
+  # the token scrubbed from the environment: ancestry alone
+  new_state h2h
+  gate run hold1 -- bash -c 'env -i PATH="$PATH" GATE_DIR="$GATE_DIR" bash "$1" held' _ "$HG"
+  check_eq "$G_RC:$G_OUT" "0:hold1" "H2/held-true-by-ancestry-with-scrubbed-env"
+  # an ancestor whose command line does not name heavy-gate.sh (this test shell)
+  new_state h2i
+  h_lock "hold1 1700000000 $$ run"
+  gate held
+  check_eq "$G_RC:$G_OUT" "1:" "H2/held-false-ancestor-not-a-gate-process"
+  # a live NON-ancestor whose command line does name heavy-gate.sh (the trailing `; :` keeps bash from exec-optimising it away)
+  new_state h2j
+  bash -c 'sleep 30; :' heavy-gate.sh >/dev/null 2>&1 </dev/null &
+  decoy=$!
+  wait_for 5 h_decoy_ready "$decoy" || true
+  h_lock "hold1 1700000000 $decoy run"
+  gate held
+  check_eq "$G_RC:$G_OUT:decoy=$(h_decoy_ready "$decoy" && echo named)" "1::decoy=named" "H2/held-false-ancestry-pid-not-an-ancestor"
+  pkill -P "$decoy" 2>/dev/null
+  kill -KILL "$decoy" 2>/dev/null
+  wait "$decoy" 2>/dev/null
+}
+
+# shellcheck disable=SC2016 # the stage scripts are single-quoted on purpose: the stage's shell expands them
+row_H3() {
+  local d tok before after inner_rc last count dq holder waiter sent
+  # a nested run inside a stage of the outer run `hold1`
+  new_state h3a
+  d="$tmp/h3x"
+  mkdir -p "$d"
+  run_bounded 5 env "${STD_SEAMS[@]}" GATE_RUN_STALE=600 bash "$HG" run hold1 -- bash -c '
+    printf %s "$HEAVY_GATE_HELD" >"$2/tok"
+    cp "$GATE_DIR/lock/owner" "$2/before"
+    bash "$1" run n2 -- bash -c '\''ls "$GATE_DIR/queue" >"$1/q.during"; exit 7'\'' _ "$2" 2>"$2/inner.err"
+    echo "$?" >"$2/inner.rc"
+    ls "$GATE_DIR/queue" >"$2/q.after"
+    cp "$GATE_DIR/lock/owner" "$2/after"' _ "$HG" "$d"
+  check_eq "$RB_RC" 0 "H3/nested-run-passes-through"
+  inner_rc=$(cat "$d/inner.rc" 2>/dev/null)
+  check_eq "$inner_rc" 7 "H3/nested-run-propagates-rc"
+  dq="$(grep -c -- '-n2$' "$d/q.during" 2>/dev/null) $(grep -c -- '-n2$' "$d/q.after" 2>/dev/null)"
+  check_eq "$dq" "0 0" "H3/nested-run-takes-no-ticket"
+  last=$(tail -n 1 "$d/inner.err" 2>/dev/null)
+  count=$(grep -c '^HEAVY_GATE_DONE ' "$d/inner.err" 2>/dev/null)
+  check_eq "$last|$count" "HEAVY_GATE_DONE n2 rc=7|1" "H3/nested-run-prints-one-verdict-line"
+  before=$(cat "$d/before" 2>/dev/null)
+  after=$(cat "$d/after" 2>/dev/null)
+  check_eq "$([ -n "$before" ] && [ "$before" = "$after" ] && echo same || echo differ)" same "H3/nested-release-does-not-free-outer-lock"
+  tok=$(cat "$d/tok" 2>/dev/null)
+  # a token from a finished stage does not make a caller nested while a different holder holds the lock
+  new_state h3b
+  sent="$tmp/h3b.sentinel"
+  bg_gate "$tmp/h3b.h.out" "$tmp/h3b.h.err" run hold2 -- bash -c 'touch "$1"; sleep 30; :' _ "$tmp/h3b.held"
+  holder=$bg_pid
+  wait_for 10 w1_exists "$tmp/h3b.held" || true
+  BG_ENV=(HEAVY_GATE_HELD="$tok")
+  bg_gate "$tmp/h3b.w.out" "$tmp/h3b.w.err" run n3 -- touch "$sent"
+  BG_ENV=()
+  waiter=$bg_pid
+  sleep 3
+  check_eq "$(exists_word "$sent"):tok=$([ -n "$tok" ] && echo set)" "gone:tok=set" "H3/stale-token-gated"
+  kill -TERM "$waiter" 2>/dev/null
+  bg_finish "$waiter" 15
+  kill -TERM "$holder" 2>/dev/null
+  bg_finish "$holder" 15
+  reap_row
+  # a nested join and wait are refused (join first, so a wait that is not refused cannot hide the join row)
+  new_state h3c
+  d="$tmp/h3y"
+  mkdir -p "$d"
+  run_bounded 8 env "${STD_SEAMS[@]}" GATE_RUN_STALE=600 bash "$HG" run hold1 -- bash -c '
+    bash "$1" join n4 2>"$2/j.err"; echo "$?" >"$2/j.rc"
+    bash "$1" wait n4 2>"$2/w.err"; echo "$?" >"$2/w.rc"' _ "$HG" "$d"
+  check_eq "rc=$(cat "$d/j.rc" 2>/dev/null) err=$(cat "$d/j.err" 2>/dev/null)" "rc=2 err=heavy-gate: n4 is nested inside hold1; a wait here would wait for its own parent" "H3/nested-join-refused"
+  check_eq "rc=$(cat "$d/w.rc" 2>/dev/null) err=$(cat "$d/w.err" 2>/dev/null)" "rc=2 err=heavy-gate: n4 is nested inside hold1; a wait here would wait for its own parent" "H3/nested-wait-refused-naming-holder"
+  reap_row
+}
+
+row_H4() {
+  new_state h4
+  g --help
+  check_eq "$(has_text "$G_OUT" held)" yes "H4/help-names-held"
+  check_eq "$(has_text "$G_OUT" 'waits for its own parent forever')" no "H4/help-drops-the-forever-claim"
 }
 
 run_row() { # ID -- run the row when HG_ONLY selects it
@@ -2263,6 +2555,7 @@ run_row() { # ID -- run the row when HG_ONLY selects it
     R1) row_R1 ;;
     R2) row_R2 ;;
     R2b) row_R2b ;;
+    D0) row_D0 ;;
     R9a) row_R9a ;;
     R14e) row_R14e ;;
     R8d1) row_R8d1 ;;
@@ -2299,11 +2592,16 @@ run_row() { # ID -- run the row when HG_ONLY selects it
     R8o) row_R8o ;;
     R8h) row_R8h ;;
     R16) row_R16 ;;
+    W1) row_W1 ;;
+    H1) row_H1 ;;
+    H2) row_H2 ;;
+    H3) row_H3 ;;
+    H4) row_H4 ;;
   esac
   unset GATE_DIR
 }
 
-ROW_IDS="R0 R0b R1 R2 R2b R9a R14e R8d1 R8d2 R3 R4h R4 R5 R6 R9 R10 R11 R11s R12 R13 R14a R14b R14c R14d R14f R15 R8f1 R8f2 R8f3 R7 R8 R8b R8c R8d3 R8e R8g R8o R8h R16"
+ROW_IDS="R0 R0b R1 R2 R2b D0 R9a R14e R8d1 R8d2 R3 R4h R4 R5 R6 R9 R10 R11 R11s R12 R13 R14a R14b R14c R14d R14f R15 R8f1 R8f2 R8f3 R7 R8 R8b R8c R8d3 R8e R8g R8o R8h R16 W1 H1 H2 H3 H4"
 
 # A selected id that names no row would otherwise run nothing and read as a pass.
 for sel in ${HG_ONLY:-}; do
