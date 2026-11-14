@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.157.3 — 2026-11-06
+- test(heavy-gate): add the mutation campaign
+
 ## v0.157.2 — 2026-11-06
 - test(heavy-gate): add the gate suite
 
