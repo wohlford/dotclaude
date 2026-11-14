@@ -133,9 +133,16 @@ by hand, then the tool to use instead.
   the campaign (a full clone, since the tool refuses a git worktree), run
   `scripts/kill-sets.py --campaign scripts/tests/<mutate_*.py>` through `run-long.sh`. That
   `kill-sets.py` is the clone's own, not the copy under `~/.claude/scripts/`: the tool grades
-  the tree its own file lives in, and that path resolves into the production checkout. It runs
-  each mutant serially on a fresh copy of the tree and ends in one `RESULT:` line, clean only
-  at `RESULT: PASS`; `identical_pairs=` above 0 names mutants that kill exactly the same rows.
+  the tree its own file lives in, and that path resolves into the production checkout. By
+  default it runs each mutant serially on a fresh copy of the tree and ends in one `RESULT:`
+  line, clean only at `RESULT: PASS`; `identical_pairs=` above 0 names mutants that kill
+  exactly the same rows. `--jobs N` (opt-in; default 1, at most 8) runs N mutants at once, each
+  on its own copy, and its clean verdict is `RESULT: PARALLEL-PASS`. That verdict is for
+  iteration only: a row that fails only under load reads as a kill, so a serial run settles its
+  findings, a pass included, unless `scripts/README.md` records a measured parity entry for
+  that campaign. Measured at 4 workers: a 28-mutant campaign fell from 191 s to 110 s, while
+  campaigns of 7 and 8 mutants gained nothing, since the worker proof spends four suite rounds
+  before the first mutant.
   Measured: its first real runs, about 3 minutes each, found duplicate pairs in two campaigns
   that had read flawless, one pair in `mutate_markdownlint_config.py` and two in
   `mutate_memory_index_check.py`. It refuses at the baseline a campaign whose suite prints one
