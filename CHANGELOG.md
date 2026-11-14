@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.163.0 — 2026-11-12
+- feat(publish-brick): add --audit and a signing assertion to dev mode
+
 ## v0.162.0 — 2026-11-10
 - feat(effort): set an explicit effort level for every dispatched role
 
