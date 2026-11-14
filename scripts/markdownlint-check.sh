@@ -64,13 +64,26 @@ esac
 # installed in only some version dirs, so the newest dir alone may lack it) and prepend it.
 if ! command -v markdownlint-cli2 >/dev/null 2>&1; then
   nvm_bin=""
-  # shellcheck disable=SC2012  # ls|sort -V orders the version dirs newest-first; paths are ours, no exotic names
-  while IFS= read -r cand; do
-    if [[ -f "$cand/markdownlint-cli2" && -x "$cand/markdownlint-cli2" ]]; then
-      nvm_bin="$cand"
-      break
-    fi
-  done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V -r)
+  # Version roots, in tie-break order: $NVM_DIR, $HOME/.local/nvm, $HOME/.nvm (deduped by
+  # physical path). The newest version, across ALL roots, whose bin holds the launcher wins;
+  # an equal version name goes to the earlier root.
+  nvm_roots=""
+  for root in "${NVM_DIR:+$NVM_DIR/versions/node}" "$HOME/.local/nvm/versions/node" "$HOME/.nvm/versions/node"; do
+    [[ -n "$root" && -d "$root" ]] || continue
+    root="$(cd "$root" && pwd -P)" || continue
+    case $'\n'"$nvm_roots" in *$'\n'"$root"$'\n'*) continue ;; esac
+    nvm_roots+="$root"$'\n'
+  done
+  # shellcheck disable=SC2012  # ls|sort -V orders the version names newest-first; paths are ours
+  while IFS= read -r ver; do
+    while IFS= read -r root; do
+      [[ -n "$root" ]] || continue
+      if [[ -f "$root/$ver/bin/markdownlint-cli2" && -x "$root/$ver/bin/markdownlint-cli2" ]]; then
+        nvm_bin="$root/$ver/bin"
+        break 2
+      fi
+    done <<< "$nvm_roots"
+  done < <(while IFS= read -r root; do [[ -n "$root" ]] && ls "$root" 2>/dev/null; done <<< "$nvm_roots" | sort -u | sort -V -r)
   if [[ -z "$nvm_bin" ]]; then
     exit 0
   fi

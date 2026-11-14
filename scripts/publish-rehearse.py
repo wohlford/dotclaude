@@ -376,15 +376,31 @@ def _find_markdownlint_cli2() -> str | None:
     found = shutil.which("markdownlint-cli2")
     if found:
         return found
-    nvm_dir = Path.home() / ".nvm" / "versions" / "node"
-    if nvm_dir.is_dir():
-        for v in sorted(
-            (p.name for p in nvm_dir.iterdir() if p.is_dir()), reverse=True
-        ):
-            candidate = nvm_dir / v / "bin" / "markdownlint-cli2"
-            if candidate.is_file() and os.access(candidate, os.X_OK):
-                return str(candidate)
-    return None
+    # Version roots, in tie-break order: $NVM_DIR, ~/.local/nvm, ~/.nvm (deduped by resolved
+    # path). The newest version, across ALL roots, whose bin holds the launcher wins; an equal
+    # version name goes to the earlier root.
+    nvm_dir = os.environ.get("NVM_DIR")
+    raw = [Path(nvm_dir) / "versions" / "node"] if nvm_dir else []
+    raw += [
+        Path.home() / ".local" / "nvm" / "versions" / "node",
+        Path.home() / ".nvm" / "versions" / "node",
+    ]
+    roots: list[Path] = []
+    for r in raw:
+        if r.is_dir() and r.resolve() not in roots:
+            roots.append(r.resolve())
+    best: tuple[tuple[int, ...], int, Path] | None = None
+    for idx, root in enumerate(roots):
+        for p in root.iterdir():
+            candidate = p / "bin" / "markdownlint-cli2"
+            if not (
+                p.is_dir() and candidate.is_file() and os.access(candidate, os.X_OK)
+            ):
+                continue
+            key = tuple(int(n) for n in re.findall(r"\d+", p.name))
+            if best is None or key > best[0] or (key == best[0] and idx < best[1]):
+                best = (key, idx, candidate)
+    return str(best[2]) if best else None
 
 
 def check_markdownlint(clone: Path) -> tuple[str, str]:

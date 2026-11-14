@@ -59,12 +59,14 @@ have_tool=0
 if command -v markdownlint-cli2 >/dev/null 2>&1; then
   have_tool=1
 else
-  while IFS= read -r cand; do
-    if [[ -f "$cand/markdownlint-cli2" && -x "$cand/markdownlint-cli2" ]]; then
+  # Same version roots as the hook: $NVM_DIR, $HOME/.local/nvm, $HOME/.nvm.
+  for cand in "${NVM_DIR:+$NVM_DIR/versions/node}" "$HOME/.local/nvm/versions/node" "$HOME/.nvm/versions/node"; do
+    [[ -n "$cand" ]] || continue
+    if compgen -G "$cand/*/bin/markdownlint-cli2" >/dev/null; then
       have_tool=1
       break
     fi
-  done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V -r)
+  done
 fi
 
 # ---------- Gate: no config anywhere near the file → silent pass ----------
@@ -190,7 +192,7 @@ hk_run() {
   local home="$1" pathval="$2" file="$3"
   HK_RC=0
   printf '{"tool_input":{"file_path":"%s"}}' "$file" \
-    | HOME="$home" PATH="$pathval" STUB_LOG="$stublog" bash "$script" >/dev/null 2>&1 \
+    | HOME="$home" PATH="$pathval" NVM_DIR="${HK_NVM_DIR:-}" STUB_LOG="$stublog" bash "$script" >/dev/null 2>&1 \
     || HK_RC=$?
 }
 
@@ -224,6 +226,49 @@ else
   hk_run "$hkhome" "$hkpathbin:$cp" "$opted/sub/dirty.md"
   check_eq "$(cat "$stublog" 2>/dev/null)" pathstub \
     "hook: a markdownlint-cli2 already on PATH wins over the nvm dirs"
+
+  # Version roots: NVM_DIR/versions/node, then $HOME/.local/nvm, then $HOME/.nvm; the newest
+  # version HOLDING the tool wins across all roots, and an equal version name goes to the
+  # earlier root. Every id below is a value no default uses.
+  mkdir -p "$sandbox/hklocal" "$sandbox/hkboth" "$sandbox/hktie" "$sandbox/hknvmdir"
+  hklocal="$(cd "$sandbox/hklocal" && pwd -P)"
+  hkboth="$(cd "$sandbox/hkboth" && pwd -P)"
+  hktie="$(cd "$sandbox/hktie" && pwd -P)"
+  hknvmdir="$(cd "$sandbox/hknvmdir" && pwd -P)"
+
+  rml_stub "$hklocal/.local/nvm/versions/node/v11.4.2/bin" local-v11.4.2 1
+  : > "$stublog"
+  hk_run "$hklocal" "$cp" "$opted/sub/dirty.md"
+  check_eq "$HK_RC" 2 "hook: tool only under HOME/.local/nvm -> reaches the lint (exit 2)"
+  check_eq "$(cat "$stublog" 2>/dev/null)" local-v11.4.2 \
+    "hook: the HOME/.local/nvm launcher is the one used"
+
+  rml_stub "$hkboth/.local/nvm/versions/node/v11.4.2/bin" local-v11.4.2 1
+  rml_stub "$hkboth/.nvm/versions/node/v13.5.0/bin" nvm-v13.5.0 1
+  : > "$stublog"
+  hk_run "$hkboth" "$cp" "$opted/sub/dirty.md"
+  check_eq "$(cat "$stublog" 2>/dev/null)" nvm-v13.5.0 \
+    "hook: the newest version wins ACROSS roots (.nvm v13.5.0 over .local/nvm v11.4.2)"
+
+  rml_stub "$hktie/.local/nvm/versions/node/v12.3.4/bin" local-v12.3.4 1
+  rml_stub "$hktie/.nvm/versions/node/v12.3.4/bin" nvm-v12.3.4 1
+  : > "$stublog"
+  hk_run "$hktie" "$cp" "$opted/sub/dirty.md"
+  check_eq "$(cat "$stublog" 2>/dev/null)" local-v12.3.4 \
+    "hook: an equal version name goes to the earlier root (.local/nvm over .nvm)"
+
+  rml_stub "$hknvmdir/.local/nvm/versions/node/v12.3.4/bin" local-v12.3.4 1
+  rml_stub "$sandbox/thirdroot/versions/node/v12.3.4/bin" nvmdir-v12.3.4 1
+  : > "$stublog"
+  HK_NVM_DIR="$sandbox/thirdroot" hk_run "$hknvmdir" "$cp" "$opted/sub/dirty.md"
+  check_eq "$(cat "$stublog" 2>/dev/null)" nvmdir-v12.3.4 \
+    "hook: NVM_DIR/versions/node is a root and wins an equal version tie"
+
+  rml_stub "$sandbox/thirdroot/versions/node/v14.1.0/bin" nvmdir-v14.1.0 1
+  : > "$stublog"
+  HK_NVM_DIR="$sandbox/thirdroot" hk_run "$hknvmdir" "$cp" "$opted/sub/dirty.md"
+  check_eq "$(cat "$stublog" 2>/dev/null)" nvmdir-v14.1.0 \
+    "hook: a newer version under NVM_DIR beats the HOME roots"
 fi
 
 # ---------- Non-md and fail-safe stdin ----------

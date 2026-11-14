@@ -51,12 +51,22 @@ fi
 # Locate markdownlint-cli2 the same way the hook does.
 if ! command -v markdownlint-cli2 > /dev/null 2>&1; then
   nvm_bin=""
-  while IFS= read -r cand; do
-    if [[ -f "$cand/markdownlint-cli2" && -x "$cand/markdownlint-cli2" ]]; then
-      nvm_bin="$cand"
-      break
-    fi
-  done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2> /dev/null | sort -V -r)
+  nvm_roots=""
+  for root in "${NVM_DIR:+$NVM_DIR/versions/node}" "$HOME/.local/nvm/versions/node" "$HOME/.nvm/versions/node"; do
+    [[ -n "$root" && -d "$root" ]] || continue
+    root="$(cd "$root" && pwd -P)" || continue
+    case $'\n'"$nvm_roots" in *$'\n'"$root"$'\n'*) continue ;; esac
+    nvm_roots+="$root"$'\n'
+  done
+  while IFS= read -r ver; do
+    while IFS= read -r root; do
+      [[ -n "$root" ]] || continue
+      if [[ -f "$root/$ver/bin/markdownlint-cli2" && -x "$root/$ver/bin/markdownlint-cli2" ]]; then
+        nvm_bin="$root/$ver/bin"
+        break 2
+      fi
+    done <<< "$nvm_roots"
+  done < <(while IFS= read -r root; do [[ -n "$root" ]] && ls "$root" 2> /dev/null; done <<< "$nvm_roots" | sort -u | sort -V -r)
   if [[ -n "$nvm_bin" ]]; then
     PATH="$nvm_bin:$PATH"
     export PATH
@@ -152,7 +162,9 @@ expect_unflagged clean.md 'a correctly spaced heading is left alone'
 # claim about a file nobody is looking at any more.
 for f in below.md clean.md CHANGELOG.md sub/notes.md; do
   out="$(lint "$f")"
-  if grep -qE -- '^Summary: 0 error' <<<"$out"; then
+  # The clean summary reads `Summary: 0 error(s).` in markdownlint-cli2 v0.23.0 and
+  # `Summary: 0 issues in 0 files` in v0.24.0; accept both.
+  if grep -qE -- '^Summary: 0 (error|issue)' <<<"$out"; then
     note_pass "$f is clean for every rule, not just the one under test"
   else
     note_fail "$f is clean for every rule, not just the one under test" \

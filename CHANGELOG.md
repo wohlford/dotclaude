@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.157.4 — 2026-11-10
+- fix(markdownlint): search ~/.local/nvm and NVM_DIR for the launcher
+
 ## v0.157.3 — 2026-11-06
 - test(heavy-gate): add the mutation campaign
 

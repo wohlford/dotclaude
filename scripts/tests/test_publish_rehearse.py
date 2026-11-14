@@ -1259,3 +1259,82 @@ def test_row14_sync_docs_interpreter_floor_is_a_skip_not_drift(
     verdict, reason = mod.check_sync_docs(repo)
     assert verdict == "SKIP", (verdict, reason)
     assert "3.9" in reason, reason
+
+
+# ---------- _find_markdownlint_cli2: version roots and ordering ----------
+
+
+def _load_rehearse():
+    spec = importlib.util.spec_from_file_location("publish_rehearse_mod", TOOL)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _stub_launcher(root: Path, version: str) -> Path:
+    bin_dir = root / "versions" / "node" / version / "bin"
+    bin_dir.mkdir(parents=True)
+    launcher = bin_dir / "markdownlint-cli2"
+    launcher.write_text("#!/bin/sh\nexit 0\n")
+    launcher.chmod(0o755)
+    return launcher
+
+
+@pytest.fixture
+def mdl_env(tmp_path, monkeypatch):
+    """HOME is a fixture, PATH holds no launcher, NVM_DIR is unset."""
+    home = tmp_path / "home"
+    home.mkdir()
+    empty = tmp_path / "emptybin"
+    empty.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.delenv("NVM_DIR", raising=False)
+    return home, _load_rehearse()
+
+
+def test_find_markdownlint_uses_the_local_nvm_root(mdl_env):
+    home, mod = mdl_env
+    want = _stub_launcher(home / ".local" / "nvm", "v11.4.2")
+    assert mod._find_markdownlint_cli2() == str(want)
+
+
+def test_find_markdownlint_newest_version_wins_across_roots(mdl_env):
+    home, mod = mdl_env
+    _stub_launcher(home / ".local" / "nvm", "v11.4.2")
+    want = _stub_launcher(home / ".nvm", "v13.5.0")
+    assert mod._find_markdownlint_cli2() == str(want)
+
+
+def test_find_markdownlint_orders_versions_numerically_not_lexically(mdl_env):
+    home, mod = mdl_env
+    _stub_launcher(home / ".nvm", "v9.1.0")
+    want = _stub_launcher(home / ".nvm", "v26.3.0")
+    assert mod._find_markdownlint_cli2() == str(want)
+
+
+def test_find_markdownlint_equal_version_goes_to_the_earlier_root(
+    mdl_env, monkeypatch, tmp_path
+):
+    home, mod = mdl_env
+    _stub_launcher(home / ".nvm", "v12.3.4")
+    local = _stub_launcher(home / ".local" / "nvm", "v12.3.4")
+    assert mod._find_markdownlint_cli2() == str(local)
+    third = tmp_path / "third"
+    nvm_dir = _stub_launcher(third, "v12.3.4")
+    monkeypatch.setenv("NVM_DIR", str(third))
+    assert mod._find_markdownlint_cli2() == str(nvm_dir)
+
+
+def test_find_markdownlint_skips_versions_whose_bin_lacks_the_launcher(mdl_env):
+    home, mod = mdl_env
+    (home / ".nvm" / "versions" / "node" / "v30.0.0" / "bin").mkdir(parents=True)
+    want = _stub_launcher(home / ".nvm", "v11.4.2")
+    assert mod._find_markdownlint_cli2() == str(want)
+
+
+def test_find_markdownlint_returns_none_when_no_root_holds_it(mdl_env):
+    home, mod = mdl_env
+    (home / ".nvm" / "versions" / "node" / "v9.1.0" / "bin").mkdir(parents=True)
+    assert mod._find_markdownlint_cli2() is None
