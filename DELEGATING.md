@@ -58,6 +58,17 @@ invites exactly that, and an invitation with no reachable rationale is decorativ
   in your report, or launch it with `run-long.sh` and wait with `run-long.sh --wait` in the
   foreground, repeating the wait until it prints a verdict. If your brief tells you to launch a
   run and stop, launch it with `run-long.sh`, stop, and name its artifact path in your report.
+- Start heavy work with `run-long.sh`, which takes its turn behind other sessions' heavy runs
+  itself, and give it `--gate-max-wait 300` unless your brief names another number. Heavy means:
+  `audit.sh --tests` (it takes its own turn; give it `--gate-max-wait 300` too), mutation
+  campaigns (`mutate_*.py`), `kill-sets.py`, `guard-parity.py`, `flake-sweep.sh`, and builds,
+  containers or VMs. One test-suite file or one pytest module is NOT heavy: run those directly,
+  in the foreground, with no gate. Never pass `--no-gate`, and never wrap a heavy command in
+  `heavy-gate.sh run` in a foreground call that can outlast the tool timeout. If
+  `run-long.sh --status` prints `RESULT: NO-TURN` (exit 6), or an `audit.sh --tests` run ends
+  `RESULT: INCOMPLETE rc=75`, the machine gave you no turn: report that to the controller and
+  stop. Do not retry in a loop, do not run the command without the gate, do not lengthen the
+  wait to outlast the controller. Wait for the job in the foreground, as the item above says.
 - Modify or delete only the files your brief names, the files you create yourself, and the files
   your task's own tooling regenerates. Leave everything else alone, above all a scratchpad or
   temp file, which is usually the controller's probe or evidence. If one seems to need changing,
@@ -96,10 +107,13 @@ pgrep -fl 'pytest|mutate(_[a-z0-9_]+)?\.py|audit\.sh|run-long|flake-sweep|test_[
 Exit 1 means nothing matched. A match means the report is not final and the tree may not be the
 delegate's work product — unless its brief told it to launch a `run-long.sh` run and stop, and the
 report names that artifact; then read the artifact's status instead. Run it directly: inside a
-wrapper whose own command line carries the pattern (`bash -c "pgrep …"`), it matches that wrapper. A
-`run-long.sh` job shows only as the command it wraps, so a job whose command is none of these needs
-its name added. And a `<file>.mutate-backup` beside a source file means a mutation campaign still
-owns that file, and its diff is a live mutant, not an edit.
+wrapper whose own command line carries the pattern (`bash -c "pgrep …"`), it matches that wrapper.
+Every `run-long.sh` job's command line carries the absolute `run-long.sh` path, and a job in turn
+mode also carries its job name `run-long-<slug>-<pid>`; so `run-long` in the pattern matches every
+such job whatever command it wraps; name the wrapped command only to narrow the match. To judge a
+delegate's own job, read its artifact with `run-long.sh --status`, which prints the `GATE:` line.
+And a `<file>.mutate-backup` beside a source file means a mutation campaign still owns that file,
+and its diff is a live mutant, not an edit.
 
 ## Why each line is here
 
@@ -120,7 +134,9 @@ writing during that window is indistinguishable, to the comparison, from the sui
 FAIL names your run for someone else's files. Note the scope carefully: the snapshot is taken only
 on a `--tests` run, because it exists to judge what the test run itself wrote. A plain sweep cannot
 produce this failure — not because it runs nothing (several of its checks do execute repo code) but
-because it never takes the snapshot. See [`skills/audit/SKILL.md`](skills/audit/SKILL.md).
+because it never takes the snapshot. See [`skills/audit/SKILL.md`](skills/audit/SKILL.md). The
+heavy-work gate orders heavy runs against each other and never against a writer, so the line above
+about not running the suite while another agent is writing stands.
 
 **Hook payloads.** Every PreToolUse hook reads a JSON payload on stdin and ignores argv. Handing one
 arguments used to make it exit 0 having examined nothing — a silent false pass — and that defect is
@@ -141,6 +157,13 @@ and gave the reason all complied, while the two that lacked it stalled. That is 
 not a rate, so this line is procedural and carries its mechanism, and the check under "When a
 delegate returns" is there because it may still fail. It sits here despite the rule below against
 repeating `CLAUDE.md`.
+
+**Heavy-work turns.** There is no measured delegate incident behind this line; the operator
+directed its addition. It therefore carries the mechanism and claims no incident: `run-long.sh` and
+`audit.sh --tests` take a turn behind other sessions' heavy runs, and a delegate that gets none
+must report that rather than work around it. The NO-TURN reading is keyed on `RESULT: NO-TURN` /
+exit 6 only, because a `HEAVY_GATE_DONE ... rc=75` line also matches a stage that genuinely exits
+75.
 
 **Files you did not create.** Measured once, in the flake-sweep work: an implementer rewrote the
 output format of one of the controller's probe scripts and deleted another, both in the controller's
@@ -175,6 +198,8 @@ authorization that is the user's to give.
   pattern. This file is published and cannot be unpublished; a fact that would compose into a
   bypass, or that describes a machine rather than this repo, belongs somewhere private.
 - **Anything not yet measured.** An item earns its line by an incident, not by plausibility.
+  The Heavy-work turns paragraph above is the single exception: the operator directed that line, and
+  the paragraph says so rather than inventing an incident.
 
 ## Keeping it true
 

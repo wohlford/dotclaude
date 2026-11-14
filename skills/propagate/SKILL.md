@@ -789,7 +789,16 @@ session, which is why the tooling below is in the repo.
    ```
 
    The recorded status is what makes an **absent** verdict legible as a death rather than as quiet
-   success; without it, a killed run and a clean one are the same silence. The artifact goes to a
+   success; without it, a killed run and a clean one are the same silence.
+
+   That `audit.sh --tests` block gates itself: it takes a heavy-work turn before the suite starts, so
+   run `~/.claude/scripts/heavy-gate.sh status` before launching and count any queue time in the
+   publish-window ETA. A `HEAVY_GATE_DONE <name> rc=<n>` line appears in the artifact: after the
+   `RESULT:` line when a turn was taken, and before the `NOTE` and `RESULT:` lines on the
+   no-turn path. It is the gate's own line and is **not the verdict**. `RESULT: INCOMPLETE rc=75`
+   (a `NOTE gate:` line names it) means no turn came and nothing ran; it follows the `INCOMPLETE`
+   rule below, re-run to completion, but only after reading the queue with `heavy-gate.sh status`,
+   never in a blind retry loop at this irreversible step. The artifact goes to a
    temp directory rather than the repo **for a mechanical reason, not tidiness**: an untracked file
    at the repo root fails the next brick's clean-tree precondition. **This is the last check
    before step 6 makes the

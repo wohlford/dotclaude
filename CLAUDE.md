@@ -193,13 +193,17 @@ by hand, then the tool to use instead.
     `--expect 'RESULT: PASS rc=0'` over a run that reached a genuine `RESULT: FAIL rc=1` reported
     INDETERMINATE, and the FAIL stayed invisible until the artifact was read by hand;
     `RESULT: (PASS|FAIL|ERROR|INCOMPLETE) rc=[0-9]+` is the form that reports it.
-- **Before a CPU-heavy stage (suite, docker, mutation campaign, build, VM):** run it as
-  `~/.claude/scripts/heavy-gate.sh run <unique-name> -- <cmd>`, so sessions take turns and wait
-  while the Mac is thermally throttled. To background it, put the gate INSIDE the launcher:
-  `run-long.sh --out <p> --expect '^HEAVY_GATE_DONE' -- ~/.claude/scripts/heavy-gate.sh run
-  <name> -- <cmd>`. Never the reverse: the launcher returns at once, so an outer gate would
-  release its turn. A delegate adds `--max-wait <secs>` and reports exit 75 (no turn in time)
-  to the controller. A convention, not enforcement.
+- **Before a CPU-heavy stage (suite, docker, mutation campaign, build, VM):** launch it with
+  `run-long.sh --out <p> --expect '^RESULT: (PASS|FAIL|ERROR|INCOMPLETE) rc=[0-9]+' -- <cmd>`;
+  a stage printing no `RESULT:` line (docker build, VM) needs its own `--expect` shape or reads
+  INDETERMINATE. `run-long.sh` and `audit.sh --tests` take their turn themselves and wait while
+  `pmset` reports a CPU speed or scheduler limit below 100, never on thermal level alone. A
+  delegate adds `--gate-max-wait <secs>`. `RESULT: NO-TURN` (exit 6) or `INCOMPLETE rc=75` means
+  no turn came: report it to the controller, never retry in a loop or run ungated. Wrap another
+  foreground command in `~/.claude/scripts/heavy-gate.sh run <name> -- <cmd>`, nesting harmlessly
+  in a held turn, but never a `run-long.sh` launch or a script starting one: it returns at once
+  and ends the turn, leaving the job ungated; `--status` labels it `nested` without saying the
+  turn has ended, and nothing else shows it ungated.
 
 > Hooks (indexed in README.md) fire per-edit: a multi-step change that passes through an invalid
 > intermediate state (e.g. resolving conflict markers with two Edits) trips transient PostToolUse
@@ -1316,11 +1320,13 @@ from `scripts/claude-md-structure.py`, which prints every group heading:
 
 #### Node.js (NVM)
 
-- **NVM** manages Node (versions under `~/.nvm/versions/node/`); use the newest installed (v26.x line)
-- Initialize: `source /opt/local/share/nvm/init-nvm.sh` — in non-interactive shells this may
-  leave `node` off PATH; call the binary directly: `~/.nvm/versions/node/<ver>/bin/node`
+- **NVM** manages Node; `NVM_DIR` is `~/.local/nvm` (set in `~/.bashrc`), whose `versions/node/`
+  holds only the newest, v26.13.0 (npm/npx 12.2.1 — measured 2026-11-06). The older installs, and the
+  global `markdownlint-cli2`, still sit under the former `~/.nvm/versions/node/`. Use the newest (v26.x line)
+- Initialize: `source ~/.local/nvm/nvm.sh` (the MacPorts `init-nvm.sh` is gone) — in non-interactive shells this may leave `node` off PATH; call the binary directly:
+  `~/.local/nvm/versions/node/<ver>/bin/node`
 - Install: `npm install <package>`
-- npm-global CLIs live per-version in `~/.nvm/versions/node/<ver>/bin` and need that dir ON
+- npm-global CLIs live per-version in `<NVM_DIR>/versions/node/<ver>/bin` and need that dir ON
   PATH (their `env node` shebang; an absolute launcher path alone fails). `markdownlint-cli2`
   is installed in only some of those directories — the markdownlint hook uses it. List the ones
   holding it with `ls ~/.nvm/versions/node/*/bin/markdownlint-cli2`; the newest need not be one.
