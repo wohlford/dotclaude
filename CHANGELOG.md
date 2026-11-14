@@ -3,6 +3,9 @@
 All notable changes — one entry per released brick, mirroring its annotated tag. The full per-brick
 history also lives in the annotated tags (`git log`).
 
+## v0.157.2 — 2026-11-06
+- test(heavy-gate): add the gate suite
+
 ## v0.157.1 — 2026-11-06
 - docs(claude-md): announce the heavy-work gate
 

@@ -11,6 +11,7 @@
 
 [weights]
 test_audit.sh 643
+test_heavy_gate.sh 346
 test_guard_secrets.sh 222
 test_flake_sweep.sh 171
 test_hook_suite_guard.sh 170
